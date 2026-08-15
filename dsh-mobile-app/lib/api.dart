@@ -19,8 +19,13 @@ final Api api = Api();
 class Api {
   String baseUrl = '';
   String token = '';
+  /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
+  /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
+  List<String> baseUrls = [];
   static const _kBase = 'dsh_mr_base';
   static const _kToken = 'dsh_mr_token';
+  static const _kUrls = 'dsh_mr_urls';
+  static const _maxUrls = 8;
 
   /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
   /// socket/定时器导致内存耗尽闪退。
@@ -30,6 +35,13 @@ class Api {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString(_kBase) ?? '';
     token = prefs.getString(_kToken) ?? '';
+    final urls = prefs.getStringList(_kUrls) ?? [];
+    if (urls.isNotEmpty) {
+      baseUrls = urls.map(_normBase).where((u) => u.isNotEmpty).toList();
+      if (!baseUrls.contains(baseUrl)) baseUrls.insert(0, baseUrl);
+    } else if (baseUrl.isNotEmpty) {
+      baseUrls = [baseUrl];
+    }
   }
 
   Future<void> save({required String base, required String token}) async {
@@ -37,7 +49,70 @@ class Api {
     await prefs.setString(_kBase, base);
     await prefs.setString(_kToken, token);
     baseUrl = base;
+    baseUrls = [base]; // 手动重配置：以用户输入的地址为准，后续再自动收集
+    await prefs.setStringList(_kUrls, baseUrls);
     this.token = token;
+  }
+
+  /// 规范化地址：去尾部斜杠与 /m 后缀。
+  static String _normBase(String s) {
+    var base = s.trim();
+    if (base.isEmpty) return '';
+    while (base.endsWith('/')) {
+      base = base.substring(0, base.length - 1);
+    }
+    if (base.endsWith('/m')) base = base.substring(0, base.length - 2);
+    return base;
+  }
+
+  /// 合并新收集到的地址（去重、去回环置后、上限裁剪），当前可用地址保持第一位。
+  void mergeUrls(List<String> urls) {
+    final seen = <String>{};
+    final merged = <String>[_normBase(baseUrl)];
+    seen.add(merged.first);
+    for (final u in urls) {
+      final n = _normBase(u);
+      if (n.isEmpty || n == 'http://127.0.0.1' || n == 'http://localhost') continue;
+      if (seen.add(n)) merged.add(n);
+    }
+    if (merged.length > _maxUrls) merged.removeRange(_maxUrls, merged.length);
+    baseUrls = merged;
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(_kUrls, baseUrls);
+      } catch (_) {}
+    }());
+  }
+
+  /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale IP）。
+  Future<void> collectUrls() async {
+    try {
+      final d = await getJson('/api/bootstrap');
+      final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
+      mergeUrls(urls);
+    } catch (_) {
+      // 收集失败不影响当前连接
+    }
+  }
+
+  /// 连接失败时轮换到下一个候选地址；返回是否发生了切换。
+  bool rotateBaseUrl() {
+    if (baseUrls.length < 2) return false;
+    final cur = _normBase(baseUrl);
+    final idx = baseUrls.indexOf(cur);
+    if (idx < 0) return false;
+    final next = baseUrls[(idx + 1) % baseUrls.length];
+    if (next == cur) return false;
+    baseUrl = next;
+    // 持久化新活动地址（失败不影响内存态切换）
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kBase, baseUrl);
+      } catch (_) {}
+    }());
+    return true;
   }
 
   /// 插件路由挂在 basePath（默认 /m）下，所有 API 需带 /m 前缀。

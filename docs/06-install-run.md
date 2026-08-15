@@ -58,10 +58,10 @@ npx @deepseek-ai/dsh web
 口令生成建议：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 
 ## 5. 外出访问（Tailscale）
-1. 电脑安装 [Tailscale](https://tailscale.com/download) 并登录。
-2. 手机安装 Tailscale App 并登录**同一账号**。
-3. 两端连接后，手机浏览器访问 `http://<电脑Tailscale IP>:3080/m`（Tailscale IP 形如 `100.x.x.x`；在电脑 `tailscale ip` 查看）。
-4. 无需开放公网端口、无需路由器配置；传输为 WireGuard 加密，设备身份即认证。
+1. 电脑安装 [Tailscale](https://tailscale.com/download) 并登录（**电脑保持开机**，dsh + Tailscale 运行）。
+2. 手机安装 Tailscale App 并登录**同一账号**（Tailscale IP 形如 `100.x.x.x`；电脑端 `tailscale ip` 查看）。
+3. **App 免配置自动切换**：App 连接成功后会自动从电脑收集全部地址（局域网 IP + Tailscale IP）并保存（设置 → 电脑地址显示「共 N 个地址自动切换」）；断线重试失败时会自动轮换候选地址——**出门自动切 Tailscale，回家自动切回局域网**，无需手动改配置。
+4. 无需开放公网端口、无需路由器配置；传输为 WireGuard 加密，设备身份即认证；访问口令（authToken）仍是第二道锁。
 > 禁止：将 3080 端口映射/穿透到公网。插件无内置公网防护（详见 04-security.md）。
 ## 6. 推送桥配置（可选，部署者 3 分钟）
 > agent 完成 / 需要你回答 / 失败 → 手机系统通知。**不配置则无推送**，其他功能不受影响。

@@ -184,7 +184,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.computer_outlined),
             title: '电脑地址',
-            sub: api.baseUrl,
+            sub: api.baseUrls.length > 1
+                ? '${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换'
+                : api.baseUrl,
             trailing: Text('已连接', style: TextStyle(fontSize: 12, color: ok)),
           ),
           _row(

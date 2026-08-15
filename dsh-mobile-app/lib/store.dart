@@ -342,7 +342,10 @@ class AppStore extends ChangeNotifier {
   Future<void> resume() async {
     if (api.baseUrl.isEmpty || api.token.isEmpty) return; // 未配置连接
     try {
-      await api.getJson('/api/bootstrap');
+      final d = await api.getJson('/api/bootstrap');
+      // 合并服务端返回的全部地址（含 Tailscale IP）：外出/回家自动切换的数据基础
+      final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
+      api.mergeUrls(urls);
       _setConnState('connected');
       if (_sub == null) connect();
       refreshAll();
@@ -358,6 +361,8 @@ class AppStore extends ChangeNotifier {
     if (type == 'hello') {
       _setConnState('connected');
       _catchup();
+      // 连接成功：收集电脑全部地址（LAN + Tailscale），供断线时自动轮换
+      unawaited(api.collectUrls());
       // 重连成功：补拉会话/通知/目录/工作区（桌面端重启后 App 无需手动刷新即可完整恢复）
       _debounceSessions();
       refreshNotifs(notify: false);
@@ -475,7 +480,13 @@ class AppStore extends ChangeNotifier {
           _retry = 0;
           connect();
         } catch (_) {
-          _retry++;
+          // 当前地址连续失败：轮换到下一个候选地址（外出自动切 Tailscale）
+          if (api.rotateBaseUrl()) {
+            AppLog.instance.log('连接切换地址 → ${api.baseUrl}');
+            _retry = 0; // 新地址重新开始退避
+          } else {
+            _retry++;
+          }
           _scheduleReconnect();
         }
       });
