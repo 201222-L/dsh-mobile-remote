@@ -1,0 +1,886 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f6f7f9" />
+<title>DSH 绉诲姩绔?路 鐣岄潰鍘熷瀷 v6锛圖eepSeek 閰嶈壊锛?/title>
+<style>
+  /* 鈹€鈹€ DeepSeek 璁捐浠ょ墝锛堝搧鐗岃摑 #426EFE锛?鈹€鈹€ */
+  :root {
+    --bg: #f6f7f9;            /* 鍐风櫧鐢诲竷 */
+    --surface: #ffffff;       /* 鍗＄墖/杈撳叆闈?*/
+    --ink: #1f2329;           /* 涓绘枃瀛楋紙钃濋粦锛?*/
+    --ink-2: #6b7280;         /* 娆¤ */
+    --ink-3: #9ca3af;         /* 鍗犱綅/娉ㄩ噴 */
+    --line: #e5e7eb;          /* 缁嗗垎鍓茬嚎锛堝喎鐏帮級 */
+    --brand: #426efe;         /* DeepSeek 鍝佺墝钃?*/
+    --brand-soft: rgba(66, 110, 254, .1);
+    --link: #426efe;          /* 閾炬帴/寮€鍏宠摑 */
+    --ok: #3ba55d;
+    --danger: #d44c47;
+    --radius-lg: 24px; --radius-md: 16px; --radius-sm: 10px;
+    --shadow: 0 1px 2px rgba(31,35,41,.05), 0 10px 30px rgba(31,35,41,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --surface: #161b22;   /* DeepSeek 娣辫壊锛氭繁钃濋粦 */
+      --ink: #e6e8ec; --ink-2: #8b949e; --ink-3: #5c6470;
+      --line: #232a33; --brand: #6c8cff; --brand-soft: rgba(108,140,255,.14);
+      --link: #6c8cff; --ok: #4cb86f; --danger: #e0655f;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  /* 鎵嬪姩娣辫壊妯″紡锛堣缃〉寮€鍏筹級锛氳鐩栬窡闅忕郴缁?*/
+  html.force-dark {
+    --bg: #0e1116; --surface: #161b22; --ink: #e6e8ec; --ink-2: #8b949e; --ink-3: #5c6470;
+    --line: #232a33; --brand: #6c8cff; --brand-soft: rgba(108,140,255,.14);
+    --link: #6c8cff; --ok: #4cb86f; --danger: #e0655f;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--ink);
+    max-width: 480px; margin: 0 auto; height: 100%;
+    display: flex; flex-direction: column;
+    overscroll-behavior: none; -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  .serif { font-family: Georgia, "Playfair Display", "Songti SC", "SimSun", serif; }
+  .ic { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .ic.sm { width: 16px; height: 16px; }
+  .ic.lg { width: 24px; height: 24px; }
+
+  /* 鈹€鈹€ 椤甸潰楠ㄦ灦 鈹€鈹€ */
+  .hidden { display: none !important; }
+  #stage { flex: auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  .screen {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transform: translateX(14px);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  .screen.active { opacity: 1; pointer-events: auto; transform: none; }
+  main.scroll { flex: auto; min-height: 0; overflow-y: auto; padding: 4px 18px 16px; }
+  ::-webkit-scrollbar { width: 0; }
+
+  /* 鈹€鈹€ 椤堕儴瀵艰埅 鈹€鈹€ */
+  .topbar { flex: none; display: flex; align-items: center; gap: 6px; padding: calc(14px + env(safe-area-inset-top)) 14px 10px; }
+  .topbar .iconbtn { width: 38px; height: 38px; border: none; background: none; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; cursor: pointer; }
+  .topbar .iconbtn:active { background: var(--line); }
+  .topbar .wordmark { font-size: 21px; font-weight: 400; letter-spacing: .01em; }
+  .topbar .right { margin-left: auto; display: flex; gap: 2px; }
+
+  /* 鈹€鈹€ 鍝佺墝鏄熷舰 鈹€鈹€ */
+  .star { color: var(--brand); }
+
+  /* 鈹€鈹€ 棣栭〉锛氱姸鎬佷腑蹇?鈹€鈹€ */
+  .welcome { padding: 14px 2px 10px; }
+  .welcome .hi { font-size: 30px; line-height: 1.25; font-weight: 400; letter-spacing: -.01em; }
+  .welcome .sub { font-size: 13.5px; color: var(--ink-2); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.running { background: var(--ok); animation: pulse 1.6s infinite; }
+  .dot.waiting { background: var(--brand); }
+  .dot.idle { background: var(--ink-3); }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  .card { background: var(--surface); border-radius: var(--radius-md); padding: 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+  .card .card-h { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; color: var(--ink-3); text-transform: uppercase; margin-bottom: 10px; }
+  .task { font-size: 16.5px; font-weight: 600; line-height: 1.4; }
+  .progress { height: 4px; border-radius: 2px; background: var(--line); margin: 12px 0 10px; overflow: hidden; }
+  .progress > i { display: block; height: 100%; width: 62%; background: var(--brand); border-radius: 2px; }
+  .meta { font-size: 13px; color: var(--ink-2); }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  /* 寰呭洖绛旓紙璧ら櫠鑹茶皟锛?*/
+  .ask { display: flex; gap: 12px; align-items: flex-start; background: var(--brand-soft); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 12px; }
+  .ask .ic { color: var(--brand); margin-top: 1px; }
+  .ask .q { font-size: 14.5px; font-weight: 600; line-height: 1.5; }
+  .ask .q-sub { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
+  .ask .acts { display: flex; gap: 8px; margin-top: 12px; }
+  .ask .acts button { flex: 1; min-height: 42px; border-radius: 999px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn-black { background: var(--brand); color: #fff; border: none; }
+  .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+  .listrow { display: flex; align-items: center; gap: 12px; padding: 11px 2px; }
+  .listrow + .listrow { border-top: 1px solid var(--line); }
+  .listrow .lead { width: 32px; height: 32px; border-radius: 10px; background: var(--line); color: var(--ink-2); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .listrow .t { font-size: 14.5px; }
+  .listrow .t small { display: block; font-size: 12px; color: var(--ink-2); margin-top: 1px; }
+  .listrow .v { margin-left: auto; font-size: 13px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+  .listrow .v.ok { color: var(--ok); }
+
+  /* 鈹€鈹€ Claude 寮忚緭鍏ュ尯 鈹€鈹€ */
+  .composer-wrap { flex: none; padding: 4px 14px calc(12px + env(safe-area-inset-bottom)); }
+  .composer {
+    display: flex; flex-direction: column; gap: 4px;
+    background: var(--surface); border-radius: 20px;
+    padding: 8px 8px 6px 12px; box-shadow: var(--shadow);
+  }
+  .composer .pillrow { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .composer .pillrow::-webkit-scrollbar { display: none; }
+  .composer .inputrow { display: flex; align-items: center; gap: 8px; }
+  .composer .plus {
+    width: 34px; height: 34px; border: none; border-radius: 50%; cursor: pointer; flex: none;
+    background: var(--line); color: var(--ink); display: inline-flex; align-items: center; justify-content: center;
+  }
+  .composer .model {
+    flex: none; display: inline-flex; align-items: center; gap: 5px;
+    background: var(--line); color: var(--ink-2); border: none; border-radius: 999px;
+    font: inherit; font-size: 11.5px; font-weight: 600; padding: 6px 10px; cursor: pointer;
+  }
+  .composer .model.on { background: var(--brand); color: #fff; }
+  .composer input {
+    flex: auto; min-width: 0; border: none; outline: none; background: none;
+    color: var(--ink); font: inherit; font-size: 14.5px; padding: 4px 0;
+  }
+  .composer input::placeholder { color: var(--ink-3); }
+  .composer .round {
+    width: 36px; height: 36px; border: none; border-radius: 50%; flex: none; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .composer .mic { background: none; color: var(--ink-2); }
+  .composer .send { background: var(--brand); color: #fff; }
+  .composer .send:active { transform: scale(.93); }
+
+  /* 鈹€鈹€ 鍔ㄤ綔鍖猴紙鎻掍欢濂戠害锛氱粺涓€ chip 缃戞牸锛?鈹€鈹€ */
+  .actions-wrap { flex: none; padding: 2px 14px 6px; }
+  .actions-label { font-size: 11px; color: var(--ink-3); padding: 2px 2px 6px; display: flex; align-items: center; gap: 5px; }
+  .actions { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .actions::-webkit-scrollbar { display: none; }
+  .actions.hidden { display: none; }
+  .chip {
+    flex: none; display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 13px; font: inherit; font-size: 13px; color: var(--ink); cursor: pointer;
+    box-shadow: var(--shadow);
+  }
+  .chip:active { background: var(--brand-soft); border-color: var(--brand); }
+  .chip .ic { width: 15px; height: 15px; color: var(--brand); }
+
+  /* 鈹€鈹€ 琛ㄥ崟瀛楁锛堝姩浣?bottom sheet 鍐咃級 鈹€鈹€ */
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+  .field input, .field select {
+    width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--ink); font: inherit; font-size: 14.5px; padding: 0 12px; outline: none;
+  }
+  .field input:focus { border-color: var(--brand); }
+  .form-actions { display: flex; gap: 10px; margin-top: 4px; }
+  .form-actions button { flex: 1; min-height: 44px; border-radius: var(--radius-sm); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .form-actions .run { background: var(--brand); color: #fff; border: none; }
+  .form-actions .cancel { background: none; color: var(--ink-2); border: 1px solid var(--line); }
+
+  /* 鈹€鈹€ 娑堟伅娴侊紙Claude 鎺掔増锛氭棤姘旀场锛?鈹€鈹€ */
+  .msgs { flex: auto; min-height: 0; overflow-y: auto; padding: 10px 18px 6px; }
+  .m { margin-bottom: 20px; }
+  .m .who { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .m .who .nm { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  .m .who .tm { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+  .m .body { font-size: 15px; line-height: 1.65; }
+  .m .body .h { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
+  .m.user { text-align: right; }
+  .m.user .who .nm { margin-left: auto; }
+  .m.user .who .tm { margin-left: 8px; }
+  .m.user .body { display: inline-block; text-align: left; background: var(--surface); border-radius: var(--radius-md); padding: 10px 14px; box-shadow: var(--shadow); }
+
+  details.tool { margin: 12px 0; }
+  details.tool summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 13px; color: var(--ink-2); padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+  details.tool summary::-webkit-details-marker { display: none; }
+  details.tool summary .nm { color: var(--ink); font-weight: 600; }
+  details.tool summary .ok { color: var(--ok); font-size: 12px; margin-left: auto; }
+  details.tool summary .arrow { transition: transform .15s; color: var(--ink-3); }
+  details.tool[open] summary { border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+  details.tool[open] summary .arrow { transform: rotate(180deg); }
+  details.tool .body { font-size: 13px; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; background: var(--surface); border: 1px solid var(--line); border-top: none; border-radius: 0 0 var(--radius-sm) var(--radius-sm); padding: 8px 12px 12px; }
+
+  /* 鈹€鈹€ 渚ц竟鏍?鈹€鈹€ */
+  #scrim { position: fixed; inset: 0; background: rgba(31,30,29,.4); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40; max-width: 480px; margin: 0 auto; }
+  #scrim.open { opacity: 1; pointer-events: auto; }
+  #drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; width: min(78vw, 330px); z-index: 50;
+    background: var(--bg); transform: translateX(-102%); transition: transform .24s cubic-bezier(.3,1,.4,1);
+    display: flex; flex-direction: column; max-width: 480px;
+  }
+  #drawer.open { transform: none; box-shadow: 8px 0 40px rgba(0,0,0,.18); }
+  .drawer-head { padding: calc(22px + env(safe-area-inset-top)) 22px 14px; }
+  .drawer-head .wordmark { font-size: 28px; }
+  .drawer-nav { flex: auto; overflow-y: auto; padding: 6px 12px; }
+  .drawer-item {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    padding: 12px 12px; border: none; background: none; border-radius: var(--radius-sm);
+    font: inherit; font-size: 15px; color: var(--ink-2); cursor: pointer; text-align: left;
+  }
+  .drawer-item .ic { color: var(--ink-3); }
+  .drawer-item.active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+  .drawer-item.active .ic { color: var(--brand); }
+  .drawer-foot { padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--brand); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex: none; }
+  .drawer-foot .name { font-size: 14px; font-weight: 600; }
+  .drawer-foot .mail { font-size: 11.5px; color: var(--ink-3); }
+  .drawer-foot .gear { margin-left: auto; border: none; background: none; color: var(--ink-2); cursor: pointer; }
+
+  /* 鈹€鈹€ 璁剧疆椤?鈹€鈹€ */
+  .center-title { text-align: center; font-size: 24px; padding: 12px 0 16px; }
+  .acct-card { display: flex; align-items: center; gap: 12px; background: var(--surface); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+  .acct-card .mail { font-size: 14px; font-weight: 600; }
+
+  .set-group { background: var(--surface); border-radius: var(--radius-md); padding: 4px 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 13px 2px; }
+  .set-row + .set-row { border-top: 1px solid var(--line); }
+  .set-row .ic { color: var(--ink-3); }
+  .set-row .t { font-size: 14.5px; }
+  .set-row .t small { display: block; font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+  .set-row .tail { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .set-row .tail .val { font-size: 13px; color: var(--ink-2); }
+  .set-row .tail .chev { color: var(--ink-3); }
+
+  .switch { position: relative; width: 44px; height: 26px; border-radius: 999px; background: var(--line); cursor: pointer; transition: background .18s; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .18s cubic-bezier(.3,1.4,.5,1); box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+  .switch.on { background: var(--link); }
+  .switch.on::after { transform: translateX(18px); }
+
+  /* 鈹€鈹€ 搴曢儴寮圭獥 鈹€鈹€ */
+  #sheet-mask, #model-mask, #action-mask, #perm-mask, #confirm-mask, #preset-mask, #newsess-mask { position: fixed; inset: 0; background: rgba(31,30,29,.45); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 60; max-width: 480px; margin: 0 auto; }
+  #sheet-mask.open, #model-mask.open, #action-mask.open, #perm-mask.open, #confirm-mask.open, #preset-mask.open, #newsess-mask.open { opacity: 1; pointer-events: auto; }
+  #sheet, #model-sheet, #action-sheet, #perm-sheet, #confirm-sheet, #preset-sheet, #newsess-sheet {
+    position: fixed; left: 50%; bottom: 0; transform: translate(-50%, 102%); width: 100%; max-width: 480px;
+    background: var(--surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    z-index: 70; transition: transform .26s cubic-bezier(.3,1,.4,1);
+    padding: 10px 18px calc(18px + env(safe-area-inset-bottom));
+  }
+  #sheet.open, #model-sheet.open, #action-sheet.open, #perm-sheet.open, #confirm-sheet.open, #preset-sheet.open, #newsess-sheet.open { transform: translate(-50%, 0); }
+  .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 14px; }
+  .sheet-title { text-align: center; font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+  .attach-grid { display: flex; gap: 10px; margin-bottom: 16px; }
+  .attach-grid .cell {
+    flex: 1; border: 1px solid var(--line); border-radius: var(--radius-md); background: none;
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 0;
+    font: inherit; font-size: 12px; color: var(--ink-2); cursor: pointer;
+  }
+  .attach-grid .cell .ic { color: var(--ink); }
+  .sheet-row { display: flex; align-items: center; gap: 10px; padding: 13px 2px; font-size: 14.5px; }
+  .sheet-row + .sheet-row { border-top: 1px solid var(--line); }
+  .sheet-row .tail { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .sheet-row .tail .chev { color: var(--ink-3); }
+
+  /* 妯″瀷閫夋嫨 */
+  .model-item { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; border-radius: var(--radius-sm); }
+  .model-item + .model-item { border-top: 1px solid var(--line); }
+  .model-item .mn { font-size: 14.5px; font-weight: 600; }
+  .model-item .mid { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+  .model-item .check { margin-left: auto; color: var(--brand); font-weight: 700; font-size: 16px; }
+  .effort-row { display: flex; gap: 8px; margin-bottom: 6px; }
+  .effort {
+    flex: 1; min-height: 38px; border: 1px solid var(--line); border-radius: 999px; background: none;
+    font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer;
+  }
+  .effort.active { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+
+  /* 閫氱煡 */
+  .bell-badge {
+    position: absolute; top: 2px; right: 1px; min-width: 16px; height: 16px; border-radius: 999px;
+    background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0 4px;
+  }
+  .notif-item { display: flex; gap: 12px; padding: 13px 16px; cursor: pointer; align-items: flex-start; position: relative; }
+  .notif-item + .notif-item { border-top: 1px solid var(--line); }
+  .notif-item .lead { width: 32px; height: 32px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .notif-item .t { font-size: 14.5px; font-weight: 600; line-height: 1.4; }
+  .notif-item .d { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; line-height: 1.5; }
+  .notif-item .tm { font-size: 11px; color: var(--ink-3); margin-top: 4px; }
+  .notif-item .u { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--link); flex: none; margin-top: 5px; }
+  .notif-item:not([data-unread]) .u { display: none; }
+  .notif-item[data-unread] { background: var(--brand-soft); }
+
+  .proto-note { text-align: center; font-size: 11px; color: var(--ink-3); padding: 10px 16px 2px; }
+</style>
+</head>
+<body>
+
+<!-- 鈺愨晲鈺?鍥炬爣搴擄紙1.5 绾垮锛?鈺愨晲鈺?-->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-3.1A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="7" cy="18" r="1.8"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 22 20H2z"/><path d="M12 10v4M12 17.2h.01"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.5l2.5 2.5 5-5.5"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11L9.5 22 19 9.5h-6.5z"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4.5 20V10M10.5 20V4M16.5 20v-6M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h2l1.5-2h4l1.5 2h2A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.2"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m3.5 17.5 5-4.5 4 3.5 3-2.5 5 4"/></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m21 11.5-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.3 5.2l-8.6 8.6a1.9 1.9 0 0 1-2.7-2.7l8-8"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 6.5 2.5 8.5 2.5 8.5h-17S6 15.5 6 9"/><path d="M10 21a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a7 7 0 0 0 10 10z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2"/><path d="M8.5 21h7M12 17v4"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14L17 12h4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 7.8h.01"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.3 3 7.6 7.5 9 4.5-1.4 7.5-4.7 7.5-9V6z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.3 3.8 5.2 3.8 8.5s-1.3 6.2-3.8 8.5c-2.5-2.3-3.8-5.2-3.8-8.5s1.3-6.2 3.8-8.5z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.8c.5 3.6 1.4 5.2 2.5 6.3 1.2 1.2 3.4 1.7 6.7 1.9-3.3.4-5.5 1.1-6.7 2.4-1.1 1.3-2 3.2-2.5 6.8-.5-3.6-1.4-5.5-2.5-6.8-1.2-1.3-3.4-2-6.7-2.4 3.3-.2 5.5-.7 6.7-1.9 1.1-1.1 2-2.7 2.5-6.3z"/></symbol>
+  </defs>
+</svg>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?涓昏垶鍙?鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="stage">
+  <!-- 棣栭〉锛氱姸鎬佷腑蹇?-->
+  <div id="home" class="screen active">
+    <div class="topbar">
+      <button class="iconbtn" onclick="openDrawer()"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <span class="wordmark serif">DSH</span>
+      <span class="right">
+        <button class="iconbtn" onclick="pushScreen('notifications')" style="position:relative">
+          <svg class="ic"><use href="#i-bell"/></svg>
+          <span id="bell-badge" class="bell-badge">2</span>
+        </button>
+      </span>
+    </div>
+    <main class="scroll">
+      <!-- 棣栭〉鍥哄畾锛氭杩庣晫闈紙鐘舵€佷俊鎭湪瀵硅瘽椤?浼氳瘽鍒楄〃/閫氱煡涓憟鐜帮級 -->
+      <div class="welcome" style="padding:34px 2px 18px;text-align:center">
+        <div class="hi serif" style="font-size:31px;line-height:1.35">鏈変粈涔堥渶瑕?br/>agent 甯繖鐨勶紵</div>
+        <div class="sub" style="justify-content:center;margin-top:10px"><span class="dot idle"></span>鐢佃剳鍦ㄧ嚎 路 鐩存帴鍙戞秷鎭嵆鍙?/div>
+      </div>
+      <div class="card" style="margin-top:8px">
+        <div class="card-h">鏈€杩戜細璇?/div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">鏇存柊椤圭洰渚濊禆骞惰窇閫氭祴璇?small>鏄ㄥぉ 22:40</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">鐢熸垚鍛ㄦ姤鑽夌<small>鏄ㄥぉ 18:05</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">鍒嗘瀽鏃ュ織涓殑閿欒鍒嗗竷<small>鍛ㄤ竴 14:30</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+      </div>
+      <button class="btn-black" style="width:100%;min-height:48px;border-radius:999px;font-size:15px" onclick="openNewSessionSheet()">锛?鏂板缓浼氳瘽</button>
+      <p class="proto-note">鍘熷瀷婕旂ず鏁版嵁 路 鐘舵€侊紙鎵ц涓?寰呭洖绛旓級瑙佸璇濋〉涓庨€氱煡</p>
+    </main>
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="pillrow">
+          <button class="model" onclick="openModelSheet()">deepseek-v4-flash <svg class="ic sm"><use href="#i-chevron-down"/></svg></button>
+          <button class="model" onclick="openPermSheet()">workspace-write <svg class="ic sm"><use href="#i-chevron-down"/></svg></button>
+        </div>
+        <div class="inputrow">
+          <button class="plus" onclick="openSheet()"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <input placeholder="Chat with DSH鈥? />
+          <button class="round send" onclick="pushScreen('chat')"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 瀵硅瘽椤?-->
+  <div id="chat" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+      <span class="wordmark serif" style="font-size:16px">鏁寸悊 F 鐩樿祫鏂?/span>
+      <span class="right">
+        <span class="dot running" style="align-self:center"></span>
+        <button class="iconbtn" onclick="toast('鏇村鑿滃崟 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-more"/></svg></button>
+      </span>
+    </div>
+    <div class="msgs" id="msgs">
+      <div class="m user">
+        <div class="who"><span class="nm">鎴?/span><span class="tm">09:15</span></div>
+        <div class="body">甯垜鏁寸悊 F 鐩橀噷鐨勮祫鏂欙紝鐢熸垚涓€浠借縼绉绘姤鍛?/div>
+      </div>
+      <div class="m">
+        <div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span><span class="tm">09:15</span></div>
+        <div class="body"><div class="h serif">濂界殑锛屾垜鍏堟壂鎻?F 鐩?/div>鎴戜細姊崇悊鐩綍缁撴瀯銆佺粺璁℃枃浠剁被鍨嬩笌澶у皬锛岀劧鍚庣粰浣犱竴浠借縼绉诲缓璁€?/div>
+      </div>
+      <details class="tool">
+        <summary><svg class="ic sm"><use href="#i-search"/></svg><span class="nm">鎵弿鐩綍</span><span class="ok">瀹屾垚</span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary>
+        <div class="body">3,842 涓枃浠?路 128 GB
+閲嶅鏂囦欢 214 涓紙绾?3.2 GB锛?澶ф枃浠?12 涓紙&gt;1 GB锛?/div>
+      </details>
+      <div class="m">
+        <div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span><span class="tm">09:16</span></div>
+        <div class="body"><div class="h serif">鎵弿瀹屾垚</div>鍙戠幇 214 涓噸澶嶆枃浠讹紙绾?3.2 GB锛夛紝闇€瑕佷綘纭鏄惁鍒犻櫎銆?/div>
+      </div>
+    </div>
+    <div class="actions-wrap">
+      <div class="actions-label">蹇嵎鍔ㄤ綔 路 鐢卞凡瀹夎鎻掍欢鎻愪緵</div>
+      <div class="actions" id="chat-actions"></div>
+    </div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="pillrow">
+          <button class="model" onclick="openModelSheet()">deepseek-v4-flash <svg class="ic sm"><use href="#i-chevron-down"/></svg></button>
+          <button class="model" id="perm-pill" onclick="openPermSheet()">workspace-write <svg class="ic sm"><use href="#i-chevron-down"/></svg></button>
+        </div>
+        <div class="inputrow">
+          <button class="plus" onclick="openSheet()"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+          <input id="chat-input" placeholder="鍥炲 agent鈥? />
+          <button class="round send" onclick="sendMsg()"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 鈺愨晲鈺愨晲鈺愨晲鈺?閫氱煡涓績 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+  <div id="notifications" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+      <span class="wordmark serif" style="font-size:16px">閫氱煡</span>
+      <span class="right"><button class="iconbtn" style="font-size:13px;color:var(--link);width:auto;padding:0 6px" onclick="readAllNotifs()">鍏ㄩ儴宸茶</button></span>
+    </div>
+    <main class="scroll" style="padding-top:8px">
+      <div class="card" id="notif-list">
+        <div class="notif-item" data-unread onclick="openNotif(this)">
+          <span class="lead" style="background:var(--brand-soft);color:var(--warn)"><svg class="ic sm"><use href="#i-alert"/></svg></span>
+          <div><div class="t">闇€瑕佷綘鍥炵瓟</div><div class="d">鍙戠幇 214 涓噸澶嶆枃浠讹紝鏄惁鍒犻櫎浠ラ噴鏀剧┖闂达紵</div><div class="tm">浠婂ぉ 09:16</div></div>
+          <span class="u"></span>
+        </div>
+        <div class="notif-item" data-unread onclick="openNotif(this)">
+          <span class="lead" style="background:rgba(63,165,93,.12);color:var(--ok)"><svg class="ic sm"><use href="#i-check-circle"/></svg></span>
+          <div><div class="t">浠诲姟瀹屾垚</div><div class="d">澶囦唤閰嶇疆鍒?E 鐩橈紙鑰楁椂 4 鍒嗛挓锛?/div><div class="tm">浠婂ぉ 09:12</div></div>
+          <span class="u"></span>
+        </div>
+        <div class="notif-item" onclick="openNotif(this)">
+          <span class="lead" style="background:rgba(63,165,93,.12);color:var(--ok)"><svg class="ic sm"><use href="#i-check-circle"/></svg></span>
+          <div><div class="t">浠诲姟瀹屾垚</div><div class="d">鏇存柊渚濊禆骞惰窇閫氭祴璇曪紙8 涓敤渚嬮€氳繃锛?/div><div class="tm">鏄ㄥぉ 22:40</div></div>
+          <span class="u"></span>
+        </div>
+        <div class="notif-item" onclick="openNotif(this)">
+          <span class="lead" style="background:rgba(212,76,71,.12);color:var(--danger)"><svg class="ic sm"><use href="#i-alert"/></svg></span>
+          <div><div class="t">浠诲姟澶辫触</div><div class="d">鏃ュ織鍒嗘瀽浠诲姟鎵ц澶辫触锛屽凡鑷姩閲嶈瘯</div><div class="tm">鏄ㄥぉ 18:30</div></div>
+          <span class="u"></span>
+        </div>
+      </div>
+      <p class="proto-note">鐐瑰嚮閫氱煡鐩磋揪瀵瑰簲浼氳瘽 路 浠诲姟瀹屾垚 / 闇€瑕佸洖绛?/ 澶辫触閮戒細鎺ㄩ€?/p>
+    </main>
+  </div>
+
+  <!-- 浼氳瘽椤?-->
+  <div id="sessions" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+      <span class="wordmark serif" style="font-size:16px">浼氳瘽</span>
+      <span class="right"><button class="iconbtn" onclick="toast('鏂板缓浼氳瘽锛堝師鍨嬪崰浣嶏級')"><svg class="ic"><use href="#i-plus"/></svg></button></span>
+    </div>
+    <main class="scroll" style="padding-top:8px">
+      <div class="card">
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-folder"/></svg></span><span class="t">鏁寸悊 F 鐩樿祫鏂欙紝鐢熸垚杩佺Щ鎶ュ憡<small>鎵ц涓?路 浠婂ぉ 09:15</small></span><span class="v"><span class="dot running"></span></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">鏇存柊椤圭洰渚濊禆骞惰窇閫氭祴璇?small>宸插畬鎴?路 鏄ㄥぉ 22:40</small></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">鐢熸垚鍛ㄦ姤鑽夌<small>宸插畬鎴?路 鏄ㄥぉ 18:05</small></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">鍒嗘瀽鏃ュ織涓殑閿欒鍒嗗竷<small>宸插畬鎴?路 鍛ㄤ竴 14:30</small></span></div>
+      </div>
+      <p class="proto-note">鐐规寜杩涘叆瀵硅瘽</p>
+    </main>
+  </div>
+
+  <!-- 璁剧疆椤?-->
+  <div id="settings" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+      <span class="wordmark serif" style="font-size:16px; margin:0 auto">璁剧疆</span>
+      <span class="right"></span>
+    </div>
+    <main class="scroll" style="padding-top:4px">
+      <div class="acct-card">
+        <span class="avatar">D</span>
+        <div><div class="mail">鏈満鐩磋繛</div><div style="font-size:11.5px;color:var(--ink-3)">DeepSeek Harness 路 妗岄潰绔?/div></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">鐢佃剳鍦板潃<small>192.168.1.100:55979</small></span><span class="tail"><span class="val" style="color:var(--ok)">宸茶繛鎺?/span></span></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row"><svg class="ic sm"><use href="#i-bell"/></svg><span class="t">浠诲姟瀹屾垚鎻愰啋</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-alert"/></svg><span class="t">闇€瑕佸洖绛旀彁閱?/span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-activity"/></svg><span class="t">澶辫触 / 鍗′綇鎻愰啋</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row" onclick="openPermSheet()"><svg class="ic sm"><use href="#i-shield"/></svg><span class="t">榛樿鏉冮檺棰勮<small>浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽</small></span><span class="tail"><span class="val" id="perm-default-val">Workspace Write</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="set-row" onclick="openPresetSheet()"><svg class="ic sm"><use href="#i-zap"/></svg><span class="t">榛樿 Agent 棰勮<small>浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽</small></span><span class="tail"><span class="val" id="preset-default-val">鏍囧噯妯″紡</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row"><svg class="ic sm"><use href="#i-eye"/></svg><span class="t">鏄剧ず宸ュ叿璋冪敤</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-moon"/></svg><span class="t">娣辫壊妯″紡<small>寮€鍚悗寮哄埗娣辫壊 路 榛樿璺熼殢绯荤粺</small></span><span class="tail"><span class="switch" data-theme="dark" onclick="toggle(this)"></span></span></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row"><svg class="ic sm"><use href="#i-info"/></svg><span class="t">鐗堟湰<small>0.1.0 路 鍘熷瀷 v6</small></span><span class="tail"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+      </div>
+      <p class="proto-note">DSH Mobile 路 DeepSeek 閰嶈壊 路 Lucide 1.5 绾垮</p>
+    </main>
+  </div>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?渚ц竟鏍?鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="scrim" onclick="closeDrawer()"></div>
+<aside id="drawer">
+  <div class="drawer-head">
+    <span class="wordmark serif">DSH</span>
+    <button class="btn-black" style="width:100%;min-height:44px;border-radius:999px;font-size:14px;margin-top:12px" onclick="closeDrawer();openNewSessionSheet()">锛?鏂板缓浼氳瘽</button>
+  </div>
+  <nav class="drawer-nav">
+    <button class="drawer-item active" data-s="home" onclick="navTo('home')"><svg class="ic"><use href="#i-activity"/></svg>鐘舵€?/button>
+    <button class="drawer-item" data-s="sessions" onclick="navTo('sessions')"><svg class="ic"><use href="#i-clock"/></svg>浼氳瘽</button>
+    <button class="drawer-item" data-s="settings" onclick="navTo('settings')"><svg class="ic"><use href="#i-sliders"/></svg>璁剧疆</button>
+  </nav>
+  <div class="drawer-foot">
+    <span class="avatar">D</span>
+    <div><div class="name">鏈満鐩磋繛</div><div class="mail">DeepSeek Harness 路 妗岄潰绔?/div></div>
+    <button class="gear" onclick="navTo('settings')"><svg class="ic"><use href="#i-sliders"/></svg></button>
+  </div>
+</aside>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?搴曢儴寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="sheet-mask" onclick="closeSheet()"></div>
+<div id="sheet">
+  <div class="handle"></div>
+  <div class="sheet-title">娣诲姞鍐呭</div>
+  <div class="attach-grid">
+    <button class="cell" onclick="toast('鎷嶇収涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-camera"/></svg>鎷嶇収</button>
+    <button class="cell" onclick="toast('鐩稿唽涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-image"/></svg>鐩稿唽</button>
+    <button class="cell" onclick="toast('鏂囦欢涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-paperclip"/></svg>鏂囦欢</button>
+  </div>
+  <div class="sheet-row"><svg class="ic sm"><use href="#i-globe"/></svg><span>鍏佽 agent 鑱旂綉鎼滅储</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:6px">闄勪欢涓婁紶灏嗗湪 v0.2 鏀寔锛堝浘鐗?/ 鏂囦欢锛?/p>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?妯″瀷閫夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="model-mask" onclick="closeModelSheet()"></div>
+<div id="model-sheet">
+  <div class="handle"></div>
+  <div class="sheet-title">妯″瀷涓庢帹鐞?/div>
+  <div class="model-item" data-model="deepseek-v4-flash" onclick="pickModel(this)">
+    <div><div class="mn">DeepSeek-V4-Flash</div><div class="mid">deepseek-v4-flash</div></div>
+    <span class="check">鉁?/span>
+  </div>
+  <div class="model-item" data-model="deepseek-v4-pro" onclick="pickModel(this)">
+    <div><div class="mn">DeepSeek-V4-Pro</div><div class="mid">deepseek-v4-pro</div></div>
+    <span class="check"></span>
+  </div>
+  <div class="sheet-title" style="margin:14px 0 10px">鎺ㄧ悊寮哄害</div>
+  <div class="effort-row">
+    <button class="effort" data-e="off" onclick="pickEffort(this)">off</button>
+    <button class="effort" data-e="high" onclick="pickEffort(this)">high</button>
+    <button class="effort active" data-e="max" onclick="pickEffort(this)">max</button>
+  </div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">涓庢闈㈢妯″瀷鐩綍涓€鑷?路 鏇村妯″瀷鐢辩數鑴戠鍐冲畾</p>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?鏉冮檺閫夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="perm-mask" onclick="closePermSheet()"></div>
+<div id="perm-sheet">
+  <div class="handle"></div>
+  <div class="sheet-title" id="perm-title">褰撳墠浼氳瘽鏉冮檺</div>
+  <div class="model-item" data-perm="read-only" onclick="pickPerm(this)">
+    <div><div class="mn">Read Only</div><div class="mid">鍙 路 鎷掔粷涓€鍒囧啓鍏ユ搷浣?/div></div>
+    <span class="check"></span>
+  </div>
+  <div class="model-item" data-perm="workspace-write" onclick="pickPerm(this)">
+    <div><div class="mn">Workspace Write</div><div class="mid">浠呭伐浣滃尯鍐呰鍐?路 鍗遍櫓鎿嶄綔鍓嶈闂?/div></div>
+    <span class="check">鉁?/span>
+  </div>
+  <div class="model-item" data-perm="danger-full-access" onclick="pickPerm(this)">
+    <div><div class="mn">Danger Full Access</div><div class="mid">瀹屽叏璁块棶 路 鍙墽琛屼换浣曟搷浣?/div></div>
+    <span class="check"></span>
+  </div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">涓庢闈㈢娌欑妯″紡涓€鑷?路 閫夋嫨瀹屽叏璁块棶闇€纭椋庨櫓</p>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?椋庨櫓纭寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="confirm-mask" onclick="cancelConfirm()"></div>
+<div id="confirm-sheet">
+  <div class="handle"></div>
+  <div class="sheet-title">鈿?椋庨櫓纭</div>
+  <p style="font-size:14px;color:var(--ink);text-align:center;line-height:1.6;padding:0 8px 16px">瀹屽叏璁块棶灏嗗厑璁?agent 鍦ㄧ數鑴戜笂鎵ц浠讳綍鎿嶄綔锛屽寘鎷慨鏀规垨鍒犻櫎宸ヤ綔鍖轰互澶栫殑鏂囦欢銆備粎鍦ㄥ彲淇′换鍔′笅浣跨敤銆?/p>
+  <div class="form-actions">
+    <button class="cancel" onclick="cancelConfirm()">鍙栨秷</button>
+    <button class="run" style="background:var(--danger);color:#fff" onclick="confirmPerm()">鎴戠悊瑙ｉ闄╋紝鍚敤</button>
+  </div>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?Agent 棰勮寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="preset-mask" onclick="closePresetSheet()"></div>
+<div id="preset-sheet">
+  <div class="handle"></div>
+  <div class="sheet-title">榛樿 Agent 棰勮</div>
+  <div class="model-item" data-preset="standard" onclick="pickPreset(this)">
+    <div><div class="mn">鏍囧噯妯″紡</div><div class="mid">鍔熻兘瀹屾暣鐨勭紪鐮?Agent锛氭枃浠剁紪杈戙€丼hell銆佹枃浠朵笌缃戦〉妫€绱€丼kills銆佽鍒掋€佺洰鏍囥€佸瓙浠ｇ悊鍜屽伐浣滄祦</div></div>
+    <span class="check">鉁?/span>
+  </div>
+  <div class="model-item" data-preset="code" onclick="pickPreset(this)">
+    <div><div class="mn">PTC 妯″紡</div><div class="mid">鍏峰鏍囧噯妯″紡鍏ㄩ儴鑳藉姏锛屽苟閫氳繃 Code Mode SDK 鍛堢幇宸ュ叿锛岃妯″瀷鐢ㄤ竴涓?TypeScript 绋嬪簭缁勫悎澶氭鎿嶄綔</div></div>
+    <span class="check"></span>
+  </div>
+  <div class="model-item" data-preset="minimal" onclick="pickPreset(this)">
+    <div><div class="mn">鏋佺畝妯″紡</div><div class="mid">浠呮彁渚涙寔涔?bash 涓?str_replace_editor 鐨勫弻宸ュ叿缂栫爜 Agent</div></div>
+    <span class="check"></span>
+  </div>
+  <div class="model-item" data-preset="cordis" onclick="pickPreset(this)">
+    <div><div class="mn">鍒涢€犳ā寮?/div><div class="mid">鐢ㄤ簬鍒涘缓鑷畾涔?Agent preset锛氭爣鍑嗘ā寮忓叏閮ㄨ兘鍔?+ 杩愯鏃舵鏌ャ€佹彃浠跺疄楠屽拰 preset 鍒涘缓鎸囧紩</div></div>
+    <span class="check"></span>
+  </div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽 路 涓庢闈㈢涓€鑷?/p>
+</div>
+
+<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?鏂板缓浼氳瘽锛氭ā寮忛€夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<div id="newsess-mask" onclick="closeNewSessionSheet()"></div>
+<div id="newsess-sheet">
+  <div class="handle"></div>
+  <div class="sheet-title">鏂板缓浼氳瘽 路 閫夋嫨妯″紡</div>
+  <div class="model-item" data-mode="standard" onclick="pickNewMode(this)">
+    <div><div class="mn">鏍囧噯妯″紡</div><div class="mid">鍔熻兘瀹屾暣鐨勭紪鐮?Agent锛氭枃浠剁紪杈戙€丼hell銆佹悳绱€丼kills銆佽鍒掋€佸瓙浠ｇ悊</div></div>
+    <span class="check">鉁?/span>
+  </div>
+  <div class="model-item" data-mode="code" onclick="pickNewMode(this)">
+    <div><div class="mn">PTC 妯″紡</div><div class="mid">Code Mode SDK锛氱敤 TypeScript 绋嬪簭缁勫悎澶氭鎿嶄綔</div></div>
+    <span class="check"></span>
+  </div>
+  <div class="model-item" data-mode="minimal" onclick="pickNewMode(this)">
+    <div><div class="mn">鏋佺畝妯″紡</div><div class="mid">浠?bash + 缂栬緫鍣?鐨勫弻宸ュ叿缂栫爜 Agent</div></div>
+    <span class="check"></span>
+  </div>
+  <div class="model-item" data-mode="cordis" onclick="pickNewMode(this)">
+    <div><div class="mn">鍒涢€犳ā寮?/div><div class="mid">鐢ㄤ簬鍒涘缓鑷畾涔?Agent preset锛氳繍琛屾椂妫€鏌ャ€佹彃浠跺疄楠?/div></div>
+    <span class="check"></span>
+  </div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">棰勯€夋潵鑷缃腑鐨勯粯璁ら璁?路 姣忔鏂板缓閮藉彲涓存椂鏇存敼</p>
+</div>
+
+<script>
+  // 鈹€鈹€ 瀵艰埅鏍堬細璇︽儏椤靛帇鏍堬紝杩斿洖閫愬眰鍥為€€ 鈹€鈹€
+  let navStack = [];
+  function currentScreen() {
+    return document.querySelector(".screen.active").id;
+  }
+  function showScreen(name) {
+    document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("active", s.id === name));
+    document.querySelectorAll(".drawer-item").forEach((b) => b.classList.toggle("active", b.dataset.s === name));
+    closeDrawer();
+    if (name === "chat") { const m = document.getElementById("msgs"); m.scrollTop = m.scrollHeight; }
+  }
+  function go(name) { showScreen(name); }
+  /** 鎵撳紑璇︽儏椤碉細褰撳墠椤靛帇鏍?*/
+  function pushScreen(name) { navStack.push(currentScreen()); showScreen(name); }
+  /** 杩斿洖锛氶€愬眰寮规爤锛屾爤绌哄洖棣栭〉 */
+  function back() { showScreen(navStack.length ? navStack.pop() : "home"); }
+  /** 涓€绾ч〉闈㈠垏鎹細娓呯┖鏍?*/
+  function navTo(name) { navStack = []; showScreen(name); }
+
+  // 鈹€鈹€ 閫氱煡涓績 鈹€鈹€
+  function openNotifications() { go("notifications"); }
+  function refreshBell() {
+    const n = document.querySelectorAll("#notif-list .notif-item[data-unread]").length;
+    const badge = document.getElementById("bell-badge");
+    badge.textContent = String(n);
+    badge.style.display = n > 0 ? "" : "none";
+  }
+  function openNotif(el) {
+    el.removeAttribute("data-unread");
+    refreshBell();
+    pushScreen('chat');
+  }
+  function readAllNotifs() {
+    document.querySelectorAll("#notif-list .notif-item").forEach((el) => {
+      el.removeAttribute("data-unread");
+    });
+    refreshBell();
+    toast("宸插叏閮ㄦ爣璁颁负宸茶");
+  }
+  function openDrawer() { document.getElementById("drawer").classList.add("open"); document.getElementById("scrim").classList.add("open"); }
+  function closeDrawer() { document.getElementById("drawer").classList.remove("open"); document.getElementById("scrim").classList.remove("open"); }
+  function openSheet() { document.getElementById("sheet").classList.add("open"); document.getElementById("sheet-mask").classList.add("open"); }
+  function closeSheet() { document.getElementById("sheet").classList.remove("open"); document.getElementById("sheet-mask").classList.remove("open"); }
+  function toggle(el) {
+    el.classList.toggle("on");
+    if (el.dataset.theme === "dark") {
+      document.documentElement.classList.toggle("force-dark", el.classList.contains("on"));
+    }
+  }
+  function toast(msg) {
+    let t = document.getElementById("toast-el");
+    if (!t) { t = document.createElement("div"); t.id = "toast-el"; t.style.cssText = "position:fixed;left:50%;bottom:120px;transform:translateX(-50%);background:var(--ink);color:var(--bg);border-radius:999px;padding:8px 16px;font-size:13px;z-index:99;max-width:86%;text-align:center"; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.style.opacity = "1";
+    clearTimeout(t._h);
+    t._h = setTimeout(() => { t.style.opacity = "0"; }, 1800);
+  }
+  function answerDone(btn) {
+    const card = btn.closest(".ask");
+    card.querySelector(".ic").outerHTML = '<svg class="ic" style="color:var(--ok)"><use href="#i-check-circle"/></svg>';
+    card.querySelector(".q").textContent = "宸查€夋嫨锛? + btn.textContent;
+    card.querySelector(".q-sub").textContent = "agent 宸叉敹鍒颁綘鐨勫喅瀹氾紝缁х画鎵ц";
+    card.querySelector(".acts").remove();
+    card.style.background = "var(--brand-soft)";
+  }
+  function sendMsg() {
+    const input = document.getElementById("chat-input");
+    const text = input.value.trim();
+    if (!text) return;
+    const box = document.getElementById("msgs");
+    const d = new Date();
+    const tm = d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
+    const m = document.createElement("div");
+    m.className = "m user";
+    m.innerHTML = '<div class="who"><span class="nm">鎴?/span><span class="tm">' + tm + '</span></div><div class="body">' + escapeHtml(text) + "</div>";
+    box.appendChild(m);
+    input.value = "";
+    box.scrollTop = box.scrollHeight;
+    setTimeout(() => {
+      const a = document.createElement("div");
+      a.className = "m";
+      a.innerHTML = '<div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span></div><div class="body"><div class="h serif">鏀跺埌</div>锛堝師鍨嬫紨绀猴級鎴戜細澶勭悊杩欎釜璇锋眰銆?/div>';
+      box.appendChild(a);
+      box.scrollTop = box.scrollHeight;
+    }, 700);
+  }
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  document.getElementById("chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendMsg(); });
+
+  // 鈹€鈹€ 妯″瀷閫夋嫨锛堢湡瀹炵洰褰曪細V4 Flash / V4 Pro锛涙帹鐞嗗己搴?off/high/max锛?鈹€鈹€
+  function openModelSheet() { document.getElementById("model-sheet").classList.add("open"); document.getElementById("model-mask").classList.add("open"); }
+  function closeModelSheet() { document.getElementById("model-sheet").classList.remove("open"); document.getElementById("model-mask").classList.remove("open"); }
+  function pickModel(el) {
+    document.querySelectorAll(".model-item").forEach((it) => { it.querySelector(".check").textContent = ""; });
+    el.querySelector(".check").textContent = "鉁?;
+    const id = el.dataset.model;
+    document.querySelectorAll(".model").forEach((pill) => {
+      pill.innerHTML = escapeHtml(id) + ' <svg class="ic sm"><use href="#i-chevron-down"/></svg>';
+    });
+  }
+  function pickEffort(btn) {
+    document.querySelectorAll(".effort").forEach((b) => b.classList.toggle("active", b === btn));
+  }
+
+  // 鈹€鈹€ 鏉冮檺棰勮锛堢湡瀹烇細workspace-write / danger-full-access锛?鈹€鈹€
+  function openPermSheet() { document.getElementById("perm-sheet").classList.add("open"); document.getElementById("perm-mask").classList.add("open"); }
+  function closePermSheet() { document.getElementById("perm-sheet").classList.remove("open"); document.getElementById("perm-mask").classList.remove("open"); }
+  function pickPerm(el) {
+    if (el.dataset.perm === "danger-full-access") {
+      // 瀹屽叏璁块棶蹇呴』鍏堟樉寮忕‘璁ら闄╋紙涓庢闈㈢涓€鑷达級
+      closePermSheet();
+      document.getElementById("confirm-sheet").classList.add("open");
+      document.getElementById("confirm-mask").classList.add("open");
+      return;
+    }
+    applyPerm(el.dataset.perm);
+  }
+  function applyPerm(perm) {
+    document.querySelectorAll("#perm-sheet .model-item").forEach((it) => {
+      it.querySelector(".check").textContent = it.dataset.perm === perm ? "鉁? : "";
+    });
+    document.getElementById("perm-pill").innerHTML = escapeHtml(perm) + ' <svg class="ic sm"><use href="#i-chevron-down"/></svg>';
+    const label = { "read-only": "Read Only", "workspace-write": "Workspace Write", "danger-full-access": "Danger Full Access" }[perm] ?? perm;
+    document.getElementById("perm-default-val").textContent = label;
+    document.getElementById("confirm-sheet").classList.remove("open");
+    document.getElementById("confirm-mask").classList.remove("open");
+    closePermSheet();
+    toast("鏉冮檺宸插垏鎹細" + label);
+  }
+  function cancelConfirm() {
+    document.getElementById("confirm-sheet").classList.remove("open");
+    document.getElementById("confirm-mask").classList.remove("open");
+    openPermSheet();
+  }
+  function confirmPerm() { applyPerm("danger-full-access"); }
+
+  // 鈹€鈹€ Agent 棰勮锛堢湡瀹烇細standard / code / minimal / cordis锛?鈹€鈹€
+  function openPresetSheet() { document.getElementById("preset-sheet").classList.add("open"); document.getElementById("preset-mask").classList.add("open"); }
+  function closePresetSheet() { document.getElementById("preset-sheet").classList.remove("open"); document.getElementById("preset-mask").classList.remove("open"); }
+  function pickPreset(el) {
+    document.querySelectorAll("#preset-sheet .model-item").forEach((it) => {
+      it.querySelector(".check").textContent = it.dataset.preset === el.dataset.preset ? "鉁? : "";
+    });
+    const label = { standard: "鏍囧噯妯″紡", code: "PTC 妯″紡", minimal: "鏋佺畝妯″紡", cordis: "鍒涢€犳ā寮? }[el.dataset.preset] ?? el.dataset.preset;
+    document.getElementById("preset-default-val").textContent = label;
+    closePresetSheet();
+    toast("榛樿 Agent 棰勮锛? + label);
+  }
+
+  // 鈹€鈹€ 鏂板缓浼氳瘽锛氬綋鍦洪€夋嫨妯″紡锛堟棤闇€鍘昏缃敼榛樿锛?鈹€鈹€
+  function openNewSessionSheet() { document.getElementById("newsess-sheet").classList.add("open"); document.getElementById("newsess-mask").classList.add("open"); }
+  function closeNewSessionSheet() { document.getElementById("newsess-sheet").classList.remove("open"); document.getElementById("newsess-mask").classList.remove("open"); }
+  function pickNewMode(el) {
+    document.querySelectorAll("#newsess-sheet .model-item").forEach((it) => {
+      it.querySelector(".check").textContent = it.dataset.mode === el.dataset.mode ? "鉁? : "";
+    });
+    const label = { standard: "鏍囧噯妯″紡", code: "PTC 妯″紡", minimal: "鏋佺畝妯″紡", cordis: "鍒涢€犳ā寮? }[el.dataset.mode] ?? el.dataset.mode;
+    closeNewSessionSheet();
+    toast("宸茬敤銆? + label + "銆嶆柊寤轰細璇?);
+    pushScreen('chat');
+  }
+  const DEMO_ACTIONS = [
+    { id: "fs-cleanup", title: "娓呯悊纾佺洏", icon: "trash", fields: [ { key: "target", label: "鐩爣鐩綍", placeholder: "濡?F:\\璧勬枡" } ] },
+    { id: "test-run", title: "璺戞祴璇?, icon: "zap", fields: [] },
+  ];
+  function renderActions() {
+    const box = document.getElementById("chat-actions");
+    box.replaceChildren();
+    // 鎻掍欢鏈敞鍐屼换浣曞姩浣?鈫?鏁村尯闅愯棌锛堢┖鎬侊級
+    if (DEMO_ACTIONS.length === 0) {
+      document.querySelector(".actions-wrap").classList.add("hidden");
+      return;
+    }
+    document.querySelector(".actions-wrap").classList.remove("hidden");
+    for (const a of DEMO_ACTIONS) {
+      const chip = document.createElement("button");
+      chip.className = "chip";
+      chip.innerHTML = '<svg class="ic"><use href="#i-' + a.icon + '"/></svg>' + escapeHtml(a.title);
+      chip.onclick = () => openActionSheet(a);
+      box.appendChild(chip);
+    }
+  }
+  function openActionSheet(action) {
+    document.getElementById("action-title").textContent = action.title;
+    const fields = document.getElementById("action-fields");
+    fields.replaceChildren();
+    if (action.fields.length === 0) {
+      const p = document.createElement("p");
+      p.style.cssText = "font-size:13px;color:var(--ink-2);text-align:center;padding:8px 0 14px";
+      p.textContent = "鐩存帴鎵ц锛屾棤闇€鍙傛暟";
+      fields.appendChild(p);
+    }
+    for (const f of action.fields) {
+      const wrap = document.createElement("div");
+      wrap.className = "field";
+      const label = document.createElement("label");
+      label.textContent = f.label;
+      const input = document.createElement("input");
+      input.placeholder = f.placeholder || "";
+      input.dataset.key = f.key;
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      fields.appendChild(wrap);
+    }
+    document.getElementById("action-sheet").dataset.actionId = action.id;
+    document.getElementById("action-sheet").classList.add("open");
+    document.getElementById("action-mask").classList.add("open");
+  }
+  function closeActionSheet() {
+    document.getElementById("action-sheet").classList.remove("open");
+    document.getElementById("action-mask").classList.remove("open");
+  }
+  function runAction() {
+    const id = document.getElementById("action-sheet").dataset.actionId;
+    const action = DEMO_ACTIONS.find((a) => a.id === id);
+    closeActionSheet();
+    toast("宸插彂閫佺粰 agent锛? + (action ? action.title : id));
+    // 妯℃嫙锛氱粨鏋滃洖娑堟伅娴侊紙宸ュ叿琛岋級
+    const box = document.getElementById("msgs");
+    const t = document.createElement("details");
+    t.className = "tool";
+    t.open = true;
+    t.innerHTML = '<summary><svg class="ic sm"><use href="#i-zap"/></svg><span class="nm">' + escapeHtml(action ? action.title : id) + '</span><span class="ok">宸叉墽琛?/span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary><div class="body">锛堝師鍨嬫紨绀猴級鍔ㄤ綔宸茬敱 PC 绔彃浠舵墽琛岋紝缁撴灉灏嗗湪杩欓噷鍥炴祦銆?/div>';
+    box.appendChild(t);
+    box.scrollTop = box.scrollHeight;
+  }
+  renderActions();
+</script>
+</body>
+</html>
+

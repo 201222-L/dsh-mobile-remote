@@ -1,0 +1,270 @@
+// DSH Mobile App — API 客户端（对接 dsh-mobile-remote 插件的 /m 接口）
+import 'dart:async';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'models.dart';
+
+class ApiException implements Exception {
+  final String message;
+  ApiException(this.message);
+  @override
+  String toString() => message;
+}
+
+/// 全局 API 单例
+final Api api = Api();
+
+class Api {
+  String baseUrl = '';
+  String token = '';
+  static const _kBase = 'dsh_mr_base';
+  static const _kToken = 'dsh_mr_token';
+
+  /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
+  /// socket/定时器导致内存耗尽闪退。
+  final http.Client _client = http.Client();
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    baseUrl = prefs.getString(_kBase) ?? '';
+    token = prefs.getString(_kToken) ?? '';
+  }
+
+  Future<void> save({required String base, required String token}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kBase, base);
+    await prefs.setString(_kToken, token);
+    baseUrl = base;
+    this.token = token;
+  }
+
+  /// 插件路由挂在 basePath（默认 /m）下，所有 API 需带 /m 前缀。
+  /// 用户填的地址可能带或不带 /m 结尾，统一规范化。
+  Uri _uri(String path) {
+    var base = baseUrl.trim();
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    if (base.endsWith('/m')) base = base.substring(0, base.length - 2);
+    return Uri.parse('$base/m$path');
+  }
+
+  Map<String, String> get _headers => {
+        'content-type': 'application/json',
+        if (token.isNotEmpty) 'x-mobile-token': token,
+      };
+
+  Future<Map<String, dynamic>> getJson(String path) async {
+    final res = await _client.get(_uri(path), headers: _headers).timeout(const Duration(seconds: 15));
+    return _decode(res);
+  }
+
+  Future<Map<String, dynamic>> postJson(String path, Map<String, dynamic> body) async {
+    final res = await _client
+        .post(_uri(path), headers: _headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 20));
+    return _decode(res);
+  }
+
+  Map<String, dynamic> _decode(http.Response res) {
+    final body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw ApiException((body['detail'] as String?) ?? (body['error'] as String?) ?? 'HTTP ${res.statusCode}');
+    }
+    return body;
+  }
+
+  // ── 业务接口 ──
+  Future<Catalog> catalog() async => Catalog.fromJson(await getJson('/api/catalog'));
+  Future<SessionConfig> sessionConfig(String sessionId) async =>
+      SessionConfig.fromJson((await getJson('/api/session-config?sessionId=${Uri.encodeQueryComponent(sessionId)}'))['config'] as Map<String, dynamic>? ?? {});
+  Future<void> updateSessionConfig(String sessionId, Map<String, dynamic> patch) async {
+    await postJson('/api/session-config', {'sessionId': sessionId, ...patch});
+  }
+  Future<List<Session>> sessions() async {
+    final data = await getJson('/api/sessions');
+    return (data['sessions'] as List? ?? []).map((e) => Session.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
+  Future<String> send(String sessionId, String text) async {
+    final r = await postJson('/api/send', {'sessionId': sessionId, 'text': text});
+    return r['messageId'] as String? ?? '';
+  }
+  /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
+  /// 避免一次解析/渲染数百条事件导致手机卡死。
+  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100}) async {
+    final params = 'sessionId=${Uri.encodeQueryComponent(sessionId)}'
+        '${after != null ? '&after=$after' : ''}${before != null ? '&before=$before' : ''}&limit=$limit';
+    final data = await getJson('/api/history?$params');
+    return (data['events'] as List? ?? []).map((e) => ChatEvent.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  Future<List<AppNotification>> notifications() async {
+    final data = await getJson('/api/notifications');
+    return (data['items'] as List? ?? []).map((e) => AppNotification.fromJson(e as Map<String, dynamic>)).toList();
+  }
+  Future<void> markNotifsRead({List<String>? ids, bool all = false}) async {
+    await postJson('/api/notifications/read', all ? {'all': true} : {'ids': ids ?? []});
+  }
+  Future<double?> balance() async {
+    try {
+      final data = await getJson('/api/balance');
+      final infos = data['balance']?['balance_infos'] as List? ?? [];
+      if (infos.isEmpty) return null;
+      final total = (infos.first as Map<String, dynamic>)['total_balance'];
+      return total is num ? total.toDouble() : double.tryParse(total.toString());
+    } on ApiException {
+      rethrow;
+    }
+  }
+
+  /// 余额详情（含币种/可用标记），查询失败返回 null。
+  Future<Map<String, dynamic>?> balanceInfo() async {
+    try {
+      final data = await getJson('/api/balance');
+      final infos = data['balance']?['balance_infos'] as List? ?? [];
+      if (infos.isEmpty) return null;
+      final first = infos.first as Map<String, dynamic>;
+      final total = first['total_balance'];
+      return {
+        'total': total is num ? total.toDouble() : double.tryParse(total.toString()) ?? 0,
+        'currency': first['currency'] ?? 'CNY',
+        'available': first['is_available'] ?? true,
+      };
+    } on ApiException {
+      rethrow;
+    }
+  }
+
+  /// 修改默认配置（Agent 预设 / 权限预设，作用于之后新建的会话）。
+  Future<void> updateDefaults({String? agentPreset, String? permissionPreset}) async {
+    await postJson('/api/defaults', {
+      'agentPreset': ?agentPreset,
+      'permissionPreset': ?permissionPreset,
+    });
+  }
+
+  /// 会话 token 用量统计（服务端聚合）。
+  Future<Map<String, dynamic>> usage(String sessionId) async {
+    final data = await getJson('/api/usage?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    return (data['usage'] as Map<String, dynamic>?) ?? {};
+  }
+
+  /// 移动端动作注册表（插件提供）。
+  Future<List<Map<String, dynamic>>> actions() async {
+    final data = await getJson('/api/actions');
+    return (data['actions'] as List? ?? []).map((e) => e as Map<String, dynamic>).toList();
+  }
+
+  /// 执行一个动作。
+  Future<void> invokeAction(String id, Map<String, dynamic> args) async {
+    await postJson('/api/actions/${Uri.encodeQueryComponent(id)}/invoke', {'args': args});
+  }
+
+  /// 已注册工作区列表：[{path, title?}]。
+  Future<List<Map<String, dynamic>>> workspaces() async {
+    final data = await getJson('/api/workspaces');
+    return (data['workspaces'] as List? ?? []).map((e) => e as Map<String, dynamic>).toList();
+  }
+
+  /// 目录浏览：path 为空返回盘符；否则返回子目录名列表。
+  Future<List<String>> directories(String path) async {
+    final data = await getJson('/api/directories?path=${Uri.encodeQueryComponent(path)}');
+    return (data['dirs'] as List? ?? []).map((e) => e.toString()).toList();
+  }
+
+  /// 新建文件夹。
+  Future<void> createDirectory({String? path, required String name}) async {
+    await postJson('/api/directories', {'path': path, 'name': name});
+  }
+
+  Future<Map<String, dynamic>?> diagnostics() async {
+    try {
+      return await getJson('/api/diagnostics');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// SSE 全量帧流（session/event + agent/status + hello），不做会话过滤。
+  /// 帧格式与网页端一致：{type: "hello"|"session/event"|"agent/status", ...}。
+  /// 解析：StringBuffer 累积，每 chunk 处理全部完整帧，剩余部分保留。
+  /// （旧实现 while 循环内不更新缓冲区，收到 ≥2 帧后同一帧无限处理 → 死循环）
+  Stream<Map<String, dynamic>> eventsRaw() {
+    final controller = StreamController<Map<String, dynamic>>();
+    final req = http.Request('GET', _uri('/api/events'));
+    req.headers.addAll(_headers);
+    _client.send(req).then((res) async {
+      if (res.statusCode != 200) {
+        controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
+        controller.close();
+        return;
+      }
+      final stream = res.stream.transform(utf8.decoder);
+      final buf = StringBuffer();
+      await for (final chunk in stream) {
+        buf.write(chunk);
+        var s = buf.toString();
+        var idx = s.indexOf('\n\n');
+        while (idx >= 0) {
+          final frame = s.substring(0, idx);
+          s = s.substring(idx + 2);
+          idx = s.indexOf('\n\n');
+          if (frame.startsWith('data: ')) {
+            try {
+              controller.add(jsonDecode(frame.substring(6)) as Map<String, dynamic>);
+            } catch (_) {/* 忽略坏帧 */}
+          }
+        }
+        buf
+          ..clear()
+          ..write(s);
+      }
+      controller.close();
+    }).catchError((e) {
+      controller.addError(e);
+      controller.close();
+    });
+    return controller.stream;
+  }
+
+  /// SSE 事件流：返回可取消的事件流（session/event 摘要帧）
+  Stream<ChatEvent> events(String sessionId) {
+    final controller = StreamController<ChatEvent>();
+    final req = http.Request('GET', _uri('/api/events'));
+    req.headers.addAll(_headers);
+    _client.send(req).then((res) async {
+      if (res.statusCode != 200) {
+        controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
+        controller.close();
+        return;
+      }
+      final stream = res.stream.transform(utf8.decoder);
+      final buf = StringBuffer();
+      await for (final chunk in stream) {
+        buf.write(chunk);
+        var s = buf.toString();
+        var idx = s.indexOf('\n\n');
+        while (idx >= 0) {
+          final frame = s.substring(0, idx);
+          s = s.substring(idx + 2);
+          idx = s.indexOf('\n\n');
+          if (frame.startsWith('data: ')) {
+            try {
+              final f = jsonDecode(frame.substring(6)) as Map<String, dynamic>;
+              if (f['type'] == 'session/event' && f['sessionId'] == sessionId) {
+                controller.add(ChatEvent.fromJson(f['event'] as Map<String, dynamic>));
+              }
+            } catch (_) {/* 忽略坏帧 */}
+          }
+        }
+        buf
+          ..clear()
+          ..write(s);
+      }
+      controller.close();
+    }).catchError((e) {
+      controller.addError(e);
+      controller.close();
+    });
+    return controller.stream;
+  }
+}
