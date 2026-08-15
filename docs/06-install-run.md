@@ -1,6 +1,6 @@
 # 06 部署与启用文档 — dsh-mobile-remote
 
-> 版本：v0.3 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md
+> 版本：v2.4.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
 
 ## 1. 部署拓扑
 
@@ -18,7 +18,7 @@ graph LR
 ## 2. 安装位置说明（通用）
 | 项目 | 位置 |
 |---|---|
-| 插件源码 | `<本仓库/`（package.json / lib / docs / tools） |
+| 插件源码 | `<本仓库>/`（package.json / lib / docs / tools） |
 | 已安装副本 | `~/.dsh/profiles/web/node_modules/dsh-mobile-remote/` |
 | profile 依赖声明 | `~/.dsh/profiles/web/package.json` → `"dsh-mobile-remote": "file:<本仓库路径>"` |
 | 启用配置 | `~/.dsh/profiles/web/cordis.patch.yml`（insert mobile-remote + webserver 0.0.0.0） |
@@ -160,16 +160,17 @@ flutter build apk --release
 > 说明：Android 9+ 默认禁止明文 HTTP，App 已配置 `usesCleartextTraffic`，仅限局域网/内网使用，勿暴露公网。
 > 换签名安装会报「签名不一致」：先卸载旧版再装新版（连接信息需重新扫码）。
 ### 8.4 重建与更新
-- 插件/网页端改动 → 按 §3 同步并重启 dsh web（网页端页面本身每次请求现读文件，刷新即生效）。
-- App 改动 → 重新 `flutter build apk --release` 并重装。
-- App 与手机浏览器（/m）可并存使用，共享同一套 API。
-## 9. 验收清单（v0.2，均已执行 ✅）
+- 插件/网页端改动 → 按 §3 同步并重启 dsh web。
+- App 改动 → 重新 `flutter build apk --release` 并重装（同签名覆盖安装，保留连接信息）。
+## 9. 验收清单（v2.4，均已执行 ✅）
 
 - [x] `--dump-config` 含 mobile-remote 行与 webserver 0.0.0.0
-- [x] `GET /m` 返回移动页
-- [x] 未认证 401 / 错误口令 401 / 正确口令 Set-Cookie
+- [x] 未认证 401 / 错误口令 401 / 正确口令通行
 - [x] `POST /m/api/send` 注入成功（200 + messageId）
-- [x] SSE 连接 + hello + 事件转发（重连退避、断线补拉）
+- [x] SSE 连接 + hello + 事件转发（重连退避、断线补拉、pendingFrames 回放）
 - [x] `/m/qr.png` 返回 PNG
 - [x] 桌面设置页「连接移动端设备」二维码 + App 扫码自动连接
-- [x] Flutter App：analyze 零问题 + release 构建成功 + 真机全流程测试
+- [x] Flutter App：analyze 零问题 + 正式签名 release 构建 + 真机全流程测试
+- [x] 问询弹窗端到端（手机选选项→agent 收到答案 / ✕→取消 / PC 端先答两端同步）
+- [x] 权限审批弹窗端到端（允许一次→操作继续 / 拒绝→操作被拒）
+- [x] 通知删除（单删/批量/清空）+ 诊断页服务探针（respondBridge/frameBridge ✅）

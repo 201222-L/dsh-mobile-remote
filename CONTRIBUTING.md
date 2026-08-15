@@ -17,9 +17,10 @@
 ## 代码约定
 
 - 插件：ESM，遵循现有 `lib/index.js` 的风格；新端点必须在 `docs/03-api.md` 补文档
-- 页面：`lib/page.html` 单文件零构建（不引入打包器），直接改直接生效
+- 原型：`prototype/app-prototype.html`（设计参考，零构建，改完直接刷新浏览器看效果）
 - App：`flutter analyze` 零 warning；UI 使用 `theme.dart` 设计令牌，不硬编码颜色
 - 提交信息：中文或英文均可，一句话说明改动（如 `fix: SSE 解析死循环`）
+- 兼容边界：改动涉及内核服务依赖时，对照 `docs/09-compatibility.md` 的降级约定
 
 ## 测试要求
 

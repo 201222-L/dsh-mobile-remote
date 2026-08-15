@@ -1,6 +1,6 @@
 # 04 安全设计文档 — dsh-mobile-remote
 
-> 版本：v0.2 · 状态：已实现 · 配套：02-architecture.md、03-api.md
+> 版本：v2.4.0 · 状态：已实现 · 配套：02-architecture.md、03-api.md、09-compatibility.md
 
 ## 1. 威胁模型
 

@@ -1,6 +1,6 @@
 # 05 测试用例设计文档 — dsh-mobile-remote
 
-> 版本：v0.2 · 状态：已按实际验证结果填写 · 配套：03-api.md、04-security.md
+> 版本：v2.4.0 · 状态：已按实际验证结果填写（含 v2.3 问询/审批、通知删除端到端用例） · 配套：03-api.md、04-security.md
 > 环境：Windows + dsh web（web profile） + Android（DSH Remote App）
 > 前置：插件已安装并启用；访问口令为安装时生成的随机串（下文 `<TOKEN>`）。
 ## 1. 测试范围与环境

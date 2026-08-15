@@ -1,6 +1,6 @@
 # 07 用户操作手册 — DSH Remote
 
-> 版本：v0.2 · 配套：06-install-run.md · 面向使用手机 App 的最终用户
+> 版本：v2.4.0 · 配套：06-install-run.md · 面向使用手机 App 的最终用户
 ## 1. 快速开始
 1. 确认电脑端 dsh（DeepSeek Harness）正在运行。
 2. 手机与电脑连接**同一 WiFi**（或电脑已加入 Tailscale 且手机装有 Tailscale App）。

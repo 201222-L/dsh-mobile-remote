@@ -1,6 +1,6 @@
 # 02 系统架构设计说明书 — dsh-mobile-remote
 
-> 版本：v0.1（草案） · 状态：设计阶段 · 配套：01-PRD.md、03-api.md、04-security.md
+> 版本：v2.4.0 · 状态：已实现（含 v2.3 问询/审批弹窗桥） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
 
 ## 1. 背景与范围
 dsh web 是 Cordis 组合出的浏览器 GUI（`dsh --profile web`），webserver 默认只绑定 `127.0.0.1`。本插件在 **web profile 的宿主侧**挂载一个 Cordis 插件，在现有 webserver 上注册 `/m` 前缀路由，提供一个**零构建的原生移动网页**，通过 dsh 的 agent/session 服务把手机操作接到运行中的 agent 上。插件不修改桌面 GUI 的任何现有 UI。
@@ -233,10 +233,10 @@ sequenceDiagram
 ```
 
 - 配置：`settings` 域（推送服务 URL、密钥、事件类型开关、静默时段）
-- 深链：网页版 `.../m?session=<id>`；App 自定义 scheme（Phase 3 定）
+- 深链：点击系统通知 → 打开 App 通知中心/对应会话（当前实现：通知中心条目跳转；App 自定义 scheme 深链未做）
 - 去重/节流：同会话同类型 60s 内合并
 ## 14. App 架构（Phase 3 要点）
-- Flutter 单工程；状态管理 Riverpod；SSE 用 `http` 包流式解析（或 `web_socket_channel` 替代通道）
-- 页面：首页（欢迎） 会话 / 对话 / 通知 / 设置（对照原型 v7）
-- 本地存储：连接配置（地址/口令）、UI 偏好（工具显示、主题）
-- 通知：前台 SSE 事件 → 本地通知；后台依赖 Phase 2 推送桥（App 不保活长连接）
+- Flutter 单工程；状态管理 ChangeNotifier（`store.dart` 的 `AppStore`）；SSE 用 `http` 包流式解析
+- 页面：首页（欢迎 + 最近会话） 会话 / 对话 / 通知 / 设置（对照原型 v7）
+- 本地存储：连接配置（地址/口令）、UI 偏好（工具显示、主题、工作区选择）
+- 通知：App 内通知中心实时角标（SSE 推送）；后台系统级提醒依赖 Phase 2 推送桥（App 不保活长连接）
