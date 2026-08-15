@@ -73,9 +73,10 @@ class Api {
     for (final u in urls) {
       final n = _normBase(u);
       if (n.isEmpty) continue;
-      // 排除回环地址（含带端口形式，如 http://127.0.0.1:3080）：手机连回环无意义
+      // 排除回环与链路本地地址（含带端口形式）：手机均不可达
       final host = Uri.tryParse(n)?.host ?? '';
       if (host == '127.0.0.1' || host == 'localhost' || host == '::1') continue;
+      if (host.startsWith('169.254.')) continue;
       if (seen.add(n)) merged.add(n);
     }
     if (merged.length > _maxUrls) merged.removeRange(_maxUrls, merged.length);
