@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'logger.dart';
 import 'models.dart';
 
 class ApiException implements Exception {
@@ -54,15 +55,25 @@ class Api {
       };
 
   Future<Map<String, dynamic>> getJson(String path) async {
-    final res = await _client.get(_uri(path), headers: _headers).timeout(const Duration(seconds: 15));
-    return _decode(res);
+    try {
+      final res = await _client.get(_uri(path), headers: _headers).timeout(const Duration(seconds: 15));
+      return _decode(res);
+    } catch (e) {
+      AppLog.instance.log('GET $path 失败: $e');
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> postJson(String path, Map<String, dynamic> body) async {
-    final res = await _client
-        .post(_uri(path), headers: _headers, body: jsonEncode(body))
-        .timeout(const Duration(seconds: 20));
-    return _decode(res);
+    try {
+      final res = await _client
+          .post(_uri(path), headers: _headers, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 20));
+      return _decode(res);
+    } catch (e) {
+      AppLog.instance.log('POST $path 失败: $e');
+      rethrow;
+    }
   }
 
   Map<String, dynamic> _decode(http.Response res) {
@@ -84,6 +95,40 @@ class Api {
     final data = await getJson('/api/sessions');
     return (data['sessions'] as List? ?? []).map((e) => Session.fromJson(e as Map<String, dynamic>)).toList();
   }
+
+  /// 标记会话被打开（服务端记录活跃时间，用于"最近会话"排序）。失败静默。
+  Future<void> touchSession(String sessionId) async {
+    try {
+      await postJson('/api/sessions/touch', {'sessionId': sessionId});
+    } catch (_) {
+      // 旧版插件无此端点：不影响打开会话
+    }
+  }
+
+  /// 归档 / 恢复会话（服务端持久化）。
+  Future<void> archiveSession(String sessionId, {required bool archive}) async {
+    await postJson(archive ? '/api/sessions/archive' : '/api/sessions/unarchive', {'sessionId': sessionId});
+  }
+
+  /// 停止（取消）会话当前运行：对齐 PC 端"停止"按钮（映射 session.cancel）。
+  Future<void> stopSession(String sessionId) async {
+    await postJson('/api/sessions/stop', {'sessionId': sessionId});
+  }
+
+  /// 在新对话中分支（映射内核 session.fork，atSeq 锚定切点），返回子会话 id。
+  Future<String> forkSession(String sessionId, {int? atSeq}) async {
+    final r = await postJson('/api/sessions/fork', {
+      'sessionId': sessionId,
+      'atSeq': ?atSeq,
+    });
+    return r['sessionId'] as String? ?? '';
+  }
+
+  /// 消息反馈（👍/👎）：直接写内核 messageFeedback 服务（与 PC 端同一份数据）。
+  Future<void> putFeedback(String sessionId, String messageId, String rating) async {
+    await postJson('/api/feedback', {'sessionId': sessionId, 'messageId': messageId, 'rating': rating});
+  }
+
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
   Future<String> send(String sessionId, String text) async {
     final r = await postJson('/api/send', {'sessionId': sessionId, 'text': text});
@@ -103,6 +148,25 @@ class Api {
   }
   Future<void> markNotifsRead({List<String>? ids, bool all = false}) async {
     await postJson('/api/notifications/read', all ? {'all': true} : {'ids': ids ?? []});
+  }
+  /// 删除通知记录：指定 id 列表或全部（插件端 /notifications/delete，桌面端重启后生效）。
+  Future<void> deleteNotifs({List<String>? ids, bool all = false}) async {
+    await postJson('/api/notifications/delete', all ? {'all': true} : {'ids': ids ?? []});
+  }
+  /// 回答内核问询/审批（kind: question | approval | cancel），走与 PC 端 GUI 相同的 respond 通道。
+  Future<Map<String, dynamic>> respond({
+    required String kind,
+    required String rpcId,
+    required String sessionId,
+    List<Map<String, dynamic>>? answers,
+    String? approvalId,
+    String? outcome,
+  }) async {
+    final body = <String, dynamic>{'kind': kind, 'rpcId': rpcId, 'sessionId': sessionId};
+    if (answers != null) body['answers'] = answers;
+    if (approvalId != null) body['approvalId'] = approvalId;
+    if (outcome != null) body['outcome'] = outcome;
+    return await postJson('/api/respond', body);
   }
   Future<double?> balance() async {
     try {
@@ -142,10 +206,13 @@ class Api {
     });
   }
 
-  /// 会话 token 用量统计（服务端聚合）。
+  /// 会话 token 用量统计（服务端聚合）+ 上下文窗口（request/context 事件，PC 圆环同源）。
   Future<Map<String, dynamic>> usage(String sessionId) async {
     final data = await getJson('/api/usage?sessionId=${Uri.encodeQueryComponent(sessionId)}');
-    return (data['usage'] as Map<String, dynamic>?) ?? {};
+    return {
+      ...(data['usage'] as Map<String, dynamic>? ?? {}),
+      if (data['contextWindow'] != null) 'contextWindow': data['contextWindow'],
+    };
   }
 
   /// 移动端动作注册表（插件提供）。

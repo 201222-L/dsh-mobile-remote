@@ -1,40 +1,74 @@
-﻿# DSH Remote App锛坉sh-mobile-app锛?
-> DeepSeek Harness 鐨勭Щ鍔ㄧ鍘熺敓 App锛堝畨鍗擄級锛?*鎵嬫満杩滅▼鎿嶄綔鐢佃剳涓婄殑 agent** 鈥斺€?鍙戞秷鎭淳娲汇€佺湅杩涘害銆佹敹閫氱煡銆佸鎵瑰喅绛栥€佺鐞嗕細璇濄€?
-涓?`dsh-mobile-remote` 鎻掍欢閰嶅浣跨敤锛堟湰浠撳簱鍚岀洰褰曠殑鎻掍欢锛夛紝鍏变韩鍚屼竴濂?API 涓?DeepSeek 閰嶈壊璁捐銆?
-## 鍔熻兘
+# DSH Remote App（dsh-mobile-app）
+> DeepSeek Harness 的移动端原生 App（安卓）**手机远程操作电脑上的 agent** —— 发消息派活、看进度、收通知、审批决策、管理会话。
+与 `dsh-mobile-remote` 插件配套使用（本仓库同目录的插件），共享同一套 API 与 DeepSeek 配色设计。
+## 功能
 
-- 馃摱 **鎵爜杩炴帴**锛氭壂妗岄潰 dsh 璁剧疆椤点€岃繛鎺ョЩ鍔ㄧ璁惧銆嶄簩缁寸爜锛岃嚜鍔ㄥ～鍏ュ湴鍧€+鍙ｄ护锛涗篃鏀寔鎵嬪姩杈撳叆
-- 馃彔 **棣栭〉**锛氭杩庤 + 鏈€杩戜細璇?+ 搴曢儴杈撳叆妗嗭紙妯″瀷/鏉冮檺鑳跺泭锛?- 馃挰 **瀵硅瘽椤?*锛氭祦寮忓洖澶嶃€丮arkdown 娓叉煋锛堟爣棰?鍒楄〃/浠ｇ爜鍧?琛ㄦ牸/寮曠敤/閾炬帴锛夈€乼oken 鐢ㄩ噺銆佸伐鍏疯皟鐢ㄦ姌鍙狅紙榛樿闅愯棌锛夈€佷笂缈诲姞杞芥洿鏃?- 馃搵 **浼氳瘽鍒楄〃**锛氭爣棰橈紙闈?ID锛? 鏃堕棿 + 宸ヤ綔鐩綍锛屼笅鎷夊埛鏂?- 馃敂 **閫氱煡涓績**锛氬畬鎴?澶辫触/寰呭洖绛斾笁鑹插浘鏍囥€佹湭璇昏鏍囥€佺偣鍑昏烦浼氳瘽銆佸叏閮ㄥ凡璇?- 鈿欙笍 **璁剧疆**锛氫綑棰濆疄鏃舵煡璇€佸厖鍊艰烦杞€?*榛樿 Agent 棰勮 / 榛樿鏉冮檺棰勮淇敼**銆佹樉绀哄伐鍏疯皟鐢ㄥ紑鍏炽€佹繁鑹叉ā寮忎笁鎬佸垏鎹€佺幆澧冭瘖鏂紙甯︽椂闂存埑锛夈€侀噸鏂伴厤缃繛鎺?- 鉃?**鏂板缓浼氳瘽**锛氭ā寮忛€夋嫨 + 宸ヤ綔鐩綍閫夋嫨锛堣法鐩樻祻瑙堛€佹柊寤烘枃浠跺す锛?- 馃帹 **DeepSeek 閰嶈壊**锛氭祬鑹?娣辫壊鍙屼富棰橈紙#426EFE / #0E1116锛夛紝璺熼殢绯荤粺鎴栨墜鍔ㄥ垏鎹?
-## 鏋勫缓
+- 📶 **扫码连接**：扫桌面 dsh 设置页「连接移动端设备」二维码，自动填入地址+口令；也支持手动输入
+- 🏠 **首页**：欢迎语 + 最近会话 + 底部输入框（模型/权限胶囊）
+- 💬 **对话页**：流式回复、Markdown 渲染（标题/列表/代码块/表格/引用/链接）、token 用量、工具调用折叠（默认隐藏）、微信式无限上翻（滑到顶部自动加载更早，无断页）
+- 📋 **会话列表**：标题（会话 ID） 时间 + 工作目录，下拉刷新
+- 🔔 **通知中心**：完成/失败/待回答三色图标、未读角标、点击跳会话、全部已读
+- ⚙️ **设置**：余额实时查询、充值跳转、**默认 Agent 预设 / 默认权限预设修改**、显示工具调用开关、深色模式三态切换、环境诊断（带时间戳）、重新配置连接
+- ➕ **新建会话**：模式选择 + 工作目录选择（跨盘浏览、新建文件夹）
+- 🎨 **DeepSeek 配色**：浅色/深色双主题（#426EFE / #0E1116），跟随系统或手动切换
+## 构建
 
-鍓嶇疆锛欶lutter SDK锛?.47+锛? Android SDK銆?
+前置：Flutter SDK（3.47+） + Android SDK。
 ```powershell
 cd dsh-mobile-app
-flutter analyze        # 搴斾负 No issues found
+flutter analyze        # 应为 No issues found
 flutter build apk --release
-# 浜х墿锛歜uild\app\outputs\flutter-apk\app-release.apk
+# 产物：build\app\outputs\flutter-apk\app-release.apk
 ```
 
-> 棣栨鏋勫缓闇€涓嬭浇 Gradle 渚濊禆锛堢害 5鈥?0 鍒嗛挓锛夛紱濡傞亣 Kotlin 澧為噺缂撳瓨鎹熷潖锛屽垹闄?`build` 涓?`.dart_tool` 鍚庨噸璇曪紙`android/gradle.properties` 宸茶 `kotlin.incremental=false`锛夈€?> 鏇存崲鍥炬爣锛氭妸 1024脳1024 PNG 瑕嗙洊鍒?`assets/icon-1024.png`锛岃繍琛?`python tools/make_icon.py` 鍚庨噸鏂版瀯寤恒€?
-## 瀹夎浣跨敤
+**Release 签名**：正式分发须自建 keystore（`android/key.properties` 存在时自动使用；不存在则回退 debug 签名，仅自用）：
 
-1. 鎶?`app-release.apk` 浼犲埌鎵嬫満瀹夎锛堝厑璁?瀹夎鏈煡鏉ユ簮搴旂敤"锛夈€?2. 鎵撳紑 App 鈫掋€屾壂鐮佽繛鎺ャ€嶅鍑嗙數鑴戝睆骞曚笂鐨勪簩缁寸爜锛坉sh 璁剧疆 鈫掋€岃繛鎺ョЩ鍔ㄧ璁惧銆嶏級锛屾垨鎵嬪姩杈撳叆鐢佃剳鍦板潃锛堝 `http://192.168.1.100:3080`锛? 璁块棶鍙ｄ护銆?3. 杩炴帴鎴愬姛杩涘叆棣栭〉锛岀洿鎺ュ彂娑堟伅娲炬椿銆?
-## 鐩綍缁撴瀯
+```powershell
+keytool -genkeypair -v -keystore android/app/release.jks -keyalg RSA -keysize 2048 -validity 10950 -alias dsh
+# 然后写 android/key.properties：
+#   storePassword=<密码>
+#   keyPassword=<密码>
+#   keyAlias=dsh
+#   storeFile=app/release.jks
+```
+
+> 首次构建需下载 Gradle 依赖（约 5-10 分钟）；如遇 Kotlin 增量缓存损坏，删除 `build` 与 `.dart_tool` 后重试（`android/gradle.properties` 已设 `kotlin.incremental=false`）。
+> 更换图标：把 1024×1024 PNG 覆盖到 `assets/icon-1024.png`，运行 `python tools/make_icon.py` 后重新构建。
+> **keystore 与 key.properties 已被 gitignore**：勿提交、勿丢失（丢失无法对已发布 APK 升级）。换签名 = 换应用，用户需卸载重装并重新扫码。
+> 渲染后端为 Impeller（Vulkan→GLES 自动回退）；个别旧机型异常时把 `AndroidManifest.xml` 的 `EnableImpeller` 改为 `false` 出 Skia 版。详见仓库根 `docs/09-compatibility.md`。
+
+## 兼容性
+
+- Android 7.0+ 全品牌（实测：小米 17 Pro Max）；iOS 未开发（Dart 代码平台无关，配置项见 docs/09 §4）。
+- 功能/服务依赖与降级行为见仓库根 `docs/09-compatibility.md`。
+## 安装使用
+
+1. 把 `app-release.apk` 传到手机安装（允许"安装未知来源应用"）。
+2. 打开 App →「扫码连接」对准电脑屏幕上的二维码（dsh 设置 →「连接移动端设备」），或手动输入电脑地址（如 `http://192.168.1.100:3080`） 访问口令。
+3. 连接成功进入首页，直接发消息派活。
+## 目录结构
 
 ```
 lib/
-  main.dart         鍏ュ彛锛氫富棰樸€佹娊灞夊鑸€佽繛鎺ラ〉銆佽繑鍥為敭澶勭悊
-  api.dart          API 瀹㈡埛绔紙鎻掍欢 /m/api 鍏ㄦ帴鍙?+ SSE 瑙ｆ瀽锛?  store.dart        鍏ㄥ眬鐘舵€?+ SSE 浜嬩欢妗ワ紙閲嶈繛閫€閬裤€佹柇绾胯ˉ鎷夛級
-  theme.dart        DeepSeek 璁捐浠ょ墝锛堥厤鑹?鍦嗚/闃村奖锛?  md.dart           Markdown 娓叉煋锛堜笌缃戦〉绔悓娆炬牱寮忥級
-  scan_screen.dart  鎵爜杩炴帴椤?  screens/          棣栭〉 / 瀵硅瘽 / 浼氳瘽 / 閫氱煡 / 璁剧疆 / 寮瑰眰缁?tools/
-  make_icon.py      鍥炬爣鐢熸垚鑴氭湰
+  main.dart         入口：主题、抽屉导航、连接页、返回键处理
+  api.dart          API 客户端（插件 /m/api 全接口 + SSE 解析）
+  store.dart        全局状态 + SSE 事件桥（重连退避、断线补拉）
+  theme.dart        DeepSeek 设计令牌（配色/圆角/阴影）
+  md.dart           Markdown 渲染（与网页端同款样式）
+  scan_screen.dart  扫码连接页
+  screens/          首页 / 对话 / 会话 / 通知 / 设置 / 弹层
+
+tools/
+  make_icon.py      图标生成脚本
 assets/
-  icon-1024.png     鍥炬爣婧愬浘
+  icon-1024.png     图标源图
 ```
 
-## 瀹夊叏璇存槑
+## 安全说明
 
-- 杩炴帴淇℃伅锛堝湴鍧€+鍙ｄ护锛変粎淇濆瓨鍦ㄦ湰鏈?SharedPreferences锛屼笉鑱旂綉涓婁紶銆?- 浠呴檺灞€鍩熺綉/鍙俊鍐呯綉浣跨敤锛汚pp 宸叉斁琛屾槑鏂?HTTP锛坄usesCleartextTraffic`锛夛紝鍕垮湪鍏綉浣跨敤銆?- 浜岀淮鐮佸惈璁块棶鍙ｄ护锛岃鍕挎埅灞忚浆鍙戙€?
-## 璁稿彲
+- 连接信息（地址+口令）仅保存在本机 SharedPreferences，不联网上传。
+- 仅限局域网/可信内网使用；App 已放行明文 HTTP（`usesCleartextTraffic`），勿在公网使用。
+- 二维码含访问口令，请勿截屏转发。
+## 许可
 
-MIT锛堜笌鎻掍欢鍚屼粨搴擄紝瑙佹牴鐩綍 LICENSE锛?
+MIT（与插件同仓库，见根目录 LICENSE）

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
+import 'logger.dart';
 import 'models.dart';
 
 class AppStore extends ChangeNotifier {
@@ -17,6 +18,16 @@ class AppStore extends ChangeNotifier {
   String agentStatus = 'idle'; // idle | running | waiting
   String darkMode = 'system'; // system | dark | light
 
+  /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
+  List<Map<String, dynamic>> workspaces = [];
+
+  /// 当前选中的工作区路径（null = 全部）。影响会话列表过滤与新建会话默认目录。
+  String? workspacePath;
+
+  /// 内核待回答的问询/审批（弹窗数据，与 PC 端同一 pending 通道；断线重连后服务端会补发）。
+  QuestionRequest? pendingQuestion;
+  ApprovalRequest? pendingApproval;
+
   // ── 事件监听（聊天页挂载） ──
   void Function(ChatEvent ev)? onChatEvent;
   VoidCallback? onSessionsChanged; // 标题/预设变化 → 外部刷新
@@ -30,13 +41,38 @@ class AppStore extends ChangeNotifier {
   static const _kSession = 'dsh_mr_session';
   static const _kTools = 'dsh_mr_showtools';
   static const _kDark = 'dsh_mr_darkmode';
+  static const _kWorkspace = 'dsh_mr_workspace';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     sessionId = prefs.getString(_kSession);
     showTools = prefs.getBool(_kTools) ?? false;
     darkMode = prefs.getString(_kDark) ?? 'system';
+    final savedWs = prefs.getString(_kWorkspace);
+    workspacePath = savedWs == null ? null : _normPath(savedWs);
     notifyListeners();
+  }
+
+  /// 规范化路径用于比较：去首尾空格、统一反斜杠、小写、去尾部斜杠。
+  /// 这样无论存储/接口返回的路径是 `D:\work`、`D:/work/` 还是 `D:\work\` 都能匹配。
+  static String _normPath(String s) {
+    var p = s.trim().replaceAll('/', '\\').toLowerCase();
+    while (p.endsWith('\\') && p.length > 1) {
+      p = p.substring(0, p.length - 1);
+    }
+    return p;
+  }
+
+  /// 切换当前工作区（null = 全部）。
+  Future<void> setWorkspace(String? path) async {
+    workspacePath = path == null ? null : _normPath(path);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (workspacePath == null) {
+      await prefs.remove(_kWorkspace);
+    } else {
+      await prefs.setString(_kWorkspace, workspacePath!);
+    }
   }
 
   Future<void> setDarkMode(String v) async {
@@ -52,7 +88,121 @@ class AppStore extends ChangeNotifier {
     if (id != null) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kSession, id);
+      // 记录打开时间（"最近会话"排序依据之一），失败静默
+      unawaited(api.touchSession(id));
     }
+  }
+
+  /// 回答内核问询（answers 顺序与提问一致、每问必答）。
+  /// 返回 null 表示成功；否则返回错误说明（弹窗保持可重试）。
+  Future<String?> answerQuestion(String rpcId, String sessionId, List<Map<String, dynamic>> answers) async {
+    try {
+      final r = await api.respond(kind: 'question', rpcId: rpcId, sessionId: sessionId, answers: answers);
+      if (r['accepted'] == true) {
+        if (pendingQuestion?.rpcId == rpcId) {
+          pendingQuestion = null;
+          notifyListeners();
+        }
+        return null;
+      }
+      // not-pending / bad-response：PC 端可能已先答，弹窗应关闭
+      if (pendingQuestion?.rpcId == rpcId) {
+        pendingQuestion = null;
+        notifyListeners();
+      }
+      return '${r['reason'] ?? '回答未被接受'}（可能电脑端已先回答）';
+    } catch (e) {
+      return '回答失败：$e';
+    }
+  }
+
+  /// 审批工具权限：outcome = "allowed-once" | "rejected"。
+  Future<String?> answerApproval(String rpcId, String sessionId, String approvalId, String outcome) async {
+    try {
+      final r = await api.respond(
+          kind: 'approval', rpcId: rpcId, sessionId: sessionId, approvalId: approvalId, outcome: outcome);
+      if (r['accepted'] == true) {
+        if (pendingApproval?.rpcId == rpcId) {
+          pendingApproval = null;
+          notifyListeners();
+        }
+        return null;
+      }
+      if (pendingApproval?.rpcId == rpcId) {
+        pendingApproval = null;
+        notifyListeners();
+      }
+      return '${r['reason'] ?? '审批未被接受'}（可能电脑端已先处理）';
+    } catch (e) {
+      return '审批失败：$e';
+    }
+  }
+
+  /// 取消（跳过）问询/审批：内核收到 cancelled，agent 按 ASK_CANCELLED 继续。
+  Future<void> cancelRespond(String rpcId) async {
+    try {
+      await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: '');
+    } catch (_) {}
+    if (pendingQuestion?.rpcId == rpcId) pendingQuestion = null;
+    if (pendingApproval?.rpcId == rpcId) pendingApproval = null;
+    notifyListeners();
+  }
+
+  /// 会话是否属于某工作区（cwd 等于工作区路径或其子目录，Windows 大小写不敏感）。
+  static bool _cwdIn(String? cwd, String path) {
+    if (cwd == null || cwd.isEmpty) return false;
+    final c = _normPath(cwd);
+    final p = _normPath(path);
+    if (c.isEmpty || p.isEmpty) return false;
+    return c == p || c.startsWith('$p\\');
+  }
+
+  /// 会话是否属于某工作区：优先内核成员关系（sessionIds，与 PC 端分组一致）；
+  /// 旧版插件无该字段时回退 cwd 前缀匹配。
+  bool _inWorkspace(Session s, Map<String, dynamic> w) {
+    final ids = w['sessionIds'];
+    if (ids is List) return ids.any((id) => id.toString() == s.id);
+    final path = w['path'];
+    if (path is String && path.isNotEmpty) return _cwdIn(s.cwd, path);
+    return false;
+  }
+
+  /// 当前选中的工作区条目（未选/找不到时为 null = 全部）。
+  Map<String, dynamic>? _selectedWorkspace() {
+    if (workspacePath == null) return null;
+    for (final w in workspaces) {
+      if (w['path'] == workspacePath) return w;
+    }
+    return null;
+  }
+
+  /// 未归档会话，按最近活跃（打开/SSE 动静）排序；按当前工作区过滤。
+  List<Session> get activeSessions {
+    final ws = _selectedWorkspace();
+    final list = sessions
+        .where((s) => !s.archived && (ws == null || _inWorkspace(s, ws)))
+        .toList();
+    list.sort((a, b) => b.sortKey.compareTo(a.sortKey));
+    return list;
+  }
+
+  /// 已归档会话，同样按最近活跃排序；按当前工作区过滤。
+  List<Session> get archivedSessions {
+    final ws = _selectedWorkspace();
+    final list = sessions
+        .where((s) => s.archived && (ws == null || _inWorkspace(s, ws)))
+        .toList();
+    list.sort((a, b) => b.sortKey.compareTo(a.sortKey));
+    return list;
+  }
+
+  /// 当前工作区的显示名（无工作区/全部时为 null）。
+  String? get workspaceTitle {
+    if (workspacePath == null) return null;
+    for (final w in workspaces) {
+      if (w['path'] == workspacePath) return (w['title'] as String?) ?? workspacePath;
+    }
+    return workspacePath;
   }
 
   Future<void> setShowTools(bool v) async {
@@ -76,6 +226,7 @@ class AppStore extends ChangeNotifier {
           sessionConfig = await api.sessionConfig(sessionId!);
         } catch (_) {/* 冷会话保持旧值 */}
       }
+      await refreshWorkspaces(notify: false);
       await refreshSessions(notify: false);
       await refreshNotifs(notify: false);
       await refreshActions(notify: false);
@@ -83,11 +234,45 @@ class AppStore extends ChangeNotifier {
     } catch (_) {/* 首屏失败由连接页处理 */}
   }
 
+  /// 拉取模型目录（新建会话弹层懒加载用），成功返回目录、失败返回 null。
+  Future<Catalog?> refreshCatalog() async {
+    try {
+      catalog = await api.catalog();
+      notifyListeners();
+      return catalog;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> refreshWorkspaces({bool notify = true}) async {
+    try {
+      final raw = await api.workspaces();
+      // 统一规范化 path，保证与 workspacePath/会话 cwd 的匹配形态一致
+      workspaces = raw
+          .map((w) => {...w, 'path': _normPath(w['path'] as String? ?? '')})
+          .toList();
+      // 已选工作区不再存在时回退到"全部"
+      if (workspacePath != null && !workspaces.any((w) => w['path'] == workspacePath)) {
+        workspacePath = null;
+      }
+      if (notify) notifyListeners();
+    } catch (_) {}
+  }
+
   Future<void> refreshSessions({bool notify = true}) async {
     try {
       sessions = await api.sessions();
+      // 排障日志：打印工作区选择与会话 cwd 样本，便于定位筛选不显示的问题
+      AppLog.instance.log(
+        'Sessions: 拉取 ${sessions.length} 条 · workspacePath=${workspacePath ?? "全部"} · '
+        'workspaces=${workspaces.map((w) => w['path']).join("|")} · '
+        'cwd样例=${sessions.take(3).map((s) => s.cwd ?? "null").join("|")}',
+      );
       if (notify) notifyListeners();
-    } catch (_) {}
+    } catch (e) {
+      AppLog.instance.log('Sessions: 拉取失败 $e');
+    }
   }
 
   Future<void> refreshNotifs({bool notify = true}) async {
@@ -138,10 +323,17 @@ class AppStore extends ChangeNotifier {
     if (_sub != null || _connecting) return;
     _connecting = true;
     _setConnState('connecting');
+    AppLog.instance.log('SSE: connect');
     _sub = api.eventsRaw().listen(
       _onFrame,
-      onError: (_) => _scheduleReconnect(),
-      onDone: _scheduleReconnect,
+      onError: (e) {
+        AppLog.instance.log('SSE: error $e');
+        _scheduleReconnect();
+      },
+      onDone: () {
+        AppLog.instance.log('SSE: done（连接关闭）');
+        _scheduleReconnect();
+      },
       cancelOnError: true,
     );
   }
@@ -166,16 +358,92 @@ class AppStore extends ChangeNotifier {
     if (type == 'hello') {
       _setConnState('connected');
       _catchup();
+      // 重连成功：补拉会话/通知/目录/工作区（桌面端重启后 App 无需手动刷新即可完整恢复）
+      _debounceSessions();
+      refreshNotifs(notify: false);
+      unawaited(refreshCatalog());
+      unawaited(refreshWorkspaces());
+      return;
+    }
+    if (type == 'notifications/changed') {
+      // 通知被增删（如移动端删除记录）：刷新列表与未读角标
+      refreshNotifs();
+      return;
+    }
+    if (type == 'mobile/frame') {
+      // 内核问询/审批瞬态帧（question|approval requested/resolved）
+      final f = frame['frame'];
+      if (f is! Map<String, dynamic>) return;
+      final ftype = f['type'];
+      if (ftype == 'question/requested') {
+        pendingQuestion = QuestionRequest(
+          rpcId: f['rpcId'] as String? ?? '',
+          sessionId: f['sessionId'] as String? ?? '',
+          questions: (f['questions'] as List? ?? [])
+              .map((q) => AskQuestion.fromJson(q as Map<String, dynamic>))
+              .toList(),
+        );
+        notifyListeners();
+        onChatEvent?.call(ChatEvent(type: 'question/requested',
+            data: {'rpcId': pendingQuestion!.rpcId, 'sessionId': pendingQuestion!.sessionId}));
+        return;
+      }
+      if (ftype == 'question/resolved') {
+        final rid = f['questionRpcId'];
+        if (pendingQuestion != null && pendingQuestion!.rpcId == rid) {
+          pendingQuestion = null;
+          notifyListeners();
+        }
+        // 无条件转发：即使本地已在提交/取消时提前清空，聊天页也要据此收起卡片
+        onChatEvent?.call(ChatEvent(type: 'question/resolved', data: {'rpcId': rid}));
+        return;
+      }
+      if (ftype == 'approval/requested') {
+        pendingApproval = ApprovalRequest(
+          rpcId: f['rpcId'] as String? ?? '',
+          sessionId: f['sessionId'] as String? ?? '',
+          approvalId: f['approvalId'] as String? ?? '',
+          toolName: f['toolName'] as String? ?? '',
+          callId: f['callId'] as String?,
+          reason: f['reason'] as String?,
+        );
+        notifyListeners();
+        onChatEvent?.call(ChatEvent(type: 'approval/requested',
+            data: {'rpcId': pendingApproval!.rpcId, 'sessionId': pendingApproval!.sessionId}));
+        return;
+      }
+      if (ftype == 'approval/resolved') {
+        final aid = f['approvalId'];
+        if (pendingApproval != null && pendingApproval!.approvalId == aid) {
+          pendingApproval = null;
+          notifyListeners();
+        }
+        // 无条件转发：聊天页据此收起审批卡片
+        onChatEvent?.call(ChatEvent(type: 'approval/resolved', data: {'approvalId': aid}));
+        return;
+      }
+      return;
+    }
+    if (type == 'session/context') {
+      // 上下文窗口实时帧：转发给聊天页（圆环即时刷新，无需重进会话）
+      final fsid = frame['sessionId'];
+      if (sessionId == null || fsid == sessionId) {
+        onChatEvent?.call(ChatEvent(type: 'session/context', data: {'contextWindow': frame['contextWindow']}));
+      }
       return;
     }
     if (type == 'session/event') {
       final event = frame['event'];
       if (event is! Map<String, dynamic>) return;
       final evType = event['type'];
-      if (evType == 'session/title' || evType == 'agent-preset/selected') {
-        _debounceSessions();
-      }
+      // 任意会话事件都视为"有动静"：去抖刷新会话列表（标题/排序），
+      // 高频 chunk 期间定时器持续重置，流结束后才真正刷新一次。
+      _debounceSessions();
       final fsid = frame['sessionId'];
+      // 排障日志：帧到达与过滤（高频 chunk 不记）
+      if (evType != 'assistant/chunk' && evType != 'tool/call' && evType != 'tool/result') {
+        AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"} ${sessionId != null && fsid != sessionId ? "（被过滤）" : ""}');
+      }
       if (sessionId == null || fsid == sessionId) {
         onChatEvent?.call(ChatEvent.fromJson(event));
       }

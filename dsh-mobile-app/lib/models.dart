@@ -5,14 +5,27 @@ class Session {
   final String? title;
   final String? cwd;
   final int createdAt;
-  Session({required this.id, this.title, this.cwd, required this.createdAt});
+  final bool archived;
+  final int? lastActivity;
+  Session({
+    required this.id,
+    this.title,
+    this.cwd,
+    required this.createdAt,
+    this.archived = false,
+    this.lastActivity,
+  });
   factory Session.fromJson(Map<String, dynamic> j) => Session(
         id: j['id'] as String,
         title: j['title'] as String?,
         cwd: j['cwd'] as String?,
         createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
+        archived: j['archived'] as bool? ?? false,
+        lastActivity: (j['lastActivity'] as num?)?.toInt(),
       );
   String get label => (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
+  /// 排序键：最近活跃优先，无活跃记录回退创建时间。
+  int get sortKey => lastActivity ?? createdAt;
 }
 
 class CatalogModel {
@@ -20,12 +33,14 @@ class CatalogModel {
   final String id;
   final String name;
   final String? description;
-  CatalogModel({required this.provider, required this.id, required this.name, this.description});
+  final int? contextWindow;
+  CatalogModel({required this.provider, required this.id, required this.name, this.description, this.contextWindow});
   factory CatalogModel.fromJson(Map<String, dynamic> j) => CatalogModel(
         provider: j['provider'] as String? ?? 'deepseek-official',
         id: j['id'] as String,
         name: j['name'] as String? ?? j['id'] as String,
         description: j['description'] as String?,
+        contextWindow: (j['contextWindow'] as num?)?.toInt(),
       );
 }
 
@@ -128,4 +143,70 @@ class ChatEvent {
         type: j['type'] as String,
         data: j['data'] as Map<String, dynamic>?,
       );
+}
+
+// ── 内核问询/审批弹窗（question/requested · approval/requested，与 PC 端同一通道） ──
+
+class AskOption {
+  final String label;
+  final String? description;
+  AskOption({required this.label, this.description});
+  factory AskOption.fromJson(Map<String, dynamic> j) =>
+      AskOption(label: j['label'] as String? ?? '', description: j['description'] as String?);
+}
+
+class AskQuestion {
+  final String id;
+  final String question;
+  final String? header;
+  final String? detail;
+  final List<AskOption> options;
+  final bool multiSelect;
+  final Map<String, dynamic>? intent; // { kind: 'plan-review', approve: 'label' }
+  AskQuestion({
+    required this.id,
+    required this.question,
+    this.header,
+    this.detail,
+    this.options = const [],
+    this.multiSelect = false,
+    this.intent,
+  });
+  factory AskQuestion.fromJson(Map<String, dynamic> j) => AskQuestion(
+        id: j['id'] as String? ?? '',
+        question: j['question'] as String? ?? '',
+        header: j['header'] as String?,
+        detail: j['detail'] as String?,
+        options: (j['options'] as List? ?? [])
+            .map((o) => AskOption.fromJson(o as Map<String, dynamic>))
+            .toList(),
+        multiSelect: j['multiSelect'] == true,
+        intent: j['intent'] as Map<String, dynamic>?,
+      );
+}
+
+/// question/requested 帧整体：rpcId 用于应答回写。
+class QuestionRequest {
+  final String rpcId;
+  final String sessionId;
+  final List<AskQuestion> questions;
+  QuestionRequest({required this.rpcId, required this.sessionId, required this.questions});
+}
+
+/// approval/requested 帧整体：工具权限审批。
+class ApprovalRequest {
+  final String rpcId;
+  final String sessionId;
+  final String approvalId;
+  final String toolName;
+  final String? callId;
+  final String? reason;
+  ApprovalRequest({
+    required this.rpcId,
+    required this.sessionId,
+    required this.approvalId,
+    required this.toolName,
+    this.callId,
+    this.reason,
+  });
 }

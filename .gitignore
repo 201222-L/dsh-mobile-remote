@@ -1,3 +1,12 @@
 node_modules/
 *.log
 .DS_Store
+
+# Release 签名（机密，勿提交；丢失无法对已发布 APK 升级）
+dsh-mobile-app/android/key.properties
+dsh-mobile-app/android/app/*.jks
+
+# Flutter 构建产物
+dsh-mobile-app/build/
+dsh-mobile-app/android/.gradle/
+dsh-mobile-app/android/local.properties

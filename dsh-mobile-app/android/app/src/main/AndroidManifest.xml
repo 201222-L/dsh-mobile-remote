@@ -35,10 +35,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- 小米 HyperOS 引擎的 Impeller+Vulkan 在部分设备上会卡死/白屏，回退 Skia 渲染 -->
+        <!-- Impeller（Vulkan）已在小米 HyperOS 实测稳定（2025-08），显式开启；
+             曾于旧列表实现下误判卡死/白屏而回退 Skia，勿再关闭。 -->
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
-            android:value="false" />
+            android:value="true" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

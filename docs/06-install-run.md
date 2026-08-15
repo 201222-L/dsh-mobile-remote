@@ -1,46 +1,49 @@
-﻿# 06 閮ㄧ讲涓庡惎鐢ㄦ枃妗?鈥?dsh-mobile-remote
+# 06 部署与启用文档 — dsh-mobile-remote
 
-> 鐗堟湰锛歷0.3 路 鐘舵€侊細宸插湪鏈満瀹屾垚瀹夎涓庨獙璇?路 閰嶅锛?4-security.md銆?7-user-manual.md
+> 版本：v0.3 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md
 
-## 1. 閮ㄧ讲鎷撴墤
+## 1. 部署拓扑
 
 ```mermaid
 graph LR
-    PH[鎵嬫満锛圖SH Remote App锛塢 -->|鍚屼竴 WiFi 鎴?Tailscale| PC[鐢佃剳 dsh web :3080 缁?0.0.0.0]
-    PC --> PL[dsh-mobile-remote 鎻掍欢 /m/api]
+    PH[手机（DSH Remote App）] -->|同一 WiFi 或 Tailscale| PC[电脑 dsh web :3080 监听 0.0.0.0]
+    PC --> PL[dsh-mobile-remote 插件 /m/api]
     PL --> DSH[dsh services: agents / sessions]
-    PH -.澶栧嚭.-> TS[Tailscale 铏氭嫙缃?br/>WireGuard 鍔犲瘑+璁惧璁よ瘉] -.-> PC
+    PH -.外出.-> TS[Tailscale 虚拟网<br/>WireGuard 加密+设备认证] -.-> PC
 ```
 
-- 鎵嬫満绔細瀹夎 DSH Remote App锛堟瀯寤烘柟娉曡 搂8锛夛紝App 杩炴帴鐢佃剳鍦板潃锛堝 `http://192.168.1.100:3080`锛夈€?- 妗岄潰绔叆鍙ｏ細dsh 璁剧疆椤点€岃繛鎺ョЩ鍔ㄧ璁惧銆嶏紙鎻掍欢瀹㈡埛绔ā鍧楋級鏄剧ず鎵爜浜岀淮鐮佷笌杩炴帴淇℃伅銆?- 澶栧嚭璁块棶锛歍ailscale 缁勭綉鍚?App 杩炴帴 `http://<Tailscale IP>:3080`銆?
-## 2. 瀹夎浣嶇疆璇存槑锛堥€氱敤锛?
-| 椤?| 浣嶇疆 |
+- 手机端：安装 DSH Remote App（构建方法见 §8），App 连接电脑地址（如 `http://192.168.1.100:3080`）。
+- 桌面端入口：dsh 设置页「连接移动端设备」（插件客户端模块）显示扫码二维码与连接信息。
+- 外出访问：Tailscale 组网后 App 连接 `http://<Tailscale IP>:3080`。
+## 2. 安装位置说明（通用）
+| 项目 | 位置 |
 |---|---|
-| 鎻掍欢婧愮爜 | `<鏈粨搴?/`锛坧ackage.json / lib / docs / tools锛?|
-| 宸插畨瑁呭壇鏈?| `~/.dsh/profiles/web/node_modules/dsh-mobile-remote/` |
-| profile 渚濊禆澹版槑 | `~/.dsh/profiles/web/package.json` 鈫?`"dsh-mobile-remote": "file:<鏈粨搴撹矾寰?"` |
-| 鍚敤閰嶇疆 | `~/.dsh/profiles/web/cordis.patch.yml`锛坕nsert mobile-remote + webserver 0.0.0.0锛?|
-| 璁块棶鍙ｄ护 | 閮ㄧ讲鏃剁敓鎴愶紙`crypto.randomBytes(24).toString('base64url')`锛夛紝鍐欏叆 `authToken` |
+| 插件源码 | `<本仓库/`（package.json / lib / docs / tools） |
+| 已安装副本 | `~/.dsh/profiles/web/node_modules/dsh-mobile-remote/` |
+| profile 依赖声明 | `~/.dsh/profiles/web/package.json` → `"dsh-mobile-remote": "file:<本仓库路径>"` |
+| 启用配置 | `~/.dsh/profiles/web/cordis.patch.yml`（insert mobile-remote + webserver 0.0.0.0） |
+| 访问口令 | 部署时生成（`crypto.randomBytes(24).toString('base64url')`），写入 `authToken` |
 
-## 3. 鍚敤/閲嶅惎姝ラ
+## 3. 启用/重启步骤
 
 ```powershell
-# 1. 淇敼鎻掍欢婧愮爜鍚庯紝鍚屾宸插畨瑁呭壇鏈紙file: 渚濊禆涓嶄細鑷姩閲嶈锛?cd ~/.dsh/profiles/web
+# 1. 修改插件源码后，同步已安装副本（file: 依赖不会自动重装）
+cd ~/.dsh/profiles/web
 corepack pnpm install
 
-# 2. 妫€鏌ョ粍鍚堥厤缃紙涓嶅惎鍔級
+# 2. 检查组合配置（不启动）
 npx @deepseek-ai/dsh --profile web --dump-config
-# 纭杈撳嚭鍖呭惈 mobile-remote 琛屼笌 webserver host: 0.0.0.0
+# 确认输出包含 mobile-remote 行与 webserver host: 0.0.0.0
 
-# 3. 閲嶅惎 dsh web
+# 3. 重启 dsh web
 npx @deepseek-ai/dsh web
 ```
 
-鍚姩鎴愬姛鍚庢帶鍒跺彴浼氭墦鍗帮細
+启动成功后控制台会打印：
 `dsh web: http://127.0.0.1:3080 (LAN: http://192.168.x.x:3080)`
 
-## 4. 鍙樻洿閰嶇疆锛堝彛浠?璺緞/鍏呭€煎湴鍧€锛?
-缂栬緫 `cordis.patch.yml` 涓?`mobile-remote` 琛岀殑 `config`锛岀劧鍚庨噸鍚細
+## 4. 变更配置（口令/路径/充值地址）
+编辑 `cordis.patch.yml` 改 `mobile-remote` 行的 `config`，然后重启：
 
 ```yaml
 - insert:
@@ -48,92 +51,125 @@ npx @deepseek-ai/dsh web
       name: dsh-mobile-remote
       config:
         path: /m
-        authToken: <鏂板彛浠わ紝鐣欑┖=鍏抽棴璁よ瘉>
+        authToken: <新口令，留空=关闭认证>
         rechargeUrl: https://platform.deepseek.com/top_up
 ```
 
-鍙ｄ护鐢熸垚寤鸿锛歚node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
+口令生成建议：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 
-## 5. 澶栧嚭璁块棶锛圱ailscale锛?
-1. 鐢佃剳瀹夎 [Tailscale](https://tailscale.com/download) 骞剁櫥褰曘€?2. 鎵嬫満瀹夎 Tailscale App 骞剁櫥褰?*鍚屼竴璐﹀彿**銆?3. 涓ょ杩炴帴鍚庯紝鎵嬫満娴忚鍣ㄨ闂?`http://<鐢佃剳Tailscale IP>:3080/m`锛圱ailscale IP 褰㈠ `100.x.x.x`锛涘湪鐢佃剳 `tailscale ip` 鏌ョ湅锛夈€?4. 鏃犻渶寮€鏀惧叕缃戠鍙ｃ€佹棤闇€璺敱鍣ㄩ厤缃紱浼犺緭缁?WireGuard 鍔犲瘑锛岃澶囪韩浠藉嵆璁よ瘉銆?
-> 绂佹锛氬皢 3080 绔彛鏄犲皠/绌块€忓埌鍏綉銆傛彃浠舵棤鍐呯疆鍏綉闃叉姢锛堣瑙?04-security.md锛夈€?
-## 6. 鎺ㄩ€佹ˉ閰嶇疆锛堝彲閫夛紝閮ㄧ讲鑰?3 鍒嗛挓锛?
-> agent 瀹屾垚 / 闇€瑕佷綘鍥炵瓟 / 澶辫触 鈫?鎵嬫満绯荤粺閫氱煡銆?*涓嶉厤缃垯鏃犳帹閫?*锛屽叾浠栧姛鑳戒笉鍙楀奖鍝嶃€?> 鐢佃剳鍙渶鑳芥甯镐笂缃戯紙HTTPS 鍑虹珯锛夛紝鏃犻渶鍏綉绔彛銆?
-鍦?`cordis.patch.yml` 鐨?`mobile-remote` 琛?`config` 涓嬪姞 `pushUrls`锛堝彲閰嶅涓€氶亾锛屼簨浠跺悓鏃舵帹閫佸埌鍏ㄩ儴锛夛細
+## 5. 外出访问（Tailscale）
+1. 电脑安装 [Tailscale](https://tailscale.com/download) 并登录。
+2. 手机安装 Tailscale App 并登录**同一账号**。
+3. 两端连接后，手机浏览器访问 `http://<电脑Tailscale IP>:3080/m`（Tailscale IP 形如 `100.x.x.x`；在电脑 `tailscale ip` 查看）。
+4. 无需开放公网端口、无需路由器配置；传输为 WireGuard 加密，设备身份即认证。
+> 禁止：将 3080 端口映射/穿透到公网。插件无内置公网防护（详见 04-security.md）。
+## 6. 推送桥配置（可选，部署者 3 分钟）
+> agent 完成 / 需要你回答 / 失败 → 手机系统通知。**不配置则无推送**，其他功能不受影响。
+> 电脑只需能正常上网（HTTPS 出站），无需公网端口。
+在 `cordis.patch.yml` 的 `mobile-remote` 行 `config` 下加 `pushUrls`（可配多个通道，事件同时推送到全部）：
 
-### Server閰憋紙寰俊鎺ㄩ€侊紝瀹夊崜/鍏ㄥ钩鍙伴€氱敤锛?
+### Server酱（微信推送，安卓/全平台通用）
 ```yaml
 - insert:
     - id: mobile-remote
       name: dsh-mobile-remote
       config:
         path: /m
-        authToken: <鍙ｄ护>
+        authToken: <口令>
         pushUrls:
-          - name: 寰俊
-            url: https://sctapi.ftqq.com/<浣犵殑SendKey>.send
+          - name: 微信
+            url: https://sctapi.ftqq.com/<你的SendKey>.send
             format: serverchan
 ```
 
-SendKey 鑾峰彇锛氭墜鏈哄井淇℃壂鐮佹墦寮€ `https://sct.ftqq.com` 鈫?鐧诲綍 鈫?澶嶅埗 SendKey銆?
-### ntfy锛堝畨鍗撶郴缁熼€氱煡鏍忥紝寮€婧愯嚜鎵樼鍙嬪ソ锛?
+SendKey 获取：手机微信扫码打开 `https://sct.ftqq.com` → 登录 → 复制 SendKey。
+### ntfy（安卓系统通知栏，开源自托管友好）
 ```yaml
         pushUrls:
           - name: ntfy
-            url: https://ntfy.sh/<浣犵殑闅忔満topic>
+            url: https://ntfy.sh/<你的随机topic>
             format: ntfy
 ```
 
-鎵嬫満瑁?ntfy App 璁㈤槄鍚屼竴 topic銆傛敞鎰忓叕鍏辨湇鍔″櫒 topic 鍙鐚滄祴锛屽缓璁敤闀块殢鏈轰覆銆?
-### Bark锛坕Phone锛?
+手机装 ntfy App 订阅同一 topic。注意公共服务器 topic 可被猜测，建议用长随机串。
+### Bark（iPhone）
 ```yaml
         pushUrls:
           - name: Bark
-            url: https://api.day.app/<浣犵殑key>
+            url: https://api.day.app/<你的key>
             format: bark
 ```
 
-### 閫氱敤 webhook
+### 通用 webhook
 
 ```yaml
         pushUrls:
-          - name: 鑷缓
+          - name: 自建
             url: https://your-server.example.com/hook
             format: generic
 ```
 
-**楠岃瘉**锛氶厤缃悗閲嶅惎妗岄潰绔紝鎵嬫満绔 agent 璺戜竴涓换鍔★紙鎴栧け璐?鎻愰棶锛夛紝瀵瑰簲寰俊/App 鏀跺埌閫氱煡銆傚悓浼氳瘽鍚岀被鍨?60 绉掑唴鍚堝苟锛坄pushCooldownMs` 鍙皟锛夈€?
-## 7. 鍥炴粴鏂规
+**验证**：配置后重启桌面端，手机端让 agent 跑一个任务（或失败/提问），对应微信/App 收到通知。同会话同类型 60 秒内合并（`pushCooldownMs` 可调）。
+## 7. 回滚方案
 
-1. 浠?`cordis.patch.yml` 鍒犻櫎 `mobile-remote` 琛屼笌 `webserver` 瑕嗙洊琛岋紙鎴栨暣浣撹繕鍘熶负 `[]`锛夈€?2. 浠?`package.json` 鍒犻櫎 `dsh-mobile-remote` 渚濊禆骞?`corepack pnpm install`銆?3. 閲嶅惎 dsh web銆傛彃浠惰矾鐢便€丼SE 杩炴帴闅?fiber dispose 鍏ㄩ儴閲婃斁锛屾闈?GUI 涓嶅彈褰卞搷銆?
-## 8. Flutter App锛坉sh-mobile-app锛屽畨鍗擄級
+1. 从 `cordis.patch.yml` 删除 `mobile-remote` 行与 `webserver` 覆盖行（或整体还原为 `[]`）。
+2. 从 `package.json` 删除 `dsh-mobile-remote` 依赖并 `corepack pnpm install`。
+3. 重启 dsh web。插件路由、SSE 连接随 fiber dispose 全部释放，桌面 GUI 不受影响。
+## 8. Flutter App（dsh-mobile-app，安卓）
 
-> 婧愮爜锛歚dsh-mobile-app/` 瀛愮洰褰曪紙鐙珛 Flutter 宸ョ▼锛屼笌鎻掍欢鍚屼粨搴撳彂甯冿級銆?
-### 8.1 鏋舵瀯
+> 源码：`dsh-mobile-app/` 子目录（独立 Flutter 工程，与插件同仓库发布）。
+### 8.1 架构
 
-App = **鍘熺敓 Flutter 搴旂敤**锛堥潪 WebView锛夛細鍏ㄩ儴鐣岄潰鐢?Flutter 鍘熺敓缁勪欢缁樺埗锛屼笌缃戦〉绔?`/m` 鍏变韩鍚屼竴濂楁彃浠?API 涓庤璁′护鐗岋紙DeepSeek 閰嶈壊锛夈€?
-- 杩炴帴锛氭壂鐮佽繛鎺ワ紙鎵闈?dsh 璁剧疆椤点€岃繛鎺ョЩ鍔ㄧ璁惧銆嶄簩缁寸爜锛夋垨鎵嬪姩杈撳湴鍧€+鍙ｄ护銆?- 椤甸潰锛氶椤碉紙娆㈣繋 + 鏈€杩戜細璇?+ 杈撳叆妗嗭級銆佸璇濓紙娴佸紡鍥炲銆丮arkdown銆乼oken 鐢ㄩ噺銆佸伐鍏疯皟鐢ㄦ姌鍙狅級銆佷細璇濆垪琛ㄣ€侀€氱煡涓績銆佽缃紙浣欓/榛樿棰勮/娣辫壊妯″紡/鐜璇婃柇锛夈€佹柊寤轰細璇濓紙妯″紡 + 宸ヤ綔鐩綍璺ㄧ洏娴忚锛夈€?- 鏁版嵁锛氫笌缃戦〉绔浉鍚?鈥斺€?鍏ㄩ儴瀹炴椂璇诲啓 PC 绔?dsh锛屾棤鏈湴鐘舵€併€?
-### 8.2 鏋勫缓 APK
+App = **原生 Flutter 应用**（非 WebView）：全部界面用 Flutter 原生组件绘制，与网页端 `/m` 共享同一套插件 API 与设计令牌（DeepSeek 配色）。
+- 连接：扫码连接（扫桌面 dsh 设置页「连接移动端设备」二维码）或手动输地址+口令。
+- 页面：首页（欢迎 + 最近会话 + 输入框）、对话（流式回复、Markdown、token 用量、工具调用折叠）、会话列表、通知中心、设置（余额/默认预设/深色模式/环境诊断）、新建会话（模式 + 工作目录跨盘浏览）。
+- 数据：与网页端相同 —— 全部实时读写 PC 端 dsh，无本地状态。
+### 8.2 构建 APK
 
-鍓嶇疆锛欶lutter SDK锛堟湰椤圭洰鐢?3.47.0锛? Android SDK銆?
+前置：Flutter SDK（本项目用 3.47.0） + Android SDK。
 ```powershell
 cd dsh-mobile-app
-flutter analyze        # 搴斾负 No issues found
+flutter analyze        # 应为 No issues found
 flutter build apk --release
-# 浜х墿锛歜uild\app\outputs\flutter-apk\app-release.apk
+# 产物：build\app\outputs\flutter-apk\app-release.apk
 ```
 
-> 棣栨鏋勫缓闇€涓嬭浇 Gradle 渚濊禆锛堢害 5鈥?0 鍒嗛挓锛夛紱鑻ユ姤 Kotlin 澧為噺缂撳瓨鎹熷潖锛坄Could not close incremental caches`锛夛紝`android/gradle.properties` 宸茶 `kotlin.incremental=false`锛屽垹闄?`build` 涓?`.dart_tool` 鍚庨噸璇曘€?> 鏇存崲鍥炬爣锛氭妸 1024脳1024 PNG 瑕嗙洊鍒?`assets/icon-1024.png`锛岃繍琛?`python tools/make_icon.py` 鍚庨噸鏂版瀯寤恒€?
-### 8.3 瀹夎涓庝娇鐢?
-1. 鎶?`app-release.apk` 浼犲埌鎵嬫満锛堝井淇℃枃浠朵紶杈?缃戠洏/USB锛夛紝鐐瑰嚮瀹夎锛堥渶鍏佽"瀹夎鏈煡鏉ユ簮搴旂敤"锛夈€?2. 鎵撳紑 App 鈫掋€屾壂鐮佽繛鎺ャ€嶅鍑嗙數鑴戝睆骞曚笂鐨勪簩缁寸爜锛堟闈?dsh 璁剧疆 鈫掋€岃繛鎺ョЩ鍔ㄧ璁惧銆嶉〉锛夛紱鎴栨墜鍔ㄨ緭鍏ョ數鑴戝湴鍧€ + 璁块棶鍙ｄ护銆?3. 杩炴帴鎴愬姛杩涘叆棣栭〉锛岀洿鎺ュ彂娑堟伅娲炬椿銆?
-> 璇存槑锛欰ndroid 9+ 榛樿绂佹槑鏂?HTTP锛孉pp 宸查厤缃?`usesCleartextTraffic`锛屼粎闄愬眬鍩熺綉/鍐呯綉浣跨敤锛屽嬁鏆撮湶鍏綉銆?
-### 8.4 閲嶅缓涓庢洿鏂?
-- 鎻掍欢/缃戦〉绔敼鍔?鈫?鎸?搂3 鍚屾骞堕噸鍚?dsh web锛堢綉椤电椤甸潰鏈韩姣忔璇锋眰鐜拌鏂囦欢锛屽埛鏂板嵆鐢熸晥锛夈€?- App 鏀瑰姩 鈫?閲嶆柊 `flutter build apk --release` 骞堕噸瑁呫€?- App 涓庢墜鏈烘祻瑙堝櫒锛?m锛夊彲骞跺瓨浣跨敤锛屽叡浜悓涓€濂?API銆?
-## 9. 楠屾敹娓呭崟锛坴0.2锛屽潎宸叉墽琛?鉁咃級
+**Release 签名（发布前必做）**：正式分发必须用你自己的 keystore（否则用的 debug 签名，且换签名=换应用、用户需卸载重装）：
 
-- [x] `--dump-config` 鍚?mobile-remote 琛屼笌 webserver 0.0.0.0
-- [x] `GET /m` 杩斿洖绉诲姩椤?- [x] 鏈璇?401 / 閿欒鍙ｄ护 401 / 姝ｇ‘鍙ｄ护 Set-Cookie
-- [x] `POST /m/api/send` 娉ㄥ叆鎴愬姛锛?00 + messageId锛?- [x] SSE 杩炴帴 + hello + 浜嬩欢杞彂锛堥噸杩為€€閬裤€佹柇绾胯ˉ鎷夛級
-- [x] `/m/qr.png` 杩斿洖 PNG
-- [x] 妗岄潰璁剧疆椤点€岃繛鎺ョЩ鍔ㄧ璁惧銆嶄簩缁寸爜 + App 鎵爜鑷姩杩炴帴
-- [x] Flutter App锛歛nalyze 闆堕棶棰?+ release 鏋勫缓鎴愬姛 + 鐪熸満鍏ㄦ祦绋嬫祴璇?
+```powershell
+# ① 生成 keystore（记住密码；jks 与 key.properties 均已 gitignore，勿提交、勿丢失）
+keytool -genkeypair -v -keystore android/app/release.jks -keyalg RSA -keysize 2048 -validity 10950 -alias dsh
+
+# ② 写 android/key.properties
+# storePassword=<密码>
+# keyPassword=<密码>
+# keyAlias=dsh
+# storeFile=app/release.jks
+
+# ③ 构建（build.gradle.kts 自动读取 key.properties；不存在则回退 debug 签名）
+flutter build apk --release
+```
+
+> 首次构建需下载 Gradle 依赖（约 5-10 分钟）；若报 Kotlin 增量缓存损坏（`Could not close incremental caches`），`android/gradle.properties` 已设 `kotlin.incremental=false`，删除 `build` 与 `.dart_tool` 后重试。
+> 更换图标：把 1024×1024 PNG 覆盖到 `assets/icon-1024.png`，运行 `python tools/make_icon.py` 后重新构建。
+> 多品牌/兼容性注意事项见 docs/09-compatibility.md。
+### 8.3 安装与使用
+1. 把 `app-release.apk` 传到手机（微信文件传输/网盘/USB），点击安装（需允许"安装未知来源应用"）。
+2. 打开 App →「扫码连接」对准电脑屏幕上的二维码（桌面 dsh 设置 →「连接移动端设备」页）；或手动输入电脑地址 + 访问口令。
+3. 连接成功进入首页，直接发消息派活。
+> 说明：Android 9+ 默认禁止明文 HTTP，App 已配置 `usesCleartextTraffic`，仅限局域网/内网使用，勿暴露公网。
+> 换签名安装会报「签名不一致」：先卸载旧版再装新版（连接信息需重新扫码）。
+### 8.4 重建与更新
+- 插件/网页端改动 → 按 §3 同步并重启 dsh web（网页端页面本身每次请求现读文件，刷新即生效）。
+- App 改动 → 重新 `flutter build apk --release` 并重装。
+- App 与手机浏览器（/m）可并存使用，共享同一套 API。
+## 9. 验收清单（v0.2，均已执行 ✅）
+
+- [x] `--dump-config` 含 mobile-remote 行与 webserver 0.0.0.0
+- [x] `GET /m` 返回移动页
+- [x] 未认证 401 / 错误口令 401 / 正确口令 Set-Cookie
+- [x] `POST /m/api/send` 注入成功（200 + messageId）
+- [x] SSE 连接 + hello + 事件转发（重连退避、断线补拉）
+- [x] `/m/qr.png` 返回 PNG
+- [x] 桌面设置页「连接移动端设备」二维码 + App 扫码自动连接
+- [x] Flutter App：analyze 零问题 + release 构建成功 + 真机全流程测试

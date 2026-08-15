@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'api.dart';
 import 'store.dart';
 import 'theme.dart';
+import 'logger.dart';
 import 'scan_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/home_screen.dart';
@@ -17,8 +18,11 @@ final AppStore store = AppStore();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppLog.instance.init();
+  AppLog.instance.log('main: 启动，baseUrl=${api.baseUrl.isNotEmpty ? "已配置" : "空"}');
   // 全局错误边界：build/布局异常不再白屏或静默闪退，直接显示错误文本（调试用）
   ErrorWidget.builder = (details) {
+    AppLog.instance.log('build 异常: ${details.exceptionAsString()}');
     return Material(
       color: const Color(0xFF0E1116),
       child: Center(
@@ -95,14 +99,22 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 全局状态变化（工作区切换、未读数、连接状态等）→ 重建自身（含抽屉），
+    // 否则 const RootScreen 会被父级重建跳过，抽屉里的工作区选中态不会跟着变。
+    store.addListener(_onStore);
     _configured = api.baseUrl.isNotEmpty && api.token.isNotEmpty;
     if (_configured) {
       _boot();
     }
   }
 
+  void _onStore() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    store.removeListener(_onStore);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -182,13 +194,49 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
           icon: const Icon(Icons.menu, size: 20),
           onPressed: () => _drawerKey.currentState?.openDrawer(),
         ),
-        title: Text(
-          titles[_index],
-          style: TextStyle(
-            fontSize: _index == 0 ? 20 : 17,
-            fontWeight: FontWeight.w700,
-            fontFamily: _index == 0 ? 'Georgia' : null,
-          ),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 电脑在线状态点：位于抽屉与 DSH 标题之间；点按立即探测/重连，长按看状态文字
+            Tooltip(
+              message: switch (store.connState) {
+                'connected' => '电脑在线',
+                'connecting' => '连接中…',
+                _ => '电脑离线 · 点按重连',
+              },
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () => store.resume(),
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: Center(
+                    child: Container(
+                      width: 9,
+                      height: 9,
+                      decoration: BoxDecoration(
+                        color: switch (store.connState) {
+                          'connected' => DshColors.ok(context),
+                          'connecting' => DshColors.warn(context),
+                          _ => DshColors.ink3(context),
+                        },
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              titles[_index],
+              style: TextStyle(
+                fontSize: _index == 0 ? 20 : 17,
+                fontWeight: FontWeight.w700,
+                fontFamily: _index == 0 ? 'Georgia' : null,
+              ),
+            ),
+          ],
         ),
         actions: [
           IconButton(
@@ -231,6 +279,19 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 4),
+              // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
+              if (store.workspaces.length >= 2) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                  child: Text(
+                    '工作区',
+                    style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
+                  ),
+                ),
+                _workspaceItem(null),
+                for (final w in store.workspaces) _workspaceItem(w),
+                const SizedBox(height: 8),
+              ],
               _drawerItem(Icons.home_outlined, '首页', 0),
               _drawerItem(Icons.history, '会话', 1),
               _drawerItem(Icons.settings_outlined, '设置', 2),
@@ -293,6 +354,54 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  /// 工作区切换项（null = 全部工作区）。
+  Widget _workspaceItem(Map<String, dynamic>? w) {
+    final brand = DshColors.brand(context);
+    final brandSoft = DshColors.brandSoft(context);
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final isAll = w == null;
+    final path = w?['path'] as String? ?? '';
+    final title = isAll ? '全部工作区' : ((w['title'] as String?) ?? path);
+    final selected = isAll ? store.workspacePath == null : store.workspacePath == path;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () {
+          store.setWorkspace(isAll ? null : path);
+          Navigator.of(context).pop();
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? brandSoft : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(isAll ? Icons.folder_open_outlined : Icons.folder_outlined, size: 18, color: selected ? brand : ink2),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13.5, color: selected ? brand : ink2,
+                            fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                    if (!isAll)
+                      Text(path, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 10.5, color: ink3)),
+                  ],
+                ),
+              ),
+              if (selected) Icon(Icons.check, size: 15, color: brand),
             ],
           ),
         ),

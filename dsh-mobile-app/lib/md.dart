@@ -71,6 +71,9 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
 
   void pushCodeBlock() {
     if (codeBuf.isEmpty) return;
+    final lineCount = codeBuf.length;
+    final code = codeBuf.join('\n');
+    codeBuf.clear();
     blocks.add(Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 8),
@@ -80,15 +83,34 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
         border: Border.all(color: line),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Text(
-          codeBuf.join('\n'),
-          style: TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.5, color: ink),
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 长代码块限高（320px 内部滚动），避免单个消息撑出数千像素高度
+          // （过高的列表总高度在部分设备上会触发绘制上限导致空白）。
+          if (lineCount > 15)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                '代码 · $lineCount 行 · 可滚动查看',
+                style: TextStyle(fontSize: 10.5, color: ink2),
+              ),
+            ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 320),
+            child: SingleChildScrollView(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Text(
+                  code,
+                  style: TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.5, color: ink),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     ));
-    codeBuf.clear();
   }
 
   while (i < lines.length) {

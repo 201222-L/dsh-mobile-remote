@@ -237,10 +237,15 @@ Future<void> showNewSessionSheet(
 ) async {
   String? pendingMode;
   String? pendingDir;
-  // 默认工作目录 = 第一个已注册工作区
+  // 默认工作目录 = 当前选中的工作区（未选时回退第一个已注册工作区）
   try {
     final ws = await api.workspaces();
-    if (ws.isNotEmpty) pendingDir = ws.first['path'] as String?;
+    if (ws.isNotEmpty) {
+      final selected = store.workspacePath;
+      pendingDir = (selected != null && ws.any((w) => w['path'] == selected))
+          ? selected
+          : ws.first['path'] as String?;
+    }
   } catch (_) {}
   if (!context.mounted) return;
 
@@ -272,8 +277,17 @@ Future<void> showNewSessionSheet(
   }
 
   // 弹层内状态用 StatefulBuilder 驱动
-  final cat = store.catalog;
-  if (cat == null) return;
+  // 目录未加载（启动时 PC 忙/超时常见）：先补拉，而不是静默无反应
+  var cat = store.catalog;
+  if (cat == null) {
+    cat = await store.refreshCatalog();
+    if (!context.mounted) return;
+  }
+  if (cat == null) {
+    _toast(ScaffoldMessenger.of(context), '模型目录加载失败，请检查连接后下拉刷新重试');
+    return;
+  }
+  final catalog = cat; // 非空最终引用，供弹层闭包使用
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -301,11 +315,11 @@ Future<void> showNewSessionSheet(
                 const SizedBox(height: 12),
                 const Text('新建会话', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
-                ...cat.agentPresets.map((p) => _sheetItem(
+                ...catalog.agentPresets.map((p) => _sheetItem(
                       context,
                       name: p.name,
                       sub: p.description,
-                      active: (pendingMode ?? cat.defaults['agentPreset']) == p.id,
+                      active: (pendingMode ?? catalog.defaults['agentPreset']) == p.id,
                       onTap: () {
                         pendingMode = p.id;
                         refresh();

@@ -90,7 +90,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
-    final ink2 = DshColors.ink2(context);
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final brand = DshColors.brand(context);
@@ -98,9 +97,13 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            children: [
+          // 下拉刷新：网络抖动/桌面端重启后手动恢复"最近会话"
+          child: RefreshIndicator(
+            onRefresh: () => widget.store.refreshAll(),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              children: [
               const SizedBox(height: 16),
               // 欢迎
               Text(
@@ -113,33 +116,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   fontFamily: 'Georgia',
                   color: Theme.of(context).colorScheme.onSurface,
                 ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: switch (store.connState) {
-                        'connected' => DshColors.ok(context),
-                        'connecting' => DshColors.warn(context),
-                        _ => DshColors.ink3(context),
-                      },
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    switch (store.connState) {
-                      'connected' => '电脑在线',
-                      'connecting' => '连接中…',
-                      _ => '电脑离线 · 自动重连',
-                    },
-                    style: TextStyle(fontSize: 13, color: ink2),
-                  ),
-                ],
               ),
               const SizedBox(height: 20),
               // 最近会话卡
@@ -157,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Padding(
                         padding: const EdgeInsets.only(top: 12, bottom: 2),
                         child: Text(
-                          '最近会话',
+                          store.workspaceTitle != null ? '最近会话 · ${store.workspaceTitle}' : '最近会话',
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
@@ -166,17 +142,17 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ),
-                      if (store.sessions.isEmpty)
+                      if (store.activeSessions.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 24),
                           child: Center(child: Text('暂无会话，点下方新建', style: TextStyle(color: Colors.grey))),
                         )
                       else
-                        for (var i = 0; i < store.sessions.take(3).length; i++) ...[
+                        for (var i = 0; i < store.activeSessions.take(3).length; i++) ...[
                           if (i > 0) Divider(height: 1, color: line),
                           _SessionRow(
-                            session: store.sessions[i],
-                            onTap: () => _openSession(store.sessions[i]),
+                            session: store.activeSessions[i],
+                            onTap: () => _openSession(store.activeSessions[i]),
                           ),
                         ],
                     ],
@@ -205,7 +181,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11, color: ink3),
               ),
-            ],
+              ],
+            ),
           ),
         ),
         // 底部 composer
@@ -289,9 +266,6 @@ class _SessionRow extends StatelessWidget {
     final ink2 = DshColors.ink2(context);
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
-    final dt = DateTime.fromMillisecondsSinceEpoch(session.createdAt).toLocal();
-    final time = '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -311,7 +285,7 @@ class _SessionRow extends StatelessWidget {
                 children: [
                   Text(session.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
                   const SizedBox(height: 1),
-                  Text(time, style: TextStyle(fontSize: 11.5, color: ink2)),
+                  Text(_relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
                 ],
               ),
             ),
@@ -320,6 +294,17 @@ class _SessionRow extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期。
+  String _relTime(int ms) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    final diff = DateTime.now().difference(dt);
+    if (diff.inMinutes < 1) return '刚刚';
+    if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
+    if (diff.inDays < 1) return '${diff.inHours} 小时前';
+    if (diff.inDays < 7) return '${diff.inDays} 天前';
+    return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 }
 

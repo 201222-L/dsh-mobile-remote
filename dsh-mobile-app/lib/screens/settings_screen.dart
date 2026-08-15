@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
+import '../logger.dart';
 import '../store.dart';
 import '../theme.dart';
 import 'sheets.dart';
@@ -19,6 +20,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? _balance;
   String _balanceStatus = '查询中…';
+  bool _busy = false; // 余额刷新中（刷新按钮转圈）
   Map<String, dynamic>? _diag;
   bool _diagLoaded = false;
   String _diagTime = '';
@@ -30,7 +32,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _refreshBalance() async {
-    setState(() => _balanceStatus = '查询中…');
+    setState(() {
+      _busy = true;
+      _balanceStatus = '查询中…';
+    });
     try {
       final b = await api.balanceInfo();
       if (!mounted) return;
@@ -41,6 +46,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _balanceStatus = '查询失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -70,7 +77,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln();
     final checks = d['checks'] as Map<String, dynamic>? ?? {};
     buf.writeln('端点实测:');
-    checks.forEach((k, v) => buf.writeln('  ${v == true ? '✅' : '❌'} $k'));
+    checks.forEach((k, v) {
+      if (v is num) {
+        // 计数字段（如 pendingFrames 挂起待答数）：0 正常，>0 表示有问询/审批待处理
+        buf.writeln('  ${v == 0 ? '✅' : '⚠'} $k = $v');
+      } else {
+        buf.writeln('  ${v == true ? '✅' : '❌'} $k');
+      }
+    });
     final plugin = d['plugin'] as Map<String, dynamic>? ?? {};
     buf.writeln();
     buf.writeln('插件: ${plugin['name']} v${plugin['version']}');
@@ -204,11 +218,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: const Icon(Icons.account_balance_wallet_outlined),
             title: '余额',
             sub: _balanceStatus,
-            trailing: Text(
-              _balance != null ? '¥${(_balance!['total'] as num).toStringAsFixed(2)}' : '—',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: brand),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _balance != null ? '¥${(_balance!['total'] as num).toStringAsFixed(2)}' : '—',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: brand),
+                ),
+                const SizedBox(width: 2),
+                // 余额旁独立刷新按钮（点击数字刷新的旧交互已移除）
+                if (_busy)
+                  const Padding(
+                    padding: EdgeInsets.all(7),
+                    child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else
+                  GestureDetector(
+                    onTap: _refreshBalance,
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: Icon(Icons.refresh, size: 17, color: brand),
+                    ),
+                  ),
+              ],
             ),
-            onTap: _refreshBalance,
           ),
           _row(
             leading: const Icon(Icons.add_card_outlined),
@@ -277,6 +310,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Text('查看 ▸', style: TextStyle(fontSize: 12, color: brand)),
             ),
           ),
+          _row(
+            leading: const Icon(Icons.article_outlined),
+            title: '应用日志',
+            sub: '启动/连接/加载事件（排障用）',
+            trailing: TextButton(
+              onPressed: _openLog,
+              child: Text('查看 ▸', style: TextStyle(fontSize: 12, color: brand)),
+            ),
+          ),
         ]),
         const SizedBox(height: 4),
         Text('DSH Mobile · DeepSeek 配色', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: ink3)),
@@ -342,6 +384,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
     msgr
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// 应用日志：查看 / 复制 / 清空
+  Future<void> _openLog() async {
+    final text = await AppLog.instance.readAll();
+    if (!mounted) return;
+    final msgr = ScaffoldMessenger.of(context);
+    showSheet(context, '应用日志', [
+      Text(
+        '最近 ${AppLog.instance.lines.length} 条 · 文件 dsh_mobile.log',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+      ),
+      const SizedBox(height: 8),
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 320),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            text.isEmpty ? '（暂无日志）' : text,
+            style: TextStyle(fontSize: 11.5, height: 1.6, color: DshColors.ink(context), fontFamily: 'monospace'),
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
+      Row(
+        children: [
+          Expanded(
+            child: OutlinedButton(
+              onPressed: () async {
+                await AppLog.instance.clear();
+                _toast(msgr, '日志已清空');
+              },
+              child: const Text('清空'),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: FilledButton(
+              onPressed: () => _copy(text),
+              child: const Text('复制'),
+            ),
+          ),
+        ],
+      ),
+    ]);
   }
 
   Future<void> _openDiag() async {

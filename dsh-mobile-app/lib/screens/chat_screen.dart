@@ -1,7 +1,9 @@
 // 对话页：消息流（Markdown/流式/工具折叠/token 用量）+ 上翻加载 + 快捷动作 + composer
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../api.dart';
+import '../logger.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -21,18 +23,37 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
+  // live 视图：最新在前（reverse 列表 index 0 = 最新，视觉底部）
   final List<_MsgItem> _items = [];
   final Map<String, _ToolRow> _toolRows = {};
   String _draft = '';
   bool _streaming = false;
   int _lastSeq = 0;
-  int _earliestSeq = 0;
+  int _earliestSeq = 0; // live 窗口最旧条目的 seq（"查看更早"分页起点）
   bool _loadingMore = false;
+  bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
+  bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
+  QuestionRequest? _question; // 内核问询弹窗（当前会话，思考中途需要拍板）
+  ApprovalRequest? _approval; // 内核权限审批弹窗（当前会话）
   bool _sending = false;
   String? _title;
   Map<String, dynamic> _usage = {};
   bool _usageLoaded = false;
   Timer? _draftTimer; // 流式草稿节流刷新（chunk 合并，避免每帧全量重建）
+  int _lastLoggedCount = -1; // 排障：itemCount 变化时打日志
+  bool _scrolledLogged = false; // 排障：滚动状态打一次日志
+
+  // ── 分段历史浏览（超长会话的安全阀，仅当无限模式不可用时启用） ──
+  static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
+  static const _infiniteMode = true; // 微信式无限上翻（配合 Impeller 实验）
+  static const _histPageSize = 30; // 历史分段每段条数
+  bool _inHistory = false;
+  List<_MsgItem> _histItems = []; // 当前历史段：旧→新顺序（普通列表，最旧在顶部）
+  int _histOldestSeq = 0;
+  int _histNewestSeq = 0;
+  bool _histHasOlder = false;
+  bool _histHasNewer = false;
+  bool _pendingNew = false; // 历史浏览期间收到新消息
 
   @override
   void initState() {
@@ -43,7 +64,13 @@ class _ChatScreenState extends State<ChatScreen> {
         break;
       }
     }
+    // 进入会话时恢复挂起的问询/审批（例如从"需要你回答"通知点进来）
+    final pq = widget.store.pendingQuestion;
+    final pa = widget.store.pendingApproval;
+    _question = pq != null && pq.sessionId == widget.store.sessionId ? pq : null;
+    _approval = pa != null && pa.sessionId == widget.store.sessionId ? pa : null;
     widget.store.onChatEvent = _handleEvent;
+    _scrollCtrl.addListener(_onScrollTick);
     _load();
     if (widget.initialSend != null && widget.initialSend!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _send(widget.initialSend!));
@@ -53,20 +80,79 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _draftTimer?.cancel();
+    _scrollCtrl.removeListener(_onScrollTick);
     widget.store.onChatEvent = null;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
 
-  /// 滚动到底部。force=true 时无条件滚（初始加载/发送后），
-  /// 否则仅当用户在底部附近（上翻阅读时不打扰）。
+  /// 滚动监听：上翻超过阈值显示"回到底部"浮钮，回到 offset 0 时隐藏。
+  void _onScrollTick() {
+    if (!mounted || _inHistory) return;
+    final visible = _scrollCtrl.hasClients && _scrollCtrl.position.pixels > 160;
+    if (visible != _showJumpToLatest) {
+      setState(() => _showJumpToLatest = visible);
+    }
+  }
+
+  /// 一键回到最新消息：近距平滑滚动，远距直接跳（避免超长距离动画卡顿）。
+  void _jumpToLatest() {
+    if (!_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    AppLog.instance.log('Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)}');
+    if (pos.pixels > 4000) {
+      _scrollCtrl.jumpTo(0);
+    } else {
+      _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
+    }
+  }
+
+  /// 提交问询答案（answers 顺序与提问一致），失败时弹窗保留可重试。
+  Future<void> _submitQuestion(List<Map<String, dynamic>> answers) async {
+    final q = _question;
+    if (q == null) return;
+    AppLog.instance.log('Chat: 回答问询 ${q.rpcId}（${answers.length} 问）');
+    final err = await widget.store.answerQuestion(q.rpcId, q.sessionId, answers);
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(err)));
+    } else {
+      setState(() => _question = null);
+    }
+  }
+
+  /// 审批工具权限：outcome = allowed-once | rejected。
+  Future<void> _decideApproval(String outcome) async {
+    final a = _approval;
+    if (a == null) return;
+    AppLog.instance.log('Chat: 审批 ${a.toolName} → $outcome');
+    final err = await widget.store.answerApproval(a.rpcId, a.sessionId, a.approvalId, outcome);
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(err)));
+    } else {
+      setState(() => _approval = null);
+    }
+  }
+
+  /// 滚动到最新消息。live 视图为 reverse 列表（最新固定在 offset 0），
+  /// 一行 jumpTo(0) 即到底；历史浏览视图不跟随滚动。
   void _scrollToBottom({bool force = false}) {
+    if (_inHistory) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtrl.hasClients) return;
       final pos = _scrollCtrl.position;
-      if (force || pos.maxScrollExtent - pos.pixels < 220) {
-        _scrollCtrl.jumpTo(pos.maxScrollExtent);
+      if (force || !_scrolledLogged) {
+        _scrolledLogged = true;
+        AppLog.instance.log('Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)}');
+      }
+      if (force || pos.pixels < 220) {
+        _scrollCtrl.jumpTo(0);
       }
     });
   }
@@ -84,26 +170,51 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _load() async {
     final id = widget.store.sessionId;
     if (id == null) return;
+    AppLog.instance.log('Chat: 打开会话 $id');
     try {
-      final events = await api.history(id, limit: 100);
+      final events = await api.history(id, limit: _liveMax);
+      AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条');
       if (!mounted) return;
       setState(() {
+        // 并发保护：历史请求期间 SSE 可能已把更新的事件入列（位于 _items 头部）。
+        // 先收集保留项，再重建其余部分，不回退 _lastSeq。
+        final fetchedLast = events.isNotEmpty ? (events.last.seq ?? 0) : 0;
+        final keep = <_MsgItem>[];
+        if (fetchedLast > 0) {
+          for (final m in _items) {
+            if (m.seq != null && m.seq! > fetchedLast) {
+              keep.add(m);
+            } else {
+              break; // _items 最新在前：一旦遇到 seq ≤ fetchedLast 即可停止
+            }
+          }
+        }
+        _noMoreHistory = false;
         _items.clear();
         _toolRows.clear();
         _draft = '';
         _streaming = false;
-        for (final ev in events) {
-          _appendEvent(ev, history: true);
+        // 最新在前：reverse 列表 index 0 = 最新（视觉底部）
+        for (final ev in events.reversed) {
+          if (ev.seq != null && ev.seq! > fetchedLast) continue; // 已在 keep 中
+          _appendEvent(ev, history: true, tail: true);
         }
+        _items.insertAll(0, keep); // SSE 期间的新事件放回头部
         if (events.isNotEmpty) {
-          _lastSeq = events.last.seq ?? _lastSeq;
           _earliestSeq = events.first.seq ?? 0;
+          if (fetchedLast > _lastSeq) _lastSeq = fetchedLast;
+        }
+        if (keep.isNotEmpty) {
+          final newest = keep.first.seq;
+          if (newest != null && newest > _lastSeq) _lastSeq = newest;
         }
       });
+      AppLog.instance.log('Chat: 已入列 ${_items.length} 条（历史 ${events.length} 条）lastSeq=$_lastSeq firstSeq=$_earliestSeq');
       _scrollToBottom(force: true); // 初始定位到最新消息
       _refreshUsage();
       widget.store.refreshSessionConfig();
     } catch (e) {
+      AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('该会话暂不可用：$e')));
         Navigator.of(context).pop();
@@ -111,25 +222,253 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _loadMore() async {
+  // ── 无限上翻（微信式） ──
+  /// 滑到 live 顶部时静默加载更早一页：追加到 _items 尾部（reverse 视觉顶部）。
+  /// reverse 列表偏移锚定在最新端，尾部增长不会跳动，视觉连续无缝。
+  Future<void> _loadMoreInfinite() async {
+    final id = widget.store.sessionId;
+    if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) return;
+    _loadingMore = true;
+    AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
+    try {
+      final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
+      if (!mounted) return;
+      if (events.isEmpty) {
+        _noMoreHistory = true;
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(content: Text('没有更早的消息了')));
+        return; // 已到最顶：不再查询，_earliestSeq 保持不动
+      }
+      setState(() {
+        // 页面最旧→最新；_items 最新在前，故逆序追加到尾部（视觉最顶部）
+        for (final ev in events.reversed) {
+          _appendEvent(ev, history: true);
+        }
+        _earliestSeq = events.first.seq ?? _earliestSeq;
+      });
+      AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length} firstSeq=$_earliestSeq');
+    } catch (e) {
+      AppLog.instance.log('Chat: 无限上翻失败 $e');
+    } finally {
+      _loadingMore = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
+  bool _onLiveScroll(ScrollNotification n) {
+    if (!_infiniteMode || !n.metrics.hasContentDimensions) return false;
+    if (n.metrics.maxScrollExtent - n.metrics.pixels < 80) {
+      _loadMoreInfinite();
+    }
+    return false;
+  }
+
+  /// 历史分段浏览 ──
+  /// 进入"查看更早"：加载 live 窗口之前的一页（旧→新顺序），普通列表从顶部展示。
+  Future<void> _openHistory() async {
     final id = widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0) return;
     _loadingMore = true;
+    AppLog.instance.log('Chat: 查看更早 before=$_earliestSeq');
     try {
-      final events = await api.history(id, before: _earliestSeq, limit: 100);
+      final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
       if (!mounted) return;
+      if (events.isEmpty) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(content: Text('没有更早的消息了')));
+        return;
+      }
       setState(() {
-        for (final ev in events) {
-          if (ev.seq != null && ev.seq! <= _lastSeq && _items.any((m) => m.seq == ev.seq)) continue;
-          if (ev.seq != null) _lastSeq = _lastSeq > ev.seq! ? _lastSeq : ev.seq!;
-          _appendEvent(ev, history: true);
-        }
-        if (events.isNotEmpty) _earliestSeq = events.first.seq ?? 0;
+        _histItems = _segmentFrom(events);
+        _histOldestSeq = events.first.seq ?? 0;
+        _histNewestSeq = events.last.seq ?? 0;
+        _histHasOlder = events.length >= _histPageSize;
+        _histHasNewer = _histNewestSeq < _earliestSeq;
+        _inHistory = true;
+        _pendingNew = false;
       });
-    } catch (_) {
+      _scrollToTopOfHistory();
+    } catch (e) {
+      AppLog.instance.log('Chat: 查看更早失败 $e');
     } finally {
       _loadingMore = false;
     }
+  }
+
+  /// 历史分段翻页：更早一段（替换式，列表高度恒定，绕开设备绘制上限）。
+  Future<void> _histOlder() async {
+    final id = widget.store.sessionId;
+    if (id == null || _loadingMore || !_histHasOlder) return;
+    _loadingMore = true;
+    AppLog.instance.log('Chat: 历史更早 before=$_histOldestSeq');
+    try {
+      final events = await api.history(id, before: _histOldestSeq, limit: _histPageSize);
+      if (!mounted) return;
+      if (events.isEmpty) {
+        setState(() => _histHasOlder = false);
+        return;
+      }
+      setState(() {
+        _histItems = _segmentFrom(events);
+        _histOldestSeq = events.first.seq ?? 0;
+        _histNewestSeq = events.last.seq ?? 0;
+        _histHasOlder = events.length >= _histPageSize;
+        _histHasNewer = _histNewestSeq < _earliestSeq;
+      });
+      _scrollToTopOfHistory();
+    } catch (e) {
+      AppLog.instance.log('Chat: 历史更早失败 $e');
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
+  /// 历史分段翻页：更新一段（更接近 live 窗口）。
+  Future<void> _histNewer() async {
+    final id = widget.store.sessionId;
+    if (id == null || _loadingMore || !_histHasNewer) return;
+    _loadingMore = true;
+    AppLog.instance.log('Chat: 历史更新 after=$_histNewestSeq');
+    try {
+      final events = await api.history(id, after: _histNewestSeq, limit: _histPageSize);
+      if (!mounted) return;
+      if (events.isEmpty) {
+        setState(() => _histHasNewer = false);
+        return;
+      }
+      setState(() {
+        _histItems = _segmentFrom(events);
+        _histOldestSeq = events.first.seq ?? 0;
+        _histNewestSeq = events.last.seq ?? 0;
+        _histHasOlder = events.length >= _histPageSize;
+        _histHasNewer = _histNewestSeq < _earliestSeq;
+      });
+      _scrollToTopOfHistory();
+    } catch (e) {
+      AppLog.instance.log('Chat: 历史更新失败 $e');
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
+  /// 历史事件 → 消息条目（旧→新顺序，独立于 live 列表）。
+  List<_MsgItem> _segmentFrom(List<ChatEvent> events) {
+    final rows = <String, _ToolRow>{};
+    final out = <_MsgItem>[];
+    for (final ev in events) {
+      _buildInto(out, rows, ev, history: true);
+    }
+    return out;
+  }
+
+  void _scrollToTopOfHistory() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollCtrl.hasClients) return;
+      _scrollCtrl.jumpTo(0);
+    });
+  }
+
+  /// 回到最新视图。
+  void _backToLive() {
+    setState(() {
+      _inHistory = false;
+      _pendingNew = false;
+    });
+    _scrollToBottom(force: true);
+  }
+
+  /// live 视图：reverse 列表（index 0 = 最新，视觉底部）。
+  /// 无限模式：滑到顶部静默加载更早（微信式无缝）；分段模式：顶部"查看更早"入口。
+  Widget _buildLiveView() {
+    final hasDraft = _streaming || _draft.isNotEmpty;
+    final topButton = !_infiniteMode && _earliestSeq > 0;
+    final loadingTail = _infiniteMode && _loadingMore && _earliestSeq > 0;
+    final itemCount = _items.length + (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
+    if (itemCount != _lastLoggedCount) {
+      _lastLoggedCount = itemCount;
+      AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length}');
+    }
+    final list = ListView.builder(
+      controller: _scrollCtrl,
+      reverse: true,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        // reverse 布局：最后一个 index 在视觉最顶部
+        if (topButton && index == itemCount - 1) {
+          return _OlderButton(busy: _loadingMore, onTap: _openHistory);
+        }
+        if (loadingTail && index == itemCount - 1) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: Center(
+              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          );
+        }
+        if (hasDraft && index == 0) {
+          return _AssistantBubble(text: _draft, streaming: true);
+        }
+        return _buildItem(_items[index - (hasDraft ? 1 : 0)]);
+      },
+    );
+    if (!_infiniteMode) return list;
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onLiveScroll,
+      child: list,
+    );
+  }
+
+  /// 历史分段浏览：普通列表（最旧在顶部，offset 0 安全），顶部翻页控制条。
+  Widget _buildHistoryView() {
+    final ink2 = DshColors.ink2(context);
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: DshColors.surface(context),
+            border: Border(bottom: BorderSide(color: DshColors.line(context))),
+          ),
+          child: Row(
+            children: [
+              TextButton.icon(
+                onPressed: _histHasOlder && !_loadingMore ? _histOlder : null,
+                icon: const Icon(Icons.arrow_upward, size: 15),
+                label: const Text('更早', style: TextStyle(fontSize: 12)),
+              ),
+              TextButton.icon(
+                onPressed: _histHasNewer && !_loadingMore ? _histNewer : null,
+                icon: const Icon(Icons.arrow_downward, size: 15),
+                label: const Text('更新', style: TextStyle(fontSize: 12)),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _backToLive,
+                icon: const Icon(Icons.subdirectory_arrow_right, size: 15),
+                label: Text(
+                  _pendingNew ? '回到最新 · 有新消息' : '回到最新',
+                  style: TextStyle(fontSize: 12, color: _pendingNew ? DshColors.brand(context) : ink2),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _histItems.isEmpty
+              ? const Center(child: Text('没有更早的消息'))
+              : ListView.builder(
+                  controller: _scrollCtrl,
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+                  itemCount: _histItems.length,
+                  itemBuilder: (context, index) => _buildItem(_histItems[index]),
+                ),
+        ),
+      ],
+    );
   }
 
   Future<void> _refreshUsage() async {
@@ -157,6 +496,44 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {});
       return;
     }
+    // 内核问询/审批弹窗帧（store 已按 sessionId 分发，这里只认当前会话）
+    if (ev.type == 'question/requested') {
+      final q = widget.store.pendingQuestion;
+      if (q != null && q.sessionId == widget.store.sessionId) {
+        setState(() => _question = q);
+      }
+      return;
+    }
+    if (ev.type == 'question/resolved') {
+      final rid = ev.data?['rpcId'];
+      if (rid != null && _question?.rpcId == rid) setState(() => _question = null);
+      return;
+    }
+    if (ev.type == 'approval/requested') {
+      final a = widget.store.pendingApproval;
+      if (a != null && a.sessionId == widget.store.sessionId) {
+        setState(() => _approval = a);
+      }
+      return;
+    }
+    if (ev.type == 'approval/resolved') {
+      final aid = ev.data?['approvalId'];
+      if (aid != null && _approval?.approvalId == aid) setState(() => _approval = null);
+      return;
+    }
+    // 上下文窗口实时帧：更新圆环数据（无需重进会话）
+    if (ev.type == 'session/context') {
+      final window = (ev.data?['contextWindow'] as num?)?.toInt();
+      if (window != null && window > 0) {
+        _usage['contextWindow'] = window;
+        setState(() {});
+      }
+      return;
+    }
+    // 关键事件日志（排除高频 chunk，便于排障）
+    if (ev.type != 'assistant/chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
+      AppLog.instance.log('Chat: SSE 事件 ${ev.type} seq=${ev.seq}');
+    }
     if (ev.seq != null) {
       if (ev.seq! <= _lastSeq) return;
       _lastSeq = ev.seq!;
@@ -174,7 +551,23 @@ class _ChatScreenState extends State<ChatScreen> {
       _draftTimer?.cancel();
       _draftTimer = null;
     }
+    // 每轮完成：用该轮的 usage 样本更新上下文压力（PC 端同口径）与累计用量条
+    if (ev.type == 'assistant/message') {
+      final u = ev.data?['usage'] as Map<String, dynamic>?;
+      if (u != null) {
+        final input = (u['inputTokens'] as num?) ?? 0;
+        final read = (u['cacheReadTokens'] as num?) ?? 0;
+        final write = (u['cacheWriteTokens'] as num?) ?? 0;
+        _usage['pressureTokens'] = input + read + write;
+        for (final key in ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens']) {
+          _usage[key] = ((_usage[key] as num?) ?? 0) + ((u[key] as num?) ?? 0);
+        }
+        _usageLoaded = true;
+      }
+    }
     setState(() => _appendEvent(ev));
+    // 历史浏览期间收到新消息：live 列表已更新，标记"有新消息"提示
+    if (_inHistory) _pendingNew = true;
     _scrollToBottom();
   }
 
@@ -194,43 +587,95 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (_) {}
   }
 
-  void _appendEvent(ChatEvent ev, {bool history = false}) {
+  /// live 列表追加一条事件（最新在前：insert 头部）。
+  /// 无限模式只增不减（微信式上翻）；分段模式裁剪到窗口上限并推进分页起点。
+  /// [tail] 表示“最新一页初始加载”：允许 chunk 进草稿/重置草稿；
+  /// 更早的历史页（tail=false）绝不触碰 live 流式草稿。
+  void _appendEvent(ChatEvent ev, {bool history = false, bool tail = false}) {
+    _buildInto(_items, _toolRows, ev, history: history, tail: tail);
+    if (!_infiniteMode) {
+      // 裁剪：live 列表最多保留 _liveMax 条，超出丢弃最旧（尾部），
+      // 同时推进"查看更早"的分页起点，保证翻页无缝隙。
+      while (_items.length > _liveMax) {
+        _items.removeLast();
+      }
+      if (_items.isNotEmpty) {
+        final oldest = _items.last.seq;
+        if (oldest != null) _earliestSeq = oldest;
+      }
+    }
+  }
+
+  /// 将事件构建为消息条目并插入 out（live 语义：最新在前，insert(0)；
+  /// 历史分段：旧→新顺序，追加到末尾）。
+  /// [tail] 见 [_appendEvent]：历史页（history=true, tail=false）跳过 chunk、
+  /// 不重置 [_draft]/[_streaming]，避免污染正在进行的流式回复。
+  void _buildInto(List<_MsgItem> out, Map<String, _ToolRow> rows, ChatEvent ev,
+      {bool history = false, bool tail = false}) {
     final d = ev.data;
     switch (ev.type) {
       case 'user/message':
         final text = d?['text'] as String? ?? '';
-        // 过滤 dsh 注入的系统上下文快照（PC 端 GUI 也不显示）
-        if (text.contains('Current runtime context') || text.contains('This snapshot supersedes')) return;
+        // 过滤 dsh 注入的系统上下文快照与后台任务通知（PC 端 GUI 也不显示）
+        if (text.contains('Current runtime context') || text.contains('This snapshot supersedes')) {
+          AppLog.instance.log('Chat: 过滤快照消息 seq=${ev.seq}');
+          return;
+        }
+        if (text.startsWith('background job ')) {
+          AppLog.instance.log('Chat: 过滤后台任务通知 seq=${ev.seq}');
+          return;
+        }
         final mid = d?['messageId'] as String?;
         // 去重（SSE 回显 vs 本地乐观添加）：
         // 1) 已有同 messageId 的消息 → 直接跳过（回显已完成渲染，同文本连发也不误并）
-        if (mid != null && _items.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) return;
-        final last = _items.isNotEmpty ? _items.last : null;
-        // 2) 最后一条是本地乐观添加（messageId 尚未赋值）且文本一致 → 合并为一条
+        if (mid != null && out.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) return;
+        final first = out.isNotEmpty ? out.first : null; // 最新在前：first = 最新
+        // 2) 最新一条是本地乐观添加（messageId 尚未赋值）且文本一致 → 合并为一条
         if (!history &&
-            last != null &&
-            last.kind == _MsgKind.user &&
-            last.messageId == null &&
-            last.text.trim() == text.trim()) {
-          _items[_items.length - 1] = last.copyWith(seq: ev.seq, messageId: mid);
+            first != null &&
+            first.kind == _MsgKind.user &&
+            first.messageId == null &&
+            first.text.trim() == text.trim()) {
+          out[0] = first.copyWith(seq: ev.seq, messageId: mid);
+        } else if (history) {
+          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid));
         } else {
-          _items.add(_MsgItem.user(text, seq: ev.seq, messageId: mid));
+          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid));
         }
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
-        // 过滤系统注入的上下文快照
+        // 过滤系统注入的上下文快照与后台任务通知
         if (body.contains('Current runtime context') || body.contains('This snapshot supersedes')) {
-          _draft = '';
-          _streaming = false;
+          if (!history || tail) {
+            _draft = '';
+            _streaming = false;
+          }
+          return;
+        }
+        if (body.startsWith('background job ')) {
+          if (!history || tail) {
+            _draft = '';
+            _streaming = false;
+          }
           return;
         }
         final reasoning = (d?['reasoningChars'] as num?)?.toInt() ?? 0;
         final prefix = reasoning > 0 ? '（思考 $reasoning 字）\n' : '';
-        _items.add(_MsgItem.assistant(prefix + body,
-            usage: d?['usage'] as Map<String, dynamic>?, seq: ev.seq));
-        _draft = '';
-        _streaming = false;
+        final item = _MsgItem.assistant(prefix + body,
+            usage: d?['usage'] as Map<String, dynamic>?,
+            seq: ev.seq,
+            messageId: d?['messageId'] as String?);
+        if (history) {
+          out.add(item);
+        } else {
+          out.insert(0, item);
+        }
+        if (!history || tail) {
+          _draft = '';
+          _streaming = false;
+        }
       case 'assistant/chunk':
+        if (history && !tail) break; // 历史页不渲染 chunk：完整文本由 assistant/message 呈现
         final text = d?['text'] as String? ?? '';
         final reasoning = d?['reasoning'] == true;
         if (text.isNotEmpty && !reasoning) {
@@ -239,21 +684,36 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       case 'tool/call':
         final callId = d?['callId'] as String? ?? '';
-        _toolRows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
+        rows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
       case 'tool/result':
         final callId = d?['callId'] as String? ?? '';
-        final row = _toolRows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
+        final row = rows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
         row.done = true;
         row.isError = d?['isError'] == true;
         if (d?['text'] != null) row.body = d!['text'] as String;
-        _items.add(_MsgItem.tool(row));
+        if (history) {
+          out.add(_MsgItem.tool(row));
+        } else {
+          out.insert(0, _MsgItem.tool(row));
+        }
       case 'turn/start':
-        _items.add(_MsgItem.divider('轮次 ${d?['turn']} 开始'));
+        if (history) {
+          out.add(_MsgItem.divider('轮次 ${d?['turn']} 开始'));
+        } else {
+          out.insert(0, _MsgItem.divider('轮次 ${d?['turn']} 开始'));
+        }
       case 'turn/end':
-        _draft = '';
-        _streaming = false;
+        if (!history || tail) {
+          _draft = '';
+          _streaming = false;
+        }
         final reason = (d?['reason'] as Map<String, dynamic>?)?['kind'];
-        _items.add(_MsgItem.divider('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}'));
+        final item = _MsgItem.divider('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}');
+        if (history) {
+          out.add(item);
+        } else {
+          out.insert(0, item);
+        }
       default:
         break;
     }
@@ -263,6 +723,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = (preset ?? _inputCtrl.text).trim();
     final id = widget.store.sessionId;
     if (text.isEmpty || id == null || _sending) return;
+    AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}');
     // 收起键盘，输入框回到原位
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）
@@ -273,25 +734,155 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     setState(() {
       _sending = true;
-      _items.add(_MsgItem.user(text));
+      _items.insert(0, _MsgItem.user(text)); // 最新在前：插入头部（视觉底部）
     });
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
       final mid = await api.send(id, text);
+      AppLog.instance.log('Chat: 发送成功 mid=$mid');
       if (!mounted) return;
       setState(() {
-        if (_items.isNotEmpty && _items.last.kind == _MsgKind.user) {
-          _items[_items.length - 1] = _items.last.copyWith(messageId: mid);
+        if (_items.isNotEmpty && _items.first.kind == _MsgKind.user) {
+          _items[0] = _items.first.copyWith(messageId: mid);
         }
       });
     } catch (e) {
       if (mounted) {
-        setState(() => _items.add(_MsgItem.divider('⚠ 发送失败：$e')));
+        setState(() => _items.insert(0, _MsgItem.divider('⚠ 发送失败：$e')));
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// 停止（取消）会话当前运行：对齐 PC 端"停止"按钮。
+  Future<void> _stop() async {
+    final id = widget.store.sessionId;
+    if (id == null || _sending) return;
+    AppLog.instance.log('Chat: 请求停止会话 $id');
+    try {
+      await api.stopSession(id);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(content: Text('已请求停止，agent 当前轮次结束后停下')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text('停止失败：$e（桌面端插件需重启生效）')));
+      }
+    }
+  }
+
+  /// 消息操作面板（长按 agent 回复）：复制 / 好的回答 / 有问题的回答 / 在新对话中分支。
+  Future<void> _showMessageActions(_MsgItem item) async {
+    final id = widget.store.sessionId;
+    if (id == null) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_awesome, size: 15, color: Color(0xFF426EFE)),
+                  const SizedBox(width: 6),
+                  const Text('消息操作', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.content_copy, size: 20),
+              title: const Text('复制回答', style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('copy'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.thumb_up_alt_outlined, size: 20),
+              title: const Text('好的回答', style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('positive'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.thumb_down_alt_outlined, size: 20),
+              title: const Text('有问题的回答', style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('negative'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.call_split, size: 20),
+              title: const Text('在新对话中分支', style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('fork'),
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    final msgr = ScaffoldMessenger.of(context);
+    switch (action) {
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: item.text));
+        if (!mounted) return;
+        msgr
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(content: Text('已复制')));
+      case 'positive':
+      case 'negative':
+        final mid = item.messageId;
+        if (mid == null) {
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('该消息暂不支持反馈（旧消息无 messageId）')));
+          return;
+        }
+        try {
+          await api.putFeedback(id, mid, action);
+          if (!mounted) return;
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(SnackBar(content: Text(action == 'positive' ? '已标记：好的回答 ✓' : '已标记：有问题的回答 ✓')));
+        } catch (e) {
+          if (!mounted) return;
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(SnackBar(content: Text('反馈失败：$e')));
+        }
+      case 'fork':
+        final seq = item.seq;
+        if (seq == null) {
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('该消息暂不支持分支')));
+          return;
+        }
+        try {
+          final childId = await api.forkSession(id, atSeq: seq);
+          if (!mounted) return;
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('已分支，正在打开新对话…')));
+          await widget.store.setSession(childId);
+          widget.store.refreshSessions();
+          if (!mounted) return;
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onTitleChanged),
+            ),
+          );
+        } catch (e) {
+          if (!mounted) return;
+          msgr
+            ..clearSnackBars()
+            ..showSnackBar(SnackBar(content: Text('分支失败：$e')));
+        }
     }
   }
 
@@ -329,26 +920,43 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: TextStyle(fontSize: 11.5, color: ink3),
               ),
             ),
-          // 消息流
+          // 消息流：live 视图（reverse，最新固定在 offset 0）或历史分段浏览；
+          // 上翻时右下角浮出"回到底部"圆钮（位于输入框正上方，不在消息流内）
           Expanded(
-            child: NotificationListener<ScrollNotification>(
-              onNotification: (n) {
-                if (n.metrics.pixels < 80) _loadMore();
-                return false;
-              },
-              child: ListView.builder(
-                controller: _scrollCtrl,
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-                itemCount: _items.length + (_streaming || _draft.isNotEmpty ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index >= _items.length) {
-                    return _AssistantBubble(text: _draft, streaming: true);
-                  }
-                  return _buildItem(_items[index]);
-                },
-              ),
+            child: Stack(
+              children: [
+                Positioned.fill(child: _inHistory ? _buildHistoryView() : _buildLiveView()),
+                if (!_inHistory)
+                  Positioned(
+                    bottom: 12,
+                    right: 14,
+                    child: _JumpToLatestButton(visible: _showJumpToLatest, onTap: _jumpToLatest),
+                  ),
+              ],
             ),
           ),
+          // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
+          if (_question != null)
+            _QuestionCard(
+              request: _question!,
+              onCancel: () {
+                // 立即收起卡片（内核 resolved 帧可能因本地状态已清而不再转发）
+                final rpc = _question!.rpcId;
+                setState(() => _question = null);
+                widget.store.cancelRespond(rpc);
+              },
+              onSubmitted: _submitQuestion,
+            ),
+          if (_approval != null)
+            _ApprovalCard(
+              request: _approval!,
+              onDecide: _decideApproval,
+              onCancel: () {
+                final rpc = _approval!.rpcId;
+                setState(() => _approval = null);
+                widget.store.cancelRespond(rpc);
+              },
+            ),
           // 快捷动作
           if (store.actions.isNotEmpty)
             SizedBox(
@@ -419,19 +1027,38 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
+                        // 上下文窗口占用圆环（对齐 PC 端；数据齐全时才显示）
+                        if (_contextRatio != null) ...[
+                          _ContextRing(ratio: _contextRatio!),
+                          const SizedBox(width: 8),
+                        ],
                         GestureDetector(
-                          onTap: _sending ? null : () => _send(),
+                          // 运行中 → 停止（对齐 PC 端蓝底白方块按钮）；空闲 → 发送
+                          onTap: _sending
+                              ? null
+                              : (widget.store.agentStatus == 'running' ? _stop : _send),
                           child: Container(
                             width: 32,
                             height: 32,
                             decoration: BoxDecoration(color: brand, borderRadius: BorderRadius.circular(9)),
-                            child: _sending
-                                ? const SizedBox(
-                                    width: 15,
-                                    height: 15,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: widget.store.agentStatus == 'running'
+                                ? Center(
+                                    child: Container(
+                                      width: 10,
+                                      height: 10,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
                                   )
-                                : const Icon(Icons.arrow_upward, size: 17, color: Colors.white),
+                                : _sending
+                                    ? const SizedBox(
+                                        width: 15,
+                                        height: 15,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      )
+                                    : const Icon(Icons.arrow_upward, size: 17, color: Colors.white),
                           ),
                         ),
                       ],
@@ -470,6 +1097,22 @@ class _ChatScreenState extends State<ChatScreen> {
         _ => '权限',
       };
 
+  /// 上下文占用比例（已用 tokens / 模型上下文窗口），数据缺失时为 null。
+  /// 上下文窗口来自服务端 usage 接口（request/context 事件捕获，与 PC 端圆环同源）。
+  /// 口径与 PC 端一致：最近一次请求的 prompt 侧 token（pressureTokens），
+  /// 而非历史累计总量（旧版服务端无该字段时回退累计和）。
+  double? get _contextRatio {
+    if (_usage.isEmpty) return null;
+    final window = (_usage['contextWindow'] as num?)?.toInt();
+    if (window == null || window <= 0) return null;
+    final used = (_usage['pressureTokens'] as num?)?.toDouble() ??
+        ((_usage['inputTokens'] as num?)?.toDouble() ?? 0) +
+            ((_usage['cacheReadTokens'] as num?)?.toDouble() ?? 0) +
+            ((_usage['cacheWriteTokens'] as num?)?.toDouble() ?? 0);
+    if (used <= 0) return null;
+    return (used / window).clamp(0.0, 1.0);
+  }
+
   Widget _buildItem(_MsgItem item) {
     switch (item.kind) {
       case _MsgKind.user:
@@ -487,7 +1130,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       case _MsgKind.assistant:
-        return _AssistantBubble(text: item.text, usage: item.usage, streaming: false);
+        // 长按弹出消息操作：复制 / 好的回答 / 有问题的回答 / 在新对话中分支
+        return GestureDetector(
+          onLongPress: () => _showMessageActions(item),
+          child: _AssistantBubble(text: item.text, usage: item.usage, streaming: false),
+        );
       case _MsgKind.tool:
         return _ToolBubble(row: item.toolRow!, show: widget.store.showTools);
       case _MsgKind.divider:
@@ -515,9 +1162,8 @@ class _MsgItem {
       : kind = _MsgKind.user,
         usage = null,
         toolRow = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq})
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId})
       : kind = _MsgKind.assistant,
-        messageId = null,
         toolRow = null;
   _MsgItem.tool(this.toolRow)
       : kind = _MsgKind.tool,
@@ -558,12 +1204,17 @@ class _AssistantBubble extends StatefulWidget {
 class _AssistantBubbleState extends State<_AssistantBubble> {
   String? _parsedFor;
   List<Widget>? _blocks;
+  int _parseLogs = 0; // 排障：每个气泡实例最多记 3 次解析日志
 
   @override
   Widget build(BuildContext context) {
     if (widget.text != _parsedFor) {
       _parsedFor = widget.text;
       _blocks = renderMarkdownBlocks(widget.text.isEmpty ? '…' : widget.text, context);
+      if (_parseLogs < 3) {
+        _parseLogs++;
+        AppLog.instance.log('Chat: bubble 解析 len=${widget.text.length} blocks=${_blocks!.length}');
+      }
     }
     final ink3 = DshColors.ink3(context);
     return Align(
@@ -692,6 +1343,104 @@ class _StatusDot extends StatelessWidget {
   }
 }
 
+/// live 列表视觉顶部的"查看更早"入口。
+class _OlderButton extends StatelessWidget {
+  final bool busy;
+  final VoidCallback onTap;
+  const _OlderButton({required this.busy, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Center(
+        child: busy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : TextButton.icon(
+                onPressed: onTap,
+                icon: const Icon(Icons.history, size: 16),
+                label: const Text('查看更早的消息', style: TextStyle(fontSize: 12.5)),
+              ),
+      ),
+    );
+  }
+}
+
+/// 上翻后浮于消息流右下角（输入框正上方）的"回到底部"圆钮：
+/// 灰白浅色调、向下箭头、带描边与轻阴影；淡入淡出，隐藏时不可点击。
+class _JumpToLatestButton extends StatelessWidget {
+  final bool visible;
+  final VoidCallback onTap;
+  const _JumpToLatestButton({required this.visible, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? Colors.white.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.88);
+    return AnimatedOpacity(
+      opacity: visible ? 1 : 0,
+      duration: const Duration(milliseconds: 160),
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: Material(
+          color: bg,
+          shape: CircleBorder(side: BorderSide(color: DshColors.line(context), width: 0.8)),
+          elevation: 2,
+          shadowColor: Colors.black26,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: SizedBox(
+              width: 38,
+              height: 38,
+              child: Icon(Icons.keyboard_arrow_down, size: 24, color: DshColors.ink2(context)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 上下文窗口占用圆环（对齐 PC 端）：绿色 <70%，橙色 <90%，红色 ≥90%。
+class _ContextRing extends StatelessWidget {
+  final double ratio;
+  const _ContextRing({required this.ratio});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ratio < 0.7
+        ? DshColors.ok(context)
+        : ratio < 0.9
+            ? DshColors.warn(context)
+            : DshColors.danger(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(
+            value: ratio,
+            strokeWidth: 2,
+            backgroundColor: DshColors.line(context),
+            color: color,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          '${(ratio * 100).round()}%',
+          style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+}
+
 class _Pill extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
@@ -735,6 +1484,364 @@ class _ActionChip extends StatelessWidget {
           action['title'] as String? ?? '',
           style: TextStyle(fontSize: 12.5, color: ink),
         ),
+      ),
+    );
+  }
+}
+
+/// 内核问询弹窗卡片：问题 + 选项（单选/多选）+ 「输入其他答案」自由输入 + 提交/取消。
+/// 挂在消息流与输入框之间（思考中途需要用户拍板时出现）。
+class _QuestionCard extends StatefulWidget {
+  final QuestionRequest request;
+  final VoidCallback onCancel;
+  final Future<void> Function(List<Map<String, dynamic>> answers) onSubmitted;
+  const _QuestionCard({required this.request, required this.onCancel, required this.onSubmitted});
+
+  @override
+  State<_QuestionCard> createState() => _QuestionCardState();
+}
+
+class _QuestionCardState extends State<_QuestionCard> {
+  final Map<String, Set<String>> _selected = {}; // questionId -> 选项 label 集合
+  final Map<String, String> _custom = {}; // questionId -> 自定义输入
+  final Map<String, TextEditingController> _ctrls = {};
+  bool _submitting = false;
+  String? _hint; // 校验提示
+
+  @override
+  void initState() {
+    super.initState();
+    for (final q in widget.request.questions) {
+      _selected[q.id] = {};
+      _custom[q.id] = '';
+      _ctrls[q.id] = TextEditingController();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in _ctrls.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _toggle(AskQuestion q, String label) {
+    setState(() {
+      final sel = _selected[q.id]!;
+      if (q.multiSelect) {
+        if (!sel.add(label)) sel.remove(label);
+      } else {
+        if (sel.contains(label)) {
+          sel.clear();
+        } else {
+          sel
+            ..clear()
+            ..add(label);
+        }
+      }
+      // 单选语义：选了选项就清掉自定义输入（内核要求二选一）
+      if (!q.multiSelect && sel.isNotEmpty) {
+        _custom[q.id] = '';
+        _ctrls[q.id]!.clear();
+      }
+      _hint = null;
+    });
+  }
+
+  void _onCustom(AskQuestion q, String v) {
+    setState(() {
+      _custom[q.id] = v;
+      // 单选语义：输入了自定义答案就清掉选项
+      if (!q.multiSelect && v.trim().isNotEmpty) _selected[q.id]!.clear();
+      _hint = null;
+    });
+  }
+
+  Future<void> _submit() async {
+    final answers = <Map<String, dynamic>>[];
+    for (final q in widget.request.questions) {
+      final sel = _selected[q.id] ?? const <String>{};
+      final custom = (_custom[q.id] ?? '').trim();
+      if (custom.isEmpty && sel.isEmpty) {
+        setState(() => _hint = '请选择选项，或输入其他答案');
+        return;
+      }
+      answers.add({
+        'id': q.id,
+        'selected': custom.isEmpty ? sel.toList() : const <String>[],
+        if (custom.isNotEmpty) 'custom': custom,
+      });
+    }
+    setState(() => _submitting = true);
+    try {
+      await widget.onSubmitted(answers);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final line = DshColors.line(context);
+    final brandSoft = DshColors.brandSoft(context);
+    final header = widget.request.questions.isEmpty ? null : widget.request.questions.first.header;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+      decoration: BoxDecoration(
+        color: brandSoft,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: brand.withValues(alpha: 0.55)),
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.live_help_outlined, size: 18, color: brand),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    header ?? '需要你决定',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: brand),
+                  ),
+                ),
+                InkWell(
+                  onTap: _submitting ? null : widget.onCancel,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(Icons.close, size: 16, color: ink3),
+                  ),
+                ),
+              ],
+            ),
+            for (final q in widget.request.questions) ...[
+              if (q.detail != null && q.detail!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 2),
+                  child: Text(q.detail!, style: TextStyle(fontSize: 11.5, color: ink3, height: 1.4)),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(top: 6, bottom: 4),
+                child: Text(q.question, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+              ),
+              for (final o in q.options)
+                _OptionTile(
+                  label: o.label,
+                  description: o.description,
+                  multi: q.multiSelect,
+                  selected: _selected[q.id]!.contains(o.label),
+                  onTap: () => _toggle(q, o.label),
+                ),
+              const SizedBox(height: 2),
+              TextField(
+                controller: _ctrls[q.id],
+                onChanged: (v) => _onCustom(q, v),
+                style: const TextStyle(fontSize: 13.5),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: q.multiSelect ? '补充说明（可选）…' : '或输入其他答案…',
+                  hintStyle: TextStyle(fontSize: 13, color: ink3),
+                  filled: true,
+                  fillColor: DshColors.surface(context),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(color: line),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(color: line),
+                  ),
+                ),
+              ),
+            ],
+            if (_hint != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(_hint!, style: TextStyle(fontSize: 12, color: DshColors.danger(context))),
+              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _submitting ? null : widget.onCancel,
+                  child: Text('取消', style: TextStyle(fontSize: 13.5, color: ink2)),
+                ),
+                const SizedBox(width: 4),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 22),
+                    backgroundColor: brand,
+                  ),
+                  onPressed: _submitting ? null : _submit,
+                  child: Text(_submitting ? '提交中…' : '提交', style: const TextStyle(fontSize: 13.5)),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OptionTile extends StatelessWidget {
+  final String label;
+  final String? description;
+  final bool multi;
+  final bool selected;
+  final VoidCallback onTap;
+  const _OptionTile({
+    required this.label,
+    this.description,
+    required this.multi,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final ink3 = DshColors.ink3(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              multi
+                  ? (selected ? Icons.check_box : Icons.check_box_outline_blank)
+                  : (selected ? Icons.radio_button_checked : Icons.radio_button_unchecked),
+              size: 18,
+              color: brand,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(fontSize: 13.5, fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
+                  ),
+                  if (description != null && description!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: Text(description!, style: TextStyle(fontSize: 11.5, color: ink3, height: 1.35)),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 内核权限审批弹窗卡片：工具名 + 原因 + 允许一次 / 拒绝。
+class _ApprovalCard extends StatefulWidget {
+  final ApprovalRequest request;
+  final Future<void> Function(String outcome) onDecide;
+  final VoidCallback onCancel;
+  const _ApprovalCard({required this.request, required this.onDecide, required this.onCancel});
+
+  @override
+  State<_ApprovalCard> createState() => _ApprovalCardState();
+}
+
+class _ApprovalCardState extends State<_ApprovalCard> {
+  bool _busy = false;
+
+  Future<void> _decide(String outcome) async {
+    setState(() => _busy = true);
+    try {
+      await widget.onDecide(outcome);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final warn = DshColors.warn(context);
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final danger = DshColors.danger(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+      decoration: BoxDecoration(
+        color: warn.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: warn.withValues(alpha: 0.7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.admin_panel_settings_outlined, size: 18, color: warn),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('权限请求', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: warn)),
+              ),
+              InkWell(
+                onTap: _busy ? null : widget.onCancel,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.close, size: 16, color: ink3),
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              '工具「${widget.request.toolName}」需要你的授权',
+              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (widget.request.reason != null && widget.request.reason!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                widget.request.reason!,
+                style: TextStyle(fontSize: 12.5, color: ink2, height: 1.45),
+                maxLines: 5,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _busy ? null : () => _decide('rejected'),
+                child: Text('拒绝', style: TextStyle(fontSize: 13.5, color: danger)),
+              ),
+              const SizedBox(width: 4),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  backgroundColor: warn,
+                ),
+                onPressed: _busy ? null : () => _decide('allowed-once'),
+                child: Text(_busy ? '处理中…' : '允许一次', style: const TextStyle(fontSize: 13.5)),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

@@ -1,22 +1,22 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#f6f7f9" />
-<title>DSH 绉诲姩绔?路 鐣岄潰鍘熷瀷 v6锛圖eepSeek 閰嶈壊锛?/title>
+<title>DSH 移动端 · 界面原型 v7（DeepSeek 配色）</title>
 <style>
-  /* 鈹€鈹€ DeepSeek 璁捐浠ょ墝锛堝搧鐗岃摑 #426EFE锛?鈹€鈹€ */
+  /* ── DeepSeek 设计令牌（品牌蓝 #426EFE） ── */
   :root {
-    --bg: #f6f7f9;            /* 鍐风櫧鐢诲竷 */
-    --surface: #ffffff;       /* 鍗＄墖/杈撳叆闈?*/
-    --ink: #1f2329;           /* 涓绘枃瀛楋紙钃濋粦锛?*/
-    --ink-2: #6b7280;         /* 娆¤ */
-    --ink-3: #9ca3af;         /* 鍗犱綅/娉ㄩ噴 */
-    --line: #e5e7eb;          /* 缁嗗垎鍓茬嚎锛堝喎鐏帮級 */
-    --brand: #426efe;         /* DeepSeek 鍝佺墝钃?*/
+    --bg: #f6f7f9;            /* 冷白画布 */
+    --surface: #ffffff;       /* 卡片/输入面 */
+    --ink: #1f2329;           /* 主文字（蓝黑） */
+    --ink-2: #6b7280;         /* 次级文字 */
+    --ink-3: #9ca3af;         /* 占位/注释 */
+    --line: #e5e7eb;          /* 细分割线（冷灰） */
+    --brand: #426efe;         /* DeepSeek 品牌蓝 */
     --brand-soft: rgba(66, 110, 254, .1);
-    --link: #426efe;          /* 閾炬帴/寮€鍏宠摑 */
+    --link: #426efe;          /* 链接/开关蓝 */
     --ok: #3ba55d;
     --danger: #d44c47;
     --radius-lg: 24px; --radius-md: 16px; --radius-sm: 10px;
@@ -24,14 +24,14 @@
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0e1116; --surface: #161b22;   /* DeepSeek 娣辫壊锛氭繁钃濋粦 */
+      --bg: #0e1116; --surface: #161b22;   /* DeepSeek 深色：深蓝黑 */
       --ink: #e6e8ec; --ink-2: #8b949e; --ink-3: #5c6470;
       --line: #232a33; --brand: #6c8cff; --brand-soft: rgba(108,140,255,.14);
       --link: #6c8cff; --ok: #4cb86f; --danger: #e0655f;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
     }
   }
-  /* 鎵嬪姩娣辫壊妯″紡锛堣缃〉寮€鍏筹級锛氳鐩栬窡闅忕郴缁?*/
+  /* 手动深色模式（设置页开关）：覆盖跟随系统 */
   html.force-dark {
     --bg: #0e1116; --surface: #161b22; --ink: #e6e8ec; --ink-2: #8b949e; --ink-3: #5c6470;
     --line: #232a33; --brand: #6c8cff; --brand-soft: rgba(108,140,255,.14);
@@ -53,7 +53,7 @@
   .ic.sm { width: 16px; height: 16px; }
   .ic.lg { width: 24px; height: 24px; }
 
-  /* 鈹€鈹€ 椤甸潰楠ㄦ灦 鈹€鈹€ */
+  /* ── 页面骨架 ── */
   .hidden { display: none !important; }
   #stage { flex: auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
   .screen {
@@ -65,17 +65,17 @@
   main.scroll { flex: auto; min-height: 0; overflow-y: auto; padding: 4px 18px 16px; }
   ::-webkit-scrollbar { width: 0; }
 
-  /* 鈹€鈹€ 椤堕儴瀵艰埅 鈹€鈹€ */
+  /* ── 顶部导航 ── */
   .topbar { flex: none; display: flex; align-items: center; gap: 6px; padding: calc(14px + env(safe-area-inset-top)) 14px 10px; }
   .topbar .iconbtn { width: 38px; height: 38px; border: none; background: none; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; cursor: pointer; }
   .topbar .iconbtn:active { background: var(--line); }
   .topbar .wordmark { font-size: 21px; font-weight: 400; letter-spacing: .01em; }
   .topbar .right { margin-left: auto; display: flex; gap: 2px; }
 
-  /* 鈹€鈹€ 鍝佺墝鏄熷舰 鈹€鈹€ */
+  /* ── 品牌星形 ── */
   .star { color: var(--brand); }
 
-  /* 鈹€鈹€ 棣栭〉锛氱姸鎬佷腑蹇?鈹€鈹€ */
+  /* ── 首页：状态中心 ── */
   .welcome { padding: 14px 2px 10px; }
   .welcome .hi { font-size: 30px; line-height: 1.25; font-weight: 400; letter-spacing: -.01em; }
   .welcome .sub { font-size: 13.5px; color: var(--ink-2); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
@@ -93,7 +93,7 @@
   .meta { font-size: 13px; color: var(--ink-2); }
   .meta b { color: var(--ink); font-weight: 600; }
 
-  /* 寰呭洖绛旓紙璧ら櫠鑹茶皟锛?*/
+  /* 待回答（赤陶色调） */
   .ask { display: flex; gap: 12px; align-items: flex-start; background: var(--brand-soft); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 12px; }
   .ask .ic { color: var(--brand); margin-top: 1px; }
   .ask .q { font-size: 14.5px; font-weight: 600; line-height: 1.5; }
@@ -111,7 +111,7 @@
   .listrow .v { margin-left: auto; font-size: 13px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
   .listrow .v.ok { color: var(--ok); }
 
-  /* 鈹€鈹€ Claude 寮忚緭鍏ュ尯 鈹€鈹€ */
+  /* ── Claude 式输入区 ── */
   .composer-wrap { flex: none; padding: 4px 14px calc(12px + env(safe-area-inset-bottom)); }
   .composer {
     display: flex; flex-direction: column; gap: 4px;
@@ -144,7 +144,7 @@
   .composer .send { background: var(--brand); color: #fff; }
   .composer .send:active { transform: scale(.93); }
 
-  /* 鈹€鈹€ 鍔ㄤ綔鍖猴紙鎻掍欢濂戠害锛氱粺涓€ chip 缃戞牸锛?鈹€鈹€ */
+  /* ── 动作区（插件契约：统一 chip 网格（ ── */
   .actions-wrap { flex: none; padding: 2px 14px 6px; }
   .actions-label { font-size: 11px; color: var(--ink-3); padding: 2px 2px 6px; display: flex; align-items: center; gap: 5px; }
   .actions { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
@@ -159,7 +159,7 @@
   .chip:active { background: var(--brand-soft); border-color: var(--brand); }
   .chip .ic { width: 15px; height: 15px; color: var(--brand); }
 
-  /* 鈹€鈹€ 琛ㄥ崟瀛楁锛堝姩浣?bottom sheet 鍐咃級 鈹€鈹€ */
+  /* ── 表单字段（动作 bottom sheet 内） ── */
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
   .field input, .field select {
@@ -172,7 +172,7 @@
   .form-actions .run { background: var(--brand); color: #fff; border: none; }
   .form-actions .cancel { background: none; color: var(--ink-2); border: 1px solid var(--line); }
 
-  /* 鈹€鈹€ 娑堟伅娴侊紙Claude 鎺掔増锛氭棤姘旀场锛?鈹€鈹€ */
+  /* ── 消息流（Claude 排版：无气泡） ── */
   .msgs { flex: auto; min-height: 0; overflow-y: auto; padding: 10px 18px 6px; }
   .m { margin-bottom: 20px; }
   .m .who { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -195,7 +195,7 @@
   details.tool[open] summary .arrow { transform: rotate(180deg); }
   details.tool .body { font-size: 13px; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; background: var(--surface); border: 1px solid var(--line); border-top: none; border-radius: 0 0 var(--radius-sm) var(--radius-sm); padding: 8px 12px 12px; }
 
-  /* 鈹€鈹€ 渚ц竟鏍?鈹€鈹€ */
+  /* ── 侧边栏 ── */
   #scrim { position: fixed; inset: 0; background: rgba(31,30,29,.4); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40; max-width: 480px; margin: 0 auto; }
   #scrim.open { opacity: 1; pointer-events: auto; }
   #drawer {
@@ -221,7 +221,7 @@
   .drawer-foot .mail { font-size: 11.5px; color: var(--ink-3); }
   .drawer-foot .gear { margin-left: auto; border: none; background: none; color: var(--ink-2); cursor: pointer; }
 
-  /* 鈹€鈹€ 璁剧疆椤?鈹€鈹€ */
+  /* ── 设置页 ── */
   .center-title { text-align: center; font-size: 24px; padding: 12px 0 16px; }
   .acct-card { display: flex; align-items: center; gap: 12px; background: var(--surface); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
   .acct-card .mail { font-size: 14px; font-weight: 600; }
@@ -241,7 +241,7 @@
   .switch.on { background: var(--link); }
   .switch.on::after { transform: translateX(18px); }
 
-  /* 鈹€鈹€ 搴曢儴寮圭獥 鈹€鈹€ */
+  /* ── 底部弹窗 ── */
   #sheet-mask, #model-mask, #action-mask, #perm-mask, #confirm-mask, #preset-mask, #newsess-mask { position: fixed; inset: 0; background: rgba(31,30,29,.45); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 60; max-width: 480px; margin: 0 auto; }
   #sheet-mask.open, #model-mask.open, #action-mask.open, #perm-mask.open, #confirm-mask.open, #preset-mask.open, #newsess-mask.open { opacity: 1; pointer-events: auto; }
   #sheet, #model-sheet, #action-sheet, #perm-sheet, #confirm-sheet, #preset-sheet, #newsess-sheet {
@@ -265,7 +265,7 @@
   .sheet-row .tail { margin-left: auto; display: flex; align-items: center; gap: 6px; }
   .sheet-row .tail .chev { color: var(--ink-3); }
 
-  /* 妯″瀷閫夋嫨 */
+  /* 模型选择 */
   .model-item { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; border-radius: var(--radius-sm); }
   .model-item + .model-item { border-top: 1px solid var(--line); }
   .model-item .mn { font-size: 14.5px; font-weight: 600; }
@@ -278,7 +278,7 @@
   }
   .effort.active { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
 
-  /* 閫氱煡 */
+  /* 通知 */
   .bell-badge {
     position: absolute; top: 2px; right: 1px; min-width: 16px; height: 16px; border-radius: 999px;
     background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
@@ -299,7 +299,7 @@
 </head>
 <body>
 
-<!-- 鈺愨晲鈺?鍥炬爣搴擄紙1.5 绾垮锛?鈺愨晲鈺?-->
+<!-- ──── 图标库（1.5 线宽） ──── -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></symbol>
@@ -335,9 +335,9 @@
   </defs>
 </svg>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?涓昏垶鍙?鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 主界面 ──── -->
 <div id="stage">
-  <!-- 棣栭〉锛氱姸鎬佷腑蹇?-->
+  <!-- 首页：状态中心 -->
   <div id="home" class="screen active">
     <div class="topbar">
       <button class="iconbtn" onclick="openDrawer()"><svg class="ic"><use href="#i-menu"/></svg></button>
@@ -350,19 +350,19 @@
       </span>
     </div>
     <main class="scroll">
-      <!-- 棣栭〉鍥哄畾锛氭杩庣晫闈紙鐘舵€佷俊鎭湪瀵硅瘽椤?浼氳瘽鍒楄〃/閫氱煡涓憟鐜帮級 -->
+      <!-- 首页固定：欢迎界面（状态信息在对话页 会话列表/通知中呈现） -->
       <div class="welcome" style="padding:34px 2px 18px;text-align:center">
-        <div class="hi serif" style="font-size:31px;line-height:1.35">鏈変粈涔堥渶瑕?br/>agent 甯繖鐨勶紵</div>
-        <div class="sub" style="justify-content:center;margin-top:10px"><span class="dot idle"></span>鐢佃剳鍦ㄧ嚎 路 鐩存帴鍙戞秷鎭嵆鍙?/div>
+        <div class="hi serif" style="font-size:31px;line-height:1.35">有什么需要<br/>agent 帮忙的？</div>
+        <div class="sub" style="justify-content:center;margin-top:10px"><span class="dot idle"></span>电脑在线 · 直接发消息即可</div>
       </div>
       <div class="card" style="margin-top:8px">
-        <div class="card-h">鏈€杩戜細璇?/div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">鏇存柊椤圭洰渚濊禆骞惰窇閫氭祴璇?small>鏄ㄥぉ 22:40</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">鐢熸垚鍛ㄦ姤鑽夌<small>鏄ㄥぉ 18:05</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">鍒嗘瀽鏃ュ織涓殑閿欒鍒嗗竷<small>鍛ㄤ竴 14:30</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="card-h">最近会话</div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">更新项目依赖并跑通测试<small>昨天 22:40</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">生成周报草稿<small>昨天 18:05</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">分析日志中的错误分布<small>周一 14:30</small></span><span class="v"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
       </div>
-      <button class="btn-black" style="width:100%;min-height:48px;border-radius:999px;font-size:15px" onclick="openNewSessionSheet()">锛?鏂板缓浼氳瘽</button>
-      <p class="proto-note">鍘熷瀷婕旂ず鏁版嵁 路 鐘舵€侊紙鎵ц涓?寰呭洖绛旓級瑙佸璇濋〉涓庨€氱煡</p>
+      <button class="btn-black" style="width:100%;min-height:48px;border-radius:999px;font-size:15px" onclick="openNewSessionSheet()">＋ 新建会话</button>
+      <p class="proto-note">原型演示数据 · 状态（执行中 / 待回答）见对话页与通知</p>
     </main>
     <div class="composer-wrap">
       <div class="composer">
@@ -372,44 +372,44 @@
         </div>
         <div class="inputrow">
           <button class="plus" onclick="openSheet()"><svg class="ic sm"><use href="#i-plus"/></svg></button>
-          <input placeholder="Chat with DSH鈥? />
+          <input placeholder="Chat with DSH—  />
           <button class="round send" onclick="pushScreen('chat')"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 瀵硅瘽椤?-->
+  <!-- 对话页 -->
   <div id="chat" class="screen">
     <div class="topbar">
       <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
-      <span class="wordmark serif" style="font-size:16px">鏁寸悊 F 鐩樿祫鏂?/span>
+      <span class="wordmark serif" style="font-size:16px">整理 F 盘资料</span>
       <span class="right">
         <span class="dot running" style="align-self:center"></span>
-        <button class="iconbtn" onclick="toast('鏇村鑿滃崟 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-more"/></svg></button>
+        <button class="iconbtn" onclick="toast('更多菜单 · 开发中')"><svg class="ic"><use href="#i-more"/></svg></button>
       </span>
     </div>
     <div class="msgs" id="msgs">
       <div class="m user">
-        <div class="who"><span class="nm">鎴?/span><span class="tm">09:15</span></div>
-        <div class="body">甯垜鏁寸悊 F 鐩橀噷鐨勮祫鏂欙紝鐢熸垚涓€浠借縼绉绘姤鍛?/div>
+        <div class="who"><span class="nm">我</span><span class="tm">09:15</span></div>
+        <div class="body">帮我整理 F 盘里的资料，生成一份迁移报告</div>
       </div>
       <div class="m">
         <div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span><span class="tm">09:15</span></div>
-        <div class="body"><div class="h serif">濂界殑锛屾垜鍏堟壂鎻?F 鐩?/div>鎴戜細姊崇悊鐩綍缁撴瀯銆佺粺璁℃枃浠剁被鍨嬩笌澶у皬锛岀劧鍚庣粰浣犱竴浠借縼绉诲缓璁€?/div>
+        <div class="body"><div class="h serif">好的，我先扫描 F 盘</div>我会梳理目录结构、统计文件类型与大小，然后给你一份迁移建议。</div>
       </div>
       <details class="tool">
-        <summary><svg class="ic sm"><use href="#i-search"/></svg><span class="nm">鎵弿鐩綍</span><span class="ok">瀹屾垚</span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary>
-        <div class="body">3,842 涓枃浠?路 128 GB
-閲嶅鏂囦欢 214 涓紙绾?3.2 GB锛?澶ф枃浠?12 涓紙&gt;1 GB锛?/div>
+        <summary><svg class="ic sm"><use href="#i-search"/></svg><span class="nm">扫描目录</span><span class="ok">完成</span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary>
+        <div class="body">3,842 个文件 · 128 GB
+重复文件 214 个（约 3.2 GB） 大文件 12 个（&gt;1 GB（ /div>
       </details>
       <div class="m">
         <div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span><span class="tm">09:16</span></div>
-        <div class="body"><div class="h serif">鎵弿瀹屾垚</div>鍙戠幇 214 涓噸澶嶆枃浠讹紙绾?3.2 GB锛夛紝闇€瑕佷綘纭鏄惁鍒犻櫎銆?/div>
+        <div class="body"><div class="h serif">扫描完成</div>发现 214 个重复文件（约 3.2 GB），需要你确认是否删除。</div>
       </div>
     </div>
     <div class="actions-wrap">
-      <div class="actions-label">蹇嵎鍔ㄤ綔 路 鐢卞凡瀹夎鎻掍欢鎻愪緵</div>
+      <div class="actions-label">快捷动作 · 由已安装插件提供</div>
       <div class="actions" id="chat-actions"></div>
     </div>
     <div class="composer-wrap">
@@ -420,238 +420,238 @@
         </div>
         <div class="inputrow">
           <button class="plus" onclick="openSheet()"><svg class="ic sm"><use href="#i-plus"/></svg></button>
-          <input id="chat-input" placeholder="鍥炲 agent鈥? />
+          <input id="chat-input" placeholder="回复 agent—  />
           <button class="round send" onclick="sendMsg()"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 鈺愨晲鈺愨晲鈺愨晲鈺?閫氱煡涓績 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+  <!-- ──── 通知中心 ──── -->
   <div id="notifications" class="screen">
     <div class="topbar">
       <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
-      <span class="wordmark serif" style="font-size:16px">閫氱煡</span>
-      <span class="right"><button class="iconbtn" style="font-size:13px;color:var(--link);width:auto;padding:0 6px" onclick="readAllNotifs()">鍏ㄩ儴宸茶</button></span>
+      <span class="wordmark serif" style="font-size:16px">通知</span>
+      <span class="right"><button class="iconbtn" style="font-size:13px;color:var(--link);width:auto;padding:0 6px" onclick="readAllNotifs()">全部已读</button></span>
     </div>
     <main class="scroll" style="padding-top:8px">
       <div class="card" id="notif-list">
         <div class="notif-item" data-unread onclick="openNotif(this)">
           <span class="lead" style="background:var(--brand-soft);color:var(--warn)"><svg class="ic sm"><use href="#i-alert"/></svg></span>
-          <div><div class="t">闇€瑕佷綘鍥炵瓟</div><div class="d">鍙戠幇 214 涓噸澶嶆枃浠讹紝鏄惁鍒犻櫎浠ラ噴鏀剧┖闂达紵</div><div class="tm">浠婂ぉ 09:16</div></div>
+          <div><div class="t">需要你回答</div><div class="d">发现 214 个重复文件，是否删除以释放空间？</div><div class="tm">今天 09:16</div></div>
           <span class="u"></span>
         </div>
         <div class="notif-item" data-unread onclick="openNotif(this)">
           <span class="lead" style="background:rgba(63,165,93,.12);color:var(--ok)"><svg class="ic sm"><use href="#i-check-circle"/></svg></span>
-          <div><div class="t">浠诲姟瀹屾垚</div><div class="d">澶囦唤閰嶇疆鍒?E 鐩橈紙鑰楁椂 4 鍒嗛挓锛?/div><div class="tm">浠婂ぉ 09:12</div></div>
+          <div><div class="t">任务完成</div><div class="d">备份配置到 E 盘（耗时 4 分钟）</div><div class="tm">今天 09:12</div></div>
           <span class="u"></span>
         </div>
         <div class="notif-item" onclick="openNotif(this)">
           <span class="lead" style="background:rgba(63,165,93,.12);color:var(--ok)"><svg class="ic sm"><use href="#i-check-circle"/></svg></span>
-          <div><div class="t">浠诲姟瀹屾垚</div><div class="d">鏇存柊渚濊禆骞惰窇閫氭祴璇曪紙8 涓敤渚嬮€氳繃锛?/div><div class="tm">鏄ㄥぉ 22:40</div></div>
+          <div><div class="t">任务完成</div><div class="d">更新依赖并跑通测试（8 个用例通过）</div><div class="tm">昨天 22:40</div></div>
           <span class="u"></span>
         </div>
         <div class="notif-item" onclick="openNotif(this)">
           <span class="lead" style="background:rgba(212,76,71,.12);color:var(--danger)"><svg class="ic sm"><use href="#i-alert"/></svg></span>
-          <div><div class="t">浠诲姟澶辫触</div><div class="d">鏃ュ織鍒嗘瀽浠诲姟鎵ц澶辫触锛屽凡鑷姩閲嶈瘯</div><div class="tm">鏄ㄥぉ 18:30</div></div>
+          <div><div class="t">任务失败</div><div class="d">日志分析任务执行失败，已自动重试</div><div class="tm">昨天 18:30</div></div>
           <span class="u"></span>
         </div>
       </div>
-      <p class="proto-note">鐐瑰嚮閫氱煡鐩磋揪瀵瑰簲浼氳瘽 路 浠诲姟瀹屾垚 / 闇€瑕佸洖绛?/ 澶辫触閮戒細鎺ㄩ€?/p>
+      <p class="proto-note">点击通知直达对应会话 · 任务完成 / 需要回答 / 失败都会推送</p>
     </main>
   </div>
 
-  <!-- 浼氳瘽椤?-->
+  <!-- 会话页 -->
   <div id="sessions" class="screen">
     <div class="topbar">
       <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
-      <span class="wordmark serif" style="font-size:16px">浼氳瘽</span>
-      <span class="right"><button class="iconbtn" onclick="toast('鏂板缓浼氳瘽锛堝師鍨嬪崰浣嶏級')"><svg class="ic"><use href="#i-plus"/></svg></button></span>
+      <span class="wordmark serif" style="font-size:16px">会话</span>
+      <span class="right"><button class="iconbtn" onclick="toast('新建会话（原型占位）')"><svg class="ic"><use href="#i-plus"/></svg></button></span>
     </div>
     <main class="scroll" style="padding-top:8px">
       <div class="card">
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-folder"/></svg></span><span class="t">鏁寸悊 F 鐩樿祫鏂欙紝鐢熸垚杩佺Щ鎶ュ憡<small>鎵ц涓?路 浠婂ぉ 09:15</small></span><span class="v"><span class="dot running"></span></span></div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">鏇存柊椤圭洰渚濊禆骞惰窇閫氭祴璇?small>宸插畬鎴?路 鏄ㄥぉ 22:40</small></span></div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">鐢熸垚鍛ㄦ姤鑽夌<small>宸插畬鎴?路 鏄ㄥぉ 18:05</small></span></div>
-        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">鍒嗘瀽鏃ュ織涓殑閿欒鍒嗗竷<small>宸插畬鎴?路 鍛ㄤ竴 14:30</small></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-folder"/></svg></span><span class="t">整理 F 盘资料，生成迁移报告<small>执行中 · 今天 09:15</small></span><span class="v"><span class="dot running"></span></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-zap"/></svg></span><span class="t">更新项目依赖并跑通测试<small>已完成 · 昨天 22:40</small></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-file"/></svg></span><span class="t">生成周报草稿<small>已完成 · 昨天 18:05</small></span></div>
+        <div class="listrow" onclick="pushScreen('chat')"><span class="lead"><svg class="ic sm"><use href="#i-chart"/></svg></span><span class="t">分析日志中的错误分布<small>已完成 · 周一 14:30</small></span></div>
       </div>
-      <p class="proto-note">鐐规寜杩涘叆瀵硅瘽</p>
+      <p class="proto-note">点按进入对话</p>
     </main>
   </div>
 
-  <!-- 璁剧疆椤?-->
+  <!-- 设置页 -->
   <div id="settings" class="screen">
     <div class="topbar">
       <button class="iconbtn" onclick="back()"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
-      <span class="wordmark serif" style="font-size:16px; margin:0 auto">璁剧疆</span>
+      <span class="wordmark serif" style="font-size:16px; margin:0 auto">设置</span>
       <span class="right"></span>
     </div>
     <main class="scroll" style="padding-top:4px">
       <div class="acct-card">
         <span class="avatar">D</span>
-        <div><div class="mail">鏈満鐩磋繛</div><div style="font-size:11.5px;color:var(--ink-3)">DeepSeek Harness 路 妗岄潰绔?/div></div>
+        <div><div class="mail">本机直连</div><div style="font-size:11.5px;color:var(--ink-3)">DeepSeek Harness · 桌面端</div></div>
       </div>
       <div class="set-group">
-        <div class="set-row"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">鐢佃剳鍦板潃<small>192.168.1.100:55979</small></span><span class="tail"><span class="val" style="color:var(--ok)">宸茶繛鎺?/span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-monitor"/></svg><span class="t">电脑地址<small>192.168.1.100:55979</small></span><span class="tail"><span class="val" style="color:var(--ok)">已连接</span></span></div>
       </div>
       <div class="set-group">
-        <div class="set-row"><svg class="ic sm"><use href="#i-bell"/></svg><span class="t">浠诲姟瀹屾垚鎻愰啋</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
-        <div class="set-row"><svg class="ic sm"><use href="#i-alert"/></svg><span class="t">闇€瑕佸洖绛旀彁閱?/span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
-        <div class="set-row"><svg class="ic sm"><use href="#i-activity"/></svg><span class="t">澶辫触 / 鍗′綇鎻愰啋</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-bell"/></svg><span class="t">任务完成提醒</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-alert"/></svg><span class="t">需要回答提醒</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-activity"/></svg><span class="t">失败 / 卡顿提醒</span><span class="tail"><span class="switch on" onclick="toggle(this)"></span></span></div>
       </div>
       <div class="set-group">
-        <div class="set-row" onclick="openPermSheet()"><svg class="ic sm"><use href="#i-shield"/></svg><span class="t">榛樿鏉冮檺棰勮<small>浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽</small></span><span class="tail"><span class="val" id="perm-default-val">Workspace Write</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
-        <div class="set-row" onclick="openPresetSheet()"><svg class="ic sm"><use href="#i-zap"/></svg><span class="t">榛樿 Agent 棰勮<small>浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽</small></span><span class="tail"><span class="val" id="preset-default-val">鏍囧噯妯″紡</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="set-row" onclick="openPermSheet()"><svg class="ic sm"><use href="#i-shield"/></svg><span class="t">默认权限预设<small>作用于之后新建的会话</small></span><span class="tail"><span class="val" id="perm-default-val">Workspace Write</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="set-row" onclick="openPresetSheet()"><svg class="ic sm"><use href="#i-zap"/></svg><span class="t">默认 Agent 预设<small>作用于之后新建的会话</small></span><span class="tail"><span class="val" id="preset-default-val">标准模式</span><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
       </div>
       <div class="set-group">
-        <div class="set-row"><svg class="ic sm"><use href="#i-eye"/></svg><span class="t">鏄剧ず宸ュ叿璋冪敤</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
-        <div class="set-row"><svg class="ic sm"><use href="#i-moon"/></svg><span class="t">娣辫壊妯″紡<small>寮€鍚悗寮哄埗娣辫壊 路 榛樿璺熼殢绯荤粺</small></span><span class="tail"><span class="switch" data-theme="dark" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-eye"/></svg><span class="t">显示工具调用</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-moon"/></svg><span class="t">深色模式<small>开启后强制深色 · 默认跟随系统</small></span><span class="tail"><span class="switch" data-theme="dark" onclick="toggle(this)"></span></span></div>
       </div>
       <div class="set-group">
-        <div class="set-row"><svg class="ic sm"><use href="#i-info"/></svg><span class="t">鐗堟湰<small>0.1.0 路 鍘熷瀷 v6</small></span><span class="tail"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
+        <div class="set-row"><svg class="ic sm"><use href="#i-info"/></svg><span class="t">版本<small>0.1.0 · 原型 v6</small></span><span class="tail"><svg class="ic sm chev"><use href="#i-chevron-right"/></svg></span></div>
       </div>
-      <p class="proto-note">DSH Mobile 路 DeepSeek 閰嶈壊 路 Lucide 1.5 绾垮</p>
+      <p class="proto-note">DSH Mobile · DeepSeek 配色 · Lucide 1.5 线宽</p>
     </main>
   </div>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?渚ц竟鏍?鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 侧边栏 ──── -->
 <div id="scrim" onclick="closeDrawer()"></div>
 <aside id="drawer">
   <div class="drawer-head">
     <span class="wordmark serif">DSH</span>
-    <button class="btn-black" style="width:100%;min-height:44px;border-radius:999px;font-size:14px;margin-top:12px" onclick="closeDrawer();openNewSessionSheet()">锛?鏂板缓浼氳瘽</button>
+    <button class="btn-black" style="width:100%;min-height:44px;border-radius:999px;font-size:14px;margin-top:12px" onclick="closeDrawer();openNewSessionSheet()">＋ 新建会话</button>
   </div>
   <nav class="drawer-nav">
-    <button class="drawer-item active" data-s="home" onclick="navTo('home')"><svg class="ic"><use href="#i-activity"/></svg>鐘舵€?/button>
-    <button class="drawer-item" data-s="sessions" onclick="navTo('sessions')"><svg class="ic"><use href="#i-clock"/></svg>浼氳瘽</button>
-    <button class="drawer-item" data-s="settings" onclick="navTo('settings')"><svg class="ic"><use href="#i-sliders"/></svg>璁剧疆</button>
+    <button class="drawer-item active" data-s="home" onclick="navTo('home')"><svg class="ic"><use href="#i-activity"/></svg>状态</button>
+    <button class="drawer-item" data-s="sessions" onclick="navTo('sessions')"><svg class="ic"><use href="#i-clock"/></svg>会话</button>
+    <button class="drawer-item" data-s="settings" onclick="navTo('settings')"><svg class="ic"><use href="#i-sliders"/></svg>设置</button>
   </nav>
   <div class="drawer-foot">
     <span class="avatar">D</span>
-    <div><div class="name">鏈満鐩磋繛</div><div class="mail">DeepSeek Harness 路 妗岄潰绔?/div></div>
+    <div><div class="name">本机直连</div><div class="mail">DeepSeek Harness · 桌面端</div></div>
     <button class="gear" onclick="navTo('settings')"><svg class="ic"><use href="#i-sliders"/></svg></button>
   </div>
 </aside>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?搴曢儴寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 底部弹窗 ──── -->
 <div id="sheet-mask" onclick="closeSheet()"></div>
 <div id="sheet">
   <div class="handle"></div>
-  <div class="sheet-title">娣诲姞鍐呭</div>
+  <div class="sheet-title">添加内容</div>
   <div class="attach-grid">
-    <button class="cell" onclick="toast('鎷嶇収涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-camera"/></svg>鎷嶇収</button>
-    <button class="cell" onclick="toast('鐩稿唽涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-image"/></svg>鐩稿唽</button>
-    <button class="cell" onclick="toast('鏂囦欢涓婁紶 路 寮€鍙戜腑')"><svg class="ic"><use href="#i-paperclip"/></svg>鏂囦欢</button>
+    <button class="cell" onclick="toast('拍照上传 · 开发中')"><svg class="ic"><use href="#i-camera"/></svg>拍照</button>
+    <button class="cell" onclick="toast('相册上传 · 开发中')"><svg class="ic"><use href="#i-image"/></svg>相册</button>
+    <button class="cell" onclick="toast('文件上传 · 开发中')"><svg class="ic"><use href="#i-paperclip"/></svg>文件</button>
   </div>
-  <div class="sheet-row"><svg class="ic sm"><use href="#i-globe"/></svg><span>鍏佽 agent 鑱旂綉鎼滅储</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
-  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:6px">闄勪欢涓婁紶灏嗗湪 v0.2 鏀寔锛堝浘鐗?/ 鏂囦欢锛?/p>
+  <div class="sheet-row"><svg class="ic sm"><use href="#i-globe"/></svg><span>允许 agent 联网搜索</span><span class="tail"><span class="switch" onclick="toggle(this)"></span></span></div>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:6px">附件上传将在 v0.2 支持（图版 / 文件（ /p>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?妯″瀷閫夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 模型选择弹窗 ──── -->
 <div id="model-mask" onclick="closeModelSheet()"></div>
 <div id="model-sheet">
   <div class="handle"></div>
-  <div class="sheet-title">妯″瀷涓庢帹鐞?/div>
+  <div class="sheet-title">模型与推理</div>
   <div class="model-item" data-model="deepseek-v4-flash" onclick="pickModel(this)">
     <div><div class="mn">DeepSeek-V4-Flash</div><div class="mid">deepseek-v4-flash</div></div>
-    <span class="check">鉁?/span>
+    <span class="check">✅ /span>
   </div>
   <div class="model-item" data-model="deepseek-v4-pro" onclick="pickModel(this)">
     <div><div class="mn">DeepSeek-V4-Pro</div><div class="mid">deepseek-v4-pro</div></div>
     <span class="check"></span>
   </div>
-  <div class="sheet-title" style="margin:14px 0 10px">鎺ㄧ悊寮哄害</div>
+  <div class="sheet-title" style="margin:14px 0 10px">推理强度</div>
   <div class="effort-row">
     <button class="effort" data-e="off" onclick="pickEffort(this)">off</button>
     <button class="effort" data-e="high" onclick="pickEffort(this)">high</button>
     <button class="effort active" data-e="max" onclick="pickEffort(this)">max</button>
   </div>
-  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">涓庢闈㈢妯″瀷鐩綍涓€鑷?路 鏇村妯″瀷鐢辩數鑴戠鍐冲畾</p>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">与桌面端模型目录一致 · 更多模型由电脑端决定</p>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?鏉冮檺閫夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 权限选择弹窗 ──── -->
 <div id="perm-mask" onclick="closePermSheet()"></div>
 <div id="perm-sheet">
   <div class="handle"></div>
-  <div class="sheet-title" id="perm-title">褰撳墠浼氳瘽鏉冮檺</div>
+  <div class="sheet-title" id="perm-title">当前会话权限</div>
   <div class="model-item" data-perm="read-only" onclick="pickPerm(this)">
-    <div><div class="mn">Read Only</div><div class="mid">鍙 路 鎷掔粷涓€鍒囧啓鍏ユ搷浣?/div></div>
+    <div><div class="mn">Read Only</div><div class="mid">只读 · 拒绝一切写入操作</div></div>
     <span class="check"></span>
   </div>
   <div class="model-item" data-perm="workspace-write" onclick="pickPerm(this)">
-    <div><div class="mn">Workspace Write</div><div class="mid">浠呭伐浣滃尯鍐呰鍐?路 鍗遍櫓鎿嶄綔鍓嶈闂?/div></div>
-    <span class="check">鉁?/span>
+    <div><div class="mn">Workspace Write</div><div class="mid">仅工作区内读内 · 危险操作前询问</div></div>
+    <span class="check">✅ /span>
   </div>
   <div class="model-item" data-perm="danger-full-access" onclick="pickPerm(this)">
-    <div><div class="mn">Danger Full Access</div><div class="mid">瀹屽叏璁块棶 路 鍙墽琛屼换浣曟搷浣?/div></div>
+    <div><div class="mn">Danger Full Access</div><div class="mid">完全访问 · 可执行任何操作</div></div>
     <span class="check"></span>
   </div>
-  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">涓庢闈㈢娌欑妯″紡涓€鑷?路 閫夋嫨瀹屽叏璁块棶闇€纭椋庨櫓</p>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">与桌面端沙盒模式一致 · 选择完全访问需确认风险</p>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?椋庨櫓纭寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 风险确认弹窗 ──── -->
 <div id="confirm-mask" onclick="cancelConfirm()"></div>
 <div id="confirm-sheet">
   <div class="handle"></div>
-  <div class="sheet-title">鈿?椋庨櫓纭</div>
-  <p style="font-size:14px;color:var(--ink);text-align:center;line-height:1.6;padding:0 8px 16px">瀹屽叏璁块棶灏嗗厑璁?agent 鍦ㄧ數鑴戜笂鎵ц浠讳綍鎿嶄綔锛屽寘鎷慨鏀规垨鍒犻櫎宸ヤ綔鍖轰互澶栫殑鏂囦欢銆備粎鍦ㄥ彲淇′换鍔′笅浣跨敤銆?/p>
+  <div class="sheet-title">⚠ 风险确认</div>
+  <p style="font-size:14px;color:var(--ink);text-align:center;line-height:1.6;padding:0 8px 16px">完全访问将允设 agent 在电脑上执行任何操作，包括修改或删除工作区以外的文件。仅在可信任务下使用。</p>
   <div class="form-actions">
-    <button class="cancel" onclick="cancelConfirm()">鍙栨秷</button>
-    <button class="run" style="background:var(--danger);color:#fff" onclick="confirmPerm()">鎴戠悊瑙ｉ闄╋紝鍚敤</button>
+    <button class="cancel" onclick="cancelConfirm()">取消</button>
+    <button class="run" style="background:var(--danger);color:#fff" onclick="confirmPerm()">我理解风险，启用</button>
   </div>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?Agent 棰勮寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── Agent 预设弹窗 ──── -->
 <div id="preset-mask" onclick="closePresetSheet()"></div>
 <div id="preset-sheet">
   <div class="handle"></div>
-  <div class="sheet-title">榛樿 Agent 棰勮</div>
+  <div class="sheet-title">默认 Agent 预设</div>
   <div class="model-item" data-preset="standard" onclick="pickPreset(this)">
-    <div><div class="mn">鏍囧噯妯″紡</div><div class="mid">鍔熻兘瀹屾暣鐨勭紪鐮?Agent锛氭枃浠剁紪杈戙€丼hell銆佹枃浠朵笌缃戦〉妫€绱€丼kills銆佽鍒掋€佺洰鏍囥€佸瓙浠ｇ悊鍜屽伐浣滄祦</div></div>
-    <span class="check">鉁?/span>
+    <div><div class="mn">标准模式</div><div class="mid">功能完整的编码 Agent：文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流</div></div>
+    <span class="check">✅ /span>
   </div>
   <div class="model-item" data-preset="code" onclick="pickPreset(this)">
-    <div><div class="mn">PTC 妯″紡</div><div class="mid">鍏峰鏍囧噯妯″紡鍏ㄩ儴鑳藉姏锛屽苟閫氳繃 Code Mode SDK 鍛堢幇宸ュ叿锛岃妯″瀷鐢ㄤ竴涓?TypeScript 绋嬪簭缁勫悎澶氭鎿嶄綔</div></div>
+    <div><div class="mn">PTC 模式</div><div class="mid">具备标准模式全部能力，并通过 Code Mode SDK 呈现工具，让模型用一一 TypeScript 程序组合多步操作</div></div>
     <span class="check"></span>
   </div>
   <div class="model-item" data-preset="minimal" onclick="pickPreset(this)">
-    <div><div class="mn">鏋佺畝妯″紡</div><div class="mid">浠呮彁渚涙寔涔?bash 涓?str_replace_editor 鐨勫弻宸ュ叿缂栫爜 Agent</div></div>
+    <div><div class="mn">极简模式</div><div class="mid">仅提供持久 bash 与 str_replace_editor 的双工具编码 Agent</div></div>
     <span class="check"></span>
   </div>
   <div class="model-item" data-preset="cordis" onclick="pickPreset(this)">
-    <div><div class="mn">鍒涢€犳ā寮?/div><div class="mid">鐢ㄤ簬鍒涘缓鑷畾涔?Agent preset锛氭爣鍑嗘ā寮忓叏閮ㄨ兘鍔?+ 杩愯鏃舵鏌ャ€佹彃浠跺疄楠屽拰 preset 鍒涘缓鎸囧紩</div></div>
+    <div><div class="mn">创造模式</div><div class="mid">用于创建自定义 Agent preset：标准模式全部能力 + 运行时检查、插件实验和 preset 创建指引</div></div>
     <span class="check"></span>
   </div>
-  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">浣滅敤浜庝箣鍚庢柊寤虹殑浼氳瘽 路 涓庢闈㈢涓€鑷?/p>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">作用于之后新建的会话 · 与桌面端一致</p>
 </div>
 
-<!-- 鈺愨晲鈺愨晲鈺愨晲鈺?鏂板缓浼氳瘽锛氭ā寮忛€夋嫨寮圭獥 鈺愨晲鈺愨晲鈺愨晲鈺?-->
+<!-- ──── 新建会话：模式选择弹窗 ──── -->
 <div id="newsess-mask" onclick="closeNewSessionSheet()"></div>
 <div id="newsess-sheet">
   <div class="handle"></div>
-  <div class="sheet-title">鏂板缓浼氳瘽 路 閫夋嫨妯″紡</div>
+  <div class="sheet-title">新建会话 · 选择模式</div>
   <div class="model-item" data-mode="standard" onclick="pickNewMode(this)">
-    <div><div class="mn">鏍囧噯妯″紡</div><div class="mid">鍔熻兘瀹屾暣鐨勭紪鐮?Agent锛氭枃浠剁紪杈戙€丼hell銆佹悳绱€丼kills銆佽鍒掋€佸瓙浠ｇ悊</div></div>
-    <span class="check">鉁?/span>
+    <div><div class="mn">标准模式</div><div class="mid">功能完整的编码 Agent：文件编辑、Shell、搜索、Skills、计划、子代理</div></div>
+    <span class="check">✅ /span>
   </div>
   <div class="model-item" data-mode="code" onclick="pickNewMode(this)">
-    <div><div class="mn">PTC 妯″紡</div><div class="mid">Code Mode SDK锛氱敤 TypeScript 绋嬪簭缁勫悎澶氭鎿嶄綔</div></div>
+    <div><div class="mn">PTC 模式</div><div class="mid">Code Mode SDK：用 TypeScript 程序组合多步操作</div></div>
     <span class="check"></span>
   </div>
   <div class="model-item" data-mode="minimal" onclick="pickNewMode(this)">
-    <div><div class="mn">鏋佺畝妯″紡</div><div class="mid">浠?bash + 缂栬緫鍣?鐨勫弻宸ュ叿缂栫爜 Agent</div></div>
+    <div><div class="mn">极简模式</div><div class="mid">件 bash + 编辑器 的双工具编码 Agent</div></div>
     <span class="check"></span>
   </div>
   <div class="model-item" data-mode="cordis" onclick="pickNewMode(this)">
-    <div><div class="mn">鍒涢€犳ā寮?/div><div class="mid">鐢ㄤ簬鍒涘缓鑷畾涔?Agent preset锛氳繍琛屾椂妫€鏌ャ€佹彃浠跺疄楠?/div></div>
+    <div><div class="mn">创造模式</div><div class="mid">用于创建自定义 Agent preset：运行时检查、插件实验</div></div>
     <span class="check"></span>
   </div>
-  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">棰勯€夋潵鑷缃腑鐨勯粯璁ら璁?路 姣忔鏂板缓閮藉彲涓存椂鏇存敼</p>
+  <p style="font-size:11px;color:var(--ink-3);text-align:center;padding-top:8px">预选来自设置中的默认预设 · 每次新建都可临时更改</p>
 </div>
 
 <script>
-  // 鈹€鈹€ 瀵艰埅鏍堬細璇︽儏椤靛帇鏍堬紝杩斿洖閫愬眰鍥為€€ 鈹€鈹€
+  // ── 导航栈：详情页压栈，返回逐层回退 ──
   let navStack = [];
   function currentScreen() {
     return document.querySelector(".screen.active").id;
@@ -663,14 +663,14 @@
     if (name === "chat") { const m = document.getElementById("msgs"); m.scrollTop = m.scrollHeight; }
   }
   function go(name) { showScreen(name); }
-  /** 鎵撳紑璇︽儏椤碉細褰撳墠椤靛帇鏍?*/
+  /** 打开详情页：当前页压栈 */
   function pushScreen(name) { navStack.push(currentScreen()); showScreen(name); }
-  /** 杩斿洖锛氶€愬眰寮规爤锛屾爤绌哄洖棣栭〉 */
+  /** 返回：逐层弹栈，栈空回首页 */
   function back() { showScreen(navStack.length ? navStack.pop() : "home"); }
-  /** 涓€绾ч〉闈㈠垏鎹細娓呯┖鏍?*/
+  /** 一级页面切换：清空标 */
   function navTo(name) { navStack = []; showScreen(name); }
 
-  // 鈹€鈹€ 閫氱煡涓績 鈹€鈹€
+  // ── 通知中心 ──
   function openNotifications() { go("notifications"); }
   function refreshBell() {
     const n = document.querySelectorAll("#notif-list .notif-item[data-unread]").length;
@@ -688,7 +688,7 @@
       el.removeAttribute("data-unread");
     });
     refreshBell();
-    toast("宸插叏閮ㄦ爣璁颁负宸茶");
+    toast("已全部标记为已读");
   }
   function openDrawer() { document.getElementById("drawer").classList.add("open"); document.getElementById("scrim").classList.add("open"); }
   function closeDrawer() { document.getElementById("drawer").classList.remove("open"); document.getElementById("scrim").classList.remove("open"); }
@@ -711,8 +711,8 @@
   function answerDone(btn) {
     const card = btn.closest(".ask");
     card.querySelector(".ic").outerHTML = '<svg class="ic" style="color:var(--ok)"><use href="#i-check-circle"/></svg>';
-    card.querySelector(".q").textContent = "宸查€夋嫨锛? + btn.textContent;
-    card.querySelector(".q-sub").textContent = "agent 宸叉敹鍒颁綘鐨勫喅瀹氾紝缁х画鎵ц";
+    card.querySelector(".q").textContent = "已选择）  + btn.textContent;
+    card.querySelector(".q-sub").textContent = "agent 已收到你的决定，继续执行";
     card.querySelector(".acts").remove();
     card.style.background = "var(--brand-soft)";
   }
@@ -725,14 +725,14 @@
     const tm = d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
     const m = document.createElement("div");
     m.className = "m user";
-    m.innerHTML = '<div class="who"><span class="nm">鎴?/span><span class="tm">' + tm + '</span></div><div class="body">' + escapeHtml(text) + "</div>";
+    m.innerHTML = '<div class="who"><span class="nm">我</span><span class="tm">' + tm + '</span></div><div class="body">' + escapeHtml(text) + "</div>";
     box.appendChild(m);
     input.value = "";
     box.scrollTop = box.scrollHeight;
     setTimeout(() => {
       const a = document.createElement("div");
       a.className = "m";
-      a.innerHTML = '<div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span></div><div class="body"><div class="h serif">鏀跺埌</div>锛堝師鍨嬫紨绀猴級鎴戜細澶勭悊杩欎釜璇锋眰銆?/div>';
+      a.innerHTML = '<div class="who"><span class="nm"><svg class="ic sm star"><use href="#i-star"/></svg> Agent</span></div><div class="body"><div class="h serif">收到</div>（原型演示）我会处理这个请求。</div>';
       box.appendChild(a);
       box.scrollTop = box.scrollHeight;
     }, 700);
@@ -742,12 +742,12 @@
   }
   document.getElementById("chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendMsg(); });
 
-  // 鈹€鈹€ 妯″瀷閫夋嫨锛堢湡瀹炵洰褰曪細V4 Flash / V4 Pro锛涙帹鐞嗗己搴?off/high/max锛?鈹€鈹€
+  // ── 模型选择（真实目录：V4 Flash / V4 Pro；推理强度 off/high/max） ──
   function openModelSheet() { document.getElementById("model-sheet").classList.add("open"); document.getElementById("model-mask").classList.add("open"); }
   function closeModelSheet() { document.getElementById("model-sheet").classList.remove("open"); document.getElementById("model-mask").classList.remove("open"); }
   function pickModel(el) {
     document.querySelectorAll(".model-item").forEach((it) => { it.querySelector(".check").textContent = ""; });
-    el.querySelector(".check").textContent = "鉁?;
+    el.querySelector(".check").textContent = "✅ ;
     const id = el.dataset.model;
     document.querySelectorAll(".model").forEach((pill) => {
       pill.innerHTML = escapeHtml(id) + ' <svg class="ic sm"><use href="#i-chevron-down"/></svg>';
@@ -757,12 +757,12 @@
     document.querySelectorAll(".effort").forEach((b) => b.classList.toggle("active", b === btn));
   }
 
-  // 鈹€鈹€ 鏉冮檺棰勮锛堢湡瀹烇細workspace-write / danger-full-access锛?鈹€鈹€
+  // ── 权限预设（真实：workspace-write / danger-full-access） ──
   function openPermSheet() { document.getElementById("perm-sheet").classList.add("open"); document.getElementById("perm-mask").classList.add("open"); }
   function closePermSheet() { document.getElementById("perm-sheet").classList.remove("open"); document.getElementById("perm-mask").classList.remove("open"); }
   function pickPerm(el) {
     if (el.dataset.perm === "danger-full-access") {
-      // 瀹屽叏璁块棶蹇呴』鍏堟樉寮忕‘璁ら闄╋紙涓庢闈㈢涓€鑷达級
+      // 完全访问必须先显式确认风险（与桌面端一致）
       closePermSheet();
       document.getElementById("confirm-sheet").classList.add("open");
       document.getElementById("confirm-mask").classList.add("open");
@@ -772,7 +772,7 @@
   }
   function applyPerm(perm) {
     document.querySelectorAll("#perm-sheet .model-item").forEach((it) => {
-      it.querySelector(".check").textContent = it.dataset.perm === perm ? "鉁? : "";
+      it.querySelector(".check").textContent = it.dataset.perm === perm ? "✅" : "";
     });
     document.getElementById("perm-pill").innerHTML = escapeHtml(perm) + ' <svg class="ic sm"><use href="#i-chevron-down"/></svg>';
     const label = { "read-only": "Read Only", "workspace-write": "Workspace Write", "danger-full-access": "Danger Full Access" }[perm] ?? perm;
@@ -780,7 +780,7 @@
     document.getElementById("confirm-sheet").classList.remove("open");
     document.getElementById("confirm-mask").classList.remove("open");
     closePermSheet();
-    toast("鏉冮檺宸插垏鎹細" + label);
+    toast("权限已切换：" + label);
   }
   function cancelConfirm() {
     document.getElementById("confirm-sheet").classList.remove("open");
@@ -789,39 +789,39 @@
   }
   function confirmPerm() { applyPerm("danger-full-access"); }
 
-  // 鈹€鈹€ Agent 棰勮锛堢湡瀹烇細standard / code / minimal / cordis锛?鈹€鈹€
+  // ── Agent 预设（真实：standard / code / minimal / cordis） ──
   function openPresetSheet() { document.getElementById("preset-sheet").classList.add("open"); document.getElementById("preset-mask").classList.add("open"); }
   function closePresetSheet() { document.getElementById("preset-sheet").classList.remove("open"); document.getElementById("preset-mask").classList.remove("open"); }
   function pickPreset(el) {
     document.querySelectorAll("#preset-sheet .model-item").forEach((it) => {
-      it.querySelector(".check").textContent = it.dataset.preset === el.dataset.preset ? "鉁? : "";
+      it.querySelector(".check").textContent = it.dataset.preset === el.dataset.preset ? "✅" : "";
     });
-    const label = { standard: "鏍囧噯妯″紡", code: "PTC 妯″紡", minimal: "鏋佺畝妯″紡", cordis: "鍒涢€犳ā寮? }[el.dataset.preset] ?? el.dataset.preset;
+    const label = { standard: "标准模式", code: "PTC 模式", minimal: "极简模式", cordis: "创造模式" }[el.dataset.preset] ?? el.dataset.preset;
     document.getElementById("preset-default-val").textContent = label;
     closePresetSheet();
-    toast("榛樿 Agent 棰勮锛? + label);
+    toast("默认 Agent 预设：" + label);
   }
 
-  // 鈹€鈹€ 鏂板缓浼氳瘽锛氬綋鍦洪€夋嫨妯″紡锛堟棤闇€鍘昏缃敼榛樿锛?鈹€鈹€
+  // ── 新建会话：当场选择模式（无需去设置改默认） ──
   function openNewSessionSheet() { document.getElementById("newsess-sheet").classList.add("open"); document.getElementById("newsess-mask").classList.add("open"); }
   function closeNewSessionSheet() { document.getElementById("newsess-sheet").classList.remove("open"); document.getElementById("newsess-mask").classList.remove("open"); }
   function pickNewMode(el) {
     document.querySelectorAll("#newsess-sheet .model-item").forEach((it) => {
-      it.querySelector(".check").textContent = it.dataset.mode === el.dataset.mode ? "鉁? : "";
+      it.querySelector(".check").textContent = it.dataset.mode === el.dataset.mode ? "✅" : "";
     });
-    const label = { standard: "鏍囧噯妯″紡", code: "PTC 妯″紡", minimal: "鏋佺畝妯″紡", cordis: "鍒涢€犳ā寮? }[el.dataset.mode] ?? el.dataset.mode;
+    const label = { standard: "标准模式", code: "PTC 模式", minimal: "极简模式", cordis: "创造模式" }[el.dataset.mode] ?? el.dataset.mode;
     closeNewSessionSheet();
-    toast("宸茬敤銆? + label + "銆嶆柊寤轰細璇?);
+    toast("已用「" + label + "」新建会话");
     pushScreen('chat');
   }
   const DEMO_ACTIONS = [
-    { id: "fs-cleanup", title: "娓呯悊纾佺洏", icon: "trash", fields: [ { key: "target", label: "鐩爣鐩綍", placeholder: "濡?F:\\璧勬枡" } ] },
-    { id: "test-run", title: "璺戞祴璇?, icon: "zap", fields: [] },
+    { id: "fs-cleanup", title: "清理磁盘", icon: "trash", fields: [ { key: "target", label: "目标目录", placeholder: "如 F:\\资料" } ] },
+    { id: "test-run", title: "跑测话 , icon: "zap", fields: [] },
   ];
   function renderActions() {
     const box = document.getElementById("chat-actions");
     box.replaceChildren();
-    // 鎻掍欢鏈敞鍐屼换浣曞姩浣?鈫?鏁村尯闅愯棌锛堢┖鎬侊級
+    // 插件未注册任何动作 → 整区隐藏（空态）
     if (DEMO_ACTIONS.length === 0) {
       document.querySelector(".actions-wrap").classList.add("hidden");
       return;
@@ -842,7 +842,7 @@
     if (action.fields.length === 0) {
       const p = document.createElement("p");
       p.style.cssText = "font-size:13px;color:var(--ink-2);text-align:center;padding:8px 0 14px";
-      p.textContent = "鐩存帴鎵ц锛屾棤闇€鍙傛暟";
+      p.textContent = "直接执行，无需参数";
       fields.appendChild(p);
     }
     for (const f of action.fields) {
@@ -869,13 +869,13 @@
     const id = document.getElementById("action-sheet").dataset.actionId;
     const action = DEMO_ACTIONS.find((a) => a.id === id);
     closeActionSheet();
-    toast("宸插彂閫佺粰 agent锛? + (action ? action.title : id));
-    // 妯℃嫙锛氱粨鏋滃洖娑堟伅娴侊紙宸ュ叿琛岋級
+    toast("已发送给 agent：" + (action ? action.title : id));
+    // 模拟：结果回消息流（工具行）
     const box = document.getElementById("msgs");
     const t = document.createElement("details");
     t.className = "tool";
     t.open = true;
-    t.innerHTML = '<summary><svg class="ic sm"><use href="#i-zap"/></svg><span class="nm">' + escapeHtml(action ? action.title : id) + '</span><span class="ok">宸叉墽琛?/span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary><div class="body">锛堝師鍨嬫紨绀猴級鍔ㄤ綔宸茬敱 PC 绔彃浠舵墽琛岋紝缁撴灉灏嗗湪杩欓噷鍥炴祦銆?/div>';
+    t.innerHTML = '<summary><svg class="ic sm"><use href="#i-zap"/></svg><span class="nm">' + escapeHtml(action ? action.title : id) + '</span><span class="ok">已执行</span><svg class="ic sm arrow"><use href="#i-chevron-down"/></svg></summary><div class="body">（原型演示）动作已由 PC 端插件执行，结果将在这里回流。</div>';
     box.appendChild(t);
     box.scrollTop = box.scrollHeight;
   }

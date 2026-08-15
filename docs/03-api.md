@@ -1,41 +1,54 @@
-﻿# 03 API 鎺ュ彛璁捐鏂囨。 鈥?dsh-mobile-remote
+# 03 API 接口设计文档 — dsh-mobile-remote
 
-> 鐗堟湰锛歷2.1锛圓pp 浜у搧鐗堬級 路 鐘舵€侊細宸插疄鐜?路 閰嶅锛?0-寮€鍙戞€荤翰.md銆?2-architecture.md銆?4-security.md
-> 鍓嶇紑锛歚/m`锛堝彲閰嶇疆椤?`path`锛岄粯璁?`/m`锛夈€備互涓嬫墍鏈夎矾寰勫潎浠ュ墠缂€寮€澶淬€?> 鏈?API 鍚屾椂鏈嶅姟 Flutter App锛坉sh-mobile-app锛変笌妗岄潰璁剧疆椤靛鎴风妯″潡锛涗笉鍚綉椤电増椤甸潰锛坴2.1 璧风Щ闄わ級銆?
-## 1. 閫氱敤绾﹀畾
+> 版本：v2.1（App 产品版） · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md
+> 前缀：`/m`（可配置项 `path`，默认 `/m`）。以下所有路径均以前缀开头。
+> 服务端 API 同时服务 Flutter App（dsh-mobile-app）与桌面设置页客户端模块；不含网页版页面（v2.1 起移除）。
+## 1. 通用约定
 
-- **鍐呭绫诲瀷**锛欽SON API 涓€寰?`application/json; charset=utf-8`锛涢敊璇粺涓€ `{ "error": string, "detail"?: string }`銆?- **閴存潈**锛歚authToken` 閰嶇疆涓虹┖ 鈫?鏃犻壌鏉冿紱闈炵┖ 鈫?闄?`GET /m/api/qr-config`锛堜粎 loopback锛夊锛屾墍鏈夌鐐硅姹傚嚟璇併€?- **鍑瘉褰㈠紡**锛堜簩閫変竴锛屼换涓€閫氳繃鍗冲彲锛夛細
-  - 璇锋眰澶达細`X-Mobile-Token: <token>`锛圓pp 浣跨敤锛?  - Cookie锛歚dsh_mobile_token=<token>`锛堝吋瀹逛繚鐣欙紝鏃犵櫥褰曞叆鍙ｏ級
-- **鏈璇佸搷搴?*锛歚401 { "error": "auth-required", "detail": "璁块棶鍙ｄ护鏈€氳繃楠岃瘉" }`銆?- **璺敱鍖归厤**锛歚/m/api/*` 鎸夊墠缂€娉ㄥ唽锛涙湭鐭ュ瓙璺緞 鈫?`404 { "error": "not-found" }`锛沗/m` 涔嬪鐨勮８璺緞涓嶆嫤鎴紙fallback 浠嶅綊妗岄潰 SPA锛夈€?
-## 2. 绔偣鎬昏〃
+- **内容类型**：JSON API 一律 `application/json; charset=utf-8`；错误统一 `{ "error": string, "detail"?: string }`。
+- **鉴权**：`authToken` 配置为空 → 无鉴权；非空 → 除 `GET /m/api/qr-config`（仅 loopback）外，所有端点要求凭证。
+- **凭证形式**（二选一，任一通过即可）：
+  - 请求头：`X-Mobile-Token: <token>`（App 使用）
+  - Cookie：`dsh_mobile_token=<token>`（兼容保留，无登录入口）
+- **未认证响应**：`401 { "error": "auth-required", "detail": "访问口令未通过验证" }`。
+- **路由匹配**：`/m/api/*` 按前缀注册；未知子路径 → `404 { "error": "not-found" }`；`/m` 之外的裸路径不拦截（fallback 仍归桌面 SPA）。
+## 2. 端点总表
 
-| 鏂规硶 | 璺緞 | 鐢ㄩ€?| 閴存潈 |
+| 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
-| GET | `/m/api/bootstrap` | 鍒濆鐘舵€侊細鍦板潃銆佽璇佽姹傘€乤gent 鎽樿銆佷細璇濆垪琛?| 鏄?|
-| POST | `/m/api/send` | 鍚戞寚瀹?榛樿 agent 娉ㄥ叆娑堟伅 | 鏄?|
-| GET | `/m/api/sessions` | 浼氳瘽鍒楄〃 | 鏄?|
-| GET | `/m/api/history` | 鎸囧畾浼氳瘽鐨勪簨浠跺巻鍙诧紙澧為噺锛?| 鏄?|
-| GET | `/m/api/events` | SSE 浜嬩欢娴侊紙session/event 鎽樿锛?| 鏄?|
-| GET | `/m/api/catalog` | 妯″瀷/鎺ㄧ悊/鏉冮檺/棰勮鐩綍 | 鏄?|
-| GET/POST | `/m/api/session-config` | 浼氳瘽閰嶇疆璇?鏀?| 鏄?|
-| POST | `/m/api/sessions` | 鏂板缓浼氳瘽 | 鏄?|
-| GET | `/m/api/notifications` | 閫氱煡鍒楄〃 | 鏄?|
-| POST | `/m/api/notifications/read` | 鏍囪宸茶 | 鏄?|
-| GET | `/m/api/actions` | 鎻掍欢鍔ㄤ綔娓呭崟 | 鏄?|
-| POST | `/m/api/actions/:id/invoke` | 鎵ц鎻掍欢鍔ㄤ綔 | 鏄?|
-| GET | `/m/api/usage` | 浼氳瘽 token 鐢ㄩ噺 | 鏄?|
-| GET | `/m/api/workspaces` | 宸叉敞鍐屽伐浣滃尯 | 鏄?|
-| GET/POST | `/m/api/directories` | 鐩綍娴忚/鏂板缓鏂囦欢澶?| 鏄?|
-| GET | `/m/api/diagnostics` | 鐜璇婃柇 | 鏄?|
-| GET | `/m/api/balance` | DeepSeek 瀹樻柟浣欓 | 鏄?|
-| GET | `/m/api/qr-config` | 妗岄潰浜岀淮鐮佹暟鎹紙loopback only锛?| 鍚︼紙loopback锛?|
-| POST | `/m/api/defaults` | 淇敼榛樿 Agent/鏉冮檺棰勮 | 鏄?|
-| GET | `/m/qr.png` | 浜岀淮鐮?PNG | 鍚?|
+| GET | `/m/api/bootstrap` | 初始状态：地址、认证要求、agent 摘要、会话列表 | 是 |
+| POST | `/m/api/send` | 向指定/默认 agent 注入消息 | 是 |
+| GET | `/m/api/sessions` | 会话列表 | 是 |
+| GET | `/m/api/history` | 指定会话的事件历史（增量） | 是 |
+| GET | `/m/api/events` | SSE 事件流（session/event 摘要） | 是 |
+| GET | `/m/api/catalog` | 模型/推理/权限/预设目录 | 是 |
+| GET/POST | `/m/api/session-config` | 会话配置（读写） | 是 |
+| POST | `/m/api/sessions` | 新建会话 | 是 |
+| POST | `/m/api/sessions/touch` | 标记会话被打开（最近活跃排序） | 是 |
+| POST | `/m/api/sessions/archive` | 归档会话 | 是 |
+| POST | `/m/api/sessions/unarchive` | 恢复（取消归档） | 是 |
+| POST | `/m/api/sessions/stop` | 停止（取消）会话当前运行 | 是 |
+| POST | `/m/api/sessions/fork` | 在新对话中分支（映射内核 `session.fork`） | 是 |
+| GET/POST | `/m/api/feedback` | 消息反馈 👍/👎（内核 `messageFeedback` 服务，与 PC 端同一份） | 是 |
+| GET | `/m/api/notifications` | 通知列表 | 是 |
+| POST | `/m/api/notifications/read` | 标记已读 | 是 |
+| POST | `/m/api/notifications/delete` | 删除通知记录（单条/批量/全部） | 是 |
+| POST | `/m/api/respond` | 回答内核问询/审批（与 PC 端 GUI 同一 respond 通道） | 是 |
+| GET | `/m/api/actions` | 插件动作清单 | 是 |
+| POST | `/m/api/actions/:id/invoke` | 执行插件动作 | 是 |
+| GET | `/m/api/usage` | 会话 token 用量 | 是 |
+| GET | `/m/api/workspaces` | 已注册工作区 | 是 |
+| GET/POST | `/m/api/directories` | 目录浏览/新建文件夹 | 是 |
+| GET | `/m/api/diagnostics` | 环境诊断 | 是 |
+| GET | `/m/api/balance` | DeepSeek 官方余额 | 是 |
+| GET | `/m/api/qr-config` | 桌面二维码数据（loopback only） | 否（loopback） |
+| POST | `/m/api/defaults` | 修改默认 Agent/权限预设 | 是 |
+| GET | `/m/qr.png` | 二维码 PNG | 否 |
 
-## 3. 绔偣璇﹁堪锛坴1 鏃㈡湁绔偣锛?
+## 3. 端点详述（v1 既有端点）
 ### 3.1 GET /m/api/bootstrap
 
-**鍝嶅簲 200**
+**响应 200**
 
 ```json
 {
@@ -54,43 +67,77 @@
 }
 ```
 
-- `urls`锛氭寜浼樺厛绾ф帓鍒椻€斺€旈涓潪 internal IPv4锛堝惈 Tailscale 100.x 娈碉級鍦ㄥ墠锛宭oopback 鏈€鍚庯紱`port` 鏉ヨ嚜 `ctx.webServer.port`銆?- `agents[].status`锛歚"running" | "idle"`锛堟槧灏勮嚜 agent 鐘舵€?鏈€杩戜簨浠舵帹鏂級銆?- 鏈璇侊細`401`锛堣閫氱敤绾﹀畾锛夈€?
+- `urls`：按优先级排列——首个非 internal IPv4（含 Tailscale 100.x 段）在前，loopback 最后；`port` 来自 `ctx.webServer.port`。
+- `agents[].status`：`"running" | "idle"`（映射自 agent 状态与最近事件推断）。
+- 未认证：`401`（见通用约定）。
 ### 3.2 POST /m/api/send
-**璇锋眰**
+**请求**
 
 ```json
-{ "sessionId": "session-abc", "text": "甯垜璺戜竴涓嬫祴璇? }
+{ "sessionId": "session-abc", "text": "帮我跑一下测试" }
 ```
 
-- `sessionId` 鍙€夛細鎸囧畾浼氳瘽锛堝繀椤诲瓨鍦ㄤ笖鍏?agent 瀛樻椿锛夛紱缂虹渷 鈫?绗竴涓?root agent銆?
-**鍝嶅簲**
+- `sessionId` 可选：指定会话（必须存在且其 agent 存活）；缺省 → 第一个 root agent。
+**响应**
 
 - `200 { "ok": true, "agentId": "session-abc", "messageId": "m_<uuid>" }`
-- `400 { "error": "empty-text" }`锛歵ext 涓虹┖鎴栭潪瀛楃涓?- `404 { "error": "session-not-found" }`锛氭寚瀹氫細璇濅笉瀛樺湪
-- `503 { "error": "no-live-agent" }`锛氭棤鍖归厤鐨勮繍琛屼腑 agent
-- `503 { "error": "agents-unavailable" }`锛歛gents 鏈嶅姟涓嶅彲鐢紙闈?web 缁勫悎鎴栧惎鍔ㄤ腑锛?
-**璇箟**锛氭湇鍔＄鏋勯€?`createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 鍚庤皟鐢?`agent.followup(message)`銆俙followup` 浼氭寔涔呭寲娑堟伅骞跺敜閱掔┖闂查┍鍔ㄥ櫒锛涗笉绛夊緟鎵ц缁撴灉锛堢粨鏋滅粡 SSE 鍥炴祦锛夈€?
+- `400 { "error": "empty-text" }`：text 为空或非字符串
+- `404 { "error": "session-not-found" }`：指定会话不存在
+- `503 { "error": "no-live-agent" }`：无匹配的运行中 agent
+- `503 { "error": "agents-unavailable" }`：agents 服务不可用（非 web 组合或启动中）
+**语义**：服务端构造 `createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 后调用 `agent.followup(message)`。`followup` 会持久化消息并唤醒空闲驱动器；不等待执行结果（结果经 SSE 回流）。
 ### 3.3 GET /m/api/sessions
 
-**鍝嶅簲 200**
+**响应 200**
 
 ```json
 {
   "ok": true,
   "sessions": [
-    { "id": "session-abc", "createdAt": 1750000000000, "cwd": "F:\\DSH-Outpost", "lastEventSeq": 42 }
+    {
+      "id": "session-abc",
+      "createdAt": 1750000000000,
+      "cwd": "F:\\DSH-Outpost",
+      "live": true,
+      "title": "会话标题（活动会话）",
+      "archived": false,
+      "lastActivity": 1750000123456
+    }
   ]
 }
 ```
 
-鎺掑簭锛歚createdAt` 鍊掑簭銆傛暟鎹簮 `ctx.sessions.list()`銆?
-### 3.4 GET /m/api/history
+- 排序：`lastActivity` 倒序（无活跃记录时回退 `createdAt`）。数据源：优先 `sessionQuery.listSessions()`（含休眠会话），回退 `ctx.sessions.list()`（仅活动会话）。
+- `archived`：是否已归档（见 3.4 归档接口）。
+- `lastActivity`：最近活跃时间（ms）。任意会话事件（SSE）与移动端"打开会话"（3.4 touch）都会更新，持久化于 `~/.dsh/mobile-remote/session-activity.json`。
 
-**鏌ヨ鍙傛暟**
+### 3.4 归档 / 活跃时间接口
 
-- `sessionId`锛堝繀濉級锛氱洰鏍囦細璇?- `after`锛堝彲閫夛級锛?*澧為噺妯″紡**鈥斺€斿彧杩斿洖 `seq > after` 鐨勪簨浠讹紙SSE 閲嶈繛琛ユ紡鐢級銆?- `before`锛堝彲閫夛級锛?*涓婄炕鍒嗛〉**鈥斺€斿彧杩斿洖 `seq < before` 鐨勬渶杩?`limit` 鏉′簨浠讹紙瀵硅瘽鍐呮粴鍔ㄥ埌椤堕儴鍔犺浇鏇存棭锛夈€?- 涓夌妯″紡浼樺厛绾э細`after` > `before` > 鍒濆鍔犺浇锛堢己鐪佹椂杩斿洖鏈€杩?`limit` 鏉★紝鍗冲熬閮級銆?- `limit`锛堝彲閫夛紝榛樿 500锛屼笂闄?1000锛夛細鏈€澶氳繑鍥炴潯鏁?
-**杩囨护瑙勫垯**锛氬彧杩斿洖浼氳瘽"琛ㄩ潰"浜嬩欢锛坄user/message`銆乣assistant/message`銆乣tool/call`銆乣tool/result`銆乣turn/start`銆乣turn/end`锛夈€倀oken 绾?`assistant/chunk`銆乣agent/inbox/spliced`銆乣request/*` 绛夋棩蹇楀瀷浜嬩欢涓嶈繑鍥烇紙鏁伴噺鍙揪鍗佷竾绾э紝浼氭饭娌＄Щ鍔ㄧ锛涘畬鏁村洖澶嶇敱 `assistant/message` 鍏滃簳锛夈€係SE 瀹炴椂娴佷笉鍙楁杩囨护褰卞搷銆?
-**鍝嶅簲 200**
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/m/api/sessions/touch` | 标记会话被打开（更新 lastActivity） |
+| POST | `/m/api/sessions/archive` | 归档会话（映射内核 `workspace.archiveSession`，与 PC 端同一份状态） |
+| POST | `/m/api/sessions/unarchive` | 恢复（取消归档） |
+| POST | `/m/api/sessions/stop` | 停止（取消）会话当前运行（映射核心 RPC `session.cancel`） |
+
+请求体统一为 `{ "sessionId": "session-abc" }`。
+
+- `touch` 响应：`200 { "ok": true, "lastActivity": 1750000123456 }`
+- `archive` / `unarchive` 响应：`200 { "ok": true, "archived": true|false }`
+- `stop` 响应：`200 { "ok": true, "accepted": true }`；会话未激活时 `500 { "error": "cancel-failed" }`
+- 归档状态即内核 `workspaceRegistry.archivedSessionIds`（与 PC 端同一份）：PC 端归档的会话在移动端同样显示为已归档，反之亦然。归档会话仍出现在 3.3 列表中（`archived: true`），由客户端分栏展示。
+
+### 3.5 GET /m/api/history
+
+**查询参数**
+
+- `sessionId`（必填）：目标会话
+- `after`（可选）：**增量模式**——只返回 `seq > after` 的事件（SSE 重连补漏用）。
+- `before`（可选）：**上翻分页**——只返回 `seq < before` 的最近 `limit` 条事件（对话内滚动到顶部加载更早）。
+- 三种模式优先级：`after` > `before` > 初始加载（缺省时返回最近 `limit` 条，即尾部）。
+- `limit`（可选，默认 500，上限 1000）：最多返回条数
+**过滤规则**：只返回会话"表面"事件（`user/message`、`assistant/message`、`tool/call`、`tool/result`、`turn/start`、`turn/end`）。token 级 `assistant/chunk`、`agent/inbox/spliced`、`request/*` 等日志型事件不返回（数量可达十万级，会淹没移动端；完整回复由 `assistant/message` 兜底）。SSE 实时流不受此过滤影响。
+**响应 200**
 
 ```json
 {
@@ -98,80 +145,95 @@
   "sessionId": "session-abc",
   "after": 42,
   "events": [
-    { "seq": 43, "type": "user/message", "data": { "text": "甯垜璺戜竴涓嬫祴璇? } }
+    { "seq": 43, "type": "user/message", "data": { "text": "帮我跑一下测试" } }
   ]
 }
 ```
 
-`events[]` 浣跨敤涓?SSE 甯х浉鍚岀殑鎽樿鏍煎紡锛堣 3.7锛夛紝淇濊瘉瀹㈡埛绔幓閲嶉€昏緫鍗曚竴銆傛暟鎹簮锛歚ctx.sessions.get(id).events`锛堣拷鍔犲紡鍐荤粨蹇収锛屽ぉ鐒舵寜 seq 鏈夊簭锛夈€?
+`events[]` 使用与 SSE 帧相同的摘要格式（见 3.6），保证客户端去重逻辑单一。数据源：`ctx.sessions.get(id).events`（追加式冻结快照，天然按 seq 有序）。
 - `404 { "error": "session-not-found" }`
 
-### 3.5 GET /m/api/events（SSE）
-`Content-Type: text/event-stream`銆傚抚鏍煎紡锛坄data:` 鍗曡 JSON锛夛細
+### 3.6 GET /m/api/events（SSE）
+`Content-Type: text/event-stream`。帧格式（`data:` 单行 JSON）：
 
 ```json
 { "type": "session/event", "sessionId": "session-abc", "seq": 44, "event": { "type": "turn/end", "data": { "reason": { "kind": "complete" } } } }
 ```
 
-**浜嬩欢鎽樿 `event` 瀛楁**锛堟湇鍔＄瑁佸壀锛岃 02 搂5.2锛夛細
+**事件摘要 `event` 字段**（服务端裁剪，见 02 §5.2）：
 
-| event.type | event.data 鍐呭 |
+| event.type | event.data 内容 |
 |---|---|
-| `user/message` | `{ text: string }`锛坱ext blocks 鎷兼帴锛屸墹2000 瀛楃锛?|
+| `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符） |
 | `assistant/message` | `{ text: string, reasoningChars: number }` |
-| `assistant/chunk` | `{ text: string }`锛堜粎鏂囨湰 delta锛?|
-| `tool/result` | `{ name: string, isError: boolean, text: string }`锛堚墹2000 瀛楃锛?|
+| `assistant/chunk` | `{ text: string }`（仅文本 delta） |
+| `tool/result` | `{ name: string, isError: boolean, text: string }`（≤2000 字符） |
 | `turn/start` | `{ turn: number }` |
 | `turn/end` | `{ turn: number, reason: object }` |
-| 鍏朵粬 | 浠?`type`锛屾棤 data锛堝鎴风蹇界暐锛?|
+| 其他 | 仅 `type`，无 data（客户端忽略） |
 
-**鎺у埗甯?*锛氳繛鎺ュ缓绔嬪悗绔嬪嵆 `data: {"type":"hello","serverTime":...}`锛涙瘡 25s `: ping` 娉ㄩ噴琛屻€?
-**閿欒璇箟**锛氶壌鏉冨け璐ュ湪杩炴帴寤虹珛闃舵浠?`401` HTTP 鐘舵€佽繑鍥烇紙EventSource 浼氳Е鍙?error 浜嬩欢锛屽鎴风杞櫥褰曟€侊級銆?
-### 3.6 GET /m/qr.png
+**控制帧**：连接建立后立即 `data: {"type":"hello","serverTime":...}`；每 25s `: ping` 注释行。
+**错误语义**：鉴权失败在连接建立阶段以 `401` HTTP 状态返回（EventSource 会触发 error 事件，客户端转登录态）。
 
-**鏌ヨ鍙傛暟**锛歚text`锛堝繀濉紝浜岀淮鐮佸唴瀹癸紝URL 缂栫爜锛夈€傛棤 `text` 鈫?`400`銆?**鍝嶅簲**锛歚200 image/png`锛坬rcode 鍖呯敓鎴愶紝灏哄 512锛岀籂閿欑骇鍒?M锛夈€?
-## 4. 閿欒鐮佹眹鎬?
-| HTTP | error 鍊?| 鍦烘櫙 |
+### 3.6b SSE 帧类型汇总（v2.3+ 扩展）
+
+除 3.6 的 `session/event` 外，SSE 还会推送：
+
+| type | 说明 |
+|---|---|
+| `session/context` | `{ sessionId, contextWindow }`——模型上下文窗口（`request/context` 事件，PC 端圆环同源） |
+| `agent/status` | `{ agentId, status }`——running / waiting / idle |
+| `notifications/changed` | 通知记录增删（如移动端删除后），客户端刷新列表与角标 |
+| `mobile/frame` | 内核瞬态帧（问询/审批/队列）。`frame` 字段为 `question/requested`（含 `rpcId`、`questions[]`）、`question/resolved`（`questionRpcId`）、`approval/requested`（`rpcId`、`approvalId`、`toolName`、`reason?`）、`approval/resolved`（`approvalId`）、`session/queue`。**App 断线重连时服务端补发挂起的待答帧**（`pendingFrames` 回放） |
+
+客户端应按 `type` 分派；未知 type 一律忽略（前向兼容）。
+### 3.7 GET /m/qr.png
+
+**查询参数**：`text`（必填，二维码内容，URL 编码）。无 `text` → `400`。 **响应**：`200 image/png`（qrcode 包生成，尺寸 512，纠错级别 M）。
+## 4. 错误码汇总
+| HTTP | error 值 | 场景 |
 |---|---|---|
-| 400 | `bad-request` | JSON 瑙ｆ瀽澶辫触 / 缂哄弬 / 鍙傛暟绫诲瀷閿欒 |
-| 400 | `empty-text` | send 鐨?text 涓虹┖ |
-| 401 | `auth-required` | 鏈彁渚涙湁鏁堝嚟璇?|
-| 401 | `bad-token` | 鐧诲綍鍙ｄ护閿欒 |
-| 404 | `not-found` | 鏈煡璺緞 |
-| 404 | `session-not-found` | 浼氳瘽涓嶅瓨鍦?|
-| 405 | `method-not-allowed` | 鏂规硶涓嶆敮鎸侊紙GET 绔偣鏀跺埌 POST 绛夛級 |
-| 503 | `no-live-agent` | 鏃犺繍琛屼腑 agent |
-| 503 | `agents-unavailable` | agents 鏈嶅姟涓嶅彲鐢?|
+| 400 | `bad-request` | JSON 解析失败 / 缺参 / 参数类型错误 |
+| 400 | `empty-text` | send 的 text 为空 |
+| 401 | `auth-required` | 未提供有效凭证 |
+| 401 | `bad-token` | 登录口令错误 |
+| 404 | `not-found` | 未知路径 |
+| 404 | `session-not-found` | 会话不存在 |
+| 405 | `method-not-allowed` | 方法不支持（GET 端点收到 POST 等） |
+| 503 | `no-live-agent` | 无运行中 agent |
+| 503 | `agents-unavailable` | agents 服务不可用 |
 
-## 5. 鐗堟湰鍏煎绛栫暐
+## 5. 版本兼容策略
 
-- 绔偣浠呰拷鍔犮€佷笉鐮村潖鎬т慨鏀癸紱`event` 鎽樿鏍煎紡鍏佽澧炲姞瀛楁锛岀姝㈠垹闄?閲嶅懡鍚嶆棦鏈夊瓧娈点€?- 鍓嶇涓庡悗绔悓鍖呭彂甯冿紙鍗曟枃浠堕〉闈㈢敱鎻掍欢鑷韩鏈嶅姟锛夛紝鏃犺法鐗堟湰閮ㄧ讲闂銆?
-## 6. 绉诲姩绔柊澧炵鐐癸紙Phase 1锛寁2.0锛?
-> 鍏ㄩ儴瑕佹眰閴存潈锛堜笌鏃㈡湁绔偣涓€鑷达級锛涘啓鎿嶄綔閬靛惊涓?PC 绔浉鍚岀殑纭璇箟锛堝 Full Access 椋庨櫓纭鐢卞鎴风鍏堣锛屾湇鍔＄鍦ㄥ弬鏁颁腑鎼哄甫纭鏍囪锛夈€?
-### 6.1 绔偣鎬昏〃
+- 端点仅追加、不破坏性修改；`event` 摘要格式允许增加字段，禁止删除/重命名既有字段。
+- 前端与后端同包发布（单文件页面由插件自身服务），无跨版本部署问题。
+## 6. 移动端新增端点（Phase 1，v2.0）
+> 全部要求鉴权（与既有端点一致）；写操作遵循与 PC 端相同的确认语义（如 Full Access 风险确认由客户端先行，服务端在参数中携带确认标记）。
+### 6.1 端点总表
 
-| 鏂规硶 | 璺緞 | 鐢ㄩ€?|
+| 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/m/api/catalog` | 妯″瀷鐩綍 + 鎺ㄧ悊寮哄害 + 鏉冮檺棰勮 + Agent 棰勮锛堝叏閮ㄦ灇涓撅紝涓€娆℃媺鍙栵級 |
-| GET | `/m/api/session-config` | 褰撳墠浼氳瘽閰嶇疆锛堟ā鍨?鎺ㄧ悊寮哄害/鏉冮檺/棰勮锛?|
-| POST | `/m/api/session-config` | 鏇存柊褰撳墠浼氳瘽閰嶇疆 |
-| POST | `/m/api/sessions` | 鏂板缓浼氳瘽锛坧reset 鍙傛暟锛?|
-| GET | `/m/api/notifications` | 閫氱煡鍒楄〃锛堟湭璇?宸茶锛?|
-| POST | `/m/api/notifications/read` | 鏍囪宸茶锛堝崟鏉?鍏ㄩ儴锛?|
-| GET | `/m/api/actions` | 鎻掍欢鍔ㄤ綔娓呭崟锛堝疄鏃讹級 |
-| POST | `/m/api/actions/:id/invoke` | 鎵ц鎻掍欢鍔ㄤ綔 |
-| GET | `/m/api/usage` | 浼氳瘽 token 鐢ㄩ噺缁熻锛坴2.1锛?|
-| GET | `/m/api/workspaces` | 宸叉敞鍐屽伐浣滃尯锛堟柊寤轰細璇濋粯璁ょ洰褰曪紝v2.1锛?|
-| GET | `/m/api/directories` | 鐩綍娴忚锛堢洏绗?瀛愮洰褰曪紝v2.1锛?|
-| POST | `/m/api/directories` | 鏂板缓鏂囦欢澶癸紙v2.1锛?|
-| GET | `/m/api/diagnostics` | 鐜璇婃柇锛堟湇鍔?绔偣瀹炴祴锛寁2.1锛?|
-| GET | `/m/api/balance` | DeepSeek 瀹樻柟浣欓锛堟湇鍔＄浠ｆ煡锛寁2.1锛?|
-| GET | `/m/api/qr-config` | 妗岄潰浜岀淮鐮佹暟鎹紙loopback only锛寁2.1锛?|
-| POST | `/m/api/defaults` | 淇敼榛樿 Agent/鏉冮檺棰勮锛坴2.1锛?|
+| GET | `/m/api/catalog` | 模型目录 + 推理强度 + 权限预设 + Agent 预设（全部枚举，一次拉取） |
+| GET | `/m/api/session-config` | 当前会话配置（模型/推理强度/权限/预设） |
+| POST | `/m/api/session-config` | 更新当前会话配置 |
+| POST | `/m/api/sessions` | 新建会话（preset 参数） |
+| GET | `/m/api/notifications` | 通知列表（未读/已读） |
+| POST | `/m/api/notifications/read` | 标记已读（单条/全部） |
+| POST | `/m/api/notifications/delete` | 删除通知记录（单条/批量/全部，v2.3） |
+| GET | `/m/api/actions` | 插件动作清单（实时） |
+| POST | `/m/api/actions/:id/invoke` | 执行插件动作 |
+| GET | `/m/api/usage` | 会话 token 用量统计（v2.1） |
+| GET | `/m/api/workspaces` | 已注册工作区（新建会话默认目录，v2.1） |
+| GET | `/m/api/directories` | 目录浏览（盘符/子目录，v2.1） |
+| POST | `/m/api/directories` | 新建文件夹（v2.1） |
+| GET | `/m/api/diagnostics` | 环境诊断（服务端端点实测，v2.1） |
+| GET | `/m/api/balance` | DeepSeek 官方余额（服务端代查，v2.1） |
+| GET | `/m/api/qr-config` | 桌面二维码数据（loopback only，v2.1） |
+| POST | `/m/api/defaults` | 修改默认 Agent/权限预设（v2.1） |
 
 ### 6.2 GET /m/api/catalog
 
-杩斿洖 PC 绔湡瀹炴灇涓撅紙鍗曚竴浜嬪疄婧愶紝瀹㈡埛绔笉纭紪鐮侊級锛?
+返回 PC 端真实枚举（单一事实源，客户端不硬编码）：
 ```json
 {
   "ok": true,
@@ -181,15 +243,15 @@
   ],
   "reasoningEfforts": ["off", "high", "max"],
   "permissionPresets": [
-    { "id": "read-only", "name": "Read Only", "description": "鍙 路 鎷掔粷涓€鍒囧啓鍏ユ搷浣? },
-    { "id": "workspace-write", "name": "Workspace Write", "description": "浠呭伐浣滃尯鍐呰鍐?路 鍗遍櫓鎿嶄綔鍓嶈闂? },
-    { "id": "danger-full-access", "name": "Danger Full Access", "description": "瀹屽叏璁块棶 路 鍙墽琛屼换浣曟搷浣? }
+    { "id": "read-only", "name": "Read Only", "description": "只读 · 拒绝一切写入操作" },
+    { "id": "workspace-write", "name": "Workspace Write", "description": "仅工作区内读写 · 危险操作前询问" },
+    { "id": "danger-full-access", "name": "Danger Full Access", "description": "完全访问 · 可执行任何操作" }
   ],
   "agentPresets": [
-    { "id": "standard", "name": "鏍囧噯妯″紡", "description": "鍔熻兘瀹屾暣鐨勭紪鐮?Agent锛氭枃浠剁紪杈戙€丼hell銆佹枃浠朵笌缃戦〉妫€绱€丼kills銆佽鍒掋€佺洰鏍囥€佸瓙浠ｇ悊鍜屽伐浣滄祦" },
-    { "id": "code", "name": "PTC 妯″紡", "description": "鈥? },
-    { "id": "minimal", "name": "鏋佺畝妯″紡", "description": "鈥? },
-    { "id": "cordis", "name": "鍒涢€犳ā寮?, "description": "鈥? }
+    { "id": "standard", "name": "标准模式", "description": "功能完整的编码 Agent：文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流" },
+    { "id": "code", "name": "PTC 模式", "description": "—" },
+    { "id": "minimal", "name": "极简模式", "description": "—" },
+    { "id": "cordis", "name": "创造模式", "description": "—" }
   ],
   "defaults": {
     "model": "deepseek-v4-flash",
@@ -200,7 +262,7 @@
 }
 ```
 
-鏁版嵁鏉ユ簮锛歚ctx.llm.listProviders()/listModels()`銆乸rovider 閰嶇疆锛坮easoningEffort 鏋氫妇锛夈€乣ctx.sandboxPolicy`/permission-presets 鏈嶅姟銆乤gent-presets 鐩綍 manifest锛坣ame/description锛夈€傞粯璁ゅ€兼潵鑷?settings/閰嶇疆鏍戙€?
+数据来源：`ctx.llm.listProviders()/listModels()`、provider 配置（reasoningEffort 枚举）、`ctx.sandboxPolicy`/permission-presets 服务、agent-presets 目录 manifest（name/description）。默认值来自 settings/配置树。
 ### 6.3 GET /m/api/session-config
 
 ```json
@@ -217,7 +279,7 @@
 
 ### 6.4 POST /m/api/session-config
 
-**璇锋眰**锛堜笁涓瓧娈靛潎鍙€夛紝鍙洿鏂扮粰瀹氶」锛夛細
+**请求**（三个字段均可选，只更新给定项）：
 
 ```json
 {
@@ -229,10 +291,12 @@
 }
 ```
 
-- `permissionPreset` 涓?`danger-full-access` 鏃?`confirmDanger` 蹇呴』涓?`true`锛屽惁鍒?`400 { "error": "risk-confirmation-required" }`锛堜笌 PC 绔?Full access 闇€鏄惧紡纭椋庨櫓"涓€鑷达級銆?- 鏉冮檺鍐欏叆璧?PC 绔悓涓€璺緞锛坄permission/preset` + sandbox/approval 鏃嬮挳浜嬩欢锛夈€?- 淇敼褰撳墠浼氳瘽閰嶇疆涓嶅垱寤烘柊浜嬩欢涔嬪鐨勪簨瀹烇紱`404 session-not-found`銆?
-### 6.5 POST /m/api/sessions锛堟柊寤轰細璇濓級
+- `permissionPreset` 为 `danger-full-access` 时 `confirmDanger` 必须为 `true`，否则 `400 { "error": "risk-confirmation-required" }`（与 PC 端 Full access 需显式确认风险一致）。
+- 权限写入走 PC 端同一路径（`permission/preset` + sandbox/approval 旋钮事件）。
+- 修改当前会话配置不产生新事件；`404 session-not-found`。
+### 6.5 POST /m/api/sessions（新建会话）
 
-**璇锋眰**锛?
+**请求**：
 ```json
 {
   "preset": "standard",
@@ -242,69 +306,109 @@
 }
 ```
 
-- `preset` 蹇呭～锛堝鎴风浠?catalog 閫夋嫨锛涢粯璁ゅ€肩敱鏈嶅姟绔?`defaults.agentPreset` 鍏滃簳锛夛紱鍏朵綑鍙€夈€?- 鏈嶅姟绔細`ctx.agents.create({ preset, ... })`锛堟寜 preset 缁勫悎浼氳瘽锛夛紝闅忓悗鎸夊弬鏁拌鍐欓厤缃€?
-**鍝嶅簲**锛歚200 { "ok": true, "sessionId": "session-xyz", "agentId": "session-xyz" }`鈥斺€斿鎴风闅忓嵆鍙?`POST /api/send` 鎴栬闃?SSE 璇ヤ細璇濄€?
+- `preset` 必填（客户端从 catalog 选择；默认值由服务端 `defaults.agentPreset` 兜底）；其余可选。
+- 服务端：`ctx.agents.create({ preset, ... })`（按 preset 组合会话），随后按参数覆写配置。
+**响应**：`200 { "ok": true, "sessionId": "session-xyz", "agentId": "session-xyz" }`——客户端随后即可 `POST /api/send` 或订阅 SSE 该会话。
 ### 6.6 GET /m/api/notifications
 
-閫氱煡鐢辨湇鍔＄浠庝細璇濅簨浠舵祦**鑱氬悎**锛堜笉鏂板瀛樺偍锛夛細
+通知由服务端从会话事件流**聚合**（不新增存储）：
 
 ```json
 {
   "ok": true,
   "unread": 2,
   "items": [
-    { "id": "n-1", "kind": "needs-answer", "sessionId": "session-abc", "title": "闇€瑕佷綘鍥炵瓟", "detail": "鍙戠幇 214 涓噸澶嶆枃浠讹紝鏄惁鍒犻櫎浠ラ噴鏀剧┖闂达紵", "time": 1750000000000, "unread": true },
-    { "id": "n-2", "kind": "completed", "sessionId": "session-abc", "title": "浠诲姟瀹屾垚", "detail": "澶囦唤閰嶇疆鍒?E 鐩橈紙鑰楁椂 4 鍒嗛挓锛?, "time": 1750000000000, "unread": true },
-    { "id": "n-3", "kind": "failed", "sessionId": "session-def", "title": "浠诲姟澶辫触", "detail": "鏃ュ織鍒嗘瀽浠诲姟鎵ц澶辫触锛屽凡鑷姩閲嶈瘯", "time": 1750000000000, "unread": false }
+    { "id": "n-1", "kind": "needs-answer", "sessionId": "session-abc", "title": "需要你回答", "detail": "发现 214 个重复文件，是否删除以释放空间？", "time": 1750000000000, "unread": true },
+    { "id": "n-2", "kind": "completed", "sessionId": "session-abc", "title": "任务完成", "detail": "备份配置到 E 盘（耗时 4 分钟）", "time": 1750000000000, "unread": true },
+    { "id": "n-3", "kind": "failed", "sessionId": "session-def", "title": "任务失败", "detail": "日志分析任务执行失败，已自动重试", "time": 1750000000000, "unread": false }
   ]
 }
 ```
 
-- `kind`锛歚completed`锛坱urn/end 姝ｅ父锛夈€乣needs-answer`锛堢瓑寰呬汉绫诲喅绛栤€斺€斾粠瀹℃壒/鎻愰棶鐩稿叧浜嬩欢鎺ㄥ锛孭hase 1 瀹炵幇鏃堕獙璇佽涔夛級銆乣failed`锛坱urn/end 寮傚父/aborted锛夈€?- **鏈鐘舵€佹寔涔呭寲**锛氭彃浠跺湪 settings 鍩熶繚瀛樺凡璇?id 闆嗗悎锛坄ctx.settings`锛夛紝鏈嶅姟閲嶅惎涓嶄涪銆?- 鎺掑簭锛氭椂闂村€掑簭锛涗笂闄?100 鏉°€?
+- `kind`：`completed`（turn/end 正常）、`needs-answer`（等待人类决策——从审批/提问相关事件推导，Phase 1 实现时验证语义）、`failed`（turn/end 异常/aborted）。
+- **未读状态持久化**：插件在 settings 域保存已读 id 集合（`ctx.settings`），服务重启不丢。
+- 排序：时间倒序；上限 100 条。
 ### 6.7 POST /m/api/notifications/read
 
 ```json
 { "ids": ["n-1", "n-2"] }
 ```
-鎴?`{ "all": true }`銆傚搷搴?`200 { "ok": true }`銆?
+或 `{ "all": true }`。响应 `200 { "ok": true }`。
+### 6.7b POST /m/api/notifications/delete（v2.3）
+
+```json
+{ "ids": ["n-1", "n-2"] }
+```
+或 `{ "all": true }`。删除移动端通知镜像中的记录（不影响 PC 端自己的通知中心）；不设墓碑——后续新事件仍会正常生成新通知。删除后经 SSE 广播 `notifications/changed` 帧，客户端刷新列表与未读角标。响应 `200 { "ok": true }`。
+### 6.7c POST /m/api/respond（v2.3，问询/审批弹窗）
+
+回答内核人类问询（`ask_user_question` 工具）或权限审批。插件经 `apiProxy.respond` 回写，**与 PC 端 GUI 完全同一 pending 通道与校验**（`matchesQuestions`、审批决策等由内核把关）：
+
+**问询**（`kind: "question"`，answers 顺序与提问一致、每问必答）：
+
+```json
+{ "kind": "question", "rpcId": "<frame 携带的 rpcId>", "sessionId": "session-abc",
+  "answers": [ { "id": "q1", "selected": ["方案A"] }, { "id": "q2", "selected": [], "custom": "先跳过" } ] }
+```
+
+- 单选：`selected` 至多 1 项；给了 `custom` 则 `selected` 必须为空（二选一）。
+- 多选：`selected` 多项；`custom` 可与之并存。
+- `selected` 必须是提问声明的选项 label。
+
+**审批**（`kind: "approval"`）：
+
+```json
+{ "kind": "approval", "rpcId": "...", "sessionId": "session-abc", "approvalId": "a-1", "outcome": "allowed-once" }
+```
+
+- `outcome`：`allowed-once` | `rejected`。
+
+**取消**（`kind: "cancel"`）：内核收到 cancelled，agent 按 `ASK_CANCELLED` 继续。
+
+响应：`200 { "ok": true, "accepted": true }`；`accepted: false` + `reason`（如 `not-pending`，PC 端已先回答）。
+
+**SSE 帧**：`question/requested`（含 `questions[]`）、`question/resolved`、`approval/requested`（toolName/reason）、`approval/resolved`，经 `mobile/frame` 帧推送；App 断线重连时服务端补发挂起的待答帧。
 ### 6.8 GET /m/api/actions
 
-**鍔ㄤ綔濂戠害 v0.1**锛堝彲閫夎兘鍔涳紝鎻掍欢涓嶆敞鍐屽垯杩斿洖绌烘暟缁勶紝瀹㈡埛绔殣钘忓姩浣滃尯锛夛細
+**动作契约 v0.1**（可选能力，插件不注册则返回空数组，客户端隐藏动作区）：
 
 ```json
 {
   "ok": true,
   "actions": [
-    { "id": "fs-cleanup", "title": "娓呯悊纾佺洏", "icon": "trash", "fields": [ { "key": "target", "label": "鐩爣鐩綍", "placeholder": "濡?F:\\璧勬枡" } ] },
-    { "id": "test-run", "title": "璺戞祴璇?, "icon": "zap", "fields": [] }
+    { "id": "fs-cleanup", "title": "清理磁盘", "icon": "trash", "fields": [ { "key": "target", "label": "目标目录", "placeholder": "如 F:\\资料" } ] },
+    { "id": "test-run", "title": "跑测试", "icon": "zap", "fields": [] }
   ]
 }
 ```
 
-- 鏈嶅姟绔敞鍐岃〃锛歚ctx.mobileActions.register({ id, title, icon, fields?, handler })`鈥斺€攊d 鍐茬獊鎶涢敊锛圕ordis 璇箟锛夛紱鎻掍欢鍗歌浇闅?fiber dispose 鑷姩绉婚櫎銆?- `icon` 闄愬畾涓虹Щ鍔ㄧ鍐呯疆鍥炬爣搴撶殑 id锛堜笉鍏佽鎻掍欢鑷甫 UI/鍥炬爣锛夈€?- `fields`锛歷0.1 浠呮敮鎸?`text` 绫诲瀷瀛楁銆?
+- 服务端注册表：`ctx.mobileActions.register({ id, title, icon, fields?, handler })`——id 冲突抛错（Cordis 语义）；插件卸载随 fiber dispose 自动移除。
+- `icon` 限定为移动端内置图标库的 id（不允许插件自带 UI/图标）。
+- `fields`：v0.1 仅支持 `text` 类型字段。
 ### 6.9 POST /m/api/actions/:id/invoke
 
-**璇锋眰**锛歚{ "args": { "target": "F:\\璧勬枡" } }`
+**请求**：`{ "args": { "target": "F:\\资料" } }`
 
-- 鏈嶅姟绔牎楠屾敞鍐岃〃瀛樺湪涓庡弬鏁扮被鍨嬶紝璋冪敤 `handler(args)`锛堣窇鍦ㄧ數鑴戠锛夈€?- 鎵ц缁撴灉**涓嶇洿鎺ヨ繑鍥?*锛堝彲鑳介暱浠诲姟锛夛細`200 { "ok": true, "accepted": true }`锛涘悗缁繘灞曠粡 SSE 浼氳瘽浜嬩欢鍥炴祦锛堝姩浣滃簲閫氳繃鏃㈡湁娑堟伅/宸ュ叿閫氶亾鍛堢幇锛夈€?
-### 6.10 GET /m/api/qr-config锛堟闈簩缁寸爜鏁版嵁锛寁2.1锛?
-**浠呯數鑴戞湰鏈哄彲璁块棶**锛圱CP socket 鏉ユ簮涓?loopback锛屽惁鍒?403 `loopback-only`锛夆€斺€?妗岄潰 dsh 璁剧疆椤靛鎴风妯″潡鐢ㄥ畠鐢熸垚銆岃繛鎺ョЩ鍔ㄧ璁惧銆嶄簩缁寸爜銆?
-**鍝嶅簲**锛歚{ "ok": true, "urls": ["http://192.168.1.100:3080/m", ...], "token": "<authToken>", "path": "/m" }`
+- 服务端校验注册表存在与参数类型，调用 `handler(args)`（跑在电脑端）。
+- 执行结果**不直接返回**（可能长任务）：`200 { "ok": true, "accepted": true }`；后续进展经 SSE 会话事件回流（动作应通过既有消息/工具通道呈现）。
+### 6.10 GET /m/api/qr-config（桌面二维码数据，v2.1）
+**仅电脑本机可访问**（TCP 层 socket 来源，仅 loopback 可访问；否则 403 `loopback-only`）—— 桌面 dsh 设置页客户端模块用它生成「连接移动端设备」二维码。
+**响应**：`{ "ok": true, "urls": ["http://192.168.1.100:3080/m", ...], "token": "<authToken>", "path": "/m" }`
 
-浜岀淮鐮佸唴瀹规牸寮忥細`DSHREMOTE|<鍦板潃>|<鍙ｄ护>`锛堝湴鍧€涓?urls 涓涓潪鍥炵幆椤癸紝涓嶅惈 /m 灏惧反锛夈€侫pp 鎵爜瑙ｆ瀽鍚庤嚜鍔ㄩ厤缃繛鎺ャ€?
-### 6.11 POST /m/api/defaults锛堜慨鏀归粯璁ら厤缃紝v2.1锛?
-淇敼**榛樿 Agent 棰勮 / 榛樿鏉冮檺棰勮**锛堜綔鐢ㄤ簬涔嬪悗鏂板缓鐨勪細璇濓級锛屼笌 PC 绔缃〉鍚屼竴鍐欏叆閫氶亾锛堣蛋 `/api` 妗?`settings.update`锛屼笉鍦?HTTP 鍥炶皟鐩存帴璋?settings 鏈嶅姟锛夈€?
-**璇锋眰**锛歚{ "agentPreset": "code", "permissionPreset": "workspace-write" }`锛堜袱鑰呭潎鍙€夛級
+二维码内容格式：`DSHREMOTE|<地址>|<口令>`（地址取 `urls` 中首个非回环项，不含 /m 尾巴）。App 扫码解析后自动配置连接。
+### 6.11 POST /m/api/defaults（修改默认配置，v2.1）
+修改**默认 Agent 预设 / 默认权限预设**（作用于之后新建的会话），与 PC 端设置页同一写入通道（走 `/api` 调 `settings.update`，不在 HTTP 回调直接调 settings 服务）。
+**请求**：`{ "agentPreset": "code", "permissionPreset": "workspace-write" }`（两者均可选）
 
-**鍝嶅簲**锛歚200 { "ok": true }`锛涘け璐?`400 { "error": "update-failed", "detail": "<鍘熷洜>" }`
+**响应**：`200 { "ok": true }`；失败 `400 { "error": "update-failed", "detail": "<原因>" }`
 
-### 6.12 閿欒鐮佽ˉ鍏?
-| HTTP | error 鍊?| 鍦烘櫙 |
+### 6.12 错误码补全
+| HTTP | error 值 | 场景 |
 |---|---|---|
-| 400 | `risk-confirmation-required` | 閫?danger-full-access 鏈甫 confirmDanger |
-| 400 | `invalid-preset` | preset 涓嶅湪鐩綍涓?|
-| 404 | `action-not-found` | 鍔ㄤ綔 id 鏈敞鍐?|
-| 503 | `action-busy` | 鍚屼竴鍔ㄤ綔骞跺彂鎵ц闄愬埗锛坴0.1 鍙厛涓嶅仛锛?|
+| 400 | `risk-confirmation-required` | 选 danger-full-access 未带 confirmDanger |
+| 400 | `invalid-preset` | preset 不在目录内 |
+| 404 | `action-not-found` | 动作 id 未注册 |
+| 503 | `action-busy` | 同一动作并发执行限制（v0.1 可先不做） |
 
 
 
