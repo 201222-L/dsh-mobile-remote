@@ -57,12 +57,57 @@ npx @deepseek-ai/dsh web
 
 口令生成建议：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 
-## 5. 外出访问（Tailscale）
-1. 电脑安装 [Tailscale](https://tailscale.com/download) 并登录（**电脑保持开机**，dsh + Tailscale 运行）。
-2. 手机安装 Tailscale App 并登录**同一账号**（Tailscale IP 形如 `100.x.x.x`；电脑端 `tailscale ip` 查看）。
-3. **App 免配置自动切换**：App 连接成功后会自动从电脑收集全部地址（局域网 IP + Tailscale IP）并保存（设置 → 电脑地址显示「共 N 个地址自动切换」）；断线重试失败时会自动轮换候选地址——**出门自动切 Tailscale，回家自动切回局域网**，无需手动改配置。
-4. 无需开放公网端口、无需路由器配置；传输为 WireGuard 加密，设备身份即认证；访问口令（authToken）仍是第二道锁。
-> 禁止：将 3080 端口映射/穿透到公网。插件无内置公网防护（详见 04-security.md）。
+## 5. 外出访问（三选一）
+
+> 共同前提：家里电脑保持开机、dsh 运行。三者都与 App 的「多地址自动切换」兼容；方案 A 最省事，方案 B 国内最稳（需要一台有公网 IP 的 VPS），方案 C 零月费但依赖路由器。**禁止把 3080 端口直接映射/穿透到公网裸奔**。
+
+### 5A. ZeroTier（推荐首选，类 Tailscale 但国内可用）
+
+1. 电脑安装 [ZeroTier One](https://www.zerotier.com/download/) 并加入你的网络（网页端 zerotier.com 建网，免费）。
+2. 手机安装 ZeroTier One（官网/酷安/APKMirror 均有 APK，无需 Google Play），登录同一账号加入同一网络（手机 IP 形如 `10.147.x.x`/`172.x.x.x`）。
+3. **App 自动生效**：连接成功后 App 自动收集 ZeroTier 网段地址，断线自动轮换——出门自动走 ZeroTier，回家自动走局域网，无需手动配置。
+
+### 5B. frp 内网穿透（国内最稳，需 VPS）
+
+1. VPS（有公网 IP，轻量服务器即可）上运行 frps：
+```toml
+# frps.toml
+bindPort = 7000
+auth.token = "<frp隧道口令>"
+```
+2. 家里电脑运行 frpc（常驻，主动外连，无需路由器/端口映射）：
+```toml
+# frpc.toml
+serverAddr = "<VPS公网IP>"
+serverPort = 7000
+auth.token = "<frp隧道口令>"
+
+[[proxies]]
+name = "dsh"
+type = "tcp"          # 更安全可选 stcp（端到端加密，手机需同时跑 frpc）或 https
+localIP = "127.0.0.1"
+localPort = 3080
+remotePort = 3080
+```
+3. 放行中继主机的 Host 校验（v2.4.1 起支持 `trustedHosts`）+ **必须开启强口令**：
+```yaml
+- insert:
+    - id: mobile-remote
+      name: dsh-mobile-remote
+      config:
+        path: /m
+        authToken: <16位以上随机口令>
+        trustedHosts: ["<VPS公网IP或域名>"]
+```
+4. 手机 App 手动输入 `http://<VPS公网IP>:3080` + 口令连接。
+> ⚠ tcp 模式下「手机↔VPS」段为明文 HTTP，**口令是唯一防线，必须强随机**；追求更强安全用 stcp（端到端加密）或 https（VPS 配置证书）。
+
+### 5C. 路由器 WireGuard（零月费）
+
+- 路由器支持 WireGuard 服务端（OpenWrt/华硕/部分小米刷机）且家里有公网 IP（或 DDNS）：路由器开 WG → 手机装官方 WireGuard App 连回家 → 等同回到家里局域网。
+- App 自动收集 WG 网段地址并切换，无需手动配置。
+
+> App 的自动切换机制：连接成功后从 `/api/bootstrap` 收集电脑全部地址（局域网/ZeroTier/WG 网段 IP），断线重试失败自动轮换；frp 场景手动配置的 VPS 地址同样进入候选列表。设置 → 电脑地址显示「共 N 个地址自动切换」。
 ## 6. 推送桥配置（可选，部署者 3 分钟）
 > agent 完成 / 需要你回答 / 失败 → 手机系统通知。**不配置则无推送**，其他功能不受影响。
 > 电脑只需能正常上网（HTTPS 出站），无需公网端口。

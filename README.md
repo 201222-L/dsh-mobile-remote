@@ -86,6 +86,7 @@ npx @deepseek-ai/dsh web
         path: /m
         authToken: <访问口令，留空=关闭认证>
         pushUrls: []   # 见下方推送配置
+        # trustedHosts: ["<内网穿透中继地址>"]  # 仅 frp 等中继方案需要，见 docs/06 §5B
 ```
 
 ## 桌面设置页入口（客户端模块）

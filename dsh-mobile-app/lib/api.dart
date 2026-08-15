@@ -72,7 +72,10 @@ class Api {
     seen.add(merged.first);
     for (final u in urls) {
       final n = _normBase(u);
-      if (n.isEmpty || n == 'http://127.0.0.1' || n == 'http://localhost') continue;
+      if (n.isEmpty) continue;
+      // 排除回环地址（含带端口形式，如 http://127.0.0.1:3080）：手机连回环无意义
+      final host = Uri.tryParse(n)?.host ?? '';
+      if (host == '127.0.0.1' || host == 'localhost' || host == '::1') continue;
       if (seen.add(n)) merged.add(n);
     }
     if (merged.length > _maxUrls) merged.removeRange(_maxUrls, merged.length);
@@ -85,12 +88,13 @@ class Api {
     }());
   }
 
-  /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale IP）。
+  /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
   Future<void> collectUrls() async {
     try {
       final d = await getJson('/api/bootstrap');
       final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
       mergeUrls(urls);
+      AppLog.instance.log('地址收集完成：共 ${baseUrls.length} 个 → ${baseUrls.join(' , ')}');
     } catch (_) {
       // 收集失败不影响当前连接
     }
