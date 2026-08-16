@@ -146,6 +146,9 @@ SendKey 获取：手机微信扫码打开 `https://sct.ftqq.com` → 登录 → 
 ## 8. Flutter App（dsh-mobile-app，安卓）
 
 > 源码：`dsh-mobile-app/` 子目录（独立 Flutter 工程，与插件同仓库发布）。
+### 8.0 安装 App（推荐：直接下载 APK）
+
+**无需编译环境**：从 [GitHub Releases](https://github.com/201222-L/dsh-mobile-remote/releases/latest) 下载 `app-release.apk`（正式签名）传到手机安装即可。愿意自己改代码/构建的开发者见 §8.2。
 ### 8.1 架构
 
 App = **原生 Flutter 应用**（非 WebView）：全部界面用 Flutter 原生组件绘制，与网页端 `/m` 共享同一套插件 API 与设计令牌（DeepSeek 配色）。

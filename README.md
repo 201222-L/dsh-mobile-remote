@@ -144,6 +144,7 @@ pushUrls:
 
 ## 手机使用
 
+0. **下载 App**：[GitHub Releases](https://github.com/201222-L/dsh-mobile-remote/releases/latest) 下载 `app-release.apk` 安装（或按 dsh-mobile-app/README 自行构建）
 1. 与电脑同一 WiFi；**人不在家**用蒲公英组网等虚拟组网方案（已实测，见 docs/06 §5，App 自动切换地址）
 2. 打开 App →「扫码连接」对准桌面 dsh 设置页二维码（或手动输地址+口令）
 3. 首页直接发消息派活；对话页实时流式回复；通知页看完成/提问/失败
