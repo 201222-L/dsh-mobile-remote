@@ -1,5 +1,6 @@
 // 全局状态 + SSE 事件桥（对齐网页端 page.html 的 state / connect / handleEvent）
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
@@ -42,6 +43,7 @@ class AppStore extends ChangeNotifier {
   static const _kTools = 'dsh_mr_showtools';
   static const _kDark = 'dsh_mr_darkmode';
   static const _kWorkspace = 'dsh_mr_workspace';
+  static const _kSessCache = 'dsh_mr_sessions_cache';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -50,7 +52,31 @@ class AppStore extends ChangeNotifier {
     darkMode = prefs.getString(_kDark) ?? 'system';
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
+    // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
+    try {
+      final raw = prefs.getString(_kSessCache);
+      if (raw != null && raw.isNotEmpty) {
+        final list = jsonDecode(raw) as List;
+        sessions = list
+            .map((e) => Session.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (_) {
+      // 缓存损坏则忽略，等待网络刷新
+    }
     notifyListeners();
+  }
+
+  void _persistSessions() {
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+          _kSessCache,
+          jsonEncode(sessions.map((s) => s.toJson()).toList()),
+        );
+      } catch (_) {}
+    }());
   }
 
   /// 规范化路径用于比较：去首尾空格、统一反斜杠、小写、去尾部斜杠。
@@ -220,17 +246,22 @@ class AppStore extends ChangeNotifier {
 
   Future<void> _refreshAllInner() async {
     try {
-      catalog = await api.catalog();
-      if (sessionId != null) {
-        try {
-          sessionConfig = await api.sessionConfig(sessionId!);
-        } catch (_) {/* 冷会话保持旧值 */}
-      }
-      await refreshWorkspaces(notify: false);
+      // 会话列表是首页首屏数据：最先拉取并立即发布；其余数据并行/后台加载。
+      // （旧版先等最慢的模型目录 RPC 完成才统一 notify，导致首屏空白数秒）
       await refreshSessions(notify: false);
-      await refreshNotifs(notify: false);
-      await refreshActions(notify: false);
       notifyListeners();
+      unawaited(refreshWorkspaces(notify: false));
+      unawaited(refreshNotifs(notify: false));
+      unawaited(refreshActions(notify: false));
+      try {
+        catalog = await api.catalog();
+        if (sessionId != null) {
+          try {
+            sessionConfig = await api.sessionConfig(sessionId!);
+          } catch (_) {/* 冷会话保持旧值 */}
+        }
+        notifyListeners();
+      } catch (_) {/* 目录加载失败不阻塞首屏 */}
     } catch (_) {/* 首屏失败由连接页处理 */}
   }
 
@@ -263,6 +294,7 @@ class AppStore extends ChangeNotifier {
   Future<void> refreshSessions({bool notify = true}) async {
     try {
       sessions = await api.sessions();
+      _persistSessions(); // 本地缓存：下次打开 App 秒出列表
       // 排障日志：打印工作区选择与会话 cwd 样本，便于定位筛选不显示的问题
       AppLog.instance.log(
         'Sessions: 拉取 ${sessions.length} 条 · workspacePath=${workspacePath ?? "全部"} · '
@@ -320,9 +352,9 @@ class AppStore extends ChangeNotifier {
   }
 
   /// 连接存活性看门狗：服务器每 25s 发 `: ping` 心跳。
-  /// 若 75s（3 个周期）没有任何心跳/数据帧，说明 TCP 已静默死亡（网络切换/路由器丢连接），
+  /// 若 45s（约 2 个周期）没有任何心跳/数据帧，说明 TCP 已静默死亡（网络切换/路由器丢连接/电脑退出），
   /// 此时流不会自行报错——旧版会永远卡在"已连接但实际离线"，必须划掉 App 重开。
-  /// 看门狗检测到超时后强制重建连接。
+  /// 看门狗每 15s 检查一次，检测到超时后强制重建连接。
   DateTime _lastLiveness = DateTime.now();
   Timer? _watchdog;
 
@@ -331,9 +363,9 @@ class AppStore extends ChangeNotifier {
   }
 
   void _startWatchdog() {
-    _watchdog ??= Timer.periodic(const Duration(seconds: 30), (_) {
+    _watchdog ??= Timer.periodic(const Duration(seconds: 15), (_) {
       if (_sub == null || _connecting) return;
-      final stale = DateTime.now().difference(_lastLiveness).inSeconds > 75;
+      final stale = DateTime.now().difference(_lastLiveness).inSeconds > 45;
       if (stale) {
         AppLog.instance.log('SSE: 心跳超时（${DateTime.now().difference(_lastLiveness).inSeconds}s），强制重建连接');
         _sub?.cancel();

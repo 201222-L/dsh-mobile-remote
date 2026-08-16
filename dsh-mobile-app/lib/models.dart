@@ -23,6 +23,14 @@ class Session {
         archived: j['archived'] as bool? ?? false,
         lastActivity: (j['lastActivity'] as num?)?.toInt(),
       );
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'cwd': cwd,
+        'createdAt': createdAt,
+        'archived': archived,
+        'lastActivity': lastActivity,
+      };
   String get label => (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
   /// 排序键：最近活跃优先，无活跃记录回退创建时间。
   int get sortKey => lastActivity ?? createdAt;
