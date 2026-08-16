@@ -53,7 +53,14 @@ class Api {
     await prefs.setString(_kBase, base);
     await prefs.setString(_kToken, token);
     baseUrl = base;
-    baseUrls = [base]; // 手动重配置：以用户输入的地址为准，后续再自动收集
+    // 修复：旧版把候选地址表重置为单条。若新地址恰好不可达（如扫到蒲公英 IP
+    // 而手机组网没开），连回退的机会都没有。现改为：新地址置首，保留旧候选作兜底。
+    final merged = <String>[_normBase(base)];
+    for (final u in baseUrls) {
+      final n = _normBase(u);
+      if (n.isNotEmpty && n != merged.first && merged.length < _maxUrls) merged.add(n);
+    }
+    baseUrls = merged;
     await prefs.setStringList(_kUrls, baseUrls);
     this.token = token;
   }
@@ -362,7 +369,9 @@ class Api {
     final controller = StreamController<Map<String, dynamic>>();
     final req = http.Request('GET', _uri('/api/events'));
     req.headers.addAll(_headers);
-    _client.send(req).then((res) async {
+    // 连接超时：地址不可达但"黑洞"（不拒绝也不响应，如组网 IP 在手机端隧道关闭时）会让
+    // send() 永久挂起，旧版因此卡死在 connecting 状态、看门狗与地址轮换全部失效。
+    _client.send(req).timeout(const Duration(seconds: 15)).then((res) async {
       if (res.statusCode != 200) {
         controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
         controller.close();

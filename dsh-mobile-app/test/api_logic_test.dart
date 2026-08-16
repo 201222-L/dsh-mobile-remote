@@ -50,14 +50,15 @@ void main() {
       expect(a.baseUrl, 'http://192.168.1.100:3080');
     });
 
-    test('手动重配置：地址表以用户输入为准（等待后续自动收集扩充）', () {
+    test('手动重配置：新地址置首，旧候选地址保留为兜底', () {
       final a = newApi('http://192.168.1.100:3080');
       a.mergeUrls(['http://192.168.1.100:3080', 'http://100.64.0.7:3080']);
       expect(a.baseUrls.length, 2);
-      // 模拟 save(base: 新地址)：列表重置为单条
+      // 模拟 save(base: 新地址)：新地址置首，旧地址不丢（黑洞地址才有回退机会）
       a.baseUrl = 'http://frp.example.com:3080';
-      a.baseUrls = [a.baseUrl];
-      expect(a.baseUrls.length, 1);
+      a.baseUrls = [a.baseUrl, ...a.baseUrls.where((u) => u != a.baseUrl)];
+      expect(a.baseUrls.length, 3);
+      expect(a.baseUrls.first, 'http://frp.example.com:3080');
       // 之后 collectUrls 会把 PC 侧网段地址合并进来
       a.mergeUrls(['http://frp.example.com:3080', 'http://192.168.1.100:3080', 'http://100.64.0.7:3080']);
       expect(a.baseUrls.length, 3);

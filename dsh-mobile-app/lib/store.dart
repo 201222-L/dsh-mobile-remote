@@ -393,7 +393,7 @@ class AppStore extends ChangeNotifier {
     if (_sub != null || _connecting) return;
     _connecting = true;
     _setConnState('connecting');
-    AppLog.instance.log('SSE: connect');
+    AppLog.instance.log('SSE: connect → ${api.baseUrl}');
     api.onSseKeepalive = _touchLiveness;
     _startWatchdog();
     _sub = api.eventsRaw().listen(
