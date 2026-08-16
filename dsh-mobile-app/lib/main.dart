@@ -210,28 +210,31 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
           mainAxisSize: MainAxisSize.min,
           children: [
             // 电脑在线状态点：贴靠抽屉图标；点按立即探测/重连，长按看状态文字
-            Tooltip(
-              message: switch (store.connState) {
-                'connected' => '电脑在线',
-                'connecting' => '连接中…',
-                _ => '电脑离线 · 点按重连',
-              },
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => store.resume(),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: switch (store.connState) {
-                        'connected' => DshColors.ok(context),
-                        'connecting' => DshColors.warn(context),
-                        _ => DshColors.ink3(context),
-                      },
-                      shape: BoxShape.circle,
-                      border: Border.all(color: DshColors.line(context), width: 1),
+            Transform.translate(
+              offset: const Offset(-6, 0), // 再向抽屉菜单靠近一点
+              child: Tooltip(
+                message: switch (store.connState) {
+                  'connected' => '电脑在线',
+                  'connecting' => '连接中…',
+                  _ => '电脑离线 · 点按重连',
+                },
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => store.resume(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: switch (store.connState) {
+                          'connected' => DshColors.ok(context),
+                          'connecting' => DshColors.warn(context),
+                          _ => DshColors.ink3(context),
+                        },
+                        shape: BoxShape.circle,
+                        border: Border.all(color: DshColors.line(context), width: 1),
+                      ),
                     ),
                   ),
                 ),
