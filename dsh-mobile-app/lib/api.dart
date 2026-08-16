@@ -174,9 +174,9 @@ class Api {
         if (token.isNotEmpty) 'x-mobile-token': token,
       };
 
-  Future<Map<String, dynamic>> getJson(String path) async {
+  Future<Map<String, dynamic>> getJson(String path, {Duration timeout = const Duration(seconds: 15)}) async {
     try {
-      final res = await _client.get(_uri(path), headers: _headers).timeout(const Duration(seconds: 15));
+      final res = await _client.get(_uri(path), headers: _headers).timeout(timeout);
       return _decode(res);
     } catch (e) {
       AppLog.instance.log('GET $path 失败: $e');
@@ -303,7 +303,8 @@ class Api {
   /// 余额详情（含币种/可用标记），查询失败返回 null。
   Future<Map<String, dynamic>?> balanceInfo() async {
     try {
-      final data = await getJson('/api/balance');
+      // 余额是电脑端代查官方 API，链路可能慢（官方接口抖动 + 组网隧道延迟），放宽到 25 秒
+      final data = await getJson('/api/balance', timeout: const Duration(seconds: 25));
       final infos = data['balance']?['balance_infos'] as List? ?? [];
       if (infos.isEmpty) return null;
       final first = infos.first as Map<String, dynamic>;
