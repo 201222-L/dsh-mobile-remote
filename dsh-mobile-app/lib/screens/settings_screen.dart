@@ -1,5 +1,6 @@
 // 设置页（对齐网页端 settings screen）：连接/默认配置/账户/显示/关于
 import 'package:flutter/material.dart';
+import '../toast.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -456,9 +457,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _toast(ScaffoldMessengerState msgr, String text) {
+    // 与全局 showToast 一致的短滞留 + 悬浮样式
     msgr
       ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(text)));
+      ..showSnackBar(SnackBar(
+        content: Text(text),
+        duration: const Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      ));
   }
 
   /// 应用日志：查看 / 复制 / 清空
@@ -532,9 +539,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _copy(String text) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('已复制')));
+      showToast(context, '已复制');
     }
   }
 }

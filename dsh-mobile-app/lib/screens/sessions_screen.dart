@@ -1,6 +1,7 @@
 // 会话列表页（对齐网页端 sessions screen）
 // 支持归档：主列表只显示活跃会话，长按可归档/恢复；顶部筛选切换已归档视图。
 import 'package:flutter/material.dart';
+import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
 import '../store.dart';
@@ -91,14 +92,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
       await api.archiveSession(s.id, archive: action == 'archive');
       await widget.store.refreshSessions();
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(action == 'archive' ? '已归档' : '已恢复')));
+      showToast(context, action == 'archive' ? '已归档' : '已恢复');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text('操作失败：$e（桌面端插件需要重启生效）')));
+      showToast(context, '操作失败：$e（桌面端插件需要重启生效）');
     }
   }
 

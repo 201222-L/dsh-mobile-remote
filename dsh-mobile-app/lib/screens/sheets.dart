@@ -731,7 +731,13 @@ void showActionSheet(BuildContext context, Map<String, dynamic> action) {
 }
 
 void _toast(ScaffoldMessengerState messenger, String text) {
+  // 与全局 showToast 一致的短滞留 + 悬浮样式
   messenger
     ..clearSnackBars()
-    ..showSnackBar(SnackBar(content: Text(text)));
+    ..showSnackBar(SnackBar(
+      content: Text(text),
+      duration: const Duration(milliseconds: 1600),
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+    ));
 }

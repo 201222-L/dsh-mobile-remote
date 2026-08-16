@@ -2,6 +2,7 @@
 // 布局：SafeArea 避开状态栏；紧凑卡片；未读蓝点；三色图标层级；浅色分隔线。
 // 删除：长按单条删除；右上角垃圾桶 → 批量多选删除 / 清空全部（插件端 /notifications/delete）。
 import 'package:flutter/material.dart';
+import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
 import '../store.dart';
@@ -75,9 +76,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await api.markNotifsRead(all: true);
       _refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('已全部标记为已读')));
+        showToast(context, '已全部标记为已读');
       }
     } catch (_) {}
   }
@@ -94,15 +93,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       });
       await _refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(SnackBar(content: Text(all ? '已清空全部通知' : '已删除 ${ids?.length ?? 0} 条通知')));
+        showToast(context, all ? '已清空全部通知' : '已删除 ${ids?.length ?? 0} 条通知');
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('删除失败：请先重启电脑端 dsh 以启用删除接口')));
+        showToast(context, '删除失败：请先重启电脑端 dsh 以启用删除接口');
       }
     } finally {
       _deleting = false;

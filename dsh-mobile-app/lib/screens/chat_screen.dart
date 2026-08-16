@@ -1,6 +1,7 @@
 // 对话页：消息流（Markdown/流式/工具折叠/token 用量）+ 上翻加载 + 快捷动作 + composer
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../toast.dart';
 import 'package:flutter/services.dart';
 import '../api.dart';
 import '../logger.dart';
@@ -116,9 +117,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final err = await widget.store.answerQuestion(q.rpcId, q.sessionId, answers);
     if (!mounted) return;
     if (err != null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(err)));
+      showToast(context, err);
     } else {
       setState(() => _question = null);
     }
@@ -132,9 +131,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final err = await widget.store.answerApproval(a.rpcId, a.sessionId, a.approvalId, outcome);
     if (!mounted) return;
     if (err != null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(err)));
+      showToast(context, err);
     } else {
       setState(() => _approval = null);
     }
@@ -216,7 +213,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('该会话暂不可用：$e')));
+        showToast(context, '该会话暂不可用：$e');
         Navigator.of(context).pop();
       }
     }
@@ -235,9 +232,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       if (events.isEmpty) {
         _noMoreHistory = true;
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('没有更早的消息了')));
+        showToast(context, '没有更早的消息了');
         return; // 已到最顶：不再查询，_earliestSeq 保持不动
       }
       setState(() {
@@ -276,9 +271,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
       if (!mounted) return;
       if (events.isEmpty) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('没有更早的消息了')));
+        showToast(context, '没有更早的消息了');
         return;
       }
       setState(() {
@@ -728,9 +721,7 @@ class _ChatScreenState extends State<ChatScreen> {
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）
     if (widget.store.agentStatus == 'running' && preset == null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('agent 正在处理上一轮，消息会排队等待')));
+      showToast(context, 'agent 正在处理上一轮，消息会排队等待');
     }
     setState(() {
       _sending = true;
@@ -750,7 +741,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _items.insert(0, _MsgItem.divider('⚠ 发送失败：$e')));
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
+        showToast(context, '发送失败：$e');
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -765,15 +756,11 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await api.stopSession(id);
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('已请求停止，agent 当前轮次结束后停下')));
+        showToast(context, '已请求停止，agent 当前轮次结束后停下');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(SnackBar(content: Text('停止失败：$e（桌面端插件需重启生效）')));
+        showToast(context, '停止失败：$e（桌面端插件需重启生效）');
       }
     }
   }
@@ -826,49 +813,36 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (action == null || !mounted) return;
-    final msgr = ScaffoldMessenger.of(context);
     switch (action) {
       case 'copy':
         await Clipboard.setData(ClipboardData(text: item.text));
         if (!mounted) return;
-        msgr
-          ..clearSnackBars()
-          ..showSnackBar(const SnackBar(content: Text('已复制')));
+        showToast(context, '已复制');
       case 'positive':
       case 'negative':
         final mid = item.messageId;
         if (mid == null) {
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(const SnackBar(content: Text('该消息暂不支持反馈（旧消息无 messageId）')));
+          showToast(context, '该消息暂不支持反馈（旧消息无 messageId）');
           return;
         }
         try {
           await api.putFeedback(id, mid, action);
           if (!mounted) return;
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(SnackBar(content: Text(action == 'positive' ? '已标记：好的回答 ✓' : '已标记：有问题的回答 ✓')));
+          showToast(context, action == 'positive' ? '已标记：好的回答 ✓' : '已标记：有问题的回答 ✓');
         } catch (e) {
           if (!mounted) return;
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(SnackBar(content: Text('反馈失败：$e')));
+          showToast(context, '反馈失败：$e');
         }
       case 'fork':
         final seq = item.seq;
         if (seq == null) {
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(const SnackBar(content: Text('该消息暂不支持分支')));
+          showToast(context, '该消息暂不支持分支');
           return;
         }
         try {
           final childId = await api.forkSession(id, atSeq: seq);
           if (!mounted) return;
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(const SnackBar(content: Text('已分支，正在打开新对话…')));
+          showToast(context, '已分支，正在打开新对话…');
           await widget.store.setSession(childId);
           widget.store.refreshSessions();
           if (!mounted) return;
@@ -879,9 +853,7 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         } catch (e) {
           if (!mounted) return;
-          msgr
-            ..clearSnackBars()
-            ..showSnackBar(SnackBar(content: Text('分支失败：$e')));
+          showToast(context, '分支失败：$e');
         }
     }
   }

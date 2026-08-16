@@ -1,5 +1,6 @@
 // 首页：欢迎 + 最近会话 + 新建会话 + 底部 composer（模型/权限 pills）
 import 'package:flutter/material.dart';
+import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
 import '../store.dart';
@@ -68,7 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
       store.refreshSessions();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
+        showToast(context, '发送失败：$e');
       }
     } finally {
       if (mounted) setState(() => _sending = false);
