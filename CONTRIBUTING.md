@@ -32,3 +32,18 @@
 
 - 任何新端点默认走统一鉴权；敏感数据（口令/二维码）只允许 loopback 读取
 - 不引入公网暴露；见 `docs/04-security.md`
+
+## 发布新版本（维护者清单）
+
+**插件改动（电脑端）**：改 `lib/index.js` → `node --check` → 同步安装目录并重启实测 → `package.json` 版本号 → CHANGELOG 条目。
+
+**App 改动（手机端）**：改代码 → `flutter analyze` + `flutter test` → `flutter build apk --release` + 真机实测 → `pubspec.yaml` 版本号（形如 `2.4.3+1`）。
+
+**共同步骤**：
+1. 文档同步（API/行为变化时更新 docs/03 等）
+2. `git commit`（一句话说明改动）+ `git push origin main`
+3. `git tag -a vX.Y.Z -m "..."` + `git push origin main --tags`
+4. GitHub 网页创建 **Release**：选新 tag → 标题 `DSH Remote vX.Y.Z` → 说明写清本次改动（= 官方公告，会通知 Watch 仓库的人）→ 上传新 `app-release.apk`
+5. 大更新在 DSH 社区发帖；CHANGELOG 保持完整历史
+
+> 提醒：手机侧载安装无自动更新，重要修复在 Release 说明里写醒目；**不要更换签名 keystore**（同签名覆盖安装保留连接信息）。
