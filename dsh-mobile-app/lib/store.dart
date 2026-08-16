@@ -119,6 +119,19 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// 手动切换到指定地址：探测可达后保存为当前地址并重连。
+  /// 返回 null 表示切换成功；否则返回错误描述（保持原连接不变）。
+  Future<String?> switchBase(String base) async {
+    if (_normPath(base).isEmpty) return '地址为空';
+    final err = await api.probeBase(base);
+    if (err != null) return '该地址不可达';
+    AppLog.instance.log('手动切换地址 → $base');
+    await api.save(base: base, token: api.token);
+    disposeBridge();
+    connect();
+    return null;
+  }
+
   /// 回答内核问询（answers 顺序与提问一致、每问必答）。
   /// 返回 null 表示成功；否则返回错误说明（弹窗保持可重试）。
   Future<String?> answerQuestion(String rpcId, String sessionId, List<Map<String, dynamic>> answers) async {

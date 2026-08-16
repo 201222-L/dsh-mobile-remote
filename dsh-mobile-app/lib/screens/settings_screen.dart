@@ -59,6 +59,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 手动切换连接地址（回家想切回局域网 / 出门想切蒲公英时用）。
+  Future<void> _pickAddress() async {
+    final candidates = api.baseUrls;
+    if (candidates.isEmpty) return;
+    final current = api.baseUrl;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Text('选择连接地址', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+            ),
+            for (final c in candidates)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                  c == current ? Icons.check_circle : Icons.circle_outlined,
+                  size: 18,
+                  color: c == current ? DshColors.brand(context) : DshColors.ink3(context),
+                ),
+                title: Text(c, style: TextStyle(fontSize: 13.5, color: c == current ? DshColors.brand(context) : null)),
+                onTap: () => Navigator.of(ctx).pop(c),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || choice == current || !mounted) return;
+    setState(() {});
+    final err = await widget.store.switchBase(choice);
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text(err),
+          duration: const Duration(milliseconds: 2000),
+          behavior: SnackBarBehavior.floating,
+        ));
+    }
+  }
+
   Future<void> _refreshBalance() async {
     setState(() {
       _busy = true;
@@ -224,8 +270,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: const Icon(Icons.computer_outlined),
             title: '电脑地址',
             sub: api.baseUrls.length > 1
-                ? '${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换'
+                ? '${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换 · 点按手动切换'
                 : api.baseUrl,
+            onTap: () => _pickAddress(),
             // 连接状态实时显示（修复：旧版写死「已连接」，断线也显示绿色已连接）
             trailing: Row(
               mainAxisSize: MainAxisSize.min,

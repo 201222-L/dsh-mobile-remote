@@ -100,6 +100,20 @@ class Api {
     }());
   }
 
+  /// 探测某地址是否可达（独立临时客户端，不动全局 baseUrl）。
+  /// 返回 null 表示可达；否则返回错误描述。
+  Future<String?> probeBase(String base) async {
+    try {
+      final probe = Api()
+        ..baseUrl = base
+        ..token = token;
+      await probe.getJson('/api/bootstrap');
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
   /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）。
   void absorbBootstrap(Map<String, dynamic> d) {
     final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
