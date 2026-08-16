@@ -1569,12 +1569,15 @@ class _QuestionCardState extends State<_QuestionCard> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: brand.withValues(alpha: 0.55)),
       ),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
+      child: ConstrainedBox(
+        // 问询卡片封顶 40% 屏高：问题说明长/选项多时卡片内滚动，不把输入框挤出屏幕
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.4),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
               children: [
                 Icon(Icons.live_help_outlined, size: 18, color: brand),
                 const SizedBox(width: 6),
@@ -1659,6 +1662,7 @@ class _QuestionCardState extends State<_QuestionCard> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

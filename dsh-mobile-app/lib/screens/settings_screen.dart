@@ -74,17 +74,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: EdgeInsets.fromLTRB(20, 14, 20, 6),
               child: Text('选择连接地址', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
             ),
-            for (final c in candidates)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                  c == current ? Icons.check_circle : Icons.circle_outlined,
-                  size: 18,
-                  color: c == current ? DshColors.brand(context) : DshColors.ink3(context),
-                ),
-                title: Text(c, style: TextStyle(fontSize: 13.5, color: c == current ? DshColors.brand(context) : null)),
-                onTap: () => Navigator.of(ctx).pop(c),
+            // 候选地址随使用动态累积（局域网/组网/历史地址），列表区可滚动防溢出
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final c in candidates)
+                    ListTile(
+                      dense: true,
+                      leading: Icon(
+                        c == current ? Icons.check_circle : Icons.circle_outlined,
+                        size: 18,
+                        color: c == current ? DshColors.brand(context) : DshColors.ink3(context),
+                      ),
+                      title: Text(c, style: TextStyle(fontSize: 13.5, color: c == current ? DshColors.brand(context) : null)),
+                      onTap: () => Navigator.of(ctx).pop(c),
+                    ),
+                ],
               ),
+            ),
             const SizedBox(height: 6),
           ],
         ),

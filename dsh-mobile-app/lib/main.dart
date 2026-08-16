@@ -293,6 +293,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 4),
               // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
+              // 封顶 35% 屏高 + 可滚动：工作区再多也不会把下方导航挤出屏幕
               if (store.workspaces.length >= 2) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
@@ -301,8 +302,16 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                     style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
                   ),
                 ),
-                _workspaceItem(null),
-                for (final w in store.workspaces) _workspaceItem(w),
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.35),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      _workspaceItem(null),
+                      for (final w in store.workspaces) _workspaceItem(w),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 8),
               ],
               _drawerItem(Icons.home_outlined, '首页', 0),
@@ -490,12 +499,14 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+      child: Center(
+        child: SingleChildScrollView(
+          // 键盘弹出/小屏时表单可滚动，避免连接页溢出
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
             // 重新配置时：放弃返回（旧配置保留，不会被清空）
             if (widget.onCancel != null)
               Align(
@@ -556,6 +567,7 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
             const SizedBox(height: 12),
             Text(_status, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),
           ],
+          ),
         ),
       ),
     );

@@ -33,7 +33,15 @@ void showSheet(BuildContext context, String title, List<Widget> children) {
             const SizedBox(height: 12),
             Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
-            ...children,
+            // 内容区可滚动：条目多（如大量自定义预设）时不再溢出
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: children,
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -315,41 +323,51 @@ Future<void> showNewSessionSheet(
                 const SizedBox(height: 12),
                 const Text('新建会话', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
-                ...catalog.agentPresets.map((p) => _sheetItem(
-                      context,
-                      name: p.name,
-                      sub: p.description,
-                      active: (pendingMode ?? catalog.defaults['agentPreset']) == p.id,
-                      onTap: () {
-                        pendingMode = p.id;
-                        refresh();
-                      },
-                    )),
-                InkWell(
-                  onTap: () => showDirPicker(context, store, (path) {
-                    pendingDir = path;
-                    refresh();
-                  }),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
-                    child: Row(
+                // 预设列表可滚动（预设多时不溢出）；取消/创建按钮固定在底部
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Icon(Icons.folder_outlined, size: 15, color: DshColors.ink3(context)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('工作目录', style: TextStyle(fontSize: 14)),
-                              Text(
-                                pendingDir ?? '默认（当前工作区）',
-                                style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
+                        ...catalog.agentPresets.map((p) => _sheetItem(
+                              context,
+                              name: p.name,
+                              sub: p.description,
+                              active: (pendingMode ?? catalog.defaults['agentPreset']) == p.id,
+                              onTap: () {
+                                pendingMode = p.id;
+                                refresh();
+                              },
+                            )),
+                        InkWell(
+                          onTap: () => showDirPicker(context, store, (path) {
+                            pendingDir = path;
+                            refresh();
+                          }),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
+                            child: Row(
+                              children: [
+                                Icon(Icons.folder_outlined, size: 15, color: DshColors.ink3(context)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text('工作目录', style: TextStyle(fontSize: 14)),
+                                      Text(
+                                        pendingDir ?? '默认（当前工作区）',
+                                        style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text('选择 ▸', style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+                              ],
+                            ),
                           ),
                         ),
-                        Text('选择 ▸', style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
                       ],
                     ),
                   ),
