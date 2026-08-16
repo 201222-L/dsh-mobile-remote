@@ -175,12 +175,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 }),
                 child: const Text('＋ 新建会话'),
               ),
-              const SizedBox(height: 8),
-              Text(
-                store.catalog == null ? '' : '构建 v2.1',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: ink3),
-              ),
               ],
             ),
           ),

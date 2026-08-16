@@ -1,6 +1,7 @@
 // 设置页（对齐网页端 settings screen）：连接/默认配置/账户/显示/关于
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
 import '../logger.dart';
@@ -24,11 +25,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? _diag;
   bool _diagLoaded = false;
   String _diagTime = '';
+  String _appVersion = ''; // App 自身版本（package_info_plus，构建时打包）
 
   @override
   void initState() {
     super.initState();
     _refreshBalance();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() {
+        _appVersion = '${info.version}+${info.buildNumber}';
+      });
+    } catch (_) {
+      // 读取失败时版本行显示 App 端为「…」
+    }
   }
 
   Future<void> _refreshBalance() async {
@@ -312,7 +327,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.info_outline),
             title: '版本',
-            sub: 'dsh-mobile-remote v2.1 · DSH Remote App',
+            sub: 'App v${_appVersion.isEmpty ? '…' : _appVersion}'
+                ' · 插件 v${api.pluginVersion.isEmpty ? '…' : api.pluginVersion}',
           ),
           _row(
             leading: const Icon(Icons.monitor_heart_outlined),

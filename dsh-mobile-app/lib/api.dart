@@ -19,6 +19,8 @@ final Api api = Api();
 class Api {
   String baseUrl = '';
   String token = '';
+  /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
+  String pluginVersion = '';
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
   List<String> baseUrls = [];
@@ -95,6 +97,8 @@ class Api {
       final d = await getJson('/api/bootstrap');
       final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
       mergeUrls(urls);
+      final p = d['plugin'];
+      if (p is Map) pluginVersion = p['version']?.toString() ?? '';
       AppLog.instance.log('地址收集完成：共 ${baseUrls.length} 个 → ${baseUrls.join(' , ')}');
     } catch (_) {
       // 收集失败不影响当前连接
