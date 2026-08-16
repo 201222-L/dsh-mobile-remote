@@ -46,4 +46,9 @@
 4. GitHub 网页创建 **Release**：选新 tag → 标题 `DSH Remote vX.Y.Z` → 说明写清本次改动（= 官方公告，会通知 Watch 仓库的人）→ 上传新 `app-release.apk`
 5. 大更新在 DSH 社区发帖；CHANGELOG 保持完整历史
 
+**版本保留原则**：
+- **旧版 Release 永远保留不删**——它们是版本历史，用户可自行选择下载任一版本回退；每次只**新增**一条 Release（选新 tag），新版本自动成为 Latest
+- 每次 App 改动**必须同步 bump `pubspec.yaml` 版本号**（`X.Y.Z+N`），否则新旧包版本号相同、无法区分；开发者本地构建也遵循同一版本号，便于对照 Release 排查
+- 同一签名覆盖安装，用户升级无痛；换 keystore 除外（= 换应用）
+
 > 提醒：手机侧载安装无自动更新，重要修复在 Release 说明里写醒目；**不要更换签名 keystore**（同签名覆盖安装保留连接信息）。
