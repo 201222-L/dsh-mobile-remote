@@ -202,14 +202,16 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
           color: brandSoft,
           borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
-            Expanded(
-              child: _InlineText(raw.replaceFirst(RegExp(r'^\s*>\s?'), ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2)),
-            ),
-          ],
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
+              Expanded(
+                child: _InlineText(raw.replaceFirst(RegExp(r'^\s*>\s?'), ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2)),
+              ),
+            ],
+          ),
         ),
       ));
       i++;
