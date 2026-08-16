@@ -71,7 +71,7 @@ npx @deepseek-ai/dsh web
 
 | 蒲公英 App（移动端） | 蒲公英 PC 客户端 | 应用商店搜索 |
 |---|---|---|
-| ![蒲公英移动端](screenshots/pgy-mobile-app.png) | ![蒲公英PC客户端](screenshots/pgy-pc-client.png) | ![应用商店搜索](screenshots/pgy-appstore.png) |
+| ![蒲公英移动端](screenshots/pgy-mobile-app.jpg) | ![蒲公英PC客户端](screenshots/pgy-pc-client.jpg) | ![应用商店搜索](screenshots/pgy-appstore.jpg) |
 
 ### 5.2 其他方案（思路参考，按自己环境自行适配）
 

@@ -12,6 +12,10 @@
 |---|---|---|
 | ![会话](docs/screenshots/03-sessions.png) | ![设置](docs/screenshots/05-settings.png) | ![新建会话](docs/screenshots/06-new-session.png) |
 
+| 外出访问：蒲公英 App（移动端） | 蒲公英 PC 客户端 | 应用商店搜索 |
+|---|---|---|
+| ![蒲公英移动端](docs/screenshots/pgy-mobile-app.jpg) | ![蒲公英PC客户端](docs/screenshots/pgy-pc-client.jpg) | ![应用商店搜索](docs/screenshots/pgy-appstore.jpg) |
+
 ## 功能
 
 - 📱 **手机远程操作**：发消息/派任务、流式回复、Markdown 渲染、token 用量、**微信式无限上翻**（滑到顶部自动加载更早 + 回到底部浮钮）
