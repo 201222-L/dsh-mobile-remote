@@ -4,9 +4,15 @@
 
 **Q：手机连不上（连接失败 / 超时）？**
 1. 确认电脑端 dsh 已启动、`webserver` 配置了 `host: 0.0.0.0`（默认 127.0.0.1 只允许本机）
-2. 手机和电脑必须在同一网络（同一 WiFi / Tailscale）
+2. 手机和电脑必须在同一网络（同一 WiFi / 虚拟组网）
 3. 口令是否正确（`cordis.patch.yml` 的 `authToken`）；改了口令要重启桌面端
-4. Windows 防火墙若拦截 3080，放行 `node`/`DeepSeek Harness`
+4. **Windows 防火墙（最常见）**：路由器重启/换网后 Windows 会把网络重新识别为「公用」，默认拦截入站 3080。修复：
+   - 设置 → 网络和 Internet → 当前网络 → 网络配置文件类型改为「**专用网络**」；
+   - 或以管理员身份运行 PowerShell：
+     ```powershell
+     netsh advfirewall firewall add rule name="DSH Mobile 3080" dir=in action=allow protocol=TCP localport=3080 profile=private
+     ```
+   - 判断方法：电脑上 `http://127.0.0.1:3080/m/api/bootstrap` 能通、手机却连不上，基本就是防火墙/网络类别问题
 
 **Q：扫码连不上 / 二维码扫了没反应？**
 - App 请用自带的「扫码连接」按钮，不要用系统相机（系统相机会跳浏览器打开网页）
