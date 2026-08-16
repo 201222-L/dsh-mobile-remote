@@ -200,53 +200,51 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
       child: Scaffold(
       key: _drawerKey,
       appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.menu, size: 20),
-          onPressed: () => _drawerKey.currentState?.openDrawer(),
-        ),
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
+        leading: Stack(
           children: [
-            // 电脑在线状态点：位于抽屉与 DSH 标题之间；点按立即探测/重连，长按看状态文字
-            Tooltip(
-              message: switch (store.connState) {
-                'connected' => '电脑在线',
-                'connecting' => '连接中…',
-                _ => '电脑离线 · 点按重连',
-              },
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => store.resume(),
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: Center(
-                    child: Container(
-                      width: 9,
-                      height: 9,
-                      decoration: BoxDecoration(
-                        color: switch (store.connState) {
-                          'connected' => DshColors.ok(context),
-                          'connecting' => DshColors.warn(context),
-                          _ => DshColors.ink3(context),
-                        },
-                        shape: BoxShape.circle,
-                      ),
+            IconButton(
+              icon: const Icon(Icons.menu, size: 20),
+              onPressed: () => _drawerKey.currentState?.openDrawer(),
+            ),
+            // 电脑在线状态点：贴附在抽屉图标右上角（角标样式）；点按立即探测/重连，长按看状态文字
+            Positioned(
+              top: 10,
+              right: 10,
+              child: Tooltip(
+                message: switch (store.connState) {
+                  'connected' => '电脑在线',
+                  'connecting' => '连接中…',
+                  _ => '电脑离线 · 点按重连',
+                },
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => store.resume(),
+                  child: Container(
+                    width: 11,
+                    height: 11,
+                    decoration: BoxDecoration(
+                      color: switch (store.connState) {
+                        'connected' => DshColors.ok(context),
+                        'connecting' => DshColors.warn(context),
+                        _ => DshColors.ink3(context),
+                      },
+                      shape: BoxShape.circle,
+                      // 与顶栏同色的描边，与菜单图标重叠时保持清晰
+                      border: Border.all(color: Theme.of(context).colorScheme.surface, width: 1.6),
                     ),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 5),
-            Text(
-              titles[_index],
-              style: TextStyle(
-                fontSize: _index == 0 ? 20 : 17,
-                fontWeight: FontWeight.w700,
-                fontFamily: _index == 0 ? 'Georgia' : null,
-              ),
-            ),
           ],
+        ),
+        title: Text(
+          titles[_index],
+          style: TextStyle(
+            fontSize: _index == 0 ? 20 : 17,
+            fontWeight: FontWeight.w700,
+            fontFamily: _index == 0 ? 'Georgia' : null,
+          ),
         ),
         actions: [
           IconButton(
