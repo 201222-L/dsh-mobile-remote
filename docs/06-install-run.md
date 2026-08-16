@@ -41,8 +41,23 @@ corepack pnpm install
 { "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote" } }
 ```
 
-> 方式 B 依赖网络能访问 GitHub 与 npm（含插件依赖 `qrcode`、`@deepseek-ai/*` 的公开解析；后者桌面端为内置打包、公开 npm 可解析性未逐一验证，遇解析失败请改用方式 A）。
-> 更新插件时：方式 A 重新 `git pull` 后 `pnpm install`；方式 B 执行 `pnpm update dsh-mobile-remote`。
+**锁定指定版本**（推荐：App 与插件版本保持一致）—— 用 git tag 固定：
+
+```json
+{ "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.5.1" } }
+```
+
+**方式 C —— 下载 Release 里的插件包离线安装**：GitHub Releases 的 `dsh-mobile-remote-vX.Y.Z.tgz` 下载后：
+
+```powershell
+# profile package.json:
+#   "dsh-mobile-remote": "file:<下载解压后的包路径>"
+corepack pnpm install
+```
+
+> 版本匹配规则：**App 与插件同版本 = 完美配对**；不同版本也能用（谁旧谁吃亏，但都不崩），详见 README「版本与兼容」。实际配对在 App 设置 → 关于 → 版本查看。
+> 方式 B 依赖网络能访问 GitHub 与 npm（含插件依赖 `qrcode`、`@deepseek-ai/*` 的公开解析；后者桌面端为内置打包、公开 npm 可解析性未逐一验证，遇解析失败请改用方式 A/C）。
+> 更新插件时：方式 A 重新 `git pull` 后 `pnpm install`；方式 B 改 tag 后 `pnpm install`；方式 C 换新 tgz 重装。
 
 ## 3. 启用/重启步骤
 

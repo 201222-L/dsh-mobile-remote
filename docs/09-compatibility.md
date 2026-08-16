@@ -11,8 +11,8 @@
 | 组件 | 要求 |
 |---|---|
 | 桌面端 DSH（Harness） | 与开发基线同系列（本文档基于 **v0.1.0-rc.6 服务包 + 2026-08 桌面发行版** 编写）；更低版本可能缺少 `apiProxy`/`workspaceRegistry` 等服务，功能会按 §2 降级 |
-| dsh-mobile-remote 插件 | v2.4.0（本仓库）；`/m/api/diagnostics` 可自检 |
-| 手机 App（Android） | Android 7.0+（`minSdk` 跟随 Flutter 引擎默认）；64 位机型 |
+| dsh-mobile-remote 插件 | **v2.5.1（与 App/git tag 版本号统一）**；`/m/api/diagnostics` 可自检 |
+| 手机 App（Android） | v2.5.1（与插件同版本 = 完美配对；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」）；Android 7.0+、64 位机型 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
 **快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；`checks.respondBridge` / `checks.frameBridge` 为 ✅ 表示问询/审批弹窗桥已就绪；`checks.pendingFrames` 是**计数**（当前挂起的待答弹窗数，0 = 正常无待答，>0 = 有问询/审批等待处理）。
