@@ -52,14 +52,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadDiag() async {
-    final d = await api.diagnostics();
-    if (!mounted) return;
-    final now = DateTime.now();
-    setState(() {
-      _diag = d;
-      _diagLoaded = true;
-      _diagTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-    });
+    try {
+      final d = await api.diagnostics();
+      if (!mounted) return;
+      final now = DateTime.now();
+      setState(() {
+        _diag = d;
+        _diagLoaded = true;
+        _diagTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+      });
+    } catch (e) {
+      // 刷新失败：清空旧数据，明确显示「检测失败」而非静默展示过期结果
+      if (!mounted) return;
+      setState(() {
+        _diag = null;
+        _diagTime = '';
+      });
+      AppLog.instance.log('环境诊断失败: $e');
+    }
   }
 
   String get _diagText {
@@ -434,7 +444,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _openDiag() async {
-    if (!_diagLoaded) await _loadDiag();
+    // 每次打开都实时拉取（修复：旧版只在首次加载，之后永远显示过期版本）
+    await _loadDiag();
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     showSheet(context, '环境诊断', [
