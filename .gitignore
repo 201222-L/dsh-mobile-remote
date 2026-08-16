@@ -10,3 +10,6 @@ dsh-mobile-app/android/app/*.jks
 dsh-mobile-app/build/
 dsh-mobile-app/android/.gradle/
 dsh-mobile-app/android/local.properties
+
+# APK 本地归档（带版本号，仅本机保留；公开分发走 GitHub Releases）
+dsh-mobile-app/dist/

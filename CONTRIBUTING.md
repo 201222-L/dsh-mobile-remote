@@ -43,8 +43,9 @@
 1. 文档同步（API/行为变化时更新 docs/03 等）
 2. `git commit`（一句话说明改动）+ `git push origin main`
 3. `git tag -a vX.Y.Z -m "..."` + `git push origin main --tags`
-4. GitHub 网页创建 **Release**：选新 tag → 标题 `DSH Remote vX.Y.Z` → 说明写清本次改动（= 官方公告，会通知 Watch 仓库的人）→ 上传新 `app-release.apk`
-5. 大更新在 DSH 社区发帖；CHANGELOG 保持完整历史
+4. **本地归档**：`flutter build apk --release` 后运行 `dsh-mobile-app\tools\package-release.ps1` → 生成 `dist\DSH-Remote-vX.Y.Z.apk`（带版本号，dist/ 已 gitignore，本机永久保留）
+5. GitHub 网页创建 **Release**：选新 tag → 标题 `DSH Remote vX.Y.Z` → 说明写清本次改动 → **上传 dist 里带版本号的那个 APK**
+6. 大更新在 DSH 社区发帖；CHANGELOG 保持完整历史
 
 **版本保留原则**：
 - **旧版 Release 永远保留不删**——它们是版本历史，用户可自行选择下载任一版本回退；每次只**新增**一条 Release（选新 tag），新版本自动成为 Latest
