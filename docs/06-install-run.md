@@ -30,6 +30,8 @@ graph LR
 
 ```powershell
 git clone https://github.com/201222-L/dsh-mobile-remote.git
+# 锁版本（推荐）：tag 与版本号一致；不 checkout 则跟随最新 main
+git -C dsh-mobile-remote checkout v2.5.1
 # profile package.json:
 #   "dsh-mobile-remote": "file:<clone 出来的路径>"
 corepack pnpm install
