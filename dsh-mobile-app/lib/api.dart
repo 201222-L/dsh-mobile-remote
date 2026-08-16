@@ -386,7 +386,8 @@ class Api {
     req.headers.addAll(_headers);
     // 连接超时：地址不可达但"黑洞"（不拒绝也不响应，如组网 IP 在手机端隧道关闭时）会让
     // send() 永久挂起，旧版因此卡死在 connecting 状态、看门狗与地址轮换全部失效。
-    _client.send(req).timeout(const Duration(seconds: 15)).then((res) async {
+    // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
+    _client.send(req).timeout(const Duration(seconds: 8)).then((res) async {
       if (res.statusCode != 200) {
         controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
         controller.close();

@@ -416,6 +416,12 @@ class AppStore extends ChangeNotifier {
       _onFrame,
       onError: (e) {
         AppLog.instance.log('SSE: error $e');
+        // 超时 = 黑洞地址（路由不可达，如手机关了组网 VPN）→ 立即轮换候选地址，
+        // 不再白等 3×15 秒的重试循环（连接被拒/中断等瞬时错误仍走正常退避）
+        if (e is TimeoutException && api.rotateBaseUrl()) {
+          AppLog.instance.log('SSE: 超时视为黑洞 → 立即切换 ${api.baseUrl}');
+          _retry = 0;
+        }
         _scheduleReconnect();
       },
       onDone: () {
@@ -430,7 +436,7 @@ class AppStore extends ChangeNotifier {
   Future<void> resume() async {
     if (api.baseUrl.isEmpty || api.token.isEmpty) return; // 未配置连接
     try {
-      final d = await api.getJson('/api/bootstrap');
+      final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       // 合并服务端返回的全部地址（含 Tailscale IP）+ 记录插件版本
       api.absorbBootstrap(d);
       _setConnState('connected');
@@ -579,7 +585,7 @@ class AppStore extends ChangeNotifier {
     if (_retry >= 3) {
       _retryTimer = Timer(const Duration(seconds: 2), () async {
         try {
-          await api.getJson('/api/bootstrap');
+          await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
           _retry = 0;
           connect();
         } catch (_) {
