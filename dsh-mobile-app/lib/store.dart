@@ -267,9 +267,32 @@ class AppStore extends ChangeNotifier {
   }
 
   // ── 启动加载（对齐网页端 bootstrap） ──
-  Future<void> refreshAll() async {
-    // 整体限时 8 秒：网络不通时避免 5 个请求各自 15s 超时堆积
+  /// 探测 → 自愈 → 拉数据（启动与下拉刷新共用）。
+  /// 先探测电脑连通性，不通则轮换候选地址再试一次；恢复后重建 SSE 并拉全量数据。
+  /// 返回是否与电脑连通（供 UI 做失败提示；日常成功静默）。
+  Future<bool> refreshAll() async {
+    var ok = false;
+    try {
+      await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+      ok = true;
+    } catch (_) {
+      // 连接不通：尝试轮换到下一个候选地址（黑洞快速切换）再探测一次
+      if (api.rotateBaseUrl()) {
+        AppLog.instance.log('刷新探测失败 → 切换地址 ${api.baseUrl}');
+        try {
+          await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+          ok = true;
+          // 当前 SSE 大概率也指向旧地址：重建连接
+          disposeBridge();
+          connect();
+        } catch (_) {
+          // 候选地址也不通：保持离线自愈（看门狗/重试会继续处理）
+        }
+      }
+    }
+    // 整体限时 8 秒：网络不通时避免 5 个请求各自超时堆积
     await Future.any([_refreshAllInner(), Future<void>.delayed(const Duration(seconds: 8))]);
+    return ok;
   }
 
   Future<void> _refreshAllInner() async {

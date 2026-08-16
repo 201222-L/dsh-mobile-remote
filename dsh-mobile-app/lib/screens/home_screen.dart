@@ -98,9 +98,14 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         Expanded(
-          // 下拉刷新：网络抖动/桌面端重启后手动恢复"最近会话"
+          // 下拉刷新：探测 → 自愈（轮换地址/重建连接）→ 拉数据；仅失败时提示
           child: RefreshIndicator(
-            onRefresh: () => widget.store.refreshAll(),
+            onRefresh: () async {
+              final ok = await widget.store.refreshAll();
+              if (!ok && context.mounted) {
+                showToast(context, '电脑连接不上，正在自动重连…');
+              }
+            },
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
