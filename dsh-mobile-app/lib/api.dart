@@ -335,6 +335,10 @@ class Api {
   /// 帧格式与网页端一致：{type: "hello"|"session/event"|"agent/status", ...}。
   /// 解析：StringBuffer 累积，每 chunk 处理全部完整帧，剩余部分保留。
   /// （旧实现 while 循环内不更新缓冲区，收到 ≥2 帧后同一帧无限处理 → 死循环）
+  /// SSE 保活回调：收到服务器心跳（`: ping` 注释行）或任何数据帧时触发。
+  /// 用于连接存活性看门狗（网络静默丢包时 TCP 不会立刻报错，靠心跳超时强制重连）。
+  void Function()? onSseKeepalive;
+
   Stream<Map<String, dynamic>> eventsRaw() {
     final controller = StreamController<Map<String, dynamic>>();
     final req = http.Request('GET', _uri('/api/events'));
@@ -356,9 +360,12 @@ class Api {
           s = s.substring(idx + 2);
           idx = s.indexOf('\n\n');
           if (frame.startsWith('data: ')) {
+            onSseKeepalive?.call();
             try {
               controller.add(jsonDecode(frame.substring(6)) as Map<String, dynamic>);
             } catch (_) {/* 忽略坏帧 */}
+          } else if (frame.trim() == ': ping') {
+            onSseKeepalive?.call();
           }
         }
         buf

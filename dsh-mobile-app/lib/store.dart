@@ -319,11 +319,39 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// 连接存活性看门狗：服务器每 25s 发 `: ping` 心跳。
+  /// 若 75s（3 个周期）没有任何心跳/数据帧，说明 TCP 已静默死亡（网络切换/路由器丢连接），
+  /// 此时流不会自行报错——旧版会永远卡在"已连接但实际离线"，必须划掉 App 重开。
+  /// 看门狗检测到超时后强制重建连接。
+  DateTime _lastLiveness = DateTime.now();
+  Timer? _watchdog;
+
+  void _touchLiveness() {
+    _lastLiveness = DateTime.now();
+  }
+
+  void _startWatchdog() {
+    _watchdog ??= Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_sub == null || _connecting) return;
+      final stale = DateTime.now().difference(_lastLiveness).inSeconds > 75;
+      if (stale) {
+        AppLog.instance.log('SSE: 心跳超时（${DateTime.now().difference(_lastLiveness).inSeconds}s），强制重建连接');
+        _sub?.cancel();
+        _sub = null;
+        _connecting = false;
+        _retry = 0;
+        connect();
+      }
+    });
+  }
+
   void connect() {
     if (_sub != null || _connecting) return;
     _connecting = true;
     _setConnState('connecting');
     AppLog.instance.log('SSE: connect');
+    api.onSseKeepalive = _touchLiveness;
+    _startWatchdog();
     _sub = api.eventsRaw().listen(
       _onFrame,
       onError: (e) {
@@ -347,11 +375,27 @@ class AppStore extends ChangeNotifier {
       final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
       api.mergeUrls(urls);
       _setConnState('connected');
+      // 关键修复：探针成功 ≠ 旧 SSE 流还活着。App 后台期间 TCP 可能已静默死亡
+      // 而流未触发 onDone/onError —— 若不重建，connect() 会被 `_sub != null` 挡住，
+      // 永远卡在"显示已连接但实际离线"，只能划掉 App 重开。
+      final stale = DateTime.now().difference(_lastLiveness).inSeconds > 45;
+      if (_sub != null && stale) {
+        AppLog.instance.log('SSE: 前台恢复发现旧流已死（${DateTime.now().difference(_lastLiveness).inSeconds}s 无心跳），重建连接');
+        _sub!.cancel();
+        _sub = null;
+        _connecting = false;
+      }
       if (_sub == null) connect();
       refreshAll();
     } catch (_) {
       _setConnState('offline');
-      if (_sub == null) connect(); // 由重连机制持续尝试
+      // 探针失败：旧流同样不可信，直接重建（重连机制会持续尝试直到成功）
+      if (_sub != null) {
+        _sub!.cancel();
+        _sub = null;
+        _connecting = false;
+      }
+      connect();
     }
   }
 
@@ -510,6 +554,9 @@ class AppStore extends ChangeNotifier {
     _sub?.cancel();
     _retryTimer?.cancel();
     _sessTimer?.cancel();
+    _watchdog?.cancel();
+    _watchdog = null;
+    api.onSseKeepalive = null;
     _sub = null;
     _connecting = false;
   }

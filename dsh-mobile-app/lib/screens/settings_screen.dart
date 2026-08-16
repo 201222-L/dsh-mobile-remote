@@ -261,7 +261,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub: '跳转 DeepSeek 开放平台',
             trailing: Text('去充值 ▸', style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => launchUrl(
-              Uri.parse('https://platform.deepseek.com/top_up'),
+              // 以电脑端插件配置为准（catalog.rechargeUrl），缺省回退官方充值页
+              Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
               mode: LaunchMode.externalApplication,
             ),
           ),

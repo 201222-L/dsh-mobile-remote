@@ -74,12 +74,14 @@ class Catalog {
   final List<PermissionPreset> permissionPresets;
   final List<AgentPreset> agentPresets;
   final Map<String, dynamic> defaults;
+  final String rechargeUrl;
   Catalog({
     required this.models,
     required this.reasoningEfforts,
     required this.permissionPresets,
     required this.agentPresets,
     required this.defaults,
+    required this.rechargeUrl,
   });
   factory Catalog.fromJson(Map<String, dynamic> j) => Catalog(
         models: (j['models'] as List? ?? []).map((e) => CatalogModel.fromJson(e as Map<String, dynamic>)).toList(),
@@ -87,6 +89,7 @@ class Catalog {
         permissionPresets: (j['permissionPresets'] as List? ?? []).map((e) => PermissionPreset.fromJson(e as Map<String, dynamic>)).toList(),
         agentPresets: (j['agentPresets'] as List? ?? []).map((e) => AgentPreset.fromJson(e as Map<String, dynamic>)).toList(),
         defaults: (j['defaults'] as Map<String, dynamic>?) ?? {},
+        rechargeUrl: j['rechargeUrl'] as String? ?? 'https://platform.deepseek.com/top_up',
       );
 }
 
