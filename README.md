@@ -176,7 +176,7 @@ pushUrls:
 ## 兼容性
 
 - **dsh 版本**：锁定 `0.1.0-rc.6` 服务包 + 2026-08 桌面发行版验证；服务依赖、降级行为、已知问题详见 **[docs/09-compatibility.md](docs/09-compatibility.md)**
-- **平台（App）**：Android 7.0+ 全品牌（渲染 Impeller 自动回退；实测小米 17 Pro Max）；**iOS 未开发**（Dart 代码已平台无关，见 docs/09 §4）
+- **平台（App）**：Android 7.0+ 全品牌（渲染 Impeller 自动回退；实测小米 17 Pro Max）；**iOS 未开发**（开发者无苹果设备，Dart 代码已平台无关，欢迎社区贡献，见 docs/09 §4）
 - **平台（桌面）**：Windows/macOS；命令行 dsh web 与桌面端均支持（纯 headless 形态插件静默无操作）
 - **个性化**：模型/权限/Agent 预设动态读取 PC 端真实目录，用户自定义自动出现；自定义动作经 `mobileActions` 注册自动上架
 - **深度魔改 web profile**（禁用标准服务）：对应功能自动降级，不崩溃——诊断页可查每个服务状态
