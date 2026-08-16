@@ -291,24 +291,32 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                   ],
                 ),
               ),
-              const SizedBox(height: 4),
-              // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
-              if (store.workspaces.length >= 2) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-                  child: Text(
-                    '工作区',
-                    style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
-                  ),
+              // 中间菜单区：可滚动 —— 工作区数量增多时，导航项（含「设置」）不再被挤出屏幕，
+              // 也无需删除工作区才能进入设置区；头部（新建会话）与底部（连接状态）保持固定。
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    const SizedBox(height: 4),
+                    // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
+                    if (store.workspaces.length >= 2) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                        child: Text(
+                          '工作区',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
+                        ),
+                      ),
+                      _workspaceItem(null),
+                      for (final w in store.workspaces) _workspaceItem(w),
+                      const SizedBox(height: 8),
+                    ],
+                    _drawerItem(Icons.home_outlined, '首页', 0),
+                    _drawerItem(Icons.history, '会话', 1),
+                    _drawerItem(Icons.settings_outlined, '设置', 2),
+                  ],
                 ),
-                _workspaceItem(null),
-                for (final w in store.workspaces) _workspaceItem(w),
-                const SizedBox(height: 8),
-              ],
-              _drawerItem(Icons.home_outlined, '首页', 0),
-              _drawerItem(Icons.history, '会话', 1),
-              _drawerItem(Icons.settings_outlined, '设置', 2),
-              const Spacer(),
+              ),
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(
