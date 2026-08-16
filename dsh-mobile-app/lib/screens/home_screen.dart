@@ -152,6 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           if (i > 0) Divider(height: 1, color: line),
                           _SessionRow(
                             session: store.activeSessions[i],
+                            workspace: store.workspaceLabelOf(store.activeSessions[i]),
                             onTap: () => _openSession(store.activeSessions[i]),
                           ),
                         ],
@@ -252,8 +253,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _SessionRow extends StatelessWidget {
   final Session session;
+  final String? workspace; // 所属工作区标题（null = 无工作区概念，不显示）
   final VoidCallback onTap;
-  const _SessionRow({required this.session, required this.onTap});
+  const _SessionRow({required this.session, this.workspace, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -279,7 +281,18 @@ class _SessionRow extends StatelessWidget {
                 children: [
                   Text(session.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
                   const SizedBox(height: 1),
-                  Text(_relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
+                  Row(
+                    children: [
+                      Text(_relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
+                      // 所属工作区小字标注（与 PC 端分组同源）
+                      if (workspace != null) ...[
+                        Text(' · ', style: TextStyle(fontSize: 11, color: ink3)),
+                        Icon(Icons.folder_outlined, size: 11, color: ink3),
+                        const SizedBox(width: 2),
+                        Text(workspace!, style: TextStyle(fontSize: 11, color: ink3)),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             ),

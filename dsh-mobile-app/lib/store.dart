@@ -193,6 +193,18 @@ class AppStore extends ChangeNotifier {
     return false;
   }
 
+  /// 会话所属工作区标题（首页最近会话小字标注用）。
+  /// 无工作区概念（未注册任何工作区）→ null（不显示）；不属于任何工作区 → 「未分组」（与 PC 端分组语义一致）。
+  String? workspaceLabelOf(Session s) {
+    if (workspaces.isEmpty) return null;
+    for (final w in workspaces) {
+      if (_inWorkspace(s, w)) {
+        return (w['title'] as String?) ?? (w['path'] as String?) ?? '工作区';
+      }
+    }
+    return '未分组';
+  }
+
   /// 当前选中的工作区条目（未选/找不到时为 null = 全部）。
   Map<String, dynamic>? _selectedWorkspace() {
     if (workspacePath == null) return null;
