@@ -51,29 +51,22 @@
 
 ## 安装（部署者 3 步）
 
-### 方式一（推荐）：npm 安装
+### 方式一：命令行 dsh web
 
 ```powershell
-# 1. 在 profile 目录安装插件包（自动解析依赖）
-cd C:\Users\<你>\.dsh\profiles\web
-corepack pnpm add @polaris-l/dsh-mobile-remote
+# 1. 在 profile 声明插件
+# 编辑 C:\Users\<你>\.dsh\profiles\web\package.json，dependencies 加：
+#   "dsh-mobile-remote": "file:<本插件路径>"
 
-# 2. 启用插件（cordis.patch.yml，见下方配置节）
-# 3. 启动 / 重启 dsh
+# 2. 安装依赖
+cd C:\Users\<你>\.dsh\profiles\web
+corepack pnpm install
+
+# 3. 启用插件（cordis.patch.yml，见下方配置节）后启动
 npx @deepseek-ai/dsh web
 ```
 
-### 方式二：本地源码（开发/离线场景）
-
-```powershell
-git clone https://github.com/201222-L/dsh-mobile-remote.git
-# profile package.json 的 dependencies 加：
-#   "@polaris-l/dsh-mobile-remote": "file:<clone 出来的路径>"
-cd C:\Users\<你>\.dsh\profiles\web
-corepack pnpm install
-```
-
-### 方式三：DeepSeek Harness 桌面端
+### 方式二：DeepSeek Harness 桌面端
 
 安装插件后重启桌面端即可（同一 profile，自动加载）。
 
@@ -92,7 +85,7 @@ corepack pnpm install
 ```yaml
 - insert:
     - id: mobile-remote
-      name: "@polaris-l/dsh-mobile-remote"
+      name: dsh-mobile-remote
       config:
         path: /m
         authToken: <访问口令，留空=关闭认证>

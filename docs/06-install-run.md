@@ -20,7 +20,7 @@ graph LR
 |---|---|
 | 插件源码 | `<本仓库>/`（package.json / lib / docs / tools） |
 | 已安装副本 | `~/.dsh/profiles/web/node_modules/dsh-mobile-remote/` |
-| profile 依赖声明 | `~/.dsh/profiles/web/package.json` → `"@polaris-l/dsh-mobile-remote": "file:<本仓库路径>"` |
+| profile 依赖声明 | `~/.dsh/profiles/web/package.json` → `"dsh-mobile-remote": "file:<本仓库路径>"` |
 | 启用配置 | `~/.dsh/profiles/web/cordis.patch.yml`（insert mobile-remote + webserver 0.0.0.0） |
 | 访问口令 | 部署时生成（`crypto.randomBytes(24).toString('base64url')`），写入 `authToken` |
 
@@ -31,14 +31,14 @@ graph LR
 ```powershell
 git clone https://github.com/201222-L/dsh-mobile-remote.git
 # profile package.json:
-#   "@polaris-l/dsh-mobile-remote": "file:<clone 出来的路径>"
+#   "dsh-mobile-remote": "file:<clone 出来的路径>"
 corepack pnpm install
 ```
 
 **方式 B（快捷，免手动 clone）—— 直接写 GitHub 地址，`pnpm install` 自动下载**：
 
 ```json
-{ "dependencies": { "@polaris-l/dsh-mobile-remote": "github:201222-L/dsh-mobile-remote" } }
+{ "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote" } }
 ```
 
 > 方式 B 依赖网络能访问 GitHub 与 npm（含插件依赖 `qrcode`、`@deepseek-ai/*` 的公开解析；后者桌面端为内置打包、公开 npm 可解析性未逐一验证，遇解析失败请改用方式 A）。
@@ -68,7 +68,7 @@ npx @deepseek-ai/dsh web
 ```yaml
 - insert:
     - id: mobile-remote
-      name: "@polaris-l/dsh-mobile-remote"
+      name: dsh-mobile-remote
       config:
         path: /m
         authToken: <新口令，留空=关闭认证>
@@ -103,7 +103,7 @@ npx @deepseek-ai/dsh web
 ```yaml
 - insert:
     - id: mobile-remote
-      name: "@polaris-l/dsh-mobile-remote"
+      name: dsh-mobile-remote
       config:
         path: /m
         authToken: <16位以上随机口令>       # 公网段的唯一防线，必须强随机
@@ -120,7 +120,7 @@ npx @deepseek-ai/dsh web
 ```yaml
 - insert:
     - id: mobile-remote
-      name: "@polaris-l/dsh-mobile-remote"
+      name: dsh-mobile-remote
       config:
         path: /m
         authToken: <口令>
