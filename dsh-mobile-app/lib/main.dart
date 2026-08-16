@@ -93,6 +93,7 @@ class RootScreen extends StatefulWidget {
 class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   bool _configured = false;
   int _index = 0;
+  bool _reconfiguring = false; // 重新配置进行中：显示连接页但保留旧配置，取消可回退
   final _drawerKey = GlobalKey<ScaffoldState>();
 
   @override
@@ -138,14 +139,17 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   void _recheck() {
     setState(() {
       _configured = api.baseUrl.isNotEmpty && api.token.isNotEmpty;
+      _reconfiguring = false;
       if (_configured) _boot();
     });
   }
 
   Future<void> _reconfigure() async {
-    await api.save(base: '', token: '');
+    // 修复：旧版在此立即清空已保存的连接信息，若用户未完成新配置就退出，
+    // App 变成空配置永远连不上。现改为：进入连接页时保留旧配置，
+    // 只有新配置保存成功才覆盖（连接页提供「返回」放弃操作）。
     store.disposeBridge();
-    if (mounted) _recheck();
+    setState(() => _reconfiguring = true);
   }
 
   void _openNotifications() {
@@ -173,9 +177,15 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (!_configured) {
+    if (!_configured || _reconfiguring) {
       return Scaffold(
-        body: ConnectionSheet(onConnected: _recheck),
+        body: ConnectionSheet(
+          onConnected: _recheck,
+          // 重新配置时允许放弃：保留旧配置返回主界面
+          onCancel: _reconfiguring
+              ? () => setState(() => _reconfiguring = false)
+              : null,
+        ),
       );
     }
     final titles = ['DSH', '会话', '设置'];
@@ -413,7 +423,9 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 /// 连接设置（首次进入/重新配置时显示）
 class ConnectionSheet extends StatefulWidget {
   final VoidCallback onConnected;
-  const ConnectionSheet({super.key, required this.onConnected});
+  /// 非空时显示「返回」按钮：放弃重新配置、保留旧配置返回主界面。
+  final VoidCallback? onCancel;
+  const ConnectionSheet({super.key, required this.onConnected, this.onCancel});
 
   @override
   State<ConnectionSheet> createState() => _ConnectionSheetState();
@@ -481,6 +493,16 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // 重新配置时：放弃返回（旧配置保留，不会被清空）
+            if (widget.onCancel != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: widget.onCancel,
+                  icon: const Icon(Icons.arrow_back, size: 18),
+                  label: const Text('返回（保留原配置）', style: TextStyle(fontSize: 13)),
+                ),
+              ),
             Text('DSH Remote',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: scheme.primary)),
