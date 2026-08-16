@@ -24,6 +24,26 @@ graph LR
 | 启用配置 | `~/.dsh/profiles/web/cordis.patch.yml`（insert mobile-remote + webserver 0.0.0.0） |
 | 访问口令 | 部署时生成（`crypto.randomBytes(24).toString('base64url')`），写入 `authToken` |
 
+### 2.1 依赖声明的两种方式
+
+**方式 A（推荐，已实测）—— 本地 clone + `file:` 依赖**：
+
+```powershell
+git clone https://github.com/201222-L/dsh-mobile-remote.git
+# profile package.json:
+#   "dsh-mobile-remote": "file:<clone 出来的路径>"
+corepack pnpm install
+```
+
+**方式 B（快捷，免手动 clone）—— 直接写 GitHub 地址，`pnpm install` 自动下载**：
+
+```json
+{ "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote" } }
+```
+
+> 方式 B 依赖网络能访问 GitHub 与 npm（含插件依赖 `qrcode`、`@deepseek-ai/*` 的公开解析；后者桌面端为内置打包、公开 npm 可解析性未逐一验证，遇解析失败请改用方式 A）。
+> 更新插件时：方式 A 重新 `git pull` 后 `pnpm install`；方式 B 执行 `pnpm update dsh-mobile-remote`。
+
 ## 3. 启用/重启步骤
 
 ```powershell
