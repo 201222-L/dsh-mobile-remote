@@ -32,6 +32,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _refreshBalance();
     _loadAppVersion();
+    // 连接状态等 store 变化实时刷新（修复：旧版离开页面重进才能看到状态更新）
+    widget.store.addListener(_onStoreChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.store.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadAppVersion() async {
@@ -187,6 +199,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final ink3 = DshColors.ink3(context);
     final brand = DshColors.brand(context);
     final ok = DshColors.ok(context);
+    final warn = DshColors.warn(context);
 
     String permName(String? id) => switch (id) {
           'read-only' => 'Read Only',
@@ -212,7 +225,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub: api.baseUrls.length > 1
                 ? '${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换'
                 : api.baseUrl,
-            trailing: Text('已连接', style: TextStyle(fontSize: 12, color: ok)),
+            // 连接状态实时显示（修复：旧版写死「已连接」，断线也显示绿色已连接）
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: switch (store.connState) {
+                      'connected' => ok,
+                      'connecting' => warn,
+                      _ => ink3,
+                    },
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  switch (store.connState) {
+                    'connected' => '已连接',
+                    'connecting' => '连接中…',
+                    _ => '离线 · 自动重连',
+                  },
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: switch (store.connState) {
+                      'connected' => ok,
+                      'connecting' => warn,
+                      _ => ink3,
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
           _row(
             leading: const Icon(Icons.settings_outlined),

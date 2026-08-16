@@ -27,6 +27,7 @@ class Api {
   static const _kBase = 'dsh_mr_base';
   static const _kToken = 'dsh_mr_token';
   static const _kUrls = 'dsh_mr_urls';
+  static const _kPluginVer = 'dsh_mr_plugin_ver';
   static const _maxUrls = 8;
 
   /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
@@ -37,6 +38,7 @@ class Api {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString(_kBase) ?? '';
     token = prefs.getString(_kToken) ?? '';
+    pluginVersion = prefs.getString(_kPluginVer) ?? ''; // 上次连接时记录，断线也可见
     final urls = prefs.getStringList(_kUrls) ?? [];
     if (urls.isNotEmpty) {
       baseUrls = urls.map(_normBase).where((u) => u.isNotEmpty).toList();
@@ -91,14 +93,27 @@ class Api {
     }());
   }
 
+  /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）。
+  void absorbBootstrap(Map<String, dynamic> d) {
+    final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
+    mergeUrls(urls);
+    final p = d['plugin'];
+    if (p is Map && p['version'] is String) {
+      pluginVersion = p['version'] as String;
+      unawaited(() async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_kPluginVer, pluginVersion);
+        } catch (_) {}
+      }());
+    }
+  }
+
   /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
   Future<void> collectUrls() async {
     try {
       final d = await getJson('/api/bootstrap');
-      final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
-      mergeUrls(urls);
-      final p = d['plugin'];
-      if (p is Map) pluginVersion = p['version']?.toString() ?? '';
+      absorbBootstrap(d);
       AppLog.instance.log('地址收集完成：共 ${baseUrls.length} 个 → ${baseUrls.join(' , ')}');
     } catch (_) {
       // 收集失败不影响当前连接

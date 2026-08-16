@@ -371,9 +371,8 @@ class AppStore extends ChangeNotifier {
     if (api.baseUrl.isEmpty || api.token.isEmpty) return; // 未配置连接
     try {
       final d = await api.getJson('/api/bootstrap');
-      // 合并服务端返回的全部地址（含 Tailscale IP）：外出/回家自动切换的数据基础
-      final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
-      api.mergeUrls(urls);
+      // 合并服务端返回的全部地址（含 Tailscale IP）+ 记录插件版本
+      api.absorbBootstrap(d);
       _setConnState('connected');
       // 关键修复：探针成功 ≠ 旧 SSE 流还活着。App 后台期间 TCP 可能已静默死亡
       // 而流未触发 onDone/onError —— 若不重建，connect() 会被 `_sub != null` 挡住，
