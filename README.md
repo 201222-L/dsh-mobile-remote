@@ -51,6 +51,8 @@
 
 ## 安装（部署者 3 步）
 
+> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.5.1"`。
+
 ### 方式一：命令行 dsh web
 
 ```powershell
