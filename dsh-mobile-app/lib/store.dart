@@ -129,6 +129,9 @@ class AppStore extends ChangeNotifier {
     await api.save(base: base, token: api.token);
     disposeBridge();
     connect();
+    // 关键：显式通知刷新。若连接状态未变化（如正卡在 connecting），
+    // 旧代码不会触发任何通知 → 界面不更新，需退出重进才看到新地址。
+    notifyListeners();
     return null;
   }
 

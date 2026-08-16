@@ -1,6 +1,5 @@
 // 设置页（对齐网页端 settings screen）：连接/默认配置/账户/显示/关于
 import 'package:flutter/material.dart';
-import '../toast.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +7,7 @@ import '../api.dart';
 import '../logger.dart';
 import '../store.dart';
 import '../theme.dart';
+import '../toast.dart';
 import 'sheets.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -91,7 +91,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (choice == null || choice == current || !mounted) return;
-    setState(() {});
     final err = await widget.store.switchBase(choice);
     if (!mounted) return;
     if (err != null) {
@@ -102,6 +101,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           duration: const Duration(milliseconds: 2000),
           behavior: SnackBarBehavior.floating,
         ));
+    } else {
+      showToast(context, '已切换 → $choice');
     }
   }
 
