@@ -175,11 +175,15 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
                   decoration: BoxDecoration(
-                    color: Theme.of(ctx).brightness == Brightness.dark ? DshTheme.surfaceDark : const Color(0xFF1F2329),
+                    // 跟随主题：浅色=白底深字，深色=深底浅字
+                    color: Theme.of(ctx).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
                     borderRadius: BorderRadius.circular(DshTheme.radiusMd),
                     boxShadow: const [
                       BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
                     ],
+                    border: Theme.of(ctx).brightness == Brightness.dark
+                        ? null
+                        : Border.all(color: DshColors.line(ctx)),
                   ),
                   child: Row(
                     children: [
