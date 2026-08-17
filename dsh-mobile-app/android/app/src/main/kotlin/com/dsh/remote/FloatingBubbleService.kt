@@ -570,8 +570,8 @@ class FloatingBubbleService : Service() {
         val metrics = resources.displayMetrics
         val dirX = if (bp.x < metrics.widthPixels / 2) -1f else 1f
         val dirY = if (bp.y < metrics.heightPixels / 2) -1f else 1f
-        p.translationX = dirX * dp(28)
-        p.translationY = dirY * dp(16)
+        p.translationX = dirX * dp(28).toFloat()
+        p.translationY = dirY * dp(16).toFloat()
         p.alpha = 0f
         p.scaleX = 0.9f
         p.scaleY = 0.9f
