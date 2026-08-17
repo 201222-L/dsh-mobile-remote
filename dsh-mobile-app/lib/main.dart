@@ -77,6 +77,13 @@ class _DshAppState extends State<DshApp> {
             mode: LaunchMode.externalApplication,
           );
           break;
+        case 'openNotifsRequested':
+          // 打开通知页（与抽屉入口同款：先切到首页再推通知页）
+          await store.refreshNotifs();
+          nav.push(MaterialPageRoute(
+            builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
+          ));
+          break;
       }
       return null;
     });

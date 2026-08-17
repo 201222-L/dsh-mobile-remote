@@ -46,6 +46,9 @@ class MainActivity : FlutterActivity() {
         if (intent.getBooleanExtra("open_charge", false)) {
             floatingChannel?.invokeMethod("openChargeRequested", null)
         }
+        if (intent.getBooleanExtra("open_notifs", false)) {
+            floatingChannel?.invokeMethod("openNotifsRequested", null)
+        }
         val session = intent.getStringExtra("open_session")
         if (session != null && session.isNotEmpty()) {
             floatingChannel?.invokeMethod("openSessionRequested", session)

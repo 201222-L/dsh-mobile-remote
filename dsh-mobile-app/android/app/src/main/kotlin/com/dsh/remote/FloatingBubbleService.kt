@@ -64,6 +64,7 @@ class FloatingBubbleService : Service() {
     private var panelSessionsSec: View? = null
     private var panelNotifs: LinearLayout? = null
     private var panelNotifsSec: View? = null
+    private var panelNotifsBadge: TextView? = null
     private var panelCharge: View? = null
     private var panelVisible = false
     private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
@@ -495,10 +496,34 @@ class FloatingBubbleService : Service() {
         root.addView(sessionsBox)
         panelSessions = sessionsBox
 
-        // 最近通知
-        val secNotifs = sectionLabel(text("最近通知", "Recent notifications"))
-        root.addView(secNotifs)
-        panelNotifsSec = secNotifs
+        // 最近通知（区块头：标题 + 未读徽标 + 查看全部入口）
+        val notifHead = LinearLayout(this)
+        notifHead.orientation = LinearLayout.HORIZONTAL
+        notifHead.gravity = Gravity.CENTER_VERTICAL
+        val secNotifs = sectionLabel(text("最近通知", "Notifications"))
+        notifHead.addView(secNotifs, LinearLayout.LayoutParams(0, dp(24), 1f))
+        val badgeUnread = TextView(this)
+        badgeUnread.text = "0"
+        badgeUnread.setTextColor(Color.WHITE)
+        badgeUnread.textSize = 9f
+        badgeUnread.gravity = Gravity.CENTER
+        badgeUnread.setPadding(dp(5), 0, dp(5), 0)
+        badgeUnread.background = GradientDrawable().apply {
+            cornerRadius = dp(8).toFloat()
+            setColor(Color.parseColor("#E5484D"))
+        }
+        badgeUnread.visibility = View.GONE
+        notifHead.addView(badgeUnread, LinearLayout.LayoutParams(dp(30), dp(16)))
+        val viewAll = TextView(this)
+        viewAll.text = text("查看全部 →", "View all →")
+        viewAll.setTextColor(Color.parseColor("#6C8CFF"))
+        viewAll.textSize = 10.5f
+        viewAll.setPadding(dp(8), 0, 0, 0)
+        viewAll.setOnClickListener { hidePanel(); openNotifs() }
+        notifHead.addView(viewAll, LinearLayout.LayoutParams(dp(64), dp(24)))
+        root.addView(notifHead)
+        panelNotifsSec = notifHead
+        panelNotifsBadge = badgeUnread
         val notifsBox = LinearLayout(this)
         notifsBox.orientation = LinearLayout.VERTICAL
         root.addView(notifsBox)
@@ -691,29 +716,36 @@ class FloatingBubbleService : Service() {
                     conn.disconnect()
                 } catch (_: Exception) {}
 
-                // 最近通知
-                val notifs = mutableListOf<String>()
+                // 最近通知（标题/未读/时间；字段与插件端 items 一致）
+                val notifs = mutableListOf<Map<String, Any>>()
+                var unreadCount = 0
                 try {
                     val conn = URL("$b/m/api/notifications").openConnection() as HttpURLConnection
                     conn.connectTimeout = 5000
                     conn.setRequestProperty("x-mobile-token", token)
                     if (conn.responseCode == 200) {
                         val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val list = JSONObject(txt).optJSONArray("notifications") ?: JSONArray()
+                        val j = JSONObject(txt)
+                        val list = j.optJSONArray("items") ?: JSONArray()
+                        unreadCount = j.optInt("unread")
                         for (i in 0 until Math.min(3, list.length())) {
                             val n = list.optJSONObject(i) ?: continue
-                            notifs.add(n.optString("title").ifEmpty { text("通知", "Notification") })
+                            notifs.add(mapOf(
+                                "title" to n.optString("title").ifEmpty { text("通知", "Notification") },
+                                "unread" to n.optBoolean("unread"),
+                                "time" to n.optLong("time"),
+                            ))
                         }
                     }
                     conn.disconnect()
                 } catch (_: Exception) {}
 
-                mainHandler.post { renderPanel(running, notifs) }
+                mainHandler.post { renderPanel(running, notifs, unreadCount) }
             } catch (_: Exception) {}
         }, "dsh-bubble-panel").apply { isDaemon = true; start() }
     }
 
-    private fun renderPanel(running: List<Pair<String, String>>, notifs: List<String>) {
+    private fun renderPanel(running: List<Pair<String, String>>, notifs: List<Map<String, Any>>, unreadCount: Int) {
         val box = panelSessions ?: return
         box.removeAllViews()
         val secS = panelSessionsSec
@@ -740,6 +772,7 @@ class FloatingBubbleService : Service() {
         val nbox = panelNotifs ?: return
         nbox.removeAllViews()
         val secN = panelNotifsSec
+        val badgeN = panelNotifsBadge
         if (notifs.isEmpty()) {
             // 无通知 → 整个区块隐藏
             secN?.visibility = View.GONE
@@ -747,14 +780,35 @@ class FloatingBubbleService : Service() {
         } else {
             secN?.visibility = View.VISIBLE
             nbox.visibility = View.VISIBLE
-            for (t in notifs) {
-                val row = TextView(this)
-                row.text = "• $t"
-                row.setTextColor(Color.parseColor("#DDE1E6"))
-                row.textSize = 12f
+            // 未读徽标（与 App 铃铛同源）
+            badgeN?.text = if (unreadCount > 99) "99+" else "$unreadCount"
+            badgeN?.visibility = if (unreadCount > 0) View.VISIBLE else View.GONE
+            for (n in notifs) {
+                val unread = n["unread"] as? Boolean ?: false
+                val title = n["title"] as? String ?: ""
+                val time = (n["time"] as? Number)?.toLong() ?: 0L
+                val row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER_VERTICAL
                 row.setPadding(0, dp(3), 0, dp(3))
-                row.maxLines = 1
-                row.ellipsize = android.text.TextUtils.TruncateAt.END
+                row.setOnClickListener { hidePanel(); openNotifs() }
+                val dot = TextView(this)
+                dot.text = if (unread) "●" else "○"
+                dot.setTextColor(if (unread) Color.parseColor("#4D6BFE") else Color.parseColor("#5C6470"))
+                dot.textSize = 10f
+                row.addView(dot, LinearLayout.LayoutParams(dp(16), dp(20)))
+                val titleTv = TextView(this)
+                titleTv.text = title
+                titleTv.setTextColor(if (unread) Color.WHITE else Color.parseColor("#B4BCC6"))
+                titleTv.textSize = 12f
+                titleTv.maxLines = 1
+                titleTv.ellipsize = android.text.TextUtils.TruncateAt.END
+                row.addView(titleTv, LinearLayout.LayoutParams(0, dp(20), 1f))
+                val timeTv = TextView(this)
+                timeTv.text = relTime(time)
+                timeTv.setTextColor(Color.parseColor("#5C6470"))
+                timeTv.textSize = 10f
+                row.addView(timeTv, LinearLayout.LayoutParams(dp(52), dp(20)))
                 nbox.addView(row)
             }
         }
@@ -974,6 +1028,30 @@ class FloatingBubbleService : Service() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra("open_charge", true)
         startActivity(i)
+    }
+
+    /** 打开 App 通知页（MainActivity extra，Flutter 侧处理）。 */
+    private fun openNotifs() {
+        val i = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra("open_notifs", true)
+        startActivity(i)
+    }
+
+    /** 相对时间：刚刚 / N 分钟前 / N 小时前 / 日期。 */
+    private fun relTime(ms: Long): String {
+        if (ms <= 0) return ""
+        val diff = System.currentTimeMillis() - ms
+        val min = diff / 60000
+        return when {
+            min < 1 -> text("刚刚", "now")
+            min < 60 -> text("${min}分钟前", "${min}m")
+            min < 1440 -> text("${min / 60}小时前", "${min / 60}h")
+            else -> {
+                val d = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+                String.format("%02d-%02d", d.get(java.util.Calendar.MONTH) + 1, d.get(java.util.Calendar.DAY_OF_MONTH))
+            }
+        }
     }
 
     private fun exitBubble(why: String) {
