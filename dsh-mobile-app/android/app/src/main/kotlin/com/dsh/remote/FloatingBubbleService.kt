@@ -382,7 +382,8 @@ class FloatingBubbleService : Service() {
     }
 
     /** 气泡定位：球正上方紧贴（8dp），水平居中于球可见部分；顶部空间不足放球下方。
-     *  球贴边时气泡随可见部分贴屏边（始终在球上方区域，不漂移）。 */
+     *  使用气泡实际测量宽度定位（修复：硬编码 170dp 与实际内容宽度不符 → 窄气泡
+     *  被按宽气泡钳制，飘到屏幕中间）。 */
     private fun positionTip() {
         val tv = tip ?: return
         if (tv.visibility != View.VISIBLE) return
@@ -391,14 +392,19 @@ class FloatingBubbleService : Service() {
         val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val bd = dp(bubbleDp)
-        val tipW = dp(170)
-        // 水平：居中于球（可见部分），钳制屏内（球贴边 → 气泡贴边，仍在球上方区域）
-        val visCenter = ((maxOf(0, bp.x) + minOf(metrics.widthPixels, bp.x + bd)) / 2)
+        // 实际宽度（首次显示未测量时用估算，布局完成后重定位）
+        val tipW = if (tv.width > 0) tv.width else dp(170)
+        // 水平：居中于球可见部分，钳制屏内
+        val visCenter = (maxOf(0, bp.x) + minOf(metrics.widthPixels, bp.x + bd)) / 2
         p.x = (visCenter - tipW / 2).coerceIn(dp(4), metrics.widthPixels - tipW - dp(4))
-        // 垂直：球上方紧贴（气泡高约 32dp + 8dp 间距）；顶部空间不足放球下方
-        val above = bp.y - dp(40)
+        // 垂直：球上方紧贴（气泡高约 30dp + 8dp 间距）；顶部空间不足放球下方
+        val above = bp.y - dp(38)
         p.y = if (above >= dp(6)) above else bp.y + bd + dp(6)
         wm.updateViewLayout(tv, p)
+        // 首次测量前定位：布局完成后按实际宽度重新定位
+        if (tv.width == 0) {
+            tv.post { if (tip?.visibility == View.VISIBLE) positionTip() }
+        }
     }
 
     private val hideTipRunnable = Runnable { tip?.visibility = View.GONE }
