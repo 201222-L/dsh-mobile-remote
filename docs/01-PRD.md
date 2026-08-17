@@ -132,6 +132,7 @@
 | 通知删除 | 核心层 | `POST /api/notifications/delete`（v2.3） |
 | 问询/审批弹窗 | 核心层 | SSE `mobile/frame` + `POST /api/respond`（v2.3） |
 | 插件动作区 | 可选层 | `GET /api/actions` + invoke（新增） |
+| 模型提供商互通 | 核心层 | `GET/POST /api/llm-providers` + `probe`（v2.6，与 PC 端同一 settings/credentials 通道） |
 | 多地址自动切换 | 核心层 | bootstrap `server.urls` 收集（局域网 + 组网 IP，排除 169.254/16）+ 断线轮换（v2.4.1） |
 | 连接自愈 | 核心层 | SSE 超时 + 心跳看门狗 + 地址轮换（v2.4.2/v2.5.1，黑洞约 10s 故障切换） |
 | 手动切换连接地址 | 核心层 | 设置 → 电脑地址候选列表，探测后切换重连（v2.5.0） |
