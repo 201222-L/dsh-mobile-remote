@@ -1,5 +1,4 @@
 // DeepSeek 设计令牌（对齐网页端 page.html :root，原型 v7 定稿）
-import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
 
 /// 设计令牌：配色/圆角/阴影，浅色深色两套。
@@ -65,11 +64,11 @@ class DshTheme {
       ),
       scaffoldBackgroundColor: dark ? bgDark : bg,
       fontFamilyFallback: const ['PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-      // v2.7：统一页面转场——SharedAxis（Google animations 包，水平轴推入带视差，
-      // 页面沿同一轴连贯移动，进/退方向自然反向）
+      // v2.7：统一页面转场——加强版（右滑 12% + 0.96 缩放 + 淡入，350ms easeOutCubic，
+      // 进/退方向自然反向，比系统默认与 SharedAxis 更可感知）
       pageTransitionsTheme: const PageTransitionsTheme(builders: {
-        TargetPlatform.android: _SharedAxisTransitionsBuilder(),
-        TargetPlatform.iOS: _SharedAxisTransitionsBuilder(),
+        TargetPlatform.android: _EnhancedTransitionsBuilder(),
+        TargetPlatform.iOS: _EnhancedTransitionsBuilder(),
       }),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? bgDark : bg,
@@ -120,9 +119,9 @@ class DshTheme {
   }
 }
 
-/// SharedAxis 页面转场（Google animations 包）：水平轴推入 + 视差。
-class _SharedAxisTransitionsBuilder extends PageTransitionsBuilder {
-  const _SharedAxisTransitionsBuilder();
+/// 加强版页面转场：右滑 12% + 0.96 缩放 + 淡入（easeOutCubic，感知明显不土气）。
+class _EnhancedTransitionsBuilder extends PageTransitionsBuilder {
+  const _EnhancedTransitionsBuilder();
 
   @override
   Widget buildTransitions<T>(
@@ -132,11 +131,20 @@ class _SharedAxisTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    return SharedAxisTransition(
-      animation: animation,
-      secondaryAnimation: secondaryAnimation,
-      transitionType: SharedAxisTransitionType.horizontal,
-      child: child,
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return FadeTransition(
+      opacity: curved,
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0.12, 0), end: Offset.zero).animate(curved),
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
+          child: child,
+        ),
+      ),
     );
   }
 }
