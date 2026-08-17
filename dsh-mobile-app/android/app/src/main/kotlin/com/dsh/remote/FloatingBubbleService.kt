@@ -565,13 +565,37 @@ class FloatingBubbleService : Service() {
         placePanel()
         scrim?.visibility = View.VISIBLE // 拦截面板外点击（透明，不遮挡视觉）
         p.visibility = View.VISIBLE
-        // 打开动画：淡入 + 轻微放大（从球方向展开的质感）
+        // 生长动画：从球方向位移 + 放大 + 淡入（球在左→从左长出，球在上→从上长出）
+        val bp = bubbleParams ?: return
+        val metrics = resources.displayMetrics
+        val dirX = if (bp.x < metrics.widthPixels / 2) -1f else 1f
+        val dirY = if (bp.y < metrics.heightPixels / 2) -1f else 1f
+        p.translationX = dirX * dp(28)
+        p.translationY = dirY * dp(16)
         p.alpha = 0f
-        p.scaleX = 0.85f
-        p.scaleY = 0.85f
-        p.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180)
+        p.scaleX = 0.9f
+        p.scaleY = 0.9f
+        p.animate().translationX(0f).translationY(0f).alpha(1f).scaleX(1f).scaleY(1f)
+            .setDuration(200)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
             .withEndAction { placePanel() } // 布局完成后按实际高度重新定位
             .start()
+        // 逐项浮现：标题/内容/按钮错开淡入上移（stagger）
+        val root = p as? LinearLayout
+        if (root != null) {
+            var i = 0
+            for (ci in 0 until root.childCount) {
+                val child = root.getChildAt(ci)
+                if (child.visibility != View.VISIBLE) continue
+                child.alpha = 0f
+                child.translationY = dp(8)
+                child.animate().alpha(1f).translationY(0f)
+                    .setStartDelay(60L + i * 40L)
+                    .setDuration(160)
+                    .start()
+                i++
+            }
+        }
         // 打开面板 = 已读：清红点
         notifCount = 0
         mainHandler.removeCallbacks(clearNotifRunnable)
