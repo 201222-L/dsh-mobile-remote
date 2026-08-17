@@ -64,10 +64,11 @@ class DshTheme {
       ),
       scaffoldBackgroundColor: dark ? bgDark : bg,
       fontFamilyFallback: const ['PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-      // v2.7：统一页面转场（fade + 轻微上滑，easeOut，比系统默认轻快）
+      // v2.7：统一页面转场——Zoom（新页放大淡入 + 旧页缩小淡出，Material 3 层级感）
+      // Android 14+ 附带预测性返回动画（PredictiveBackPageTransitionsBuilder）
       pageTransitionsTheme: const PageTransitionsTheme(builders: {
-        TargetPlatform.android: _FadeSlideTransitionsBuilder(),
-        TargetPlatform.iOS: _FadeSlideTransitionsBuilder(),
+        TargetPlatform.android: ZoomPageTransitionsBuilder(),
+        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
       }),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? bgDark : bg,
@@ -113,29 +114,6 @@ class DshTheme {
           borderSide: BorderSide(color: dark ? brandDark : brand, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      ),
-    );
-  }
-}
-
-/// 统一的页面转场：fade + 轻微上滑（easeOutCubic，250ms 语义由路由动画长度决定）。
-class _FadeSlideTransitionsBuilder extends PageTransitionsBuilder {
-  const _FadeSlideTransitionsBuilder();
-
-  @override
-  Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) {
-    final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
-    return FadeTransition(
-      opacity: curved,
-      child: SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero).animate(curved),
-        child: child,
       ),
     );
   }
