@@ -1,4 +1,5 @@
 // DeepSeek 设计令牌（对齐网页端 page.html :root，原型 v7 定稿）
+import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
 
 /// 设计令牌：配色/圆角/阴影，浅色深色两套。
@@ -64,11 +65,11 @@ class DshTheme {
       ),
       scaffoldBackgroundColor: dark ? bgDark : bg,
       fontFamilyFallback: const ['PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-      // v2.7：统一页面转场——Zoom（新页放大淡入 + 旧页缩小淡出，Material 3 层级感）
-      // Android 14+ 附带预测性返回动画（PredictiveBackPageTransitionsBuilder）
+      // v2.7：统一页面转场——SharedAxis（Google animations 包，水平轴推入带视差，
+      // 页面沿同一轴连贯移动，进/退方向自然反向）
       pageTransitionsTheme: const PageTransitionsTheme(builders: {
-        TargetPlatform.android: ZoomPageTransitionsBuilder(),
-        TargetPlatform.iOS: ZoomPageTransitionsBuilder(),
+        TargetPlatform.android: _SharedAxisTransitionsBuilder(),
+        TargetPlatform.iOS: _SharedAxisTransitionsBuilder(),
       }),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? bgDark : bg,
@@ -115,6 +116,27 @@ class DshTheme {
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       ),
+    );
+  }
+}
+
+/// SharedAxis 页面转场（Google animations 包）：水平轴推入 + 视差。
+class _SharedAxisTransitionsBuilder extends PageTransitionsBuilder {
+  const _SharedAxisTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    return SharedAxisTransition(
+      animation: animation,
+      secondaryAnimation: secondaryAnimation,
+      transitionType: SharedAxisTransitionType.horizontal,
+      child: child,
     );
   }
 }
