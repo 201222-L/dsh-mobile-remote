@@ -90,6 +90,17 @@ class FloatingBubbleService : Service() {
     @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
     private var bubbleDp = 52
 
+    // 未读增量对比（补"事件驱动之外的提示"：重连窗口/离线期间新增的通知）
+    private var lastUnreadCount = 0
+    private var firstUnreadCheck = true // 首次检查只记录基线，不提示存量
+    /** 每 60 秒对比未读数，增量则提示（防抖：最近 60 秒已提示过则只更新基线）。 */
+    private val unreadCheckRunnable: Runnable = object : Runnable {
+        override fun run() {
+            checkUnreadDelta()
+            mainHandler.postDelayed(this, 60000)
+        }
+    }
+
     // 拖动/点击判定
     private var downX = 0f
     private var downY = 0f
@@ -115,6 +126,8 @@ class FloatingBubbleService : Service() {
         startSse()
         // 余额定时自查（30 分钟一次，不依赖 App 打开设置页触发）
         mainHandler.postDelayed(balanceCheckRunnable, 30 * 60 * 1000L)
+        // 未读增量对比（60 秒一次，补重连/离线期间的通知提示）
+        mainHandler.postDelayed(unreadCheckRunnable, 20000)
     }
 
     /** 余额自查：每 30 分钟拉一次 /m/api/balance，低余额时亮起 + 气泡 + 面板按钮变红。 */
@@ -758,7 +771,12 @@ class FloatingBubbleService : Service() {
                     conn.disconnect()
                 } catch (_: Exception) {}
 
-                mainHandler.post { renderPanel(running, notifs, unreadCount) }
+                mainHandler.post {
+                    // 面板打开 = 已看：更新未读基线（下次增量从当前起算）
+                    lastUnreadCount = unreadCount
+                    firstUnreadCheck = false
+                    renderPanel(running, notifs, unreadCount)
+                }
             } catch (_: Exception) {}
         }, "dsh-bubble-panel").apply { isDaemon = true; start() }
     }
@@ -1070,6 +1088,48 @@ class FloatingBubbleService : Service() {
                 String.format("%02d-%02d", d.get(java.util.Calendar.MONTH) + 1, d.get(java.util.Calendar.DAY_OF_MONTH))
             }
         }
+    }
+
+    /** 未读增量对比：重连/离线期间新增的通知也能提示（不只靠实时事件）。 */
+    private fun checkUnreadDelta() {
+        if (panelVisible) return // 面板开着=正在看，不打扰
+        Thread({
+            try {
+                val base = prefs("flutter.dsh_mr_base") ?: return@Thread
+                val token = prefs("flutter.dsh_mr_token") ?: return@Thread
+                var b = base.trim()
+                if (b.endsWith("/")) b = b.dropLast(1)
+                if (b.endsWith("/m")) b = b.dropLast(2)
+                val conn = URL("$b/m/api/notifications").openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.setRequestProperty("x-mobile-token", token)
+                var unread = 0
+                if (conn.responseCode == 200) {
+                    val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    unread = JSONObject(txt).optInt("unread")
+                }
+                conn.disconnect()
+                val u = unread
+                mainHandler.post {
+                    if (firstUnreadCheck) {
+                        // 首次（服务启动）：只记录基线，不提示存量
+                        firstUnreadCheck = false
+                        lastUnreadCount = u
+                        return@post
+                    }
+                    if (u > lastUnreadCount) {
+                        val diff = u - lastUnreadCount
+                        // 防抖：事件驱动刚提示过（60 秒内）则只更新基线，避免重复气泡
+                        if (System.currentTimeMillis() - lastNotifAt > 60000) {
+                            markNotif("unread-delta", text("有 $diff 条新通知", "$diff new notification" + if (diff > 1) "s" else ""))
+                        }
+                        lastUnreadCount = u
+                    } else {
+                        lastUnreadCount = u
+                    }
+                }
+            } catch (_: Exception) {}
+        }, "dsh-bubble-unread").apply { isDaemon = true; start() }
     }
 
     private fun exitBubble(why: String) {
