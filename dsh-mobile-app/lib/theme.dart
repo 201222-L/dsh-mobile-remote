@@ -30,18 +30,17 @@ class DshTheme {
   static const okDark = Color(0xFF4CB86F);
   static const dangerDark = Color(0xFFE0655F);
 
-  // 圆角
-  static const radiusLg = 24.0;
-  static const radiusMd = 16.0;
-  static const radiusSm = 10.0;
+  // 圆角（v2.7 统一：卡片 14 / 输入框 10 / 胶囊全圆）
+  static const radiusLg = 20.0; // 弹层/底部弹窗顶部
+  static const radiusMd = 14.0; // 卡片
+  static const radiusSm = 10.0; // 输入框/次级元素
 
+  // 轻量阴影：卡片靠"浅底+细边框+极轻投影"分层，不用重阴影（v2.7 弱化）
   static const shadow = [
-    BoxShadow(color: Color(0x0D1F2329), blurRadius: 2, offset: Offset(0, 1)),
-    BoxShadow(color: Color(0x0F1F2329), blurRadius: 30, offset: Offset(0, 10)),
+    BoxShadow(color: Color(0x0A1F2329), blurRadius: 10, offset: Offset(0, 2)),
   ];
   static const shadowDark = [
-    BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
-    BoxShadow(color: Color(0x59000000), blurRadius: 30, offset: Offset(0, 10)),
+    BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 2)),
   ];
 
   static ThemeData light() => _base(Brightness.light);
@@ -97,15 +96,15 @@ class DshTheme {
         filled: true,
         fillColor: dark ? surfaceDark : surface,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(radiusSm),
           borderSide: BorderSide(color: dark ? lineDark : line),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(radiusSm),
           borderSide: BorderSide(color: dark ? lineDark : line),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(radiusSm),
           borderSide: BorderSide(color: dark ? brandDark : brand, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),

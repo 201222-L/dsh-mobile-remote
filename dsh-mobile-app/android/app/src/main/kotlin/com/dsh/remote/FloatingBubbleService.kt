@@ -25,7 +25,6 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -55,7 +54,6 @@ class FloatingBubbleService : Service() {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var logoImg: BubbleView? = null
     private var badge: TextView? = null
-    private var spinner: ProgressBar? = null
     private var tip: TextView? = null
     private var tipParams: WindowManager.LayoutParams? = null
 
@@ -204,10 +202,6 @@ class FloatingBubbleService : Service() {
         bd.visibility = View.GONE
         root.addView(bd, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.TOP or Gravity.END))
 
-        val sp = ProgressBar(this, null, android.R.attr.progressBarStyleSmall)
-        sp.visibility = View.GONE
-        root.addView(sp, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
-
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(
@@ -291,7 +285,6 @@ class FloatingBubbleService : Service() {
         bubbleParams = params
         logoImg = img
         badge = bd
-        spinner = sp
         setState()
     }
 
@@ -705,8 +698,6 @@ class FloatingBubbleService : Service() {
         } else {
             bd.visibility = View.GONE
         }
-        val sp = spinner ?: return
-        sp.visibility = if (agentsRunning) View.VISIBLE else View.GONE
     }
 
     /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
