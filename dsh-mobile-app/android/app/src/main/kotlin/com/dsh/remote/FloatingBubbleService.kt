@@ -246,7 +246,8 @@ class FloatingBubbleService : Service() {
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
-        params.x = dp(20)
+        // 启动即贴右边缘（完全露出，无需手动拖动吸附）
+        params.x = resources.displayMetrics.widthPixels - size
         params.y = dp(240)
         wm.addView(root, params)
 
