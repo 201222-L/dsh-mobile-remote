@@ -419,12 +419,30 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// 新增未读通知回调（横幅提示用）：参数 = 新增条数。
+  void Function(int count)? onNewNotifications;
+  int _lastUnread = 0;
+  bool _firstUnreadSeen = false;
+
   Future<void> refreshNotifs({bool notify = true}) async {
     try {
       final items = await api.notifications();
-      unread = items.where((n) => n.unread).length;
+      final u = items.where((n) => n.unread).length;
+      // 未读增量对比：重连/离线期间新增的通知也能触发提示（不只靠实时事件）
+      if (_firstUnreadSeen && u > _lastUnread) {
+        onNewNotifications?.call(u - _lastUnread);
+      }
+      _firstUnreadSeen = true;
+      _lastUnread = u;
+      unread = u;
       if (notify) notifyListeners();
     } catch (_) {}
+  }
+
+  /// 打开通知页后视为已读基线更新（下次增量从当前起算）。
+  void markNotifsSeen() {
+    _firstUnreadSeen = true;
+    _lastUnread = unread;
   }
 
   Future<void> refreshActions({bool notify = true}) async {

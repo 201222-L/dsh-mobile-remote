@@ -130,6 +130,8 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   int _index = 0;
   bool _reconfiguring = false; // 重新配置进行中：显示连接页但保留旧配置，取消可回退
   final _drawerKey = GlobalKey<ScaffoldState>();
+  OverlayEntry? _bannerEntry;
+  DateTime _lastBannerAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -138,10 +140,74 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     // 全局状态变化（工作区切换、未读数、连接状态等）→ 重建自身（含抽屉），
     // 否则 const RootScreen 会被父级重建跳过，抽屉里的工作区选中态不会跟着变。
     store.addListener(_onStore);
+    // 新增未读通知 → 顶部横幅提示（重连/离线期间新增也能提示）
+    store.onNewNotifications = _onNewNotifications;
     _configured = api.baseUrl.isNotEmpty && api.token.isNotEmpty;
     if (_configured) {
       _boot();
     }
+  }
+
+  /// 新增未读通知横幅：顶部滑入，2.5 秒自动消失，点击跳通知页；10 秒内不重复。
+  void _onNewNotifications(int count) {
+    final now = DateTime.now();
+    if (now.difference(_lastBannerAt).inSeconds < 10) return;
+    _lastBannerAt = now;
+    final overlay = Overlay.of(context);
+    _bannerEntry?.remove();
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (ctx) => Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Material(
+              color: Colors.transparent,
+              child: GestureDetector(
+                onTap: () {
+                  entry.remove();
+                  store.markNotifsSeen();
+                  _openNotifications();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: Theme.of(ctx).brightness == Brightness.dark ? DshTheme.surfaceDark : const Color(0xFF1F2329),
+                    borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.notifications_active, size: 17, color: DshColors.brand(ctx)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          L10n.t('有 $count 条新通知', '$count new notification${count > 1 ? 's' : ''}'),
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(ctx)),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(ctx)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    _bannerEntry = entry;
+    overlay.insert(entry);
+    // 2.5 秒自动消失
+    Future.delayed(const Duration(milliseconds: 2500), () {
+      if (entry.mounted) entry.remove();
+      if (_bannerEntry == entry) _bannerEntry = null;
+    });
   }
 
   void _onStore() {
