@@ -250,6 +250,8 @@ class FloatingBubbleService : Service() {
         params.x = resources.displayMetrics.widthPixels - size
         params.y = dp(240)
         wm.addView(root, params)
+        // 启动后 5 秒无操作自动缩进（贴边常驻，无需先拖动）
+        mainHandler.postDelayed(autoHideRunnable, 5000)
 
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -642,6 +644,9 @@ class FloatingBubbleService : Service() {
         panelVisible = false
         scrim?.visibility = View.GONE
         mainHandler.removeCallbacks(panelRefreshRunnable)
+        // 面板关闭后 5 秒无操作自动缩进（球保持可见便于再次操作）
+        mainHandler.removeCallbacks(autoHideRunnable)
+        mainHandler.postDelayed(autoHideRunnable, 5000)
         // 收起动画：淡出 + 缩小（动画期间若重新打开则不隐藏）
         p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
             .withEndAction { if (!panelVisible) p.visibility = View.GONE }
