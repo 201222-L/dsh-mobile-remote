@@ -290,12 +290,19 @@ class _SessionRow extends StatelessWidget {
                   Row(
                     children: [
                       Text(_relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
-                      // 所属工作区小字标注（与 PC 端分组同源）
+                      // 所属工作区小字标注（与 PC 端分组同源）；长标题省略号防溢出
                       if (workspace != null) ...[
                         Text(' · ', style: TextStyle(fontSize: 11, color: ink3)),
                         Icon(Icons.folder_outlined, size: 11, color: ink3),
                         const SizedBox(width: 2),
-                        Text(workspace!, style: TextStyle(fontSize: 11, color: ink3)),
+                        Flexible(
+                          child: Text(
+                            workspace!,
+                            style: TextStyle(fontSize: 11, color: ink3),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ],
                     ],
                   ),

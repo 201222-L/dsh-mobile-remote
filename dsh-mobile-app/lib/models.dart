@@ -83,6 +83,7 @@ class Catalog {
   final List<AgentPreset> agentPresets;
   final Map<String, dynamic> defaults;
   final String rechargeUrl;
+  final List<ProviderInfo> providers; // v2.6：提供商元信息（分组显示名 / dormant 状态）
   Catalog({
     required this.models,
     required this.reasoningEfforts,
@@ -90,6 +91,7 @@ class Catalog {
     required this.agentPresets,
     required this.defaults,
     required this.rechargeUrl,
+    required this.providers,
   });
   factory Catalog.fromJson(Map<String, dynamic> j) => Catalog(
         models: (j['models'] as List? ?? []).map((e) => CatalogModel.fromJson(e as Map<String, dynamic>)).toList(),
@@ -98,17 +100,33 @@ class Catalog {
         agentPresets: (j['agentPresets'] as List? ?? []).map((e) => AgentPreset.fromJson(e as Map<String, dynamic>)).toList(),
         defaults: (j['defaults'] as Map<String, dynamic>?) ?? {},
         rechargeUrl: j['rechargeUrl'] as String? ?? 'https://platform.deepseek.com/top_up',
+        providers: (j['providers'] as List? ?? []).map((e) => ProviderInfo.fromJson(e as Map<String, dynamic>)).toList(),
+      );
+}
+
+/// v2.6：提供商元信息（与 PC 端模型目录同源）。
+class ProviderInfo {
+  final String id;
+  final String name;
+  final bool dormant; // true = 可配置但未激活（未配置端点/密钥）
+  const ProviderInfo({required this.id, required this.name, required this.dormant});
+  factory ProviderInfo.fromJson(Map<String, dynamic> j) => ProviderInfo(
+        id: j['id'] as String? ?? 'deepseek-official',
+        name: j['name'] as String? ?? (j['id'] as String? ?? 'deepseek-official'),
+        dormant: j['dormant'] == true,
       );
 }
 
 class SessionConfig {
   final String? model;
+  final String? provider; // v2.6：当前模型所属提供商
   final String? reasoningEffort;
   final String? permissionPreset;
   final String? agentPreset;
-  SessionConfig({this.model, this.reasoningEffort, this.permissionPreset, this.agentPreset});
+  SessionConfig({this.model, this.provider, this.reasoningEffort, this.permissionPreset, this.agentPreset});
   factory SessionConfig.fromJson(Map<String, dynamic> j) => SessionConfig(
         model: j['model'] as String?,
+        provider: j['provider'] as String?,
         reasoningEffort: j['reasoningEffort'] as String?,
         permissionPreset: j['permissionPreset'] as String?,
         agentPreset: j['agentPreset'] as String?,

@@ -1,5 +1,60 @@
 # Changelog
 
+## v2.6.0（2026-08-17）— 安全加固 + 移动端过程可见性 + 模型提供商互通
+
+### 新增（安全）
+- **登录失败限流**：`rateLimit` 配置（默认 10 次/60s），错误口令按来源 IP 计数，超限返回 `429 rate-limited` + `Retry-After`；认证成功重置计数——防弱口令爆破（仅 `authToken` 启用时生效）
+- **推送内容脱敏（默认开启）**：第三方推送通道（Server酱/ntfy/Bark/generic）默认只推事件类型 + 会话短码，**会话标题、错误详情等核心内容不再外发**；确需完整内容设 `pushContent: "standard"`（旧行为，仅在信任通道时开启）
+- **链接 scheme 白名单（App）**：消息内链接仅 http/https 可点击，`file:`/`intent:`/`tel:` 等一律渲染为纯文本（含单元测试 `test/md_link_test.dart`）
+- **`/m/qr.png` 收口本机**：与 `qr-config` 同策略（Host 校验 + loopback 来源），不再对外提供无认证二维码渲染
+- **口令比较加固**：改为 sha256 定长化 + 常量时间比较，消除长度侧信道
+- **认证未启用显性警示**：插件启动日志告警 + 桌面设置页红色横幅「访问口令未启用」
+- **Android 备份隔离**：`allowBackup="false"`，口令/缓存不进云备份与 ADB 备份
+- **桌面设置页复制口令 60s 自动清剪贴板**（防其他应用读取；尽力而为）
+
+### 新增（移动端过程可见性）
+- **思考过程实时显示**：agent 思考时对话页出现可折叠「思考中…」面板，实时滚动思考内容（点开/收起），正文开始后显示「已思考 N 字」
+- **活动条**：思考 / 工具执行阶段在输入框上方显示轻量状态行（如「正在调用 read…」），结束即消失——不再"干等无反应"
+- **移除「显示工具调用」开关与工具卡片**：工具过程统一由活动条呈现，设置页与代码同步清理（工具结果细节以 PC 端为准）
+- **「思考内容」开关（设置 → 显示）**：默认关——只显示思考状态（思考中/已思考 N 字），不显示思考原文（deepseek 思考内容为英文，默认隐藏防刷屏；需要时打开）
+
+### 修复
+- generic 推送格式 `kind is not defined`（存量 bug，仅 generic 通道触发）
+- `z.enum` 不兼容 schemastery 导致插件加载失败（v2.6 新增配置项改用 `z.string` + 运行时校验）
+- **移动端消息重复显示**：SSE 回显先于 send 响应到达（且轮次分隔线已插入）时，乐观消息合并失败 → 同一条消息显示两次；改为全列表查找乐观消息合并
+- **工具阶段空气泡**：多步工具轮中正文为空的中间 assistant 消息不再渲染（过程由活动条呈现）
+- e2e-check：支持 `DSH_MOBILE_BASE` 环境变量、无 agent 实例自动跳过发送
+
+### 新增（模型提供商互通，PC × 移动端）
+- **模型提供商互通**：PC 端「设置 → 模型」配置的提供商与移动端同一通道，**两端一致、手机修改即时生效**
+  - 内核 `llm` 服务的可配置提供商目录全量上手机：除 deepseek-official 外，**37 个 dormant 提供商**（anthropic / openai / google / groq / mistral / nvidia / openrouter / xai / kimi / minimax / moonshotai / qwen / zai / xiaomi 等）在手机可见，配置 baseURL + API Key 即激活
+- **插件新端点**（`/m/api/llm-providers` GET / POST、`/m/api/llm-providers/probe`）：
+  - 提供商列表（live/dormant、settingsNs、baseURL、密钥状态——密钥引用只读，**不返回密钥本身**）
+  - 保存：`ctx.settings.mutate` 写配置 + `ctx.credentials.set` 存密钥（引用派生规则与 PC 端一致：`<PROVIDER>_API_KEY`）；仅允许写入配置目录声明的命名空间
+  - 探测：优先内核 `discoverModels`；内核未注册模型探测时（rc.5 deepseek 适配器）**回退 OpenAI 兼容 `GET {baseURL}/models`**
+- **App**：
+  - 模型选择器**按提供商分组**（组名 = 提供商显示名），dormant 提供商显示「未配置」不可选
+  - 设置新增「模型提供商」管理页：列表（已连接/未配置徽标 + baseURL + 密钥状态 + 目录模型数）、编辑（baseURL / API Key / 探测模型 / 清除密钥）
+- catalog 新增 `providers` 元信息；`session-config` 返回当前模型所属 `provider`；无 agent 兜底目录改为遍历全部提供商（不再写死 deepseek-official）
+
+### 修复
+- generic 推送格式 `kind is not defined`（存量 bug，仅 generic 通道触发）
+- `z.enum` 不兼容 schemastery 导致插件加载失败（v2.6 新增配置项改用 `z.string` + 运行时校验）
+- **移动端消息重复显示**：SSE 回显先于 send 响应到达（且轮次分隔线已插入）时，乐观消息合并失败 → 同一条消息显示两次；改为全列表查找乐观消息合并
+- **工具阶段空气泡**：多步工具轮中正文为空的中间 assistant 消息不再渲染（过程由活动条呈现）
+- `llm.listProviders()` 等为同步方法，原 `.catch()` 链式调用抛错（端点改用 try/catch）
+- e2e-check：支持 `DSH_MOBILE_BASE` 环境变量、无 agent 实例自动跳过发送
+
+### 文档
+- 06 新增「HTTPS 反代」章节（Caddy/nginx + 自签证书，可选 TLS 方案）
+- 03 新增 §6.13 模型提供商端点；04/09/00/07/README 同步：限流参数、429 错误码、推送脱敏、链接白名单、备份说明、提供商互通
+
+### 兼容
+- `pushContent` 默认 minimal 为**行为变更**：升级后推送内容变精简（通道配置无需改动，如需完整内容显式设 standard）
+- 移除「显示工具调用」为**行为变更**：移动端不再显示工具结果卡片，工具过程以活动条呈现
+- 旧 App 忽略 catalog 新增字段；旧插件无新端点（App 管理页提示加载失败，升级插件后可用）
+- 已发布 API 无破坏性变更；`rateLimit` / `pushContent` 均为新增可配置项
+
 ## v2.5.2（2026-08-17）— 抽屉与弹层溢出修复
 
 ### 修复

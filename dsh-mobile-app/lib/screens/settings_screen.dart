@@ -9,6 +9,7 @@ import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
 import 'sheets.dart';
+import 'providers_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final AppStore store;
@@ -342,6 +343,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => _pickDefaultPreset(store),
           ),
+          _row(
+            leading: const Icon(Icons.dns_outlined),
+            title: '模型提供商',
+            sub: '与 PC 端「设置 → 模型」同一配置通道',
+            trailing: Text('管理', style: TextStyle(fontSize: 12, color: brand)),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
+              );
+            },
+          ),
         ]),
         _card('账户', [
           _row(
@@ -387,14 +399,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ]),
         _card('显示', [
           _row(
-            leading: const Icon(Icons.visibility_outlined),
-            title: '显示工具调用',
-            sub: '移动端默认隐藏，只显示结果',
-            trailing: GestureDetector(
-              onTap: () => store.setShowTools(!store.showTools),
-              child: Text(
-                store.showTools ? '开' : '关',
-                style: TextStyle(fontSize: 13, color: brand),
+            leading: const Icon(Icons.psychology_outlined),
+            title: '思考内容',
+            sub: '活动条思考状态展开时是否显示思考原文（默认关：只显示状态）',
+            trailing: SizedBox(
+              width: 44,
+              height: 28,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Switch(
+                  value: store.showReasoning,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  // 色调适配：打开 = 品牌蓝；关闭 = 浅灰白（深色模式用柔和深灰）
+                  activeTrackColor: DshColors.brand(context),
+                  activeThumbColor: Colors.white,
+                  inactiveTrackColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
+                  inactiveThumbColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
+                  onChanged: (v) => store.setShowReasoning(v),
+                ),
               ),
             ),
           ),
@@ -452,8 +476,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ]),
-        const SizedBox(height: 4),
-        Text('DSH Mobile · DeepSeek 配色', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: ink3)),
       ],
     );
   }

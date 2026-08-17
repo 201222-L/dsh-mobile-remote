@@ -15,9 +15,9 @@ class AppStore extends ChangeNotifier {
   List<Session> sessions = [];
   List<Map<String, dynamic>> actions = [];
   int unread = 0;
-  bool showTools = false;
   String agentStatus = 'idle'; // idle | running | waiting
   String darkMode = 'system'; // system | dark | light
+  bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
   List<Map<String, dynamic>> workspaces = [];
@@ -40,16 +40,16 @@ class AppStore extends ChangeNotifier {
   bool _connecting = false;
 
   static const _kSession = 'dsh_mr_session';
-  static const _kTools = 'dsh_mr_showtools';
   static const _kDark = 'dsh_mr_darkmode';
+  static const _kReasoning = 'dsh_mr_show_reasoning';
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     sessionId = prefs.getString(_kSession);
-    showTools = prefs.getBool(_kTools) ?? false;
     darkMode = prefs.getString(_kDark) ?? 'system';
+    showReasoning = prefs.getBool(_kReasoning) ?? false;
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
     // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
@@ -259,11 +259,11 @@ class AppStore extends ChangeNotifier {
     return workspacePath;
   }
 
-  Future<void> setShowTools(bool v) async {
-    showTools = v;
+  Future<void> setShowReasoning(bool v) async {
+    showReasoning = v;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kTools, v);
+    await prefs.setBool(_kReasoning, v);
   }
 
   // ── 启动加载（对齐网页端 bootstrap） ──

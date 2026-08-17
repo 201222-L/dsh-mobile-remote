@@ -1,8 +1,10 @@
 // 底部弹层组：模型与推理 / 权限预设（含风险确认）/ 新建会话 / 目录选择 / 新建文件夹 / 执行动作
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
+import 'providers_screen.dart';
 
 /// 通用底部弹层容器（对齐网页端 sheet：圆角顶、拖拽把手、标题）。
 void showSheet(BuildContext context, String title, List<Widget> children) {
@@ -111,21 +113,75 @@ Widget _sheetItem(BuildContext context, {required String name, String? sub, bool
 void showModelSheet(BuildContext context, AppStore store) {
   final cat = store.catalog;
   if (cat == null) return;
-  showSheet(context, '模型与推理', [
-    ...cat.models.map((model) => _sheetItem(
-          context,
-          name: model.name,
-          sub: model.id,
-          active: store.sessionConfig.model == model.id,
+  // v2.6：按提供商分组显示（组名来自 catalog.providers，与 PC 端目录同源）
+  final providerNames = <String, String>{};
+  final dormantIds = <String>{};
+  for (final p in cat.providers) {
+    providerNames[p.id] = p.name;
+    if (p.dormant) dormantIds.add(p.id);
+  }
+  final groups = <String, List<CatalogModel>>{};
+  final groupOrder = <String>[];
+  for (final m in cat.models) {
+    final pid = m.provider;
+    if (!groups.containsKey(pid)) {
+      groups[pid] = [];
+      groupOrder.add(pid);
+    }
+    groups[pid]!.add(m);
+  }
+  final sheetChildren = <Widget>[
+    for (final pid in groupOrder) ...[
+      Padding(
+        padding: const EdgeInsets.only(top: 12, bottom: 4),
+        child: Text(
+          providerNames[pid] ?? pid,
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: DshColors.ink2(context)),
+        ),
+      ),
+      ...groups[pid]!.map((model) => _sheetItem(
+            context,
+            name: model.name,
+            sub: model.id,
+            active: store.sessionConfig.provider == model.provider && store.sessionConfig.model == model.id,
+            onTap: () {
+              final msgr = ScaffoldMessenger.of(context);
+              Navigator.of(context).pop();
+              store
+                  .applySessionConfig({'provider': model.provider, 'model': model.id})
+                  .then((_) => _toast(msgr, '已切换模型'))
+                  .catchError((e) => _toast(msgr, '切换失败：$e'));
+            },
+          )),
+    ],
+    // 未配置提供商收敛为一条入口（不再逐条列出）
+    if (dormantIds.isNotEmpty)
+      Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: InkWell(
           onTap: () {
-            final msgr = ScaffoldMessenger.of(context);
             Navigator.of(context).pop();
-            store
-                .applySessionConfig({'provider': model.provider, 'model': model.id})
-                .then((_) => _toast(msgr, '已切换模型'))
-                .catchError((e) => _toast(msgr, '切换失败：$e'));
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
+            );
           },
-        )),
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '还有 ${dormantIds.length} 个提供商未配置',
+                  style: TextStyle(fontSize: 12.5, color: DshColors.ink3(context)),
+                ),
+              ),
+              Text('前往设置 ➜', style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+            ],
+          ),
+        ),
+      ),
+  ];
+  showSheet(context, '模型与推理', [
+    ...sheetChildren,
     const SizedBox(height: 10),
     const Text('推理强度', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
     const SizedBox(height: 10),

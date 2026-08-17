@@ -499,24 +499,30 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          // 键盘弹出/小屏时表单可滚动，避免连接页溢出
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-            // 重新配置时：放弃返回（旧配置保留，不会被清空）
-            if (widget.onCancel != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
+      child: Column(
+        children: [
+          // 返回按钮固定在左上角（重新配置时可见，放弃保留原配置）
+          if (widget.onCancel != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 4, top: 4),
+                child: IconButton(
                   onPressed: widget.onCancel,
-                  icon: const Icon(Icons.arrow_back, size: 18),
-                  label: const Text('返回（保留原配置）', style: TextStyle(fontSize: 13)),
+                  icon: const Icon(Icons.arrow_back, size: 22),
+                  tooltip: '返回（保留原配置）',
                 ),
               ),
+            ),
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                // 键盘弹出/小屏时表单可滚动，避免连接页溢出
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             Text('DSH Remote',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: scheme.primary)),
@@ -567,8 +573,11 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
             const SizedBox(height: 12),
             Text(_status, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),
           ],
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

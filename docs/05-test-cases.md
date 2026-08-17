@@ -1,6 +1,6 @@
 # 05 测试用例设计文档 — dsh-mobile-remote
 
-> 版本：v2.4.0 · 状态：已按实际验证结果填写（含 v2.3 问询/审批、通知删除端到端用例） · 配套：03-api.md、04-security.md
+> 版本：v2.6.0 · 状态：已按实际验证结果填写（含 v2.3 问询/审批、通知删除端到端用例；连接逻辑 v2.4.2 起有单元测试，v2.6 起含链接白名单单测） · 配套：03-api.md、04-security.md
 > 环境：Windows + dsh web（web profile） + Android（DSH Remote App）
 > 前置：插件已安装并启用；访问口令为安装时生成的随机串（下文 `<TOKEN>`）。
 ## 1. 测试范围与环境
@@ -132,6 +132,23 @@
 | 步骤 | 通知页长按单删 / 垃圾桶批量多选 / 清空全部；随后让 agent 再完成一轮任务 |
 | 预期 | ① 删除后列表与角标即时刷新（SSE `notifications/changed`）；② 新事件仍正常产生新通知（删除≠静音）；③ PC 端通知中心不受影响 |
 
+### F-18 登录限流（v2.6，端到端）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | `authToken` 已启用 |
+| 步骤 | 连续错误口令请求 `/m/api/bootstrap`（错误 token） |
+| 预期 | 阈值（10 次/60s）内 401；超限后 `429 { "error": "rate-limited" }` + `Retry-After` 头；窗口过后自动恢复；正确口令成功后计数重置 |
+| 变体 A | `authToken` 未启用（留空）时无限流，按原语义返回 |
+| 说明 | `tools/e2e-check.mjs` 末尾已含自动化断言（封锁后本机 IP 60s 内 429，故段位置于脚本最后） |
+
+### F-19 链接 scheme 白名单（v2.6，App 单元测试）
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | `flutter test test/md_link_test.dart` |
+| 预期 | http/https 放行；`file:`/`intent:`/`tel:`/`javascript:`/`data:` 与解析失败/空串一律返回 null（渲染为纯文本不可点击） |
+
 ## 3. 安全测试用例
 
 ### S-01 Host 校验
@@ -166,4 +183,4 @@
 ## 4. 回归执行建议
 
 - 每次修改插件源码后：`cd C:\Users\<用户>\.dsh\profiles\web && corepack pnpm install`（同步 file: 副本）→ 重启 dsh web → 跑 `tools/e2e-check.mjs` → 手机 App 冒烟（连接/发消息/通知/新建会话）。
-- 修改 App 后：`flutter analyze` → `flutter build apk --release` → 覆盖安装。
+- 修改 App 后：`flutter analyze` → `flutter test`（`test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单）→ `flutter build apk --release` → 覆盖安装。

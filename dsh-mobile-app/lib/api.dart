@@ -211,6 +211,53 @@ class Api {
   Future<void> updateSessionConfig(String sessionId, Map<String, dynamic> patch) async {
     await postJson('/api/session-config', {'sessionId': sessionId, ...patch});
   }
+
+  // ── v2.6：模型提供商（与 PC 端 设置→模型 同一配置通道） ──
+  /// 提供商列表（含 dormant 未激活项、baseURL、密钥状态）。
+  Future<List<Map<String, dynamic>>> llmProviders() async {
+    final data = await getJson('/api/llm-providers');
+    return (data['providers'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// 探测端点模型列表（凭据一次性使用，不存储）。
+  Future<List<Map<String, dynamic>>> probeLlmProvider({
+    required String settingsNs,
+    required String baseURL,
+    String? apiKey,
+    String? protocol,
+  }) async {
+    final data = await postJson('/api/llm-providers/probe', {
+      'settingsNs': settingsNs,
+      'baseURL': baseURL,
+      if (apiKey != null && apiKey.isNotEmpty) 'apiKey': apiKey,
+      if (protocol != null && protocol.isNotEmpty) 'protocol': protocol,
+    });
+    return (data['models'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// 保存提供商配置（baseURL / API Key / 模型目录）。
+  /// [removeKey] 为 true 时清除已存密钥；[models] 为模型列表（[{id, name?}] 或字符串）。
+  Future<void> saveLlmProvider({
+    required String provider,
+    required String settingsNs,
+    String? baseURL,
+    String? apiKey,
+    List<Map<String, dynamic>>? models,
+    String? api,
+    String? displayName,
+    bool removeKey = false,
+  }) async {
+    await postJson('/api/llm-providers', {
+      'provider': provider,
+      'settingsNs': settingsNs,
+      if (baseURL != null && baseURL.isNotEmpty) 'baseURL': baseURL,
+      if (apiKey != null && apiKey.isNotEmpty) 'apiKey': apiKey,
+      if (models != null && models.isNotEmpty) 'models': models,
+      if (api != null && api.isNotEmpty) 'api': api,
+      if (displayName != null && displayName.isNotEmpty) 'displayName': displayName,
+      if (removeKey) 'removeKey': true,
+    });
+  }
   Future<List<Session>> sessions() async {
     final data = await getJson('/api/sessions');
     return (data['sessions'] as List? ?? []).map((e) => Session.fromJson(e as Map<String, dynamic>)).toList();

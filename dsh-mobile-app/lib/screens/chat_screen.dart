@@ -26,7 +26,11 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scrollCtrl = ScrollController();
   // live 视图：最新在前（reverse 列表 index 0 = 最新，视觉底部）
   final List<_MsgItem> _items = [];
-  final Map<String, _ToolRow> _toolRows = {};
+  // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
+  final Map<String, String> _activeTools = {};
+  String _reasoning = '';
+  bool _reasoningExpanded = false;
+  Timer? _activityTimer;
   String _draft = '';
   bool _streaming = false;
   int _lastSeq = 0;
@@ -81,6 +85,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _draftTimer?.cancel();
+    _activityTimer?.cancel();
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.onChatEvent = null;
     _inputCtrl.dispose();
@@ -164,6 +169,14 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// 活动条节流：思考/工具状态变化定时合并刷新（不滚动）。
+  void _scheduleActivityFlush() {
+    _activityTimer ??= Timer(const Duration(milliseconds: 80), () {
+      _activityTimer = null;
+      if (mounted) setState(() {});
+    });
+  }
+
   Future<void> _load() async {
     final id = widget.store.sessionId;
     if (id == null) return;
@@ -188,7 +201,9 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         _noMoreHistory = false;
         _items.clear();
-        _toolRows.clear();
+        _activeTools.clear();
+        _reasoning = '';
+        _reasoningExpanded = false;
         _draft = '';
         _streaming = false;
         // 最新在前：reverse 列表 index 0 = 最新（视觉底部）
@@ -349,10 +364,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 历史事件 → 消息条目（旧→新顺序，独立于 live 列表）。
   List<_MsgItem> _segmentFrom(List<ChatEvent> events) {
-    final rows = <String, _ToolRow>{};
     final out = <_MsgItem>[];
     for (final ev in events) {
-      _buildInto(out, rows, ev, history: true);
+      _buildInto(out, ev, history: true);
     }
     return out;
   }
@@ -537,12 +551,30 @@ class _ChatScreenState extends State<ChatScreen> {
       if (text.isNotEmpty && !reasoning) {
         _draft += text;
         _scheduleDraftFlush();
+      } else if (text.isNotEmpty && reasoning) {
+        // 思考内容实时累积（活动条面板，可展开）
+        if (_reasoning.isEmpty) AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+        _reasoning += text;
+        _scheduleActivityFlush();
       }
       return;
     }
     if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
       _draftTimer?.cancel();
       _draftTimer = null;
+      _activityTimer?.cancel();
+      _activityTimer = null;
+      if (ev.type == 'assistant/message') {
+        // 正文到达：工具阶段结束（思考保留到轮次结束，面板显示"已思考 N 字"）
+        _activeTools.clear();
+        AppLog.instance.log('Chat: 活动条-正文到达（思考 ${_reasoning.length} 字）');
+      } else {
+        // 轮次结束：清空活动条与思考草稿
+        _activeTools.clear();
+        if (_reasoning.isNotEmpty) AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
+        _reasoning = '';
+        _reasoningExpanded = false;
+      }
     }
     // 每轮完成：用该轮的 usage 样本更新上下文压力（PC 端同口径）与累计用量条
     if (ev.type == 'assistant/message') {
@@ -585,7 +617,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// [tail] 表示“最新一页初始加载”：允许 chunk 进草稿/重置草稿；
   /// 更早的历史页（tail=false）绝不触碰 live 流式草稿。
   void _appendEvent(ChatEvent ev, {bool history = false, bool tail = false}) {
-    _buildInto(_items, _toolRows, ev, history: history, tail: tail);
+    _buildInto(_items, ev, history: history, tail: tail);
     if (!_infiniteMode) {
       // 裁剪：live 列表最多保留 _liveMax 条，超出丢弃最旧（尾部），
       // 同时推进"查看更早"的分页起点，保证翻页无缝隙。
@@ -603,7 +635,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 历史分段：旧→新顺序，追加到末尾）。
   /// [tail] 见 [_appendEvent]：历史页（history=true, tail=false）跳过 chunk、
   /// 不重置 [_draft]/[_streaming]，避免污染正在进行的流式回复。
-  void _buildInto(List<_MsgItem> out, Map<String, _ToolRow> rows, ChatEvent ev,
+  void _buildInto(List<_MsgItem> out, ChatEvent ev,
       {bool history = false, bool tail = false}) {
     final d = ev.data;
     switch (ev.type) {
@@ -622,15 +654,18 @@ class _ChatScreenState extends State<ChatScreen> {
         // 去重（SSE 回显 vs 本地乐观添加）：
         // 1) 已有同 messageId 的消息 → 直接跳过（回显已完成渲染，同文本连发也不误并）
         if (mid != null && out.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) return;
-        final first = out.isNotEmpty ? out.first : null; // 最新在前：first = 最新
-        // 2) 最新一条是本地乐观添加（messageId 尚未赋值）且文本一致 → 合并为一条
-        if (!history &&
-            first != null &&
-            first.kind == _MsgKind.user &&
-            first.messageId == null &&
-            first.text.trim() == text.trim()) {
-          out[0] = first.copyWith(seq: ev.seq, messageId: mid);
-        } else if (history) {
+        // 2) 列表中已存在本地乐观添加（messageId 尚未赋值）且文本一致的消息 → 合并。
+        //    全列表查找而非只看 out.first：turn/start 等事件可能先于回显插入，
+        //    把乐观消息挤到非首位（否则会出现"同一条消息显示两次"）。
+        if (!history) {
+          final idx = out.indexWhere((m) =>
+              m.kind == _MsgKind.user && m.messageId == null && m.text.trim() == text.trim());
+          if (idx != -1) {
+            out[idx] = out[idx].copyWith(seq: ev.seq, messageId: mid);
+            return;
+          }
+        }
+        if (history) {
           out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid));
         } else {
           out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid));
@@ -646,6 +681,14 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         if (body.startsWith('background job ')) {
+          if (!history || tail) {
+            _draft = '';
+            _streaming = false;
+          }
+          return;
+        }
+        // 工具阶段中间产物（正文为空的多步消息）：不渲染空气泡，过程由活动条呈现
+        if (body.trim().isEmpty) {
           if (!history || tail) {
             _draft = '';
             _streaming = false;
@@ -676,18 +719,18 @@ class _ChatScreenState extends State<ChatScreen> {
           _streaming = true;
         }
       case 'tool/call':
-        final callId = d?['callId'] as String? ?? '';
-        rows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
+        // 只驱动活动条（live）；历史加载不重建工具痕迹
+        if (!history) {
+          final callId = d?['callId'] as String? ?? '';
+          final name = d?['name'] as String? ?? '工具';
+          _activeTools[callId] = name;
+          _scheduleActivityFlush();
+        }
       case 'tool/result':
-        final callId = d?['callId'] as String? ?? '';
-        final row = rows.putIfAbsent(callId, () => _ToolRow(name: d?['name'] as String? ?? ''));
-        row.done = true;
-        row.isError = d?['isError'] == true;
-        if (d?['text'] != null) row.body = d!['text'] as String;
-        if (history) {
-          out.add(_MsgItem.tool(row));
-        } else {
-          out.insert(0, _MsgItem.tool(row));
+        if (!history) {
+          final callId = d?['callId'] as String? ?? '';
+          _activeTools.remove(callId);
+          _scheduleActivityFlush();
         }
       case 'turn/start':
         if (history) {
@@ -734,9 +777,10 @@ class _ChatScreenState extends State<ChatScreen> {
       AppLog.instance.log('Chat: 发送成功 mid=$mid');
       if (!mounted) return;
       setState(() {
-        if (_items.isNotEmpty && _items.first.kind == _MsgKind.user) {
-          _items[0] = _items.first.copyWith(messageId: mid);
-        }
+        // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）
+        final idx = _items.indexWhere(
+            (m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
+        if (idx != -1) _items[idx] = _items[idx].copyWith(messageId: mid);
       });
     } catch (e) {
       if (mounted) {
@@ -875,7 +919,9 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         title: Row(
           children: [
-            Text(_title ?? '会话', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            Flexible(
+              child: Text(_title ?? '会话', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
             const SizedBox(width: 8),
             _StatusDot(status: store.connState == 'connected' ? store.agentStatus : 'offline'),
           ],
@@ -907,6 +953,16 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
+          // 活动条：思考中 / 工具执行中（过程反馈，不依赖任何开关）
+          if (!_inHistory && (_reasoning.isNotEmpty || _activeTools.isNotEmpty))
+            _ActivityBar(
+              reasoning: _reasoning,
+              expanded: _reasoningExpanded,
+              textStreaming: _streaming,
+              showContent: widget.store.showReasoning,
+              tools: _activeTools.values.toList(),
+              onToggleReasoning: () => setState(() => _reasoningExpanded = !_reasoningExpanded),
+            ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
             _QuestionCard(
@@ -1107,8 +1163,6 @@ class _ChatScreenState extends State<ChatScreen> {
           onLongPress: () => _showMessageActions(item),
           child: _AssistantBubble(text: item.text, usage: item.usage, streaming: false),
         );
-      case _MsgKind.tool:
-        return _ToolBubble(row: item.toolRow!, show: widget.store.showTools);
       case _MsgKind.divider:
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1121,7 +1175,7 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 // ── 消息模型 ──
-enum _MsgKind { user, assistant, tool, divider }
+enum _MsgKind { user, assistant, divider }
 
 class _MsgItem {
   final _MsgKind kind;
@@ -1129,36 +1183,18 @@ class _MsgItem {
   final Map<String, dynamic>? usage;
   final int? seq;
   final String? messageId;
-  final _ToolRow? toolRow;
   _MsgItem.user(this.text, {this.seq, this.messageId})
       : kind = _MsgKind.user,
-        usage = null,
-        toolRow = null;
+        usage = null;
   _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId})
-      : kind = _MsgKind.assistant,
-        toolRow = null;
-  _MsgItem.tool(this.toolRow)
-      : kind = _MsgKind.tool,
-        text = '',
-        usage = null,
-        seq = null,
-        messageId = null;
+      : kind = _MsgKind.assistant;
   _MsgItem.divider(this.text)
       : kind = _MsgKind.divider,
         usage = null,
         seq = null,
-        messageId = null,
-        toolRow = null;
+        messageId = null;
 
   _MsgItem copyWith({int? seq, String? messageId}) => _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId);
-}
-
-class _ToolRow {
-  String name;
-  String body = '';
-  bool done = false;
-  bool isError = false;
-  _ToolRow({required this.name});
 }
 
 // ── 气泡组件 ──
@@ -1242,54 +1278,99 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   }
 }
 
-class _ToolBubble extends StatelessWidget {
-  final _ToolRow row;
-  final bool show;
-  const _ToolBubble({required this.row, required this.show});
+/// 活动条：agent 当前在干什么（思考中 / 工具执行中）。
+/// 思考面板可展开看实时思考内容（仅 showContent 时）；工具执行结束即消失；正文流式开始后由文字本身反馈。
+class _ActivityBar extends StatelessWidget {
+  final String reasoning;
+  final bool expanded;
+  final bool textStreaming;
+  final bool showContent; // 是否显示思考内容原文（默认关：只显示状态，思考原文多为英文）
+  final List<String> tools;
+  final VoidCallback onToggleReasoning;
+  const _ActivityBar({
+    required this.reasoning,
+    required this.expanded,
+    required this.textStreaming,
+    required this.showContent,
+    required this.tools,
+    required this.onToggleReasoning,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (!show) return const SizedBox.shrink();
     final ink2 = DshColors.ink2(context);
-    final ok = DshColors.ok(context);
-    final danger = DshColors.danger(context);
+    final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final surface = DshColors.surface(context);
+    final brand = DshColors.brand(context);
+    final toolLabel = tools.isEmpty
+        ? ''
+        : (tools.length > 1
+            ? '正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）'
+            : '正在调用 ${tools.first}…');
+    final thinking = !textStreaming;
+    final header = expanded
+        ? (thinking ? '思考中，点此收起' : '思考内容，点此收起')
+        : (thinking ? '思考中…（${reasoning.length} 字）' : '已思考 ${reasoning.length} 字');
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: BoxDecoration(
         color: surface,
         border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(DshTheme.radiusSm),
+        borderRadius: BorderRadius.circular(12),
       ),
-      child: ExpansionTile(
-        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                row.name,
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            if (row.done)
-              Text(
-                row.isError ? '失败' : '完成',
-                style: TextStyle(fontSize: 11.5, color: row.isError ? danger : ok),
-              ),
-          ],
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              row.body,
-              style: TextStyle(fontSize: 12.5, color: ink2, height: 1.5),
+          if (reasoning.isNotEmpty)
+            InkWell(
+              onTap: showContent ? onToggleReasoning : null,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Icon(Icons.psychology_outlined, size: 16, color: brand),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        header,
+                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (showContent)
+                      Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 16, color: ink3),
+                  ],
+                ),
+              ),
             ),
-          ),
+          if (showContent && expanded && reasoning.isNotEmpty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 200),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  reasoning,
+                  style: TextStyle(fontSize: 12, height: 1.55, color: ink3, fontStyle: FontStyle.italic),
+                ),
+              ),
+            ),
+          if (tools.isNotEmpty)
+            Padding(
+              padding: EdgeInsets.only(top: reasoning.isNotEmpty ? 4 : 0),
+              child: Row(
+                children: [
+                  Icon(Icons.handyman_outlined, size: 15, color: ink2),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(toolLabel, style: TextStyle(fontSize: 12.5, color: ink2), overflow: TextOverflow.ellipsis),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

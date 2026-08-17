@@ -4,6 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'theme.dart';
 
+/// 只放行 http/https 链接（v2.6.0 安全加固）：
+/// 防止消息内容（或中间人篡改的回复）用 file:/intent:/tel: 等 scheme 拉起任意应用/Intent。
+/// 解析失败或 scheme 不允许时返回 null（渲染为纯文本，不可点击）。
+Uri? safeLinkUrl(String raw) {
+  try {
+    final uri = Uri.parse(raw.trim());
+    if (uri.scheme == 'http' || uri.scheme == 'https') return uri;
+  } catch (_) {}
+  return null;
+}
+
 /// 行内 token：**加粗** *斜体* `代码` [链接](url)
 final _inlineRe = RegExp(r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]*\]\([^)\s]+\))');
 
@@ -299,18 +310,23 @@ List<InlineSpan> _inlineSpans(String text) {
     } else if (tok.startsWith('[')) {
       final mm = RegExp(r'^\[([^\]]*)\]\(([^)]*)\)$').firstMatch(tok);
       if (mm != null) {
-        final url = mm.group(2)!;
-        spans.add(WidgetSpan(
-          alignment: PlaceholderAlignment.baseline,
-          baseline: TextBaseline.alphabetic,
-          child: GestureDetector(
-            onTap: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
-            child: Text(
-              mm.group(1)!,
-              style: TextStyle(color: DshTheme.brand, decoration: TextDecoration.underline, decorationColor: DshTheme.brand),
+        final target = safeLinkUrl(mm.group(2)!);
+        if (target == null) {
+          // 非 http/https 链接（或解析失败）：渲染为纯文本，不可点击（v2.6.0）
+          spans.add(TextSpan(text: mm.group(1)!));
+        } else {
+          spans.add(WidgetSpan(
+            alignment: PlaceholderAlignment.baseline,
+            baseline: TextBaseline.alphabetic,
+            child: GestureDetector(
+              onTap: () => launchUrl(target, mode: LaunchMode.externalApplication),
+              child: Text(
+                mm.group(1)!,
+                style: TextStyle(color: DshTheme.brand, decoration: TextDecoration.underline, decorationColor: DshTheme.brand),
+              ),
             ),
-          ),
-        ));
+          ));
+        }
       } else {
         spans.add(TextSpan(text: tok));
       }

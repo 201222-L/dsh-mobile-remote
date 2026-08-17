@@ -51,7 +51,7 @@
 
 ## 安装（部署者 3 步）
 
-> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.5.1"`。
+> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.6.0"`。
 
 ### 方式一：命令行 dsh web
 
@@ -92,6 +92,8 @@ npx @deepseek-ai/dsh web
         path: /m
         authToken: <访问口令，留空=关闭认证>
         pushUrls: []   # 见下方推送配置
+        # pushContent: standard  # 默认 minimal：推送只含事件类型+会话短码（核心内容不外出）；standard 才含标题/详情
+        # rateLimit: { maxFailures: 10, windowMs: 60000, blockMs: 60000 }  # 登录失败限流（v2.6）
         # trustedHosts: ["<内网穿透中继地址>"]  # 仅 frp 等中继方案需要，见 docs/06 §5B
 ```
 
@@ -102,6 +104,7 @@ npx @deepseek-ai/dsh web
 ## 推送配置（可选，3 分钟）
 
 > 不配置则无系统推送，其余功能不受影响。三种任选，也可同时配置多个（事件会推送到全部通道）。同会话同类型 60 秒内合并（`pushCooldownMs` 可调），通知中心按会话聚合。
+> **隐私（v2.6 起）**：推送默认只含「事件类型 + 会话短码」，会话标题/错误详情等核心内容不经过第三方通道；确需完整内容（信任通道时）设 `pushContent: standard`。
 
 ### Server酱（微信推送，最省事）
 
@@ -164,7 +167,7 @@ pushUrls:
 - 新建会话选的工作目录不在任何已注册工作区时，PC 端按"未分组"显示；在工作区子目录下会自动归属。
 
 **已知限制**
-- 移动端默认隐藏工具调用过程（设置可开）。
+- 移动端显示活动条（思考中/正在调用工具），不显示工具结果细节（v2.6 起移除工具卡片，详见 CHANGELOG）。
 - 长任务期间建议等待上一轮完成再发新消息，避免排队混乱。
 - 归档（archive）会话与 PC 端同源显示，行为一致。
 - 问询/审批弹窗依赖内核 `apiProxy` 私有协议（与 PC 端 GUI 同一通道）：Harness 未来大版本重构时桥会干净降级，随插件更新恢复（诊断页可查）。
@@ -185,7 +188,7 @@ pushUrls:
 
 ## 版本与兼容
 
-- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v2.5.1` = App 2.5.1 + 插件 2.5.1）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
+- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v2.6.0` = App 2.6.0 + 插件 2.6.0）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
 - **版本差矩阵**（一句话：谁旧谁吃亏，但都不崩）：
 
 | 组合 | 结果 |
@@ -195,7 +198,7 @@ pushUrls:
 | App 新 + 插件旧 | ✅ 老功能正常，新功能提示升级 |
 | 破坏性变更 | ❌ 禁止——已发布接口只加字段（docs/08 约定） |
 
-- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.5.1"`（不带 `#` 取最新）。
+- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.6.0"`（不带 `#` 取最新）。
 - 实际配对可在 App **设置 → 关于 → 版本**（`App vX · 插件 vY`）或环境诊断页对照。
 
 ## 文档

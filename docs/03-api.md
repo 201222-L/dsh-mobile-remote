@@ -1,6 +1,6 @@
 # 03 API 接口设计文档 — dsh-mobile-remote
 
-> 版本：v2.4.0 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
+> 版本：v2.6.0 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
 > 前缀：`/m`（可配置项 `path`，默认 `/m`）。以下所有路径均以前缀开头。
 > 服务端 API 同时服务 Flutter App（dsh-mobile-app）与桌面设置页客户端模块；不含网页版页面（v2.1 起移除）。
 ## 1. 通用约定
@@ -197,6 +197,7 @@
 | 400 | `empty-text` | send 的 text 为空 |
 | 401 | `auth-required` | 未提供有效凭证 |
 | 401 | `bad-token` | 登录口令错误 |
+| 429 | `rate-limited` | 登录失败超限（v2.6，仅 authToken 启用时；响应带 `Retry-After` 头，默认 60s 后恢复） |
 | 404 | `not-found` | 未知路径 |
 | 404 | `session-not-found` | 会话不存在 |
 | 405 | `method-not-allowed` | 方法不支持（GET 端点收到 POST 等） |
@@ -393,6 +394,7 @@
 - 执行结果**不直接返回**（可能长任务）：`200 { "ok": true, "accepted": true }`；后续进展经 SSE 会话事件回流（动作应通过既有消息/工具通道呈现）。
 ### 6.10 GET /m/api/qr-config（桌面二维码数据，v2.1）
 **仅电脑本机可访问**（TCP 层 socket 来源，仅 loopback 可访问；否则 403 `loopback-only`）—— 桌面 dsh 设置页客户端模块用它生成「连接移动端设备」二维码。
+> v2.6.0：`/m/qr.png`（二维码图片渲染，供设置页 `<img>` 使用）同样收口——Host 校验 + loopback 来源，非本机 403。
 **响应**：`{ "ok": true, "urls": ["http://192.168.1.100:3080/m", ...], "token": "<authToken>", "path": "/m" }`
 
 二维码内容格式：`DSHREMOTE|<地址>|<口令>`（地址取 `urls` 中首个非回环项，不含 /m 尾巴）。App 扫码解析后自动配置连接。
@@ -409,6 +411,39 @@
 | 400 | `invalid-preset` | preset 不在目录内 |
 | 404 | `action-not-found` | 动作 id 未注册 |
 | 503 | `action-busy` | 同一动作并发执行限制（v0.1 可先不做） |
+
+### 6.13 模型提供商（v2.6，与 PC 端「设置 → 模型」同一配置通道）
+> 全部端点需鉴权；密钥只写不读（响应不含密钥本身）。
+
+**GET `/m/api/llm-providers`** — 提供商列表（live + dormant）
+```json
+{ "ok": true, "providers": [
+  { "id": "deepseek-official", "name": "DeepSeek", "dormant": false,
+    "settingsNs": "llm-deepseek", "settingsPath": [],
+    "baseURL": "https://api.deepseek.com", "apiKeyRef": "DEEPSEEK_API_KEY",
+    "keyConfigured": true, "keyWritable": true, "catalogModels": [{"id":"deepseek-v4-pro","name":"DeepSeek-V4-Pro"}] },
+  { "id": "anthropic", "name": "anthropic", "dormant": true, "settingsNs": "…", "baseURL": null, "keyConfigured": false }
+]}
+```
+- dormant = 配置目录已声明但未激活（配好 baseURL/密钥即生效）；37 个内置 dormant 提供商（anthropic/openai/google/groq 等）
+- `apiKeyRef` 为凭据引用名（如 `DEEPSEEK_API_KEY`），**非密钥本身**；`keyConfigured` 指示是否已存
+
+**POST `/m/api/llm-providers/probe`** — 探测端点模型列表
+```json
+请求: { "settingsNs": "llm-deepseek", "baseURL": "https://…", "apiKey": "可选", "protocol": "可选" }
+响应: { "ok": true, "models": [{"id":"…","name":"…","contextWindow":…}], "fallback": true }
+```
+- 优先内核 `discoverModels`；内核未注册模型探测时回退 OpenAI 兼容 `GET {baseURL}/models`
+- 凭据一次性使用，不存储；仅允许探测配置目录声明的命名空间
+
+**POST `/m/api/llm-providers`** — 保存提供商配置
+```json
+请求: { "provider": "deepseek-official", "settingsNs": "llm-deepseek",
+        "baseURL": "https://…", "apiKey": "可选（留空不修改）", "removeKey": false }
+响应: { "ok": true, "provider": "…", "apiKeyRef": "…", "keyConfigured": true }
+```
+- 经 `settings.mutate` 写配置 + `credentials.set` 存密钥（引用派生规则与 PC 端一致：`<PROVIDER>_API_KEY`）
+- 仅允许写入配置目录声明的命名空间（`400 unknown-provider`）；`removeKey: true` 清除已存密钥
 
 
 

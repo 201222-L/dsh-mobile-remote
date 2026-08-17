@@ -1,6 +1,6 @@
 # 06 部署与启用文档 — dsh-mobile-remote
 
-> 版本：v2.4.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
+> 版本：v2.6.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
 
 ## 1. 部署拓扑
 
@@ -31,7 +31,7 @@ graph LR
 ```powershell
 git clone https://github.com/201222-L/dsh-mobile-remote.git
 # 锁版本（推荐）：tag 与版本号一致；不 checkout 则跟随最新 main
-git -C dsh-mobile-remote checkout v2.5.1
+git -C dsh-mobile-remote checkout v2.6.0
 # profile package.json:
 #   "dsh-mobile-remote": "file:<clone 出来的路径>"
 corepack pnpm install
@@ -46,7 +46,7 @@ corepack pnpm install
 **锁定指定版本**（推荐：App 与插件版本保持一致）—— 用 git tag 固定：
 
 ```json
-{ "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.5.1" } }
+{ "dependencies": { "dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.6.0" } }
 ```
 
 **方式 C —— 下载 Release 里的插件包离线安装**：GitHub Releases 的 `dsh-mobile-remote-vX.Y.Z.tgz` 下载后：
@@ -177,6 +177,31 @@ SendKey 获取：手机微信扫码打开 `https://sct.ftqq.com` → 登录 → 
 ```
 
 **验证**：配置后重启桌面端，手机端让 agent 跑一个任务（或失败/提问），对应微信/App 收到通知。同会话同类型 60 秒内合并（`pushCooldownMs` 可调）。
+> **隐私（v2.6）**：推送默认只含「事件类型 + 会话短码」（`pushContent: minimal`），会话标题/错误详情等核心内容不经过第三方通道；确需完整内容（信任通道时）在 config 加 `pushContent: standard`。
+## 6b. HTTPS 反代（可选，v2.6 起文档化）
+
+> 适用：不信任的 WiFi（酒店/咖啡馆）、或经公网反代访问。原理：用反向代理（Caddy/nginx）在 3080 前加 TLS。
+> **证书**：App 按标准 TLS 校验，**不支持放行自签证书**。请使用受信任 CA（需公网域名，Let's Encrypt），或自建内网 CA 并把**根证书安装进手机**（设置 → 安全 → 安装证书）。
+
+**Caddy 示例（mkcert 内网 CA）**：
+
+```powershell
+# ① 生成内网 CA 并签发证书（安装 mkcert 后）
+mkcert -install                 # 把 CA 根证书装进系统
+mkcert 192.168.1.100 172.16.x.x # 给电脑的局域网/组网 IP 签证书
+# ② Caddyfile：
+#   :3443 {
+#     tls <生成的 cert.pem> <生成的 key.pem>
+#     reverse_proxy 127.0.0.1:3080
+#   }
+# ③ 把 mkcert 的 CA 根证书传到手机安装（Android：设置 → 安全 → 加密与凭据 → 安装证书）
+# ④ 启动 caddy，App 手动连接 https://<电脑IP>:3443 + 口令
+```
+
+**注意**：
+- 反代只负责传输加密；`authToken` 仍必须启用（v2.6 起未启用会在启动日志与设置页显式警示）。
+- 地址自动收集/二维码按 http 生成；HTTPS 场景请手动填地址。
+- 纯局域网 + 蒲公英（WireGuard 加密）场景无需 TLS。
 ## 7. 回滚方案
 
 1. 从 `cordis.patch.yml` 删除 `mobile-remote` 行与 `webserver` 覆盖行（或整体还原为 `[]`）。

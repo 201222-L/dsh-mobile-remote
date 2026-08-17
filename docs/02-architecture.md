@@ -1,6 +1,6 @@
 # 02 系统架构设计说明书 — dsh-mobile-remote
 
-> 版本：v2.4.0 · 状态：已实现（含 v2.3 问询/审批弹窗桥） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
+> 版本：v2.6.0 · 状态：已实现（含 v2.3 问询/审批弹窗桥、v2.4~v2.5 连接自愈、v2.6 安全加固 + 模型提供商互通） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
 
 ## 1. 背景与范围
 dsh web 是 Cordis 组合出的浏览器 GUI（`dsh --profile web`），webserver 默认只绑定 `127.0.0.1`。本插件在 **web profile 的宿主侧**挂载一个 Cordis 插件，在现有 webserver 上注册 `/m` 前缀路由，提供一个**零构建的原生移动网页**，通过 dsh 的 agent/session 服务把手机操作接到运行中的 agent 上。插件不修改桌面 GUI 的任何现有 UI。
@@ -71,7 +71,7 @@ graph TB
 | 模块 | 职责 |
 |---|---|
 | App 状态层（`store.dart`） | bootstrap 缓存、当前会话、SSE 重连（指数退避）、事件去重（messageId/seq） |
-| App 消息流（`chat_screen.dart`） | user/assistant 气泡、流式合并（节流）、Markdown 渲染、工具折叠、轮次分隔 |
+| App 消息流（`chat_screen.dart`） | user/assistant 气泡、流式合并（节流）、Markdown 渲染、活动条（思考/工具过程，v2.6）、轮次分隔 |
 | App 通知页 | turn/end 分类通知（完成/失败/需回答）、已读持久化、未读角标 |
 | App 会话/新建 | 会话列表、新建会话（模式 + 目录跨盘浏览） |
 | App 设置 | 余额、默认预设、深色模式、诊断、重新配置 |
@@ -239,4 +239,5 @@ sequenceDiagram
 - Flutter 单工程；状态管理 ChangeNotifier（`store.dart` 的 `AppStore`）；SSE 用 `http` 包流式解析
 - 页面：首页（欢迎 + 最近会话） 会话 / 对话 / 通知 / 设置（对照原型 v7）
 - 本地存储：连接配置（地址/口令）、UI 偏好（工具显示、主题、工作区选择）
+- 连接自愈（v2.4.1~v2.5.1）：bootstrap `server.urls` 收集全部地址（局域网 + 蒲公英/Tailscale，排除 169.254/16 链路本地）；SSE 心跳看门狗（75s 无心跳强制重建）+ 超时即轮换（黑洞地址约 10s 故障切换）；下拉刷新「探测 → 自愈 → 拉数据」
 - 通知：App 内通知中心实时角标（SSE 推送）；后台系统级提醒依赖 Phase 2 推送桥（App 不保活长连接）
