@@ -584,6 +584,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          _row(
+            leading: const Icon(Icons.help_outline),
+            title: L10n.t('悬浮球操作说明', 'Bubble guide'),
+            sub: L10n.t('状态含义与手势操作', 'Status meaning and gestures'),
+            trailing: Text(L10n.t('查看 ▸', 'View ▸'), style: TextStyle(fontSize: 12, color: brand)),
+            onTap: _showBubbleGuide,
+          ),
         ]),
         _card(L10n.t('关于', 'About'), [
           _row(
@@ -666,6 +673,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _toast(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
         }
       },
+    );
+  }
+
+  /// 悬浮球操作说明弹窗（状态含义 + 手势操作）。
+  void _showBubbleGuide() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('悬浮球操作说明', 'Floating bubble guide'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _guideSection(
+                L10n.t('状态', 'Status'),
+                [
+                  (L10n.t('灰色鲸鱼', 'Gray whale'), L10n.t('一切正常，空闲', 'All good, idle')),
+                  (L10n.t('蓝色鲸鱼', 'Blue whale'), L10n.t('agent 运行中 / 有新通知 / 余额不足', 'Agent running / new notification / low balance')),
+                  (L10n.t('红色角标', 'Red badge'), L10n.t('未读通知数（60 秒后自动消退）', 'Unread count (clears after 60s)')),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _guideSection(
+                L10n.t('手势', 'Gestures'),
+                [
+                  (L10n.t('单击', 'Tap'), L10n.t('展开 / 收起面板', 'Open / close panel')),
+                  (L10n.t('拖动', 'Drag'), L10n.t('移动位置，松手贴边，5 秒无操作自动缩进', 'Move; snaps to edge, auto-hides after 5s')),
+                  (L10n.t('双击', 'Double tap'), L10n.t('打开 App', 'Open the app')),
+                  (L10n.t('长按', 'Long press'), L10n.t('退出悬浮球', 'Exit the bubble')),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _guideSection(
+                L10n.t('面板', 'Panel'),
+                [
+                  (L10n.t('内容', 'Content'), L10n.t('运行中会话 / 最近通知 / 打开 App / 去充值', 'Active sessions / notifications / open app / top up')),
+                  (L10n.t('关闭', 'Close'), L10n.t('点面板外任意位置', 'Tap anywhere outside')),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(L10n.t('知道了', 'Got it')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _guideSection(String title, List<(String, String)> rows) {
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: DshColors.brand(context))),
+        const SizedBox(height: 4),
+        for (final (k, v) in rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$k：', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: ink2)),
+                Expanded(child: Text(v, style: TextStyle(fontSize: 13, color: ink3))),
+              ],
+            ),
+          ),
+      ],
     );
   }
 
