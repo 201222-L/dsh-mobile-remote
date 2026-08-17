@@ -505,15 +505,15 @@ class FloatingBubbleService : Service() {
         val badgeUnread = TextView(this)
         badgeUnread.text = "0"
         badgeUnread.setTextColor(Color.WHITE)
-        badgeUnread.textSize = 9f
+        badgeUnread.textSize = 8.5f
         badgeUnread.gravity = Gravity.CENTER
-        badgeUnread.setPadding(dp(5), 0, dp(5), 0)
+        badgeUnread.setPadding(dp(3), 0, dp(3), 0)
         badgeUnread.background = GradientDrawable().apply {
-            cornerRadius = dp(8).toFloat()
+            cornerRadius = dp(7).toFloat()
             setColor(Color.parseColor("#E5484D"))
         }
         badgeUnread.visibility = View.GONE
-        notifHead.addView(badgeUnread, LinearLayout.LayoutParams(dp(30), dp(16)))
+        notifHead.addView(badgeUnread, LinearLayout.LayoutParams(dp(20), dp(14)))
         val viewAll = TextView(this)
         viewAll.text = text("查看全部 →", "View all →")
         viewAll.setTextColor(Color.parseColor("#6C8CFF"))
