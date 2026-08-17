@@ -441,7 +441,9 @@ class FloatingBubbleService : Service() {
         p.alpha = 0f
         p.scaleX = 0.85f
         p.scaleY = 0.85f
-        p.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start()
+        p.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180)
+            .withEndAction { placePanel() } // 布局完成后按实际高度重新定位
+            .start()
         // 打开面板 = 已读：清红点
         notifCount = 0
         mainHandler.removeCallbacks(clearNotifRunnable)
@@ -456,6 +458,8 @@ class FloatingBubbleService : Service() {
         val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val pw = dp(300)
+        // 用面板实际高度（首次打开前未测量时用估算值）
+        val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(340)
         val sw = metrics.widthPixels
         val sh = metrics.heightPixels
         val ballRight = bp.x + dp(bubbleDp)
@@ -470,19 +474,19 @@ class FloatingBubbleService : Service() {
         if (onTop) {
             pp.y = bp.y
         } else {
-            pp.y = ballBottom - dp(360)
+            pp.y = ballBottom - ph
         }
         if (pp.y < dp(40)) pp.y = dp(40)
-        if (pp.y + dp(360) > sh) pp.y = sh - dp(360) - dp(20)
+        if (pp.y + ph > sh) pp.y = sh - ph - dp(20)
         wm.updateViewLayout(panel, pp)
     }
 
     private fun hidePanel() {
         val p = panel ?: return
         panelVisible = false
-        // 收起动画：淡出 + 缩小
+        // 收起动画：淡出 + 缩小（动画期间若重新打开则不隐藏）
         p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
-            .withEndAction { p.visibility = View.GONE }
+            .withEndAction { if (!panelVisible) p.visibility = View.GONE }
             .start()
     }
 

@@ -465,8 +465,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.add_card_outlined),
             title: L10n.t('充值', 'Top up'),
-            sub: L10n.t('Custom Tabs 内打开官方充值页（复用浏览器登录态，支付可正常唤起）',
-                'Opens the official top-up page in Custom Tabs (browser session reused, payments work)'),
+            sub: L10n.t('打开官方充值页（设备不支持内嵌时自动跳转系统浏览器）',
+                'Opens the official top-up page (falls back to the system browser when in-app tabs are unsupported)'),
             trailing: Text(L10n.t('去充值 ▸', 'Top up ▸'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => CustomTabs.open(
               // 以电脑端插件配置为准（catalog.rechargeUrl），缺省回退官方充值页

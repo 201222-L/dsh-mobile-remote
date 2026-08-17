@@ -5,7 +5,9 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.browser.customtabs.CustomTabsServiceConnection
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -101,22 +103,48 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Chrome Custom Tabs 打开链接：复用浏览器登录态、支付可正常唤起；
-     *  设备无 Custom Tabs 服务时兜底普通浏览器（ACTION_VIEW）。 */
+    /** Custom Tabs 打开链接：显式绑定 CustomTabsService，绑定成功才内嵌（复用浏览器登录态、支付可唤起）；
+     *  绑定失败（小米 MIUI 常限制后台服务绑定）→ 明确回退系统浏览器。 */
     private fun openCustomTab(url: String) {
-        try {
-            val builder = CustomTabsIntent.Builder()
-            builder.setShowTitle(true)
-            builder.setToolbarColor(Color.parseColor("#1A1D24"))
-            builder.setColorScheme(CustomTabsIntent.COLOR_SCHEME_DARK)
-            builder.setInstantAppsEnabled(false)
-            val intent = builder.build()
-            intent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            intent.launchUrl(this, Uri.parse(url))
-        } catch (e: Exception) {
-            val fallback = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(fallback)
+        val ctPackage = CustomTabsClient.getPackageName(this, null)
+        if (ctPackage == null) {
+            android.util.Log.i("DSHRemote", "custom-tabs: no provider, fallback")
+            openInBrowser(url)
+            return
         }
+        val ok = CustomTabsClient.bindCustomTabsService(this, ctPackage, object : CustomTabsServiceConnection() {
+            override fun onCustomTabsServiceConnected(name: android.content.ComponentName, client: CustomTabsClient) {
+                try {
+                    client.warmup(0)
+                    val session = client.newSession(null)
+                    val builder = CustomTabsIntent.Builder(session)
+                    builder.setShowTitle(true)
+                    builder.setToolbarColor(Color.parseColor("#1A1D24"))
+                    builder.setColorScheme(CustomTabsIntent.COLOR_SCHEME_DARK)
+                    builder.setInstantAppsEnabled(false)
+                    val intent = builder.build()
+                    intent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    intent.launchUrl(this@MainActivity, Uri.parse(url))
+                    android.util.Log.i("DSHRemote", "custom-tabs: bound and launched via $ctPackage")
+                } catch (e: Exception) {
+                    android.util.Log.i("DSHRemote", "custom-tabs: launch failed ${e.message}, fallback")
+                    openInBrowser(url)
+                } finally {
+                    runCatching { unbindService(this) }
+                }
+            }
+
+            override fun onServiceDisconnected(name: android.content.ComponentName) {}
+        })
+        if (!ok) {
+            android.util.Log.i("DSHRemote", "custom-tabs: bind refused, fallback")
+            openInBrowser(url)
+        }
+    }
+
+    private fun openInBrowser(url: String) {
+        val fallback = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(fallback)
     }
 }
