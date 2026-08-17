@@ -53,7 +53,7 @@ class FloatingBubbleService : Service() {
     private var wm: WindowManager? = null
     private var bubble: View? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
-    private var logoImg: ImageView? = null
+    private var logoImg: BubbleView? = null
     private var badge: TextView? = null
     private var spinner: ProgressBar? = null
     private var tip: TextView? = null
@@ -63,8 +63,9 @@ class FloatingBubbleService : Service() {
     private var panel: View? = null
     private var panelParams: WindowManager.LayoutParams? = null
     private var panelSessions: LinearLayout? = null
+    private var panelSessionsSec: View? = null
     private var panelNotifs: LinearLayout? = null
-    private var panelEmpty: TextView? = null
+    private var panelNotifsSec: View? = null
     private var panelCharge: View? = null
     private var panelVisible = false
 
@@ -75,6 +76,10 @@ class FloatingBubbleService : Service() {
     private var notifCount = 0
     private var lastActivity = 0L
     private var lastNotif = 0L
+    private var lastNotifKey = ""
+    private var lastNotifAt = 0L
+    private val seenJobs = mutableSetOf<String>()
+    @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
     private var bubbleDp = 52
 
     // 拖动/点击判定
@@ -138,6 +143,38 @@ class FloatingBubbleService : Service() {
     }
 
     // ── 悬浮球视图（圆形，白底蓝鲸官方图标样式）──
+    /** 自绘圆形 logo 球：BitmapShader 画圆，无 ImageView/clip 兼容问题。 */
+    inner class BubbleView(context: android.content.Context) : View(context) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private val bmp = android.graphics.BitmapFactory.decodeResource(resources, R.drawable.deepseek_logo)
+        private val shader = bmp?.let { android.graphics.BitmapShader(it, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP) }
+
+        fun setGray(gray: Boolean) {
+            paint.colorFilter = if (gray) {
+                android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+            } else null
+            invalidate()
+        }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val c = width / 2f
+            val r = minOf(width, height) / 2f
+            // 白底圆
+            paint.color = Color.WHITE
+            paint.shader = null
+            canvas.drawCircle(c, c, r, paint)
+            // logo 圆（居中，留 8% 边距）
+            if (shader != null && bmp != null) {
+                val s = r * 1.8f // 方形位图边长 ≈ 直径
+                val m = android.graphics.Matrix()
+                m.setScale(s / bmp.width, s / bmp.height)
+                shader.setLocalMatrix(m)
+                paint.shader = shader
+                canvas.drawCircle(c, c, r, paint)
+            }
+        }
+    }
+
     private fun addBubble() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
@@ -145,21 +182,7 @@ class FloatingBubbleService : Service() {
         val root = FrameLayout(this)
         root.layoutParams = FrameLayout.LayoutParams(size, size)
 
-        val img = ImageView(this)
-        img.setImageResource(R.drawable.deepseek_logo)
-        img.scaleType = ImageView.ScaleType.FIT_CENTER
-        img.setPadding(dp(4), dp(4), dp(4), dp(4))
-        // 圆形裁剪：白底蓝鲸 logo 圆形展示（官方 App 图标样式），无方块底
-        img.outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: Outline) {
-                outline.setOval(0, 0, view.width, view.height)
-            }
-        }
-        img.clipToOutline = true
-        img.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.WHITE)
-        }
+        val img = BubbleView(this)
         root.addView(img, FrameLayout.LayoutParams(size, size))
 
         val bd = TextView(this)
@@ -336,6 +359,7 @@ class FloatingBubbleService : Service() {
         // 运行中会话
         val secSessions = sectionLabel(text("运行中的会话", "Active sessions"))
         root.addView(secSessions)
+        panelSessionsSec = secSessions
         val sessionsBox = LinearLayout(this)
         sessionsBox.orientation = LinearLayout.VERTICAL
         root.addView(sessionsBox)
@@ -344,18 +368,11 @@ class FloatingBubbleService : Service() {
         // 最近通知
         val secNotifs = sectionLabel(text("最近通知", "Recent notifications"))
         root.addView(secNotifs)
+        panelNotifsSec = secNotifs
         val notifsBox = LinearLayout(this)
         notifsBox.orientation = LinearLayout.VERTICAL
         root.addView(notifsBox)
         panelNotifs = notifsBox
-
-        val empty = TextView(this)
-        empty.text = text("暂无", "None")
-        empty.setTextColor(Color.parseColor("#9AA3AF"))
-        empty.textSize = 12f
-        empty.setPadding(0, dp(4), 0, dp(8))
-        root.addView(empty)
-        panelEmpty = empty
 
         // 底部按钮
         val btnRow = LinearLayout(this)
@@ -417,34 +434,56 @@ class FloatingBubbleService : Service() {
     private fun showPanel() {
         val p = panel ?: return
         val pp = panelParams ?: return
-        val bp = bubbleParams ?: return
         panelVisible = true
         placePanel()
         p.visibility = View.VISIBLE
-        wm?.updateViewLayout(p, pp)
-        // 刷新面板数据（异步）
+        // 打开动画：淡入 + 轻微放大（从球方向展开的质感）
+        p.alpha = 0f
+        p.scaleX = 0.85f
+        p.scaleY = 0.85f
+        p.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start()
+        // 打开面板 = 已读：清红点
+        notifCount = 0
+        mainHandler.removeCallbacks(clearNotifRunnable)
+        mainHandler.post { setState() }
         refreshPanelData()
     }
 
+    /** 面板贴球展开：随球所在象限选择方向（左上/右上/左下/右下），始终完整在屏内。 */
     private fun placePanel() {
         val pp = panelParams ?: return
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val pw = dp(300)
-        // 球在左半边 → 面板放球右侧；否则放球左侧
-        val onLeft = bp.x < metrics.widthPixels / 2
-        pp.x = if (onLeft) bp.x + dp(bubbleDp) + dp(4) else bp.x - pw - dp(4)
+        val sw = metrics.widthPixels
+        val sh = metrics.heightPixels
+        val ballRight = bp.x + dp(bubbleDp)
+        val ballBottom = bp.y + dp(bubbleDp)
+        // 水平：球在左半 → 面板放球右侧；右半 → 面板放球左侧（贴边）
+        val onLeftSide = bp.x < sw / 2
+        pp.x = if (onLeftSide) ballRight + dp(4) else bp.x - pw - dp(4)
         if (pp.x < 0) pp.x = 0
-        if (pp.x + pw > metrics.widthPixels) pp.x = metrics.widthPixels - pw
-        pp.y = bp.y - dp(40)
-        if (pp.y < dp(60)) pp.y = dp(60)
+        if (pp.x + pw > sw) pp.x = sw - pw
+        // 垂直：球在上半 → 面板顶部对齐球顶部；下半 → 面板底部对齐球底部
+        val onTop = bp.y < sh / 2
+        if (onTop) {
+            pp.y = bp.y
+        } else {
+            pp.y = ballBottom - dp(360)
+        }
+        if (pp.y < dp(40)) pp.y = dp(40)
+        if (pp.y + dp(360) > sh) pp.y = sh - dp(360) - dp(20)
         wm.updateViewLayout(panel, pp)
     }
 
     private fun hidePanel() {
+        val p = panel ?: return
         panelVisible = false
-        panel?.visibility = View.GONE
+        // 收起动画：淡出 + 缩小
+        p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
+            .withEndAction { p.visibility = View.GONE }
+            .start()
     }
 
     private fun refreshPanelData() {
@@ -501,19 +540,20 @@ class FloatingBubbleService : Service() {
     private fun renderPanel(running: List<Pair<String, String>>, notifs: List<String>) {
         val box = panelSessions ?: return
         box.removeAllViews()
+        val secS = panelSessionsSec
         if (running.isEmpty()) {
-            val tv = TextView(this)
-            tv.text = text("暂无运行中的会话", "No active sessions")
-            tv.setTextColor(Color.parseColor("#9AA3AF"))
-            tv.textSize = 12f
-            tv.setPadding(0, dp(2), 0, dp(4))
-            box.addView(tv)
+            // 无运行中会话 → 整个区块隐藏（不留占位文案）
+            secS?.visibility = View.GONE
+            box.visibility = View.GONE
         } else {
+            secS?.visibility = View.VISIBLE
+            box.visibility = View.VISIBLE
             for ((id, st) in running.take(3)) {
                 val row = TextView(this)
                 val dot = if (st == "waiting") "◉" else "●"
-                val name = if (id.length >= 8) id.substring(0, 8) else id
-                row.text = "$dot $name"
+                // id 形如 "session:<uuid>"，去掉前缀显示短码
+                val short = id.removePrefix("session:").take(8)
+                row.text = "$dot $short"
                 row.setTextColor(Color.WHITE)
                 row.textSize = 12.5f
                 row.setPadding(0, dp(3), 0, dp(3))
@@ -523,14 +563,14 @@ class FloatingBubbleService : Service() {
         }
         val nbox = panelNotifs ?: return
         nbox.removeAllViews()
+        val secN = panelNotifsSec
         if (notifs.isEmpty()) {
-            val tv = TextView(this)
-            tv.text = text("暂无通知", "No notifications")
-            tv.setTextColor(Color.parseColor("#9AA3AF"))
-            tv.textSize = 12f
-            tv.setPadding(0, dp(2), 0, dp(4))
-            nbox.addView(tv)
+            // 无通知 → 整个区块隐藏
+            secN?.visibility = View.GONE
+            nbox.visibility = View.GONE
         } else {
+            secN?.visibility = View.VISIBLE
+            nbox.visibility = View.VISIBLE
             for (t in notifs) {
                 val row = TextView(this)
                 row.text = "• $t"
@@ -542,12 +582,7 @@ class FloatingBubbleService : Service() {
                 nbox.addView(row)
             }
         }
-        panelEmpty?.visibility = View.GONE
         panelCharge?.visibility = if (lowBalance) View.VISIBLE else View.GONE
-        if (!lowBalance) {
-            // 不显示去充值按钮时，打开按钮占满
-            panelCharge?.layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f)
-        }
     }
 
     // ── 状态渲染 ──
@@ -556,12 +591,11 @@ class FloatingBubbleService : Service() {
         if (agentsRunning || lowBalance || notifCount > 0) {
             // 亮态：原色
             img.alpha = 1f
-            img.colorFilter = null
+            img.setGray(false)
         } else {
-            // 暗态：灰度 + 半透明
-            img.alpha = 0.45f
-            img.colorFilter = android.graphics.ColorMatrixColorFilter(
-                android.graphics.ColorMatrix().apply { setSaturation(0f) })
+            // 暗态：灰度 + 轻微透明（保留鲸鱼辨识度）
+            img.alpha = 0.72f
+            img.setGray(true)
         }
         val bd = badge ?: return
         if (notifCount > 0) {
@@ -574,10 +608,23 @@ class FloatingBubbleService : Service() {
         sp.visibility = if (agentsRunning) View.VISIBLE else View.GONE
     }
 
-    private fun markNotif(text: String) {
+    /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
+    private fun markNotif(key: String, text: String) {
+        val now = System.currentTimeMillis()
+        if (key == lastNotifKey && now - lastNotifAt < 5000) return
+        lastNotifKey = key
+        lastNotifAt = now
         notifCount++
-        lastNotif = System.currentTimeMillis()
+        lastNotif = now
         mainHandler.post { setState(); showTip(text) }
+        // 红点 60 秒后自动消退（用户没看也不残留）
+        mainHandler.removeCallbacks(clearNotifRunnable)
+        mainHandler.postDelayed(clearNotifRunnable, 60000)
+    }
+
+    private val clearNotifRunnable = Runnable {
+        notifCount = 0
+        mainHandler.post { setState() }
     }
 
     // ── SSE：自己连插件事件流 ──
@@ -639,7 +686,7 @@ class FloatingBubbleService : Service() {
                 val f = o.optJSONObject("frame") ?: return
                 val ft = f.optString("type")
                 if (ft == "question/requested" || ft == "approval/requested") {
-                    markNotif(text("需要你回答", "Your input needed"))
+                    markNotif("frame-${f.optString("rpcId")}", text("需要你回答", "Your input needed"))
                 }
             }
         }
@@ -654,23 +701,29 @@ class FloatingBubbleService : Service() {
                 agentsRunning = true
                 lastActivity = System.currentTimeMillis()
                 mainHandler.post { setState() }
+                scheduleIdleCheck()
             }
             type == "turn/end" -> {
                 val data = ev.optJSONObject("data") ?: JSONObject()
                 val reason = data.optJSONObject("reason")
                 val kind = reason?.optString("kind") ?: ""
-                if (kind == "completed") markNotif(text("任务完成", "Task done"))
-                else if (kind == "failed" || kind == "error") markNotif(text("任务失败", "Task failed"))
-                else if (kind == "needs-answer") markNotif(text("需要你回答", "Your input needed"))
+                // 轮次完成不算通知（agent 正常跑完一轮）；失败/需要回答才提醒
+                if (kind == "failed" || kind == "error") markNotif("task-failed", text("任务失败", "Task failed"))
+                else if (kind == "needs-answer") markNotif("needs-answer", text("需要你回答", "Your input needed"))
                 lastActivity = System.currentTimeMillis()
-                mainHandler.removeCallbacks(idleCheckRunnable)
-                mainHandler.postDelayed(idleCheckRunnable, 3000)
+                scheduleIdleCheck()
             }
         }
     }
 
+    /** 每次活动事件后调度空闲检查：3 秒无新事件 → 停止转圈（不再被红点/余额卡住）。 */
+    private fun scheduleIdleCheck() {
+        mainHandler.removeCallbacks(idleCheckRunnable)
+        mainHandler.postDelayed(idleCheckRunnable, 3000)
+    }
+
     private val idleCheckRunnable = Runnable {
-        if (System.currentTimeMillis() - lastActivity > 3000 && notifCount == 0 && !lowBalance) {
+        if (System.currentTimeMillis() - lastActivity > 3000) {
             agentsRunning = false
             mainHandler.post { setState() }
         }
@@ -679,19 +732,26 @@ class FloatingBubbleService : Service() {
     private fun handleJobs(o: JSONObject) {
         val jobs = o.optJSONArray("jobs") ?: return
         var running = false
-        var done = false
+        var notified = false
+        val replay = firstJobsFrame
+        firstJobsFrame = false
         for (i in 0 until jobs.length()) {
             val j = jobs.optJSONObject(i) ?: continue
             val st = j.optString("status")
+            val id = j.optString("id")
             if (st == "running" || st == "stopping") running = true
-            if (st == "completed" || st == "failed") done = true
+            // 任务终态：每个 job 只通知一次；连接回放帧只学习不通知（避免重启后误报历史任务）
+            if ((st == "completed" || st == "failed") && id.isNotEmpty() && seenJobs.add(id) && !replay) {
+                markNotif("job-$id", if (st == "completed") text("任务完成", "Task done") else text("任务失败", "Task failed"))
+                notified = true
+            }
         }
         agentsRunning = running
-        lastActivity = System.currentTimeMillis()
         if (running) {
+            lastActivity = System.currentTimeMillis()
             mainHandler.post { setState() }
-        } else if (done) {
-            markNotif(text("任务完成", "Task done"))
+            scheduleIdleCheck()
+        } else if (notified) {
             mainHandler.post { setState() }
         }
     }
