@@ -71,7 +71,7 @@ class FloatingBubbleService : Service() {
     private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
     private var lastPanelRefresh = 0L
     /** 面板打开期间 5 秒周期兜底刷新（事件驱动之外的状态变化也能跟上）。 */
-    private val panelRefreshRunnable = Runnable {
+    private val panelRefreshRunnable: Runnable = Runnable {
         if (panelVisible) {
             refreshPanelData()
             mainHandler.postDelayed(panelRefreshRunnable, 5000)
