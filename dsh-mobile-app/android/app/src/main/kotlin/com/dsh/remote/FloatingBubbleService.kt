@@ -381,8 +381,8 @@ class FloatingBubbleService : Service() {
         mainHandler.postDelayed(hideTipRunnable, 5000)
     }
 
-    /** 气泡定位：按球可见部分水平居中；优先球上方，顶部空间不足放球下方；
-     *  处理半隐藏与贴边，避免偏移出屏。 */
+    /** 气泡定位：完全露出时按球可见部分水平居中；半隐藏时贴屏边缘（与球可见部分对齐）；
+     *  优先球上方，顶部空间不足放球下方。 */
     private fun positionTip() {
         val tv = tip ?: return
         if (tv.visibility != View.VISIBLE) return
@@ -392,12 +392,20 @@ class FloatingBubbleService : Service() {
         val metrics = resources.displayMetrics
         val bd = dp(bubbleDp)
         val tipW = dp(170)
-        // 球可见部分（半隐藏时只算屏内区域）
-        val visLeft = maxOf(0, bp.x)
-        val visRight = minOf(metrics.widthPixels, bp.x + bd)
-        val visCenter = (visLeft + visRight) / 2
-        // 水平：气泡中心对齐可见部分中心，钳制在屏内
-        p.x = (visCenter - tipW / 2).coerceIn(0, metrics.widthPixels - tipW)
+        // 半隐藏（球部分在屏外）：气泡贴边（左隐藏贴左、右隐藏贴右），与可见部分一致
+        val hiddenLeft = bp.x < 0
+        val hiddenRight = bp.x + bd > metrics.widthPixels
+        p.x = if (hiddenLeft) {
+            0
+        } else if (hiddenRight) {
+            metrics.widthPixels - tipW
+        } else {
+            // 完全露出：气泡中心对齐球可见部分中心，钳制在屏内
+            val visLeft = maxOf(0, bp.x)
+            val visRight = minOf(metrics.widthPixels, bp.x + bd)
+            val visCenter = (visLeft + visRight) / 2
+            (visCenter - tipW / 2).coerceIn(0, metrics.widthPixels - tipW)
+        }
         // 垂直：紧贴球上沿（约 36dp 高 + 8dp 间距）；顶部空间不足放球下方紧贴
         val above = bp.y - dp(44)
         p.y = if (above >= dp(8)) above else bp.y + bd + dp(6)
@@ -451,7 +459,7 @@ class FloatingBubbleService : Service() {
         animateX(target)
     }
 
-    /** 水平滑动动画（吸附/缩进/滑出统一用）。 */
+    /** 水平滑动动画（吸附/缩进/滑出统一用）；球移动时气泡同步跟随。 */
     private fun animateX(target: Int) {
         val p = bubbleParams ?: return
         val wm = this.wm ?: return
@@ -464,6 +472,7 @@ class FloatingBubbleService : Service() {
             p.x = it.animatedValue as Int
             wm.updateViewLayout(bubble, p)
             if (panelVisible) placePanel()
+            positionTip() // 气泡跟随球移动（缩进/滑出期间不错位）
         }
         anim.start()
     }
