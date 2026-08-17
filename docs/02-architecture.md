@@ -1,6 +1,6 @@
 # 02 系统架构设计说明书 — dsh-mobile-remote
 
-> 版本：v2.6.0 · 状态：已实现（含 v2.3 问询/审批弹窗桥、v2.4~v2.5 连接自愈、v2.6 安全加固 + 模型提供商互通） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
+> 版本：v2.7.0 · 状态：已实现（含 v2.3 问询/审批弹窗桥、v2.4~v2.5 连接自愈、v2.6 安全加固 + 模型提供商互通） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
 
 ## 1. 背景与范围
 dsh web 是 Cordis 组合出的浏览器 GUI（`dsh --profile web`），webserver 默认只绑定 `127.0.0.1`。本插件在 **web profile 的宿主侧**挂载一个 Cordis 插件，在现有 webserver 上注册 `/m` 前缀路由，提供一个**零构建的原生移动网页**，通过 dsh 的 agent/session 服务把手机操作接到运行中的 agent 上。插件不修改桌面 GUI 的任何现有 UI。

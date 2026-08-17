@@ -1,6 +1,6 @@
 # 06 部署与启用文档 — dsh-mobile-remote
 
-> 版本：v2.6.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
+> 版本：v2.7.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
 
 ## 1. 部署拓扑
 

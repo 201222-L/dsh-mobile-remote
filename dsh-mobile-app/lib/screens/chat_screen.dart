@@ -10,6 +10,7 @@ import '../store.dart';
 import '../theme.dart';
 import '../md.dart';
 import 'sheets.dart';
+import 'session_tools_sheet.dart';
 
 class ChatScreen extends StatefulWidget {
   final AppStore store;
@@ -77,15 +78,29 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.store.onChatEvent = _handleEvent;
     _scrollCtrl.addListener(_onScrollTick);
     _load();
+    // v2.7：恢复该会话上次未发送的输入草稿
+    final sid = widget.store.sessionId;
+    if (sid != null) {
+      final draft = widget.store.draftOf(sid);
+      if (draft.isNotEmpty) _inputCtrl.text = draft;
+    }
+    _inputCtrl.addListener(_onDraftChanged);
     if (widget.initialSend != null && widget.initialSend!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _send(widget.initialSend!));
     }
+  }
+
+  /// v2.7：输入变化 → 按会话保存草稿（返回/重进后恢复；清空即移除）。
+  void _onDraftChanged() {
+    final sid = widget.store.sessionId;
+    if (sid != null) widget.store.saveDraft(sid, _inputCtrl.text);
   }
 
   @override
   void dispose() {
     _draftTimer?.cancel();
     _activityTimer?.cancel();
+    _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.onChatEvent = null;
     _inputCtrl.dispose();
@@ -537,6 +552,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       return;
     }
+    // v2.7：会话任务视图更新（后台任务卡片/工具弹层刷新）
+    if (ev.type == 'session/jobs') {
+      if (mounted) setState(() {});
+      return;
+    }
     // 关键事件日志（排除高频 chunk，便于排障）
     if (ev.type != 'assistant/chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
       AppLog.instance.log('Chat: SSE 事件 ${ev.type} seq=${ev.seq}');
@@ -809,6 +829,24 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // ── v2.7：任务（jobs） ──
+  Future<void> _killJob(String jobId) async {
+    final sid = widget.store.sessionId;
+    if (sid == null) return;
+    try {
+      await api.jobKill(sid, jobId);
+      if (mounted) showToast(context, '已请求取消任务');
+    } catch (e) {
+      if (mounted) showToast(context, '取消失败：$e');
+    }
+  }
+
+  void _openTools() {
+    final sid = widget.store.sessionId;
+    if (sid == null) return;
+    showSessionToolsSheet(context, widget.store, sid);
+  }
+
   /// 消息操作面板（长按 agent 回复）：复制 / 好的回答 / 有问题的回答 / 在新对话中分支。
   Future<void> _showMessageActions(_MsgItem item) async {
     final id = widget.store.sessionId;
@@ -926,6 +964,17 @@ class _ChatScreenState extends State<ChatScreen> {
             _StatusDot(status: store.connState == 'connected' ? store.agentStatus : 'offline'),
           ],
         ),
+        actions: [
+          // v2.7：会话工具（任务 / 子代理 / 目标）
+          IconButton(
+            icon: const Icon(Icons.assignment_outlined, size: 20),
+            tooltip: '任务 / 子代理 / 目标',
+            onPressed: () {
+              final sid = widget.store.sessionId;
+              if (sid != null) showSessionToolsSheet(context, widget.store, sid);
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -962,6 +1011,13 @@ class _ChatScreenState extends State<ChatScreen> {
               showContent: widget.store.showReasoning,
               tools: _activeTools.values.toList(),
               onToggleReasoning: () => setState(() => _reasoningExpanded = !_reasoningExpanded),
+            ),
+          // v2.7：进行中任务卡片（有任务才出现，完成自动消失）
+          if (!_inHistory && widget.store.hasRunningJobs(widget.store.sessionId ?? ''))
+            _JobCard(
+              jobs: widget.store.jobsOf(widget.store.sessionId ?? ''),
+              onOpen: _openTools,
+              onKill: _killJob,
             ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
@@ -1377,10 +1433,92 @@ class _ActivityBar extends StatelessWidget {
   }
 }
 
+/// v2.7：进行中任务卡片（活动条下方；运行中的后台任务实时状态，点击进工具弹层）。
+class _JobCard extends StatelessWidget {
+  final List<Map<String, dynamic>> jobs;
+  final VoidCallback onOpen;
+  final void Function(String jobId) onKill;
+  const _JobCard({required this.jobs, required this.onOpen, required this.onKill});
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final line = DshColors.line(context);
+    final surface = DshColors.surface(context);
+    final running = jobs.where((j) => j['status'] == 'running' || j['status'] == 'stopping').toList();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: surface,
+        border: Border.all(color: line),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: onOpen,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Icon(Icons.hourglass_top_outlined, size: 15, color: brand),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      running.length > 1 ? '后台任务 ${running.length} 个进行中' : '后台任务进行中',
+                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
+                    ),
+                  ),
+                  Text('详情 ▸', style: TextStyle(fontSize: 11.5, color: ink3)),
+                ],
+              ),
+            ),
+          ),
+          for (final j in running.take(2))
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Row(
+                children: [
+                  Icon(Icons.circle, size: 7, color: brand),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      (j['label'] as String? ?? j['id'] as String? ?? '任务').toString(),
+                      style: const TextStyle(fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: j['status'] == 'stopping' ? null : () => onKill(j['id'] as String? ?? ''),
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 28),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      j['status'] == 'stopping' ? '停止中' : '取消',
+                      style: TextStyle(fontSize: 11.5, color: j['status'] == 'stopping' ? ink3 : DshColors.danger(context)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StatusDot extends StatelessWidget {
   final String status;
   const _StatusDot({required this.status});
-
   @override
   Widget build(BuildContext context) {
     final color = switch (status) {

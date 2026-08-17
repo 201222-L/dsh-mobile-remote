@@ -272,6 +272,48 @@ class Api {
     }
   }
 
+  // ── v2.7：任务（jobs）/ 子代理 / 目标 ──
+  /// 会话任务列表（SSE session/jobs 帧已实时推送，此端点用于下拉刷新兜底）。
+  Future<List<Map<String, dynamic>>> jobs(String sessionId) async {
+    final data = await getJson('/api/jobs?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    return (data['jobs'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// 取消任务。
+  Future<void> jobKill(String sessionId, String jobId) async {
+    await postJson('/api/jobs/kill', {'sessionId': sessionId, 'jobId': jobId});
+  }
+
+  /// 子代理列表（按父会话查询，与内核 subagent.list 契约一致）。
+  Future<List<Map<String, dynamic>>> subagents(String parentSessionId) async {
+    final data = await getJson('/api/subagents?parentSessionId=${Uri.encodeQueryComponent(parentSessionId)}');
+    return (data['subagents'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// 中断子代理（内核契约：parentSessionId + childSessionId + mode=continuable）。
+  Future<void> subagentInterrupt(String parentSessionId, String childSessionId) async {
+    await postJson('/api/subagents/interrupt', {
+      'parentSessionId': parentSessionId,
+      'childSessionId': childSessionId,
+    });
+  }
+
+  /// 当前目标。
+  Future<Map<String, dynamic>?> goal(String sessionId) async {
+    final data = await getJson('/api/goal?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    return data['goal'] as Map<String, dynamic>?;
+  }
+
+  /// 目标操作：create / pause / resume / complete（sessionId 必填，与内核 goal RPC 契约一致）。
+  Future<void> goalAction(String action, {required String sessionId, String? objective, int? maxGoalRounds}) async {
+    await postJson('/api/goal', {
+      'action': action,
+      'sessionId': sessionId,
+      'objective': ?objective,
+      'maxGoalRounds': ?maxGoalRounds,
+    });
+  }
+
   /// 归档 / 恢复会话（服务端持久化）。
   Future<void> archiveSession(String sessionId, {required bool archive}) async {
     await postJson(archive ? '/api/sessions/archive' : '/api/sessions/unarchive', {'sessionId': sessionId});

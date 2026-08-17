@@ -26,6 +26,8 @@
 - ⚙️ **配置对齐 PC 端**：模型、推理强度、权限预设（危险权限需风险确认）、**默认 Agent 预设 / 默认权限预设可直接修改**（作用于之后新建的会话）
 - 🏢 **模型提供商互通（v2.6）**：PC 端「设置 → 模型」与手机同一配置通道——37 个内置提供商（anthropic / openai / google / groq 等）手机可见可配（baseURL + API Key 即激活），模型选择器按提供商分组，设置页「模型提供商」可搜索/编辑/探测模型
 - 👀 **过程可见性（v2.6）**：活动条（思考中 / 正在调用工具实时状态行）+ 可折叠思考面板（默认只显示状态）
+- 🛠️ **会话工具（v2.7）**：运行中的后台任务实时卡片（可取消）+ 三页签弹层——任务 / 子代理（查看+中断）/ 目标（查看、创建、暂停、继续、标记完成，与 PC 端 goal 服务同源）
+- 💾 **体验打磨（v2.7）**：Agent 状态 bootstrap 同步（按钮/活动条即时反映 PC 状态）、下拉刷新收集地址（蒲公英/Tailscale 自动进候选）、聊天草稿保留（退出重进自动恢复）、首页改版（官方 logo / 新欢迎语 / 最近会话卡片滑动）
 - 📶 **扫码连接**：桌面 dsh 设置页出现「连接移动端设备」二维码 → 手机 App 扫码即连（免输 IP/口令）
 - 🩺 **环境诊断**：一键查看当前环境各项能力（含问询/审批桥状态），升级/排障一目了然
 - 🧩 **插件动作区**：第三方插件注册的动作自动出现在移动端（可选）
@@ -53,7 +55,7 @@
 
 ## 安装（部署者 3 步）
 
-> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.6.0"`。
+> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.7.0"`。
 
 ### 方式一：命令行 dsh web
 
@@ -190,7 +192,7 @@ pushUrls:
 
 ## 版本与兼容
 
-- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v2.6.0` = App 2.6.0 + 插件 2.6.0）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
+- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v2.7.0` = App 2.7.0 + 插件 2.7.0）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
 - **版本差矩阵**（一句话：谁旧谁吃亏，但都不崩）：
 
 | 组合 | 结果 |
@@ -200,7 +202,7 @@ pushUrls:
 | App 新 + 插件旧 | ✅ 老功能正常，新功能提示升级 |
 | 破坏性变更 | ❌ 禁止——已发布接口只加字段（docs/08 约定） |
 
-- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.6.0"`（不带 `#` 取最新）。
+- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.7.0"`（不带 `#` 取最新）。
 - 实际配对可在 App **设置 → 关于 → 版本**（`App vX · 插件 vY`）或环境诊断页对照。
 
 ## 文档

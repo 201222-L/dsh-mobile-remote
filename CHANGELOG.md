@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.7.0（2026-08-18）— 会话工具（任务/子代理/目标）+ 移动端体验打磨
+
+### 新增（移动端会话工具，PC 端 GUI 同源数据）
+- **任务进度**：会话运行中的后台任务（jobs）实时推送（SSE `session/jobs` 帧，连接回放 + 订阅更新），对话页活动条下方自动出现任务卡片（状态点/标签/取消）；AppBar 新增「会话工具」入口
+- **会话工具弹层**（任务 / 子代理 / 目标 三页签）：
+  - 任务：列表 + 取消（映射内核 `jobs.kill`，按会话隔离）
+  - 子代理：按父会话查询子代理列表（`subagent.list`）+ 中断（`subagent.interrupt`）
+  - 目标：查看当前目标（objective / 轮次 / 状态）、创建、暂停 / 继续 / 标记完成（映射内核 goal RPC，`sessionId + ref` 契约一致）；受阻时显示原因
+- **插件新端点**：`/m/api/jobs`（GET）、`/m/api/jobs/kill`（POST）、`/m/api/subagents`（GET）、`/m/api/subagents/interrupt`（POST）、`/m/api/goal`（GET/POST）；连接回放 `session/jobs` 帧，`onJobsChanged`/`onJobDone` 订阅随插件卸载清理
+
+### 新增（移动端体验）
+- **Agent 状态 bootstrap 同步**：连接 / 重连 / 下拉刷新时从 bootstrap 同步 agent 状态（思考中 / 工具执行 / 空闲），按钮与活动条即时反映 PC 真实状态
+- **下拉刷新收集地址**：refreshAll 吸收 bootstrap 的 `server.urls`（蒲公英 / Tailscale 等新地址及时进候选表，回环地址过滤）
+- **聊天草稿保留**：会话级缓存，输入内容退出会话后重进自动恢复（仅内存，不落盘）
+- **首页改版**：移除底部快捷输入框（模型/权限选择移至新建会话弹层与会话页）；欢迎语改为「今天打算设计什么？」；顶部展示 DeepSeek 官网官方 logo；内容块整体上移居中；最近会话卡片固定 3 行完整显示、超出卡片内滑动
+
+### 修复
+- 任务四端点契约对齐内核 schema（`subagent.list` 需 `parentSessionId`、`subagent.interrupt` 需 `parentSessionId + childSessionId + mode`、goal 变更需 `sessionId + ref`；goal POST 的 agent 解析改用 body 的 sessionId）
+- 目标页「无目标」状态不再卡加载（服务端 `goal: null` 与加载中区分）
+- 目标操作后无论成败都刷新真实状态（轮次驱动可能已改变状态，如轮次耗尽→受阻）
+- 会话工具弹层旧插件降级：端点不存在时显示「加载失败 + 重试」而非白屏
+
+### 兼容
+- 新增端点与 SSE 帧：旧 App 忽略新帧；旧插件无新端点（App 弹层提示加载失败，升级插件后可用）
+- 首页移除底部输入框为**行为变更**：首页发消息改为「＋新建会话」入口（会话页输入不受影响）
+- 已发布 API 无破坏性变更
+
 ## v2.6.0（2026-08-17）— 安全加固 + 移动端过程可见性 + 模型提供商互通
 
 ### 新增（安全）
@@ -36,14 +63,7 @@
   - 模型选择器**按提供商分组**（组名 = 提供商显示名），dormant 提供商显示「未配置」不可选
   - 设置新增「模型提供商」管理页：列表（已连接/未配置徽标 + baseURL + 密钥状态 + 目录模型数）、编辑（baseURL / API Key / 探测模型 / 清除密钥）
 - catalog 新增 `providers` 元信息；`session-config` 返回当前模型所属 `provider`；无 agent 兜底目录改为遍历全部提供商（不再写死 deepseek-official）
-
-### 修复
-- generic 推送格式 `kind is not defined`（存量 bug，仅 generic 通道触发）
-- `z.enum` 不兼容 schemastery 导致插件加载失败（v2.6 新增配置项改用 `z.string` + 运行时校验）
-- **移动端消息重复显示**：SSE 回显先于 send 响应到达（且轮次分隔线已插入）时，乐观消息合并失败 → 同一条消息显示两次；改为全列表查找乐观消息合并
-- **工具阶段空气泡**：多步工具轮中正文为空的中间 assistant 消息不再渲染（过程由活动条呈现）
 - `llm.listProviders()` 等为同步方法，原 `.catch()` 链式调用抛错（端点改用 try/catch）
-- e2e-check：支持 `DSH_MOBILE_BASE` 环境变量、无 agent 实例自动跳过发送
 
 ### 文档
 - 06 新增「HTTPS 反代」章节（Caddy/nginx + 自签证书，可选 TLS 方案）

@@ -29,6 +29,24 @@ class AppStore extends ChangeNotifier {
   QuestionRequest? pendingQuestion;
   ApprovalRequest? pendingApproval;
 
+  // ── v2.7：会话级输入草稿（返回/切会话后恢复） ──
+  final Map<String, String> _drafts = {};
+  String draftOf(String sessionId) => _drafts[sessionId] ?? '';
+  void saveDraft(String sessionId, String text) {
+    if (text.isEmpty) {
+      _drafts.remove(sessionId);
+    } else {
+      _drafts[sessionId] = text;
+    }
+  }
+  void clearDraft(String sessionId) => _drafts.remove(sessionId);
+
+  // ── v2.7：会话任务视图（session/jobs 帧，与 PC 端同源） ──
+  final Map<String, List<Map<String, dynamic>>> jobsBySession = {};
+  List<Map<String, dynamic>> jobsOf(String sessionId) => jobsBySession[sessionId] ?? const [];
+  bool hasRunningJobs(String sessionId) =>
+      jobsBySession[sessionId]?.any((j) => j['status'] == 'running' || j['status'] == 'stopping') ?? false;
+
   // ── 事件监听（聊天页挂载） ──
   void Function(ChatEvent ev)? onChatEvent;
   VoidCallback? onSessionsChanged; // 标题/预设变化 → 外部刷新
@@ -273,15 +291,20 @@ class AppStore extends ChangeNotifier {
   Future<bool> refreshAll() async {
     var ok = false;
     try {
-      await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+      final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       ok = true;
+      // v2.7：下拉刷新也收集地址（蒲公英等新地址及时进候选）+ 同步 agent 状态
+      api.absorbBootstrap(d);
+      _syncAgentStatus(d);
     } catch (_) {
       // 连接不通：尝试轮换到下一个候选地址（黑洞快速切换）再探测一次
       if (api.rotateBaseUrl()) {
         AppLog.instance.log('刷新探测失败 → 切换地址 ${api.baseUrl}');
         try {
-          await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+          final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
           ok = true;
+          api.absorbBootstrap(d);
+          _syncAgentStatus(d);
           // 当前 SSE 大概率也指向旧地址：重建连接
           disposeBridge();
           connect();
@@ -293,6 +316,18 @@ class AppStore extends ChangeNotifier {
     // 整体限时 8 秒：网络不通时避免 5 个请求各自超时堆积
     await Future.any([_refreshAllInner(), Future<void>.delayed(const Duration(seconds: 8))]);
     return ok;
+  }
+
+  /// 从 bootstrap 响应同步 agent 状态（连接/重连/下拉刷新时按钮立即反映 PC 真实状态）。
+  void _syncAgentStatus(Map<String, dynamic> d) {
+    final agents = d['agents'] as List? ?? const [];
+    if (agents.isEmpty) return;
+    final st = (agents.first as Map?)?['status'] ?? 'idle';
+    final next = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+    if (next != agentStatus) {
+      agentStatus = next;
+      notifyListeners();
+    }
   }
 
   Future<void> _refreshAllInner() async {
@@ -462,6 +497,7 @@ class AppStore extends ChangeNotifier {
       final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       // 合并服务端返回的全部地址（含 Tailscale IP）+ 记录插件版本
       api.absorbBootstrap(d);
+      _syncAgentStatus(d);
       _setConnState('connected');
       // 关键修复：探针成功 ≠ 旧 SSE 流还活着。App 后台期间 TCP 可能已静默死亡
       // 而流未触发 onDone/onError —— 若不重建，connect() 会被 `_sub != null` 挡住，
@@ -566,6 +602,18 @@ class AppStore extends ChangeNotifier {
       final fsid = frame['sessionId'];
       if (sessionId == null || fsid == sessionId) {
         onChatEvent?.call(ChatEvent(type: 'session/context', data: {'contextWindow': frame['contextWindow']}));
+      }
+      return;
+    }
+    if (type == 'session/jobs') {
+      // v2.7：会话任务视图（后台任务进度，与 PC 端同源）
+      final fsid = frame['sessionId'] as String?;
+      if (fsid != null) {
+        jobsBySession[fsid] = (frame['jobs'] as List? ?? []).cast<Map<String, dynamic>>();
+        notifyListeners();
+        if (sessionId == null || fsid == sessionId) {
+          onChatEvent?.call(ChatEvent(type: 'session/jobs', data: {'sessionId': fsid, 'jobs': jobsBySession[fsid]}));
+        }
       }
       return;
     }

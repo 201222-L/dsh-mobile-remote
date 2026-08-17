@@ -1,6 +1,6 @@
 # 03 API 接口设计文档 — dsh-mobile-remote
 
-> 版本：v2.6.0 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
+> 版本：v2.7.0 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
 > 前缀：`/m`（可配置项 `path`，默认 `/m`）。以下所有路径均以前缀开头。
 > 服务端 API 同时服务 Flutter App（dsh-mobile-app）与桌面设置页客户端模块；不含网页版页面（v2.1 起移除）。
 ## 1. 通用约定
@@ -43,7 +43,14 @@
 | GET | `/m/api/balance` | DeepSeek 官方余额 | 是 |
 | GET | `/m/api/qr-config` | 桌面二维码数据（loopback only） | 否（loopback） |
 | POST | `/m/api/defaults` | 修改默认 Agent/权限预设 | 是 |
+| GET/POST | `/m/api/llm-providers` | 模型提供商列表 / 保存配置（v2.6） | 是 |
+| POST | `/m/api/llm-providers/probe` | 探测端点模型列表（v2.6） | 是 |
 | GET | `/m/qr.png` | 二维码 PNG | 否 |
+| GET | `/m/api/jobs` | 会话后台任务列表（v2.7，内核 jobs 同源） | 是 |
+| POST | `/m/api/jobs/kill` | 取消任务（v2.7，映射 `jobs.kill`） | 是 |
+| GET | `/m/api/subagents` | 子代理列表（v2.7，按父会话 `subagent.list`） | 是 |
+| POST | `/m/api/subagents/interrupt` | 中断子代理（v2.7，`subagent.interrupt`） | 是 |
+| GET/POST | `/m/api/goal` | 当前目标 / 创建·暂停·继续·完成（v2.7，goal RPC 同源） | 是 |
 
 ## 3. 端点详述（v1 既有端点）
 ### 3.1 GET /m/api/bootstrap
@@ -444,6 +451,61 @@
 ```
 - 经 `settings.mutate` 写配置 + `credentials.set` 存密钥（引用派生规则与 PC 端一致：`<PROVIDER>_API_KEY`）
 - 仅允许写入配置目录声明的命名空间（`400 unknown-provider`）；`removeKey: true` 清除已存密钥
+
+### 6.14 会话工具（v2.7：任务 / 子代理 / 目标，PC 端 GUI 同源）
+> 全部端点需鉴权；数据与 PC 端「任务 / 子代理 / 目标」同一内核服务，手机只读 + 简单操作。
+
+**GET `/m/api/jobs?sessionId=可选`** — 会话后台任务列表（不传 sessionId 返回全部）
+```json
+{ "ok": true, "sessionId": "…", "jobs": [
+  { "id": "…", "kind": "task", "label": "…", "status": "running",
+    "startedAt": 1786987923387, "finishedAt": 1786987923387 }
+]}
+```
+- 状态：`running / stopping / completed / failed`；任务视图与 SSE `session/jobs` 帧同源
+- 会话不存在 `404 session-not-found`；jobs 服务不可用 `503 jobs-unavailable`
+
+**POST `/m/api/jobs/kill`** — 取消任务
+```json
+请求: { "sessionId": "可选", "jobId": "…" }
+响应: { "ok": true }
+```
+- 映射内核 `jobs.kill(jobId, agent, reason)`；失败 `400 job-kill-failed`
+
+**GET `/m/api/subagents?parentSessionId=…`** — 子代理列表（按父会话）
+```json
+{ "ok": true, "parentAvailable": true, "subagents": [
+  { "id": "…", "kind": "child", "status": "running", "title": "…" }
+]}
+```
+- 映射内核 `subagent.list`（payload `{ parentSessionId }`）；`status` = activity（running/inactive）或 diagnostic reason
+- 缺参数 `400 parentSessionId-required`；会话不存在 `404 session-not-found`
+
+**POST `/m/api/subagents/interrupt`** — 中断子代理
+```json
+请求: { "parentSessionId": "…", "childSessionId": "…" }
+响应: { "ok": true }
+```
+- 映射内核 `subagent.interrupt`（payload `{ parentSessionId, childSessionId, mode: "continuable" }`）
+
+**GET `/m/api/goal?sessionId=…`** — 当前目标（无目标返回 `{ "goal": null }`）
+```json
+{ "ok": true, "goal": { "id": "…", "revision": 1, "objective": "…",
+  "phase": "active", "maxGoalRounds": 256, "roundsStarted": 0,
+  "createdAt": 1786987923387, "updatedAt": 1786987923387, "activation": "armed" } }
+```
+- `phase`: active / paused / blocked / complete；blocked 时含 `blockedReason`（如轮次耗尽）
+- 无会话 `503 goal-unavailable`
+
+**POST `/m/api/goal`** — 创建 / 暂停 / 继续 / 完成
+```json
+请求: { "action": "create|pause|resume|complete", "sessionId": "…",
+        "objective": "create 必填", "maxGoalRounds": "create 可选" }
+响应: { "ok": true }
+```
+- 映射内核 goal RPC（契约一致：create 需 `sessionId + objective`；pause/resume/complete 需 `sessionId + ref`，ref 由插件经 `goals.get(agent)` 自动取得）
+- 缺参 `400 sessionId-required / objective-required`；无当前目标 `400 no-active-goal`；非法 action `400 bad-action`
+
 
 
 

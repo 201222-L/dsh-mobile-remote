@@ -1,6 +1,6 @@
 # 07 用户操作手册 — DSH Remote
 
-> 版本：v2.6.0 · 配套：06-install-run.md · 面向使用手机 App 的最终用户
+> 版本：v2.7.0 · 配套：06-install-run.md · 面向使用手机 App 的最终用户
 ## 1. 快速开始
 1. 确认电脑端 dsh（DeepSeek Harness）正在运行。
 2. 手机与电脑连接**同一 WiFi**；**人不在家**时用蒲公英组网（电脑+手机装蒲公英客户端、同一组网，见 06-install-run.md §5）。
