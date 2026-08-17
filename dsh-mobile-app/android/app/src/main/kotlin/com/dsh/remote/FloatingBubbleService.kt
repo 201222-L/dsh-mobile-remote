@@ -588,7 +588,7 @@ class FloatingBubbleService : Service() {
                 val child = root.getChildAt(ci)
                 if (child.visibility != View.VISIBLE) continue
                 child.alpha = 0f
-                child.translationY = dp(8)
+                child.translationY = dp(8).toFloat()
                 child.animate().alpha(1f).translationY(0f)
                     .setStartDelay(60L + i * 40L)
                     .setDuration(160)
