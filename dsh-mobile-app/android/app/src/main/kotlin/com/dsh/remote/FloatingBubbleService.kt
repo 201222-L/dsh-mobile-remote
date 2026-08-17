@@ -68,6 +68,7 @@ class FloatingBubbleService : Service() {
     private var panelNotifsSec: View? = null
     private var panelCharge: View? = null
     private var panelVisible = false
+    private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
 
     private var sseThread: Thread? = null
     @Volatile private var sseAlive = false
@@ -102,6 +103,7 @@ class FloatingBubbleService : Service() {
         startForeground(NOTIF_ID, buildNotification())
         addBubble()
         addTipView()
+        addScrim()   // z 序：球 < scrim < 面板
         addPanel()
         startSse()
     }
@@ -114,7 +116,8 @@ class FloatingBubbleService : Service() {
         bubble?.let { runCatching { wm?.removeView(it) } }
         tip?.let { runCatching { wm?.removeView(it) } }
         panel?.let { runCatching { wm?.removeView(it) } }
-        bubble = null; tip = null; panel = null
+        scrim?.let { runCatching { wm?.removeView(it) } }
+        bubble = null; tip = null; panel = null; scrim = null
         super.onDestroy()
     }
 
@@ -325,6 +328,26 @@ class FloatingBubbleService : Service() {
 
     private val hideTipRunnable = Runnable { tip?.visibility = View.GONE }
 
+    /** 全屏透明触摸层：面板打开时接收"面板外"点击 → 关闭面板。
+     *  在 onCreate 中先于面板添加，保证 z 序在面板之下、球之上。 */
+    private fun addScrim() {
+        val wm = this.wm ?: return
+        val v = View(this)
+        v.setBackgroundColor(Color.TRANSPARENT)
+        v.setOnClickListener { hidePanel() }
+        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.START
+        wm.addView(v, params)
+        v.visibility = View.GONE
+        scrim = v
+    }
+
     /** 松手后吸附到边缘（完全露出），供 5 秒无操作后的缩进做基线。 */
     private fun snapToEdgeVisible() {
         val p = bubbleParams ?: return
@@ -487,6 +510,7 @@ class FloatingBubbleService : Service() {
         val pp = panelParams ?: return
         panelVisible = true
         placePanel()
+        scrim?.visibility = View.VISIBLE // 拦截面板外点击（透明，不遮挡视觉）
         p.visibility = View.VISIBLE
         // 打开动画：淡入 + 轻微放大（从球方向展开的质感）
         p.alpha = 0f
@@ -535,6 +559,7 @@ class FloatingBubbleService : Service() {
     private fun hidePanel() {
         val p = panel ?: return
         panelVisible = false
+        scrim?.visibility = View.GONE
         // 收起动画：淡出 + 缩小（动画期间若重新打开则不隐藏）
         p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
             .withEndAction { if (!panelVisible) p.visibility = View.GONE }
