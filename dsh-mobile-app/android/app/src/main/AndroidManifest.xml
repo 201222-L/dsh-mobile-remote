@@ -3,6 +3,11 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 扫码连接（桌面端二维码） -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- 悬浮球（v2.7）：悬浮窗 + 前台服务 + 通知 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="DSH Remote"
         android:name="${applicationName}"
@@ -31,6 +36,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 悬浮球常驻服务（v2.7） -->
+        <service
+            android:name=".FloatingBubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floating_bubble_status" />
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

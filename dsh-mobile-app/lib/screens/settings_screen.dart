@@ -1,9 +1,11 @@
 // 设置页（对齐网页端 settings screen）：连接/默认配置/账户/显示/关于
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
+import '../custom_tabs.dart';
+import '../floating.dart';
 import '../l10n.dart';
 import '../logger.dart';
 import '../store.dart';
@@ -25,18 +27,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? _balance;
   String? _balanceError; // 余额查询失败的错误（build 时动态显示）
   bool _busy = false; // 余额刷新中（刷新按钮转圈）
+  bool _alertShown = false; // 本次会话内余额预警已提示过
   Map<String, dynamic>? _diag;
   bool _diagLoaded = false;
   String _diagTime = '';
   String _appVersion = ''; // App 自身版本（package_info_plus，构建时打包）
+  bool _bubbleOn = false; // 悬浮球开关状态（与服务实际运行状态同步）
 
   @override
   void initState() {
     super.initState();
     _refreshBalance();
     _loadAppVersion();
+    _initBubbleState();
     // 连接状态等 store 变化实时刷新（修复：旧版离开页面重进才能看到状态更新）
     widget.store.addListener(_onStoreChanged);
+  }
+
+  Future<void> _initBubbleState() async {
+    final on = await Floating.isRunning();
+    if (mounted) setState(() => _bubbleOn = on);
+  }
+
+  /// 悬浮球开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
+  Future<void> _toggleBubble(bool v) async {
+    if (v) {
+      final ok = await Floating.canDrawOverlay();
+      if (!ok) {
+        if (!mounted) return;
+        final go = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(L10n.t('需要悬浮窗权限', 'Overlay permission needed')),
+            content: Text(L10n.t('开启悬浮球需要在系统设置中允许「显示在其他应用上层」。\n点击【去开启】跳转系统设置。',
+                'The floating bubble needs the "display over other apps" permission.\nTap Open Settings to grant it.')),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: Text(L10n.t('取消', 'Cancel')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: Text(L10n.t('去开启', 'Open Settings')),
+              ),
+            ],
+          ),
+        );
+        if (go == true) {
+          await Floating.openOverlaySettings();
+        }
+        return; // 授权后由用户重新打开开关（或重进页面状态同步）
+      }
+      await Floating.start();
+      if (mounted) setState(() => _bubbleOn = true);
+    } else {
+      await Floating.stop();
+      if (mounted) setState(() => _bubbleOn = false);
+    }
   }
 
   @override
@@ -122,6 +169,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final b = await api.balanceInfo();
       if (!mounted) return;
       setState(() => _balance = b);
+      // 余额联动悬浮球（低余额时悬浮球亮起 + 气泡）
+      if (b != null) {
+        final total = (b['total'] as num?)?.toDouble() ?? 0;
+        unawaited(Floating.notifyBalance(total));
+      }
+      // 余额预警：低于阈值时提示一次（本次会话内不重复打扰）
+      if (widget.store.balanceAlert && b != null) {
+        final total = (b['total'] as num?)?.toDouble() ?? double.infinity;
+        if (total < widget.store.balanceThreshold && !_alertShown) {
+          _alertShown = true;
+          showToast(context, L10n.t('余额不足 ¥', 'Low balance ¥') + total.toStringAsFixed(1) + L10n.t('，建议及时充值', ' — consider topping up'));
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       // 查询失败：记住错误，build 里动态显示（语言切换后也能正确翻译）
@@ -263,6 +323,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final brand = DshColors.brand(context);
     final ok = DshColors.ok(context);
     final warn = DshColors.warn(context);
+    final danger = DshColors.danger(context);
 
     String permName(String? id) => switch (id) {
           'read-only' => 'Read Only',
@@ -372,7 +433,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 Text(
                   _balance != null ? '¥${(_balance!['total'] as num).toStringAsFixed(2)}' : '—',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: brand),
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    // 预警开启且低于阈值 → 红色警示
+                    color: (store.balanceAlert &&
+                            (_balance?['total'] as num?)?.toDouble() != null &&
+                            ((_balance!['total'] as num).toDouble() < store.balanceThreshold))
+                        ? danger
+                        : brand,
+                  ),
                 ),
                 const SizedBox(width: 2),
                 // 余额旁独立刷新按钮（点击数字刷新的旧交互已移除）
@@ -395,12 +465,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.add_card_outlined),
             title: L10n.t('充值', 'Top up'),
-            sub: L10n.t('跳转 DeepSeek 开放平台', 'Go to DeepSeek Open Platform'),
+            sub: L10n.t('Custom Tabs 内打开官方充值页（复用浏览器登录态，支付可正常唤起）',
+                'Opens the official top-up page in Custom Tabs (browser session reused, payments work)'),
             trailing: Text(L10n.t('去充值 ▸', 'Top up ▸'), style: TextStyle(fontSize: 12, color: brand)),
-            onTap: () => launchUrl(
+            onTap: () => CustomTabs.open(
               // 以电脑端插件配置为准（catalog.rechargeUrl），缺省回退官方充值页
-              Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
-              mode: LaunchMode.externalApplication,
+              store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up',
+            ),
+          ),
+          _row(
+            leading: const Icon(Icons.notifications_active_outlined),
+            title: L10n.t('余额预警', 'Low-balance alert'),
+            sub: L10n.t('余额低于 ¥10 时提醒充值', 'Remind to top up when balance is below ¥10'),
+            trailing: SizedBox(
+              width: 44,
+              height: 28,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Switch(
+                  value: store.balanceAlert,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeTrackColor: DshColors.brand(context),
+                  activeThumbColor: Colors.white,
+                  inactiveTrackColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
+                  inactiveThumbColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
+                  onChanged: (v) => store.setBalanceAlert(v),
+                ),
+              ),
             ),
           ),
         ]),
@@ -465,6 +558,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: Text(
               store.language == 'en' ? 'English' : '中文',
               style: TextStyle(fontSize: 13, color: brand),
+            ),
+          ),
+          _row(
+            leading: const Icon(Icons.bubble_chart_outlined),
+            title: L10n.t('悬浮球', 'Floating bubble'),
+            sub: L10n.t('桌面悬浮球：agent 运行/通知/余额低时亮起，单击展开面板（默认关）',
+                'Floating bubble: lights up on activity, tap to open panel (off by default)'),
+            trailing: SizedBox(
+              width: 44,
+              height: 28,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Switch(
+                  value: _bubbleOn,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeTrackColor: DshColors.brand(context),
+                  activeThumbColor: Colors.white,
+                  inactiveTrackColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
+                  inactiveThumbColor:
+                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
+                  onChanged: _toggleBubble,
+                ),
+              ),
             ),
           ),
         ]),

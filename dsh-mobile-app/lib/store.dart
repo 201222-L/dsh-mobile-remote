@@ -20,6 +20,8 @@ class AppStore extends ChangeNotifier {
   String darkMode = 'system'; // system | dark | light
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
+  bool balanceAlert = false; // 余额预警开关（v2.7：低于阈值提醒充值）
+  double balanceThreshold = 10; // 预警阈值（元）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
   List<Map<String, dynamic>> workspaces = [];
@@ -65,6 +67,7 @@ class AppStore extends ChangeNotifier {
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
   static const _kLang = 'dsh_mr_language';
+  static const _kBalanceAlert = 'dsh_mr_balance_alert';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -73,6 +76,7 @@ class AppStore extends ChangeNotifier {
     showReasoning = prefs.getBool(_kReasoning) ?? false;
     language = prefs.getString(_kLang) ?? 'zh';
     L10n.lang = language;
+    balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
     // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
@@ -138,6 +142,14 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kLang, v);
+  }
+
+  /// 余额预警开关（低于阈值时提醒充值）。
+  Future<void> setBalanceAlert(bool v) async {
+    balanceAlert = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kBalanceAlert, v);
   }
 
   Future<void> setSession(String? id) async {

@@ -2,8 +2,10 @@
 // 原生 App：抽屉导航（首页/会话/设置）+ 通知 + 连接配置 + 扫码连接。
 // 界面与功能对齐网页端 dsh-mobile-remote（DeepSeek 配色，Claude 式布局）。
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'l10n.dart';
 import 'api.dart';
+import 'custom_tabs.dart';
 import 'store.dart';
 import 'theme.dart';
 import 'logger.dart';
@@ -16,6 +18,9 @@ import 'screens/notifications_screen.dart';
 import 'screens/sheets.dart';
 
 final AppStore store = AppStore();
+
+/// 全局导航 key（悬浮球面板等跨页面入口用）。
+final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,6 +59,24 @@ class _DshAppState extends State<DshApp> {
   void initState() {
     super.initState();
     store.addListener(_onStore);
+    // 悬浮球迷你面板动作（原生 → Flutter）：打开会话 / 去充值
+    const MethodChannel('dsh/floating').setMethodCallHandler((call) async {
+      final nav = rootNavigatorKey.currentState;
+      if (nav == null) return null;
+      switch (call.method) {
+        case 'openSessionRequested':
+          final id = call.arguments as String?;
+          if (id == null || id.isEmpty) break;
+          await store.setSession(id);
+          store.refreshSessionConfig();
+          nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
+          break;
+        case 'openChargeRequested':
+          await CustomTabs.open(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up');
+          break;
+      }
+      return null;
+    });
   }
 
   @override
@@ -76,6 +99,7 @@ class _DshAppState extends State<DshApp> {
     return MaterialApp(
       title: 'DSH Remote',
       debugShowCheckedModeBanner: false,
+      navigatorKey: rootNavigatorKey,
       theme: DshTheme.light(),
       darkTheme: DshTheme.dark(),
       themeMode: mode,
