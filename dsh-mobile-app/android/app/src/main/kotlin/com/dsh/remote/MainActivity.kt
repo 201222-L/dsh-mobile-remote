@@ -31,8 +31,11 @@ class MainActivity : FlutterActivity() {
                 }
                 "notifyBalance" -> {
                     val v = call.argument<String>("value") ?: ""
-                    val i = Intent(this, FloatingBubbleService::class.java).putExtra("balance", v)
-                    startServiceCompat(i)
+                    // 服务未运行时忽略（否则余额刷新会把悬浮球拉起来，开关形同虚设）
+                    if (FloatingBubbleService.running) {
+                        val i = Intent(this, FloatingBubbleService::class.java).putExtra("balance", v)
+                        startServiceCompat(i)
+                    }
                     result.success(true)
                 }
                 else -> result.notImplemented()

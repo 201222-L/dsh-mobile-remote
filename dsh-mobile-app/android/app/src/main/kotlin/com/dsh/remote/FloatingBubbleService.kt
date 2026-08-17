@@ -177,7 +177,9 @@ class FloatingBubbleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.getStringExtra("balance")?.let { onBalance(it) }
-        return START_STICKY
+        // NOT_STICKY：只有用户主动开开关才启动；App 被杀/覆盖安装后系统不自动复活
+        // （修复：设置页开关是"关"但悬浮球却出现的现象）
+        return START_NOT_STICKY
     }
 
     // ── 前台通知 ──
