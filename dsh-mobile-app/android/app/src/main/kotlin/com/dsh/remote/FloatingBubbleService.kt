@@ -385,9 +385,9 @@ class FloatingBubbleService : Service() {
         val visCenter = (visLeft + visRight) / 2
         // 水平：气泡中心对齐可见部分中心，钳制在屏内
         p.x = (visCenter - tipW / 2).coerceIn(0, metrics.widthPixels - tipW)
-        // 垂直：优先球上方；顶部空间不足（球太靠顶）放球下方
-        val above = bp.y - dp(56)
-        p.y = if (above >= dp(12)) above else bp.y + bd + dp(8)
+        // 垂直：紧贴球上沿（约 36dp 高 + 8dp 间距）；顶部空间不足放球下方紧贴
+        val above = bp.y - dp(44)
+        p.y = if (above >= dp(8)) above else bp.y + bd + dp(6)
         wm.updateViewLayout(tv, p)
     }
 
