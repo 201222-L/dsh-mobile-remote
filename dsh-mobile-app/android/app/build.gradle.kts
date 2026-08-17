@@ -72,11 +72,6 @@ kotlin {
     }
 }
 
-dependencies {
-    // Chrome Custom Tabs（充值页内嵌打开，复用浏览器登录态 + 支付能力）
-    implementation("androidx.browser:browser:1.5.0")
-}
-
 flutter {
     source = "../.."
 }

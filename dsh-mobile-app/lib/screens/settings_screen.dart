@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
-import '../custom_tabs.dart';
 import '../floating.dart';
 import '../l10n.dart';
 import '../logger.dart';
@@ -465,12 +465,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.add_card_outlined),
             title: L10n.t('充值', 'Top up'),
-            sub: L10n.t('打开官方充值页（设备不支持内嵌时自动跳转系统浏览器）',
-                'Opens the official top-up page (falls back to the system browser when in-app tabs are unsupported)'),
+            sub: L10n.t('跳转 DeepSeek 开放平台', 'Go to DeepSeek Open Platform'),
             trailing: Text(L10n.t('去充值 ▸', 'Top up ▸'), style: TextStyle(fontSize: 12, color: brand)),
-            onTap: () => CustomTabs.open(
+            onTap: () => launchUrl(
               // 以电脑端插件配置为准（catalog.rechargeUrl），缺省回退官方充值页
-              store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up',
+              Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
+              mode: LaunchMode.externalApplication,
             ),
           ),
           _row(

@@ -3,9 +3,9 @@
 // 界面与功能对齐网页端 dsh-mobile-remote（DeepSeek 配色，Claude 式布局）。
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'l10n.dart';
 import 'api.dart';
-import 'custom_tabs.dart';
 import 'store.dart';
 import 'theme.dart';
 import 'logger.dart';
@@ -72,7 +72,10 @@ class _DshAppState extends State<DshApp> {
           nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
           break;
         case 'openChargeRequested':
-          await CustomTabs.open(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up');
+          await launchUrl(
+            Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
+            mode: LaunchMode.externalApplication,
+          );
           break;
       }
       return null;
