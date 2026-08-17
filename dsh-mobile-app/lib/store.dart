@@ -651,6 +651,11 @@ class AppStore extends ChangeNotifier {
       // 高频 chunk 期间定时器持续重置，流结束后才真正刷新一次。
       _debounceSessions();
       final fsid = frame['sessionId'];
+      // v2.7 修复：轮次结束 → 主动刷新通知（不依赖插件 notifications/changed 广播，
+      // 旧插件写入后不广播时 App 铃铛也能跟上）
+      if (evType == 'turn/end') {
+        _debounceNotifs();
+      }
       // 排障日志：帧到达与过滤（高频 chunk 不记）
       if (evType != 'assistant/chunk' && evType != 'tool/call' && evType != 'tool/result') {
         AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"} ${sessionId != null && fsid != sessionId ? "（被过滤）" : ""}');
@@ -712,10 +717,19 @@ class AppStore extends ChangeNotifier {
     });
   }
 
+  Timer? _notifTimer;
+  void _debounceNotifs() {
+    _notifTimer?.cancel();
+    _notifTimer = Timer(const Duration(milliseconds: 500), () {
+      refreshNotifs();
+    });
+  }
+
   void disposeBridge() {
     _sub?.cancel();
     _retryTimer?.cancel();
     _sessTimer?.cancel();
+    _notifTimer?.cancel();
     _watchdog?.cancel();
     _watchdog = null;
     api.onSseKeepalive = null;

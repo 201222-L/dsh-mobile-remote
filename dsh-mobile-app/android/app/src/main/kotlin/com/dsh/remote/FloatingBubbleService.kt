@@ -318,8 +318,10 @@ class FloatingBubbleService : Service() {
         val tv = tip ?: return
         val p = tipParams ?: return
         val bp = bubbleParams ?: return
-        p.x = bp.x
-        p.y = bp.y - dp(60)
+        // 气泡跟随球上方，钳制在屏幕内（贴边/顶部时仍可见）
+        val metrics = resources.displayMetrics
+        p.x = bp.x.coerceIn(0, metrics.widthPixels - dp(160))
+        p.y = (bp.y - dp(60)).coerceAtLeast(dp(10))
         tv.text = text
         tv.visibility = View.VISIBLE
         wm?.updateViewLayout(tv, p)
@@ -799,8 +801,9 @@ class FloatingBubbleService : Service() {
                 val data = ev.optJSONObject("data") ?: JSONObject()
                 val reason = data.optJSONObject("reason")
                 val kind = reason?.optString("kind") ?: ""
-                // 轮次完成不算通知（agent 正常跑完一轮）；失败/需要回答才提醒
-                if (kind == "failed" || kind == "error") markNotif("task-failed", text("任务失败", "Task failed"))
+                // 轮次结束即提醒（红点+气泡）；同类 5 秒防抖合并、红点 60 秒自动消退，不残留
+                if (kind == "completed") markNotif("turn-completed", text("任务完成", "Task done"))
+                else if (kind == "failed" || kind == "error") markNotif("task-failed", text("任务失败", "Task failed"))
                 else if (kind == "needs-answer") markNotif("needs-answer", text("需要你回答", "Your input needed"))
                 lastActivity = System.currentTimeMillis()
                 scheduleIdleCheck()
