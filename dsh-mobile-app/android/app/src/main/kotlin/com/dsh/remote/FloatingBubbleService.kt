@@ -112,6 +112,40 @@ class FloatingBubbleService : Service() {
         addScrim()   // z 序：球 < scrim < 面板
         addPanel()
         startSse()
+        // 余额定时自查（30 分钟一次，不依赖 App 打开设置页触发）
+        mainHandler.postDelayed(balanceCheckRunnable, 30 * 60 * 1000L)
+    }
+
+    /** 余额自查：每 30 分钟拉一次 /m/api/balance，低余额时亮起 + 气泡 + 面板按钮变红。 */
+    private val balanceCheckRunnable: Runnable = object : Runnable {
+        override fun run() {
+            Thread({
+                try {
+                    val base = prefs("flutter.dsh_mr_base") ?: return@Thread
+                    val token = prefs("flutter.dsh_mr_token") ?: return@Thread
+                    var b = base.trim()
+                    if (b.endsWith("/")) b = b.dropLast(1)
+                    if (b.endsWith("/m")) b = b.dropLast(2)
+                    val conn = URL("$b/m/api/balance").openConnection() as HttpURLConnection
+                    conn.connectTimeout = 8000
+                    conn.setRequestProperty("x-mobile-token", token)
+                    if (conn.responseCode == 200) {
+                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
+                        val first = infos?.optJSONObject(0)
+                        val total = first?.opt("total_balance")
+                        val v = when (total) {
+                            is Number -> total.toDouble()
+                            is String -> total.toDoubleOrNull() ?: 0.0
+                            else -> 0.0
+                        }
+                        if (v > 0) onBalance("$v:")
+                    }
+                    conn.disconnect()
+                } catch (_: Exception) {}
+            }, "dsh-bubble-balance").start()
+            mainHandler.postDelayed(this, 30 * 60 * 1000L)
+        }
     }
 
     override fun onDestroy() {
@@ -678,7 +712,18 @@ class FloatingBubbleService : Service() {
                 nbox.addView(row)
             }
         }
-        panelCharge?.visibility = if (lowBalance) View.VISIBLE else View.GONE
+        panelCharge?.visibility = View.VISIBLE // 充值按钮常显（余额低时红色强调，见 renderPanel）
+        if (lowBalance) {
+            (panelCharge as? TextView)?.background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(Color.parseColor("#E5484D"))
+            }
+        } else {
+            (panelCharge as? TextView)?.background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(Color.parseColor("#3A3F47"))
+            }
+        }
     }
 
     // ── 状态渲染 ──
@@ -790,12 +835,13 @@ class FloatingBubbleService : Service() {
         val ev = o.optJSONObject("event") ?: return
         val type = ev.optString("type")
         when {
-            type.contains("tool/") || type == "thinking/start" || type == "turn/start" ||
+            // 轮次开始/工具/思考 → 亮（轮次边界驱动，不靠超时猜，避免时亮时暗）
+            type == "turn/start" ||
+                type.contains("tool/") || type == "thinking/start" ||
                 type == "agent/status" && ev.optJSONObject("data")?.optString("status") == "running" -> {
                 agentsRunning = true
                 lastActivity = System.currentTimeMillis()
                 mainHandler.post { setState() }
-                scheduleIdleCheck()
             }
             type == "turn/end" -> {
                 val data = ev.optJSONObject("data") ?: JSONObject()
@@ -805,25 +851,14 @@ class FloatingBubbleService : Service() {
                 if (kind == "completed") markNotif("turn-completed", text("任务完成", "Task done"))
                 else if (kind == "failed" || kind == "error") markNotif("task-failed", text("任务失败", "Task failed"))
                 else if (kind == "needs-answer") markNotif("needs-answer", text("需要你回答", "Your input needed"))
+                // 轮次结束 → 回到暗态（无通知时）；等下一轮 turn/start 再亮
+                agentsRunning = false
                 lastActivity = System.currentTimeMillis()
-                scheduleIdleCheck()
+                mainHandler.post { setState() }
             }
         }
         // 面板打开时即时刷新（会话状态变化同步）
         refreshPanelIfOpen()
-    }
-
-    /** 每次活动事件后调度空闲检查：3 秒无新事件 → 停止转圈（不再被红点/余额卡住）。 */
-    private fun scheduleIdleCheck() {
-        mainHandler.removeCallbacks(idleCheckRunnable)
-        mainHandler.postDelayed(idleCheckRunnable, 3000)
-    }
-
-    private val idleCheckRunnable = Runnable {
-        if (System.currentTimeMillis() - lastActivity > 3000) {
-            agentsRunning = false
-            mainHandler.post { setState() }
-        }
     }
 
     private fun handleJobs(o: JSONObject) {
@@ -847,7 +882,6 @@ class FloatingBubbleService : Service() {
         if (running) {
             lastActivity = System.currentTimeMillis()
             mainHandler.post { setState() }
-            scheduleIdleCheck()
         } else if (notified) {
             mainHandler.post { setState() }
         }
