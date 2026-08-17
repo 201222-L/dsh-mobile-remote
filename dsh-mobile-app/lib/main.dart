@@ -2,6 +2,7 @@
 // 原生 App：抽屉导航（首页/会话/设置）+ 通知 + 连接配置 + 扫码连接。
 // 界面与功能对齐网页端 dsh-mobile-remote（DeepSeek 配色，Claude 式布局）。
 import 'package:flutter/material.dart';
+import 'l10n.dart';
 import 'api.dart';
 import 'store.dart';
 import 'theme.dart';
@@ -29,7 +30,7 @@ void main() async {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: SelectableText(
-            '界面异常：\n${details.exceptionAsString()}',
+            '${L10n.t('界面异常：', 'UI error:')}\n${details.exceptionAsString()}',
             style: const TextStyle(color: Color(0xFFE6E8EC), fontSize: 13),
           ),
         ),
@@ -188,7 +189,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
         ),
       );
     }
-    final titles = ['DSH', '会话', '设置'];
+    final titles = ['DSH', L10n.t('会话', 'Sessions'), L10n.t('设置', 'Settings')];
     // 返回键：非首页 tab 按返回 → 先回首页；首页再按返回 → 退出 App
     return PopScope(
       canPop: _index == 0,
@@ -214,9 +215,9 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
               offset: const Offset(-6, 0), // 再向抽屉菜单靠近一点
               child: Tooltip(
                 message: switch (store.connState) {
-                  'connected' => '电脑在线',
-                  'connecting' => '连接中…',
-                  _ => '电脑离线 · 点按重连',
+                  'connected' => L10n.t('电脑在线', 'PC online'),
+                  'connecting' => L10n.t('连接中…', 'Connecting…'),
+                  _ => L10n.t('电脑离线 · 点按重连', 'PC offline · tap to reconnect'),
                 },
                 child: InkWell(
                   customBorder: const CircleBorder(),
@@ -286,7 +287,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                         Navigator.of(context).pop();
                         _openNewSession();
                       },
-                      child: const Text('＋ 新建会话'),
+                      child: Text(L10n.t('＋ 新建会话', '+ New Session')),
                     ),
                   ],
                 ),
@@ -298,7 +299,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
                   child: Text(
-                    '工作区',
+                    L10n.t('工作区', 'Workspaces'),
                     style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
                   ),
                 ),
@@ -314,14 +315,14 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 8),
               ],
-              _drawerItem(Icons.home_outlined, '首页', 0),
-              _drawerItem(Icons.history, '会话', 1),
-              _drawerItem(Icons.settings_outlined, '设置', 2),
+              _drawerItem(Icons.home_outlined, L10n.t('首页', 'Home'), 0),
+              _drawerItem(Icons.history, L10n.t('会话', 'Sessions'), 1),
+              _drawerItem(Icons.settings_outlined, L10n.t('设置', 'Settings'), 2),
               const Spacer(),
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(
-                  '本机直连 · DeepSeek Harness',
+                  L10n.t('本机直连 · DeepSeek Harness', 'Direct connection · DeepSeek Harness'),
                   style: TextStyle(fontSize: 12, color: DshColors.ink3(context)),
                 ),
               ),
@@ -390,7 +391,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     final ink3 = DshColors.ink3(context);
     final isAll = w == null;
     final path = w?['path'] as String? ?? '';
-    final title = isAll ? '全部工作区' : ((w['title'] as String?) ?? path);
+    final title = isAll ? L10n.t('全部工作区', 'All Workspaces') : ((w['title'] as String?) ?? path);
     final selected = isAll ? store.workspacePath == null : store.workspacePath == path;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
@@ -463,7 +464,7 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
     if (base.endsWith('/m')) base = base.substring(0, base.length - 2);
     setState(() {
       _busy = true;
-      _status = '连接中…';
+      _status = L10n.t('连接中…', 'Connecting…');
     });
     try {
       final probe = Api()
@@ -472,11 +473,11 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
       await probe.getJson('/api/bootstrap');
       await api.save(base: base, token: _tokenCtrl.text.trim());
       if (!mounted) return;
-      setState(() => _status = '✅ 已连接');
+      setState(() => _status = L10n.t('✅ 已连接', '✅ Connected'));
       widget.onConnected();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _status = '连接失败：$e');
+      setState(() => _status = '${L10n.t('连接失败：', 'Connection failed:')}$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -510,7 +511,7 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
                 child: IconButton(
                   onPressed: widget.onCancel,
                   icon: const Icon(Icons.arrow_back, size: 22),
-                  tooltip: '返回（保留原配置）',
+                  tooltip: L10n.t('返回（保留原配置）', 'Back (keep current settings)'),
                 ),
               ),
             ),
@@ -527,12 +528,12 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: scheme.primary)),
             const SizedBox(height: 6),
-            Text('手机远程操作 DeepSeek Harness', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+            Text(L10n.t('手机远程操作 DeepSeek Harness', 'Control DeepSeek Harness from your phone'), textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
             const SizedBox(height: 28),
             FilledButton.icon(
               onPressed: _busy ? null : _scan,
               icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('扫码连接'),
+              label: Text(L10n.t('扫码连接', 'Scan to Connect')),
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
             ),
             const SizedBox(height: 16),
@@ -541,7 +542,7 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
                 Expanded(child: Divider(color: scheme.outlineVariant)),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text('或手动输入', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                  child: Text(L10n.t('或手动输入', 'Or enter manually'), style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
                 ),
                 Expanded(child: Divider(color: scheme.outlineVariant)),
               ],
@@ -550,25 +551,25 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
             TextField(
               controller: _baseCtrl,
               keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: '电脑地址',
+              decoration: InputDecoration(
+                labelText: L10n.t('电脑地址', 'Computer Address'),
                 hintText: 'http://192.168.x.x:3080',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: _tokenCtrl,
               obscureText: true,
-              decoration: const InputDecoration(
-                labelText: '访问口令',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: L10n.t('访问口令', 'Token'),
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 20),
             FilledButton(
               onPressed: _busy ? null : _connect,
-              child: Text(_busy ? '连接中…' : '连接'),
+              child: Text(_busy ? L10n.t('连接中…', 'Connecting…') : L10n.t('连接', 'Connect')),
             ),
             const SizedBox(height: 12),
             Text(_status, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),

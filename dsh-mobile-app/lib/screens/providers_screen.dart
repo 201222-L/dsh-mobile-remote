@@ -3,6 +3,7 @@
 // 点击可编辑 baseURL / API Key / 模型目录 / 探测模型。
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../l10n.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
@@ -48,7 +49,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
       final msg = '$e';
       // 旧插件没有 /api/llm-providers 端点（404 not-found）：给出可操作的提示
       if (msg.contains('not-found') || msg.contains('404')) {
-        setState(() => _error = '电脑端插件版本过旧：缺少「模型提供商」接口。\n请升级 dsh-mobile-remote 插件后重启桌面端（已配置的模型不受影响）。');
+        setState(() => _error = L10n.t('电脑端插件版本过旧：缺少「模型提供商」接口。\n请升级 dsh-mobile-remote 插件后重启桌面端（已配置的模型不受影响）。', 'The desktop plugin is outdated: the "Model Providers" API is missing.\nPlease upgrade the dsh-mobile-remote plugin and restart the desktop app (configured models are unaffected).'));
       } else {
         setState(() => _error = msg);
       }
@@ -74,7 +75,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
           icon: const Icon(Icons.arrow_back, size: 20),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text('模型提供商', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        title: Text(L10n.t('模型提供商', 'Model Providers'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       ),
       body: _error != null
           ? Center(
@@ -86,7 +87,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
                     child: Text('$_error', style: TextStyle(fontSize: 13, color: ink2, height: 1.5), textAlign: TextAlign.center),
                   ),
                   const SizedBox(height: 10),
-                  FilledButton(onPressed: _load, child: const Text('重试')),
+                  FilledButton(onPressed: _load, child: Text(L10n.t('重试', 'Retry'))),
                 ],
               ),
             )
@@ -98,7 +99,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
                     children: [
                       Text(
-                        '与 PC 端「设置 → 模型」同一配置通道；手机修改即时生效，两端一致。',
+                        L10n.t('与 PC 端「设置 → 模型」同一配置通道；手机修改即时生效，两端一致。', 'Same configuration channel as "Settings → Model" on the desktop; changes on your phone apply instantly on both ends.'),
                         style: TextStyle(fontSize: 12, color: ink3, height: 1.5),
                       ),
                       const SizedBox(height: 10),
@@ -108,7 +109,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
                         style: const TextStyle(fontSize: 14),
                         onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
                         decoration: InputDecoration(
-                          hintText: '搜索提供商（名称 / ID）',
+                          hintText: L10n.t('搜索提供商（名称 / ID）', 'Search providers (name / ID)'),
                           hintStyle: TextStyle(fontSize: 13, color: ink3),
                           prefixIcon: const Icon(Icons.search, size: 18),
                           suffixIcon: _query.isEmpty
@@ -142,14 +143,14 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
     if (live.isEmpty && dormant.isEmpty) {
       return Padding(
         padding: const EdgeInsets.only(top: 40),
-        child: Center(child: Text('没有匹配的提供商', style: TextStyle(fontSize: 13, color: ink3))),
+        child: Center(child: Text(L10n.t('没有匹配的提供商', 'No matching providers'), style: TextStyle(fontSize: 13, color: ink3))),
       );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (live.isNotEmpty) ...[
-          _sectionHeader('已连接（${live.length}）'),
+          _sectionHeader('${L10n.t('已连接（', 'Connected (')}${live.length}${L10n.t('）', ')')}'),
           for (final p in live) _ProviderCard(provider: p, onEdit: () => _openEditor(p)),
           const SizedBox(height: 6),
         ],
@@ -166,11 +167,11 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      '未配置提供商（${dormant.length}）',
+                      '${L10n.t('未配置提供商（', 'Not configured (')}${dormant.length}${L10n.t('）', ')')}',
                       style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: ink2),
                     ),
                   ),
-                  Text(_dormantExpanded ? '收起' : '展开', style: TextStyle(fontSize: 11.5, color: ink3)),
+                  Text(_dormantExpanded ? L10n.t('收起', 'Collapse') : L10n.t('展开', 'Expand'), style: TextStyle(fontSize: 11.5, color: ink3)),
                 ],
               ),
             ),
@@ -193,7 +194,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
   void _openEditor(Map<String, dynamic> p) {
     final ns = p['settingsNs'] as String?;
     if (ns == null || ns.isEmpty) {
-      showToast(context, '该提供商由内核内置，配置入口在 PC 端');
+      showToast(context, L10n.t('该提供商由内核内置，配置入口在 PC 端', 'This provider is built into the kernel; configure it on the desktop app.'));
       return;
     }
     showModalBottomSheet(
@@ -205,7 +206,7 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
         provider: p,
         onSaved: () {
           Navigator.of(ctx).pop();
-          showToast(context, '已保存');
+          showToast(context, L10n.t('已保存', 'Saved'));
           _load();
         },
       ),
@@ -232,8 +233,8 @@ class _ProviderCard extends StatelessWidget {
     final subs = <String>[
       provider['id'] as String? ?? '',
       if (baseURL != null && baseURL.isNotEmpty) baseURL,
-      keyConfigured ? '密钥已配置' : '未设置密钥',
-      if (catalogModels != null) '目录 ${catalogModels.length} 个模型',
+      keyConfigured ? L10n.t('密钥已配置', 'API key set') : L10n.t('未设置密钥', 'No API key set'),
+      if (catalogModels != null) '${L10n.t('目录 ', 'Catalog: ')}${catalogModels.length}${L10n.t(' 个模型', ' models')}',
     ];
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -265,7 +266,7 @@ class _ProviderCard extends StatelessWidget {
                         color: ok.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(999),
                       ),
-                      child: Text('已连接', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: ok)),
+                      child: Text(L10n.t('已连接', 'Connected'), style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: ok)),
                     ),
                   ],
                 ),
@@ -372,12 +373,12 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final ns = widget.provider['settingsNs'] as String? ?? '';
     final base = _baseCtrl.text.trim();
     if (base.isEmpty) {
-      setState(() => _status = '请先填写 baseURL');
+      setState(() => _status = L10n.t('请先填写 baseURL', 'Please enter a baseURL first'));
       return;
     }
     setState(() {
       _busy = true;
-      _status = '探测中…';
+      _status = L10n.t('探测中…', 'Probing…');
       _discovered = null;
     });
     try {
@@ -389,11 +390,11 @@ class _ProviderEditorState extends State<_ProviderEditor> {
       if (!mounted) return;
       setState(() {
         _discovered = models;
-        _status = '探测成功：${models.length} 个模型';
+        _status = '${L10n.t('探测成功：', 'Probe succeeded: ')}${models.length}${L10n.t(' 个模型', ' models')}';
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _status = '探测失败：$e');
+      setState(() => _status = '${L10n.t('探测失败：', 'Probe failed: ')}$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -410,7 +411,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     }
     setState(() {
       _models.addAll(added);
-      _status = added.isEmpty ? '没有新模型（已全部在列表）' : '已采用 ${added.length} 个模型';
+      _status = added.isEmpty ? L10n.t('没有新模型（已全部在列表）', 'No new models (all are already in the list)') : '${L10n.t('已采用 ', 'Adopted ')}${added.length}${L10n.t(' 个模型', ' models')}';
     });
   }
 
@@ -418,13 +419,13 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final id = _modelIdCtrl.text.trim();
     if (id.isEmpty) return;
     if (_models.any((m) => m['id'] == id)) {
-      setState(() => _status = '模型已存在：$id');
+      setState(() => _status = '${L10n.t('模型已存在：', 'Model already exists: ')}$id');
       return;
     }
     setState(() {
       _models.add({'id': id, 'name': id});
       _modelIdCtrl.clear();
-      _status = '已添加：$id';
+      _status = '${L10n.t('已添加：', 'Added: ')}$id';
     });
   }
 
@@ -436,16 +437,16 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final ns = widget.provider['settingsNs'] as String? ?? '';
     final base = _baseCtrl.text.trim();
     if (base.isEmpty) {
-      setState(() => _status = 'baseURL 不能为空');
+      setState(() => _status = L10n.t('baseURL 不能为空', 'baseURL cannot be empty'));
       return;
     }
     if (_isPiAiStyle && _models.isEmpty) {
-      setState(() => _status = '请至少添加一个模型（探测采用或手动输入模型 ID）');
+      setState(() => _status = L10n.t('请至少添加一个模型（探测采用或手动输入模型 ID）', 'Please add at least one model (adopt from probe or enter a model ID manually)'));
       return;
     }
     setState(() {
       _busy = true;
-      _status = '保存中…';
+      _status = L10n.t('保存中…', 'Saving…');
     });
     try {
       await api.saveLlmProvider(
@@ -461,7 +462,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
       widget.onSaved();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _status = '保存失败：$e');
+      setState(() => _status = '${L10n.t('保存失败：', 'Save failed: ')}$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -471,7 +472,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final ns = widget.provider['settingsNs'] as String? ?? '';
     setState(() {
       _busy = true;
-      _status = '清除中…';
+      _status = L10n.t('清除中…', 'Clearing…');
     });
     try {
       await api.saveLlmProvider(
@@ -483,7 +484,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
       widget.onSaved();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _status = '清除失败：$e');
+      setState(() => _status = '${L10n.t('清除失败：', 'Clear failed: ')}$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -540,7 +541,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
               obscureText: true,
               style: const TextStyle(fontSize: 14),
               decoration: InputDecoration(
-                labelText: p['keyConfigured'] == true ? 'API Key（已配置，留空不修改）' : 'API Key',
+                labelText: p['keyConfigured'] == true ? L10n.t('API Key（已配置，留空不修改）', 'API Key (set — leave empty to keep)') : 'API Key',
                 labelStyle: TextStyle(fontSize: 13, color: ink3),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: line)),
                 enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: line)),
@@ -552,14 +553,14 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                 Expanded(
                   child: OutlinedButton(
                     onPressed: _busy ? null : _probe,
-                    child: const Text('探测模型', style: TextStyle(fontSize: 13)),
+                    child: Text(L10n.t('探测模型', 'Probe Models'), style: TextStyle(fontSize: 13)),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: FilledButton(
                     onPressed: _busy ? null : _save,
-                    child: const Text('保存', style: TextStyle(fontSize: 13)),
+                    child: Text(L10n.t('保存', 'Save'), style: TextStyle(fontSize: 13)),
                   ),
                 ),
               ],
@@ -568,7 +569,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
               const SizedBox(height: 8),
               TextButton(
                 onPressed: _busy ? null : _removeKey,
-                child: Text('清除已存密钥', style: TextStyle(fontSize: 12.5, color: danger)),
+                child: Text(L10n.t('清除已存密钥', 'Clear saved key'), style: TextStyle(fontSize: 12.5, color: danger)),
               ),
             ],
             if (_status != null)
@@ -581,11 +582,11 @@ class _ProviderEditorState extends State<_ProviderEditor> {
               Row(
                 children: [
                   Expanded(
-                    child: Text('探测到的模型：', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: ink)),
+                    child: Text(L10n.t('探测到的模型：', 'Discovered models:'), style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: ink)),
                   ),
                   TextButton(
                     onPressed: _busy ? null : _adoptAll,
-                    child: const Text('全部采用', style: TextStyle(fontSize: 12)),
+                    child: Text(L10n.t('全部采用', 'Adopt All'), style: TextStyle(fontSize: 12)),
                   ),
                 ],
               ),
@@ -622,7 +623,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
               ),
             ],
             const SizedBox(height: 12),
-            Text('模型目录（${_models.length}）', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: ink)),
+            Text('${L10n.t('模型目录（', 'Model catalog (')}${_models.length}${L10n.t('）', ')')}', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: ink)),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -631,7 +632,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                     controller: _modelIdCtrl,
                     style: const TextStyle(fontSize: 13.5),
                     decoration: InputDecoration(
-                      hintText: '手动输入模型 ID',
+                      hintText: L10n.t('手动输入模型 ID', 'Enter a model ID manually'),
                       hintStyle: TextStyle(fontSize: 12.5, color: ink3),
                       isDense: true,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: line)),
@@ -643,14 +644,14 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                 const SizedBox(width: 8),
                 OutlinedButton(
                   onPressed: _addModel,
-                  child: const Text('添加', style: TextStyle(fontSize: 12.5)),
+                  child: Text(L10n.t('添加', 'Add'), style: TextStyle(fontSize: 12.5)),
                 ),
               ],
             ),
             if (_models.isEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Text('未添加模型', style: TextStyle(fontSize: 11.5, color: ink3)),
+                child: Text(L10n.t('未添加模型', 'No models added'), style: TextStyle(fontSize: 11.5, color: ink3)),
               )
             else
               Container(

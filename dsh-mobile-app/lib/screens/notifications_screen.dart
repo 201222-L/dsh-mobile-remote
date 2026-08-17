@@ -2,6 +2,7 @@
 // 布局：SafeArea 避开状态栏；紧凑卡片；未读蓝点；三色图标层级；浅色分隔线。
 // 删除：长按单条删除；右上角垃圾桶 → 批量多选删除 / 清空全部（插件端 /notifications/delete）。
 import 'package:flutter/material.dart';
+import '../l10n.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
@@ -76,7 +77,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await api.markNotifsRead(all: true);
       _refresh();
       if (mounted) {
-        showToast(context, '已全部标记为已读');
+        showToast(context, L10n.t('已全部标记为已读', 'All marked as read'));
       }
     } catch (_) {}
   }
@@ -93,11 +94,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       });
       await _refresh();
       if (mounted) {
-        showToast(context, all ? '已清空全部通知' : '已删除 ${ids?.length ?? 0} 条通知');
+        showToast(context, all ? L10n.t('已清空全部通知', 'All notifications cleared') : '${L10n.t('已删除 ', 'Deleted ')}${ids?.length ?? 0}${L10n.t(' 条通知', ' notifications')}');
       }
     } catch (_) {
       if (mounted) {
-        showToast(context, '删除失败：请先重启电脑端 dsh 以启用删除接口');
+        showToast(context, L10n.t('删除失败：请先重启电脑端 dsh 以启用删除接口', 'Delete failed: restart dsh on the computer to enable deletion'));
       }
     } finally {
       _deleting = false;
@@ -119,7 +120,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             const Divider(height: 1),
             ListTile(
               leading: Icon(Icons.delete_outline, color: DshColors.danger(context)),
-              title: Text('删除这条通知', style: TextStyle(color: DshColors.danger(context), fontSize: 15)),
+              title: Text(L10n.t('删除这条通知', 'Delete this notification'), style: TextStyle(color: DshColors.danger(context), fontSize: 15)),
               onTap: () {
                 Navigator.of(ctx).pop();
                 _delete(ids: [n.id]);
@@ -127,7 +128,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             ListTile(
               leading: Icon(Icons.close, color: DshColors.ink3(context)),
-              title: const Text('取消', style: TextStyle(fontSize: 15)),
+              title: Text(L10n.t('取消', 'Cancel'), style: const TextStyle(fontSize: 15)),
               onTap: () => Navigator.of(ctx).pop(),
             ),
           ],
@@ -146,7 +147,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           children: [
             ListTile(
               leading: Icon(Icons.checklist, color: DshColors.ink2(context)),
-              title: const Text('批量删除…', style: TextStyle(fontSize: 15)),
+              title: Text(L10n.t('批量删除…', 'Batch delete…'), style: const TextStyle(fontSize: 15)),
               onTap: () {
                 Navigator.of(ctx).pop();
                 setState(() => _selecting = true);
@@ -155,7 +156,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             const Divider(height: 1),
             ListTile(
               leading: Icon(Icons.delete_sweep_outlined, color: DshColors.danger(context)),
-              title: Text('清空全部通知', style: TextStyle(color: DshColors.danger(context), fontSize: 15)),
+              title: Text(L10n.t('清空全部通知', 'Clear all notifications'), style: TextStyle(color: DshColors.danger(context), fontSize: 15)),
               onTap: () {
                 Navigator.of(ctx).pop();
                 _confirmClearAll();
@@ -163,7 +164,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             ListTile(
               leading: Icon(Icons.close, color: DshColors.ink3(context)),
-              title: const Text('取消', style: TextStyle(fontSize: 15)),
+              title: Text(L10n.t('取消', 'Cancel'), style: const TextStyle(fontSize: 15)),
               onTap: () => Navigator.of(ctx).pop(),
             ),
           ],
@@ -176,16 +177,16 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('清空全部通知', style: TextStyle(fontSize: 16)),
-        content: const Text('将删除全部通知记录，此操作不可恢复。', style: TextStyle(fontSize: 14)),
+        title: Text(L10n.t('清空全部通知', 'Clear all notifications'), style: const TextStyle(fontSize: 16)),
+        content: Text(L10n.t('将删除全部通知记录，此操作不可恢复。', 'All notification records will be deleted. This cannot be undone.'), style: const TextStyle(fontSize: 14)),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(L10n.t('取消', 'Cancel'))),
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
               _delete(all: true);
             },
-            child: Text('清空', style: TextStyle(color: DshColors.danger(context))),
+            child: Text(L10n.t('清空', 'Clear'), style: TextStyle(color: DshColors.danger(context))),
           ),
         ],
       ),
@@ -198,16 +199,16 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('删除所选通知', style: TextStyle(fontSize: 16)),
-        content: Text('将删除选中的 $n 条通知记录，此操作不可恢复。', style: const TextStyle(fontSize: 14)),
+        title: Text(L10n.t('删除所选通知', 'Delete selected notifications'), style: const TextStyle(fontSize: 16)),
+        content: Text('${L10n.t('将删除选中的 ', 'Delete the selected ')}$n${L10n.t(' 条通知记录，此操作不可恢复。', ' notification records. This cannot be undone.')}', style: const TextStyle(fontSize: 14)),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(L10n.t('取消', 'Cancel'))),
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
               _delete(ids: _selected.toList());
             },
-            child: Text('删除', style: TextStyle(color: DshColors.danger(context))),
+            child: Text(L10n.t('删除', 'Delete'), style: TextStyle(color: DshColors.danger(context))),
           ),
         ],
       ),
@@ -245,13 +246,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           icon: const Icon(Icons.arrow_back, size: 20),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(_selecting ? '已选 ${_selected.length} 条' : '通知',
+        title: Text(_selecting ? '${L10n.t('已选 ', 'Selected ')}${_selected.length}${L10n.t(' 条', '')}' : L10n.t('通知', 'Notifications'),
             style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
           if (_selecting)
             TextButton(
               onPressed: _toggleSelectAll,
-              child: Text(allSelected ? '取消全选' : '全选', style: TextStyle(fontSize: 13, color: brand)),
+              child: Text(allSelected ? L10n.t('取消全选', 'Deselect all') : L10n.t('全选', 'Select all'), style: TextStyle(fontSize: 13, color: brand)),
             ),
           if (_selecting)
             TextButton(
@@ -259,12 +260,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 _selecting = false;
                 _selected.clear();
               }),
-              child: Text('完成', style: TextStyle(fontSize: 13, color: ink2)),
+              child: Text(L10n.t('完成', 'Done'), style: TextStyle(fontSize: 13, color: ink2)),
             ),
           if (!_selecting && unreadCount > 0)
             TextButton(
               onPressed: _readAll,
-              child: Text('全部已读', style: TextStyle(fontSize: 13, color: brand)),
+              child: Text(L10n.t('全部已读', 'Mark all read'), style: TextStyle(fontSize: 13, color: brand)),
             ),
           if (!_selecting && _loaded && _items.isNotEmpty)
             IconButton(
@@ -280,7 +281,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           children: [
             Expanded(
               child: _loaded && _items.isEmpty
-                  ? Center(child: Text('暂无通知', style: TextStyle(fontSize: 13, color: ink3)))
+                  ? Center(child: Text(L10n.t('暂无通知', 'No notifications'), style: TextStyle(fontSize: 13, color: ink3)))
                   : RefreshIndicator(
                       onRefresh: _refresh,
                       child: ListView.separated(
@@ -392,7 +393,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   ),
                   child: Row(
                     children: [
-                      Text('已选 ${_selected.length} 条', style: TextStyle(fontSize: 13, color: ink2)),
+                      Text('${L10n.t('已选 ', 'Selected ')}${_selected.length}${L10n.t(' 条', '')}', style: TextStyle(fontSize: 13, color: ink2)),
                       const Spacer(),
                       FilledButton(
                         style: FilledButton.styleFrom(
@@ -400,7 +401,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           padding: const EdgeInsets.symmetric(horizontal: 20),
                         ),
                         onPressed: _selected.isEmpty || _deleting ? null : _confirmDeleteSelected,
-                        child: Text(_deleting ? '删除中…' : '删除所选', style: const TextStyle(fontSize: 14)),
+                        child: Text(_deleting ? L10n.t('删除中…', 'Deleting…') : L10n.t('删除所选', 'Delete selected'), style: const TextStyle(fontSize: 14)),
                       ),
                     ],
                   ),

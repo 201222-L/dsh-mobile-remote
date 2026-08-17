@@ -5,6 +5,7 @@ import '../toast.dart';
 import 'package:flutter/services.dart';
 import '../api.dart';
 import '../logger.dart';
+import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -243,7 +244,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
-        showToast(context, '该会话暂不可用：$e');
+        showToast(context, '${L10n.t('该会话暂不可用：', 'This session is unavailable: ')}$e');
         Navigator.of(context).pop();
       }
     }
@@ -262,7 +263,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       if (events.isEmpty) {
         _noMoreHistory = true;
-        showToast(context, '没有更早的消息了');
+        showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
         return; // 已到最顶：不再查询，_earliestSeq 保持不动
       }
       setState(() {
@@ -301,7 +302,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
       if (!mounted) return;
       if (events.isEmpty) {
-        showToast(context, '没有更早的消息了');
+        showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
         return;
       }
       setState(() {
@@ -460,19 +461,21 @@ class _ChatScreenState extends State<ChatScreen> {
               TextButton.icon(
                 onPressed: _histHasOlder && !_loadingMore ? _histOlder : null,
                 icon: const Icon(Icons.arrow_upward, size: 15),
-                label: const Text('更早', style: TextStyle(fontSize: 12)),
+                label: Text(L10n.t('更早', 'Older'), style: TextStyle(fontSize: 12)),
               ),
               TextButton.icon(
                 onPressed: _histHasNewer && !_loadingMore ? _histNewer : null,
                 icon: const Icon(Icons.arrow_downward, size: 15),
-                label: const Text('更新', style: TextStyle(fontSize: 12)),
+                label: Text(L10n.t('更新', 'Newer'), style: TextStyle(fontSize: 12)),
               ),
               const Spacer(),
               TextButton.icon(
                 onPressed: _backToLive,
                 icon: const Icon(Icons.subdirectory_arrow_right, size: 15),
                 label: Text(
-                  _pendingNew ? '回到最新 · 有新消息' : '回到最新',
+                  _pendingNew
+                      ? L10n.t('回到最新 · 有新消息', 'Back to latest · New messages')
+                      : L10n.t('回到最新', 'Back to latest'),
                   style: TextStyle(fontSize: 12, color: _pendingNew ? DshColors.brand(context) : ink2),
                 ),
               ),
@@ -481,7 +484,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         Expanded(
           child: _histItems.isEmpty
-              ? const Center(child: Text('没有更早的消息'))
+              ? Center(child: Text(L10n.t('没有更早的消息', 'No earlier messages')))
               : ListView.builder(
                   controller: _scrollCtrl,
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
@@ -716,7 +719,7 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         final reasoning = (d?['reasoningChars'] as num?)?.toInt() ?? 0;
-        final prefix = reasoning > 0 ? '（思考 $reasoning 字）\n' : '';
+        final prefix = reasoning > 0 ? L10n.t('（思考 $reasoning 字）\n', '(Thought: $reasoning chars)\n') : '';
         final item = _MsgItem.assistant(prefix + body,
             usage: d?['usage'] as Map<String, dynamic>?,
             seq: ev.seq,
@@ -742,7 +745,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // 只驱动活动条（live）；历史加载不重建工具痕迹
         if (!history) {
           final callId = d?['callId'] as String? ?? '';
-          final name = d?['name'] as String? ?? '工具';
+          final name = d?['name'] as String? ?? L10n.t('工具', 'Tool');
           _activeTools[callId] = name;
           _scheduleActivityFlush();
         }
@@ -754,9 +757,9 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       case 'turn/start':
         if (history) {
-          out.add(_MsgItem.divider('轮次 ${d?['turn']} 开始'));
+          out.add(_MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started')));
         } else {
-          out.insert(0, _MsgItem.divider('轮次 ${d?['turn']} 开始'));
+          out.insert(0, _MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started')));
         }
       case 'turn/end':
         if (!history || tail) {
@@ -764,7 +767,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _streaming = false;
         }
         final reason = (d?['reason'] as Map<String, dynamic>?)?['kind'];
-        final item = _MsgItem.divider('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}');
+        final item = _MsgItem.divider(
+            L10n.t('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}',
+                'Turn ${d?['turn']} ended${reason != null ? ' ($reason)' : ''}'));
         if (history) {
           out.add(item);
         } else {
@@ -784,7 +789,7 @@ class _ChatScreenState extends State<ChatScreen> {
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）
     if (widget.store.agentStatus == 'running' && preset == null) {
-      showToast(context, 'agent 正在处理上一轮，消息会排队等待');
+      showToast(context, L10n.t('agent 正在处理上一轮，消息会排队等待', 'The agent is still processing the last turn — your message will be queued'));
     }
     setState(() {
       _sending = true;
@@ -804,8 +809,8 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     } catch (e) {
       if (mounted) {
-        setState(() => _items.insert(0, _MsgItem.divider('⚠ 发送失败：$e')));
-        showToast(context, '发送失败：$e');
+        setState(() => _items.insert(0, _MsgItem.divider('⚠ ${L10n.t('发送失败：', 'Send failed: ')}$e')));
+        showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}$e');
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -820,11 +825,11 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await api.stopSession(id);
       if (mounted) {
-        showToast(context, '已请求停止，agent 当前轮次结束后停下');
+        showToast(context, L10n.t('已请求停止，agent 当前轮次结束后停下', 'Stop requested — the agent will halt after its current turn'));
       }
     } catch (e) {
       if (mounted) {
-        showToast(context, '停止失败：$e（桌面端插件需重启生效）');
+        showToast(context, '${L10n.t('停止失败：', 'Stop failed: ')}$e${L10n.t('（桌面端插件需重启生效）', ' (the desktop plugin may need a restart)')}');
       }
     }
   }
@@ -835,9 +840,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (sid == null) return;
     try {
       await api.jobKill(sid, jobId);
-      if (mounted) showToast(context, '已请求取消任务');
+      if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
     } catch (e) {
-      if (mounted) showToast(context, '取消失败：$e');
+      if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
     }
   }
 
@@ -865,28 +870,28 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   const Icon(Icons.auto_awesome, size: 15, color: Color(0xFF426EFE)),
                   const SizedBox(width: 6),
-                  const Text('消息操作', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  Text(L10n.t('消息操作', 'Message actions'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                 ],
               ),
             ),
             ListTile(
               leading: const Icon(Icons.content_copy, size: 20),
-              title: const Text('复制回答', style: TextStyle(fontSize: 14)),
+              title: Text(L10n.t('复制回答', 'Copy answer'), style: TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('copy'),
             ),
             ListTile(
               leading: const Icon(Icons.thumb_up_alt_outlined, size: 20),
-              title: const Text('好的回答', style: TextStyle(fontSize: 14)),
+              title: Text(L10n.t('好的回答', 'Good answer'), style: TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('positive'),
             ),
             ListTile(
               leading: const Icon(Icons.thumb_down_alt_outlined, size: 20),
-              title: const Text('有问题的回答', style: TextStyle(fontSize: 14)),
+              title: Text(L10n.t('有问题的回答', 'Bad answer'), style: TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('negative'),
             ),
             ListTile(
               leading: const Icon(Icons.call_split, size: 20),
-              title: const Text('在新对话中分支', style: TextStyle(fontSize: 14)),
+              title: Text(L10n.t('在新对话中分支', 'Fork in a new chat'), style: TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('fork'),
             ),
             const SizedBox(height: 6),
@@ -899,32 +904,34 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'copy':
         await Clipboard.setData(ClipboardData(text: item.text));
         if (!mounted) return;
-        showToast(context, '已复制');
+        showToast(context, L10n.t('已复制', 'Copied'));
       case 'positive':
       case 'negative':
         final mid = item.messageId;
         if (mid == null) {
-          showToast(context, '该消息暂不支持反馈（旧消息无 messageId）');
+          showToast(context, L10n.t('该消息暂不支持反馈（旧消息无 messageId）', 'Feedback is not available for this message (older messages lack a message ID)'));
           return;
         }
         try {
           await api.putFeedback(id, mid, action);
           if (!mounted) return;
-          showToast(context, action == 'positive' ? '已标记：好的回答 ✓' : '已标记：有问题的回答 ✓');
+          showToast(context, action == 'positive'
+              ? L10n.t('已标记：好的回答 ✓', 'Marked: good answer ✓')
+              : L10n.t('已标记：有问题的回答 ✓', 'Marked: bad answer ✓'));
         } catch (e) {
           if (!mounted) return;
-          showToast(context, '反馈失败：$e');
+          showToast(context, '${L10n.t('反馈失败：', 'Feedback failed: ')}$e');
         }
       case 'fork':
         final seq = item.seq;
         if (seq == null) {
-          showToast(context, '该消息暂不支持分支');
+          showToast(context, L10n.t('该消息暂不支持分支', 'Forking is not available for this message'));
           return;
         }
         try {
           final childId = await api.forkSession(id, atSeq: seq);
           if (!mounted) return;
-          showToast(context, '已分支，正在打开新对话…');
+          showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
           await widget.store.setSession(childId);
           widget.store.refreshSessions();
           if (!mounted) return;
@@ -935,7 +942,7 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         } catch (e) {
           if (!mounted) return;
-          showToast(context, '分支失败：$e');
+          showToast(context, '${L10n.t('分支失败：', 'Fork failed: ')}$e');
         }
     }
   }
@@ -958,7 +965,7 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Row(
           children: [
             Flexible(
-              child: Text(_title ?? '会话', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+              child: Text(_title ?? L10n.t('会话', 'Session'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(width: 8),
             _StatusDot(status: store.connState == 'connected' ? store.agentStatus : 'offline'),
@@ -968,7 +975,7 @@ class _ChatScreenState extends State<ChatScreen> {
           // v2.7：会话工具（任务 / 子代理 / 目标）
           IconButton(
             icon: const Icon(Icons.assignment_outlined, size: 20),
-            tooltip: '任务 / 子代理 / 目标',
+            tooltip: L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
             onPressed: () {
               final sid = widget.store.sessionId;
               if (sid != null) showSessionToolsSheet(context, widget.store, sid);
@@ -1078,7 +1085,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         scrollDirection: Axis.horizontal,
                         children: [
                           _Pill(
-                            label: store.sessionConfig.model ?? '选择模型',
+                            label: store.sessionConfig.model ?? L10n.t('选择模型', 'Select model'),
                             onTap: () => showModelSheet(context, store),
                           ),
                           const SizedBox(width: 6),
@@ -1099,7 +1106,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             maxLines: 4,
                             style: const TextStyle(fontSize: 14.5),
                             decoration: InputDecoration(
-                              hintText: '回复 agent…',
+                              hintText: L10n.t('回复 agent…', 'Reply to agent…'),
                               hintStyle: TextStyle(color: ink3),
                               filled: false,
                               border: InputBorder.none,
@@ -1171,14 +1178,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final out = (u['outputTokens'] as num?)?.toInt() ?? 0;
     final billed = input + read + write;
     final hit = billed > 0 ? ((read / billed) * 100).round() : 0;
-    return '本会话：输入 ${t(input)} · 缓存 ${t(read)} · 输出 ${t(out)} · 命中率 $hit%';
+    return '${L10n.t('本会话：输入 ', 'This session: in ')}${t(input)}${L10n.t(' · 缓存 ', ' · cache ')}${t(read)}${L10n.t(' · 输出 ', ' · out ')}${t(out)}${L10n.t(' · 命中率 ', ' · hit rate ')}$hit%';
   }
 
   String _permName(String? id) => switch (id) {
         'read-only' => 'Read Only',
         'workspace-write' => 'Workspace Write',
         'danger-full-access' => 'Danger Full Access',
-        _ => '权限',
+        _ => L10n.t('权限', 'Permission'),
       };
 
   /// 上下文占用比例（已用 tokens / 模型上下文窗口），数据缺失时为 null。
@@ -1330,7 +1337,7 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
     final out = (u['outputTokens'] as num?)?.toInt() ?? 0;
     final total = input + read + write;
     final hit = total > 0 ? ((read / total) * 100).round() : 0;
-    return '↑${t(input)} ↓${t(out)} · 缓存 $hit%';
+    return '↑${t(input)} ↓${t(out)} · ${L10n.t('缓存 ', 'cache ')}$hit%';
   }
 }
 
@@ -1362,12 +1369,17 @@ class _ActivityBar extends StatelessWidget {
     final toolLabel = tools.isEmpty
         ? ''
         : (tools.length > 1
-            ? '正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）'
-            : '正在调用 ${tools.first}…');
+            ? L10n.t('正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）',
+                'Running ${tools.length} tools (${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''})')
+            : '${L10n.t('正在调用 ', 'Calling ')}${tools.first}…');
     final thinking = !textStreaming;
     final header = expanded
-        ? (thinking ? '思考中，点此收起' : '思考内容，点此收起')
-        : (thinking ? '思考中…（${reasoning.length} 字）' : '已思考 ${reasoning.length} 字');
+        ? (thinking
+            ? L10n.t('思考中，点此收起', 'Thinking — tap to collapse')
+            : L10n.t('思考内容，点此收起', 'Thinking content — tap to collapse'))
+        : (thinking
+            ? L10n.t('思考中…（${reasoning.length} 字）', 'Thinking… (${reasoning.length} chars)')
+            : L10n.t('已思考 ${reasoning.length} 字', 'Thought: ${reasoning.length} chars'));
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
@@ -1472,11 +1484,13 @@ class _JobCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      running.length > 1 ? '后台任务 ${running.length} 个进行中' : '后台任务进行中',
+                      running.length > 1
+                          ? L10n.t('后台任务 ${running.length} 个进行中', '${running.length} background tasks running')
+                          : L10n.t('后台任务进行中', 'Background task running'),
                       style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
                     ),
                   ),
-                  Text('详情 ▸', style: TextStyle(fontSize: 11.5, color: ink3)),
+                  Text(L10n.t('详情 ▸', 'Details ▸'), style: TextStyle(fontSize: 11.5, color: ink3)),
                 ],
               ),
             ),
@@ -1490,7 +1504,7 @@ class _JobCard extends StatelessWidget {
                   const SizedBox(width: 7),
                   Expanded(
                     child: Text(
-                      (j['label'] as String? ?? j['id'] as String? ?? '任务').toString(),
+                      (j['label'] as String? ?? j['id'] as String? ?? L10n.t('任务', 'Task')).toString(),
                       style: const TextStyle(fontSize: 12),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1503,7 +1517,9 @@ class _JobCard extends StatelessWidget {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     child: Text(
-                      j['status'] == 'stopping' ? '停止中' : '取消',
+                      j['status'] == 'stopping'
+                          ? L10n.t('停止中', 'Stopping')
+                          : L10n.t('取消', 'Cancel'),
                       style: TextStyle(fontSize: 11.5, color: j['status'] == 'stopping' ? ink3 : DshColors.danger(context)),
                     ),
                   ),
@@ -1554,7 +1570,7 @@ class _OlderButton extends StatelessWidget {
             : TextButton.icon(
                 onPressed: onTap,
                 icon: const Icon(Icons.history, size: 16),
-                label: const Text('查看更早的消息', style: TextStyle(fontSize: 12.5)),
+                label: Text(L10n.t('查看更早的消息', 'View earlier messages'), style: TextStyle(fontSize: 12.5)),
               ),
       ),
     );
@@ -1755,7 +1771,7 @@ class _QuestionCardState extends State<_QuestionCard> {
       final sel = _selected[q.id] ?? const <String>{};
       final custom = (_custom[q.id] ?? '').trim();
       if (custom.isEmpty && sel.isEmpty) {
-        setState(() => _hint = '请选择选项，或输入其他答案');
+        setState(() => _hint = L10n.t('请选择选项，或输入其他答案', 'Choose an option or type another answer'));
         return;
       }
       answers.add({
@@ -1802,7 +1818,7 @@ class _QuestionCardState extends State<_QuestionCard> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    header ?? '需要你决定',
+                    header ?? L10n.t('需要你决定', 'Your input needed'),
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: brand),
                   ),
                 ),
@@ -1840,7 +1856,9 @@ class _QuestionCardState extends State<_QuestionCard> {
                 style: const TextStyle(fontSize: 13.5),
                 decoration: InputDecoration(
                   isDense: true,
-                  hintText: q.multiSelect ? '补充说明（可选）…' : '或输入其他答案…',
+                  hintText: q.multiSelect
+                      ? L10n.t('补充说明（可选）…', 'Add details (optional)…')
+                      : L10n.t('或输入其他答案…', 'Or type another answer…'),
                   hintStyle: TextStyle(fontSize: 13, color: ink3),
                   filled: true,
                   fillColor: DshColors.surface(context),
@@ -1866,7 +1884,7 @@ class _QuestionCardState extends State<_QuestionCard> {
               children: [
                 TextButton(
                   onPressed: _submitting ? null : widget.onCancel,
-                  child: Text('取消', style: TextStyle(fontSize: 13.5, color: ink2)),
+                  child: Text(L10n.t('取消', 'Cancel'), style: TextStyle(fontSize: 13.5, color: ink2)),
                 ),
                 const SizedBox(width: 4),
                 FilledButton(
@@ -1875,7 +1893,9 @@ class _QuestionCardState extends State<_QuestionCard> {
                     backgroundColor: brand,
                   ),
                   onPressed: _submitting ? null : _submit,
-                  child: Text(_submitting ? '提交中…' : '提交', style: const TextStyle(fontSize: 13.5)),
+                  child: Text(
+                      _submitting ? L10n.t('提交中…', 'Submitting…') : L10n.t('提交', 'Submit'),
+                      style: const TextStyle(fontSize: 13.5)),
                 ),
               ],
             ),
@@ -1990,7 +2010,8 @@ class _ApprovalCardState extends State<_ApprovalCard> {
               Icon(Icons.admin_panel_settings_outlined, size: 18, color: warn),
               const SizedBox(width: 6),
               Expanded(
-                child: Text('权限请求', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: warn)),
+                child: Text(L10n.t('权限请求', 'Permission request'),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: warn)),
               ),
               InkWell(
                 onTap: _busy ? null : widget.onCancel,
@@ -2004,7 +2025,8 @@ class _ApprovalCardState extends State<_ApprovalCard> {
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              '工具「${widget.request.toolName}」需要你的授权',
+              L10n.t('工具「${widget.request.toolName}」需要你的授权',
+                  'Tool “${widget.request.toolName}” needs your authorization'),
               style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
             ),
           ),
@@ -2023,7 +2045,7 @@ class _ApprovalCardState extends State<_ApprovalCard> {
             children: [
               TextButton(
                 onPressed: _busy ? null : () => _decide('rejected'),
-                child: Text('拒绝', style: TextStyle(fontSize: 13.5, color: danger)),
+                child: Text(L10n.t('拒绝', 'Deny'), style: TextStyle(fontSize: 13.5, color: danger)),
               ),
               const SizedBox(width: 4),
               FilledButton(
@@ -2032,7 +2054,9 @@ class _ApprovalCardState extends State<_ApprovalCard> {
                   backgroundColor: warn,
                 ),
                 onPressed: _busy ? null : () => _decide('allowed-once'),
-                child: Text(_busy ? '处理中…' : '允许一次', style: const TextStyle(fontSize: 13.5)),
+                child: Text(
+                    _busy ? L10n.t('处理中…', 'Processing…') : L10n.t('允许一次', 'Allow once'),
+                    style: const TextStyle(fontSize: 13.5)),
               ),
             ],
           ),

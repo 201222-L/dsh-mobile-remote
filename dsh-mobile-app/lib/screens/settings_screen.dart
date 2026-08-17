@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
+import '../l10n.dart';
 import '../logger.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -22,7 +23,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? _balance;
-  String _balanceStatus = '查询中…';
+  String? _balanceError; // 余额查询失败的错误（build 时动态显示）
   bool _busy = false; // 余额刷新中（刷新按钮转圈）
   Map<String, dynamic>? _diag;
   bool _diagLoaded = false;
@@ -71,9 +72,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 14, 20, 6),
-              child: Text('选择连接地址', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Text(L10n.t('选择连接地址', 'Choose address'), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
             ),
             // 候选地址随使用动态累积（局域网/组网/历史地址），列表区可滚动防溢出
             Flexible(
@@ -111,28 +112,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
           behavior: SnackBarBehavior.floating,
         ));
     } else {
-      showToast(context, '已切换 → $choice');
+      showToast(context, L10n.t('已切换 → ', 'Switched to ') + choice);
     }
   }
 
   Future<void> _refreshBalance() async {
-    setState(() {
-      _busy = true;
-      _balanceStatus = '查询中…';
-    });
+    setState(() => _busy = true);
     try {
       final b = await api.balanceInfo();
       if (!mounted) return;
-      setState(() {
-        _balance = b;
-        _balanceStatus = b == null ? '无数据' : '实时 · 币种 ${b['currency']}${b['available'] == false ? ' · 不可用' : ''}';
-      });
+      setState(() => _balance = b);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _balanceStatus = '查询失败：$e');
+      // 查询失败：记住错误，build 里动态显示（语言切换后也能正确翻译）
+      _balanceError = '$e';
+      if (mounted) setState(() {});
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// 余额状态行（build 时求值：语言切换后即时换语言）。
+  String get _balanceLabel {
+    if (_busy) return L10n.t('查询中…', 'Loading…');
+    if (_balanceError != null) return '${L10n.t('查询失败：', 'Failed: ')}$_balanceError';
+    final b = _balance;
+    if (b == null) return L10n.t('无数据', 'No data');
+    return '${L10n.t('实时 · 币种 ', 'Live · ')}${b['currency']}${b['available'] == false ? L10n.t(' · 不可用', ' · unavailable') : ''}';
   }
 
   Future<void> _loadDiag() async {
@@ -158,19 +164,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String get _diagText {
     final d = _diag;
-    if (d == null) return '检测失败';
+    if (d == null) return L10n.t('检测失败', 'Check failed');
     final buf = StringBuffer();
     final runtime = d['runtime'] as Map<String, dynamic>? ?? {};
-    buf.writeln('运行形态: ${runtime['form']}${runtime['authEnabled'] == true ? ' · 口令已启用' : ' · 口令未启用'}');
-    buf.writeln('监听: ${runtime['host']}:${runtime['port']}');
-    buf.writeln('进程目录: ${runtime['cwd']}');
+    buf.writeln('${L10n.t('运行形态: ', 'Mode: ')}${runtime['form']}${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}');
+    buf.writeln('${L10n.t('监听: ', 'Listen: ')}${runtime['host']}:${runtime['port']}');
+    buf.writeln('${L10n.t('进程目录: ', 'CWD: ')}${runtime['cwd']}');
     buf.writeln();
     final services = d['services'] as Map<String, dynamic>? ?? {};
-    buf.writeln('服务:');
+    buf.writeln(L10n.t('服务:', 'Services:'));
     services.forEach((k, v) => buf.writeln('  ${v == true ? '✅' : '❌'} $k'));
     buf.writeln();
     final checks = d['checks'] as Map<String, dynamic>? ?? {};
-    buf.writeln('端点实测:');
+    buf.writeln(L10n.t('端点实测:', 'Endpoint checks:'));
     checks.forEach((k, v) {
       if (v is num) {
         // 计数字段（如 pendingFrames 挂起待答数）：0 正常，>0 表示有问询/审批待处理
@@ -181,7 +187,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     final plugin = d['plugin'] as Map<String, dynamic>? ?? {};
     buf.writeln();
-    buf.writeln('插件: ${plugin['name']} v${plugin['version']}');
+    buf.writeln('${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}');
     return buf.toString();
   }
 
@@ -265,22 +271,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _ => '…',
         };
     String presetName(String? id) => switch (id) {
-          'standard' => '标准模式',
-          'code' => 'PTC 模式',
-          'minimal' => '极简模式',
-          'cordis' => '创造模式',
+          'standard' => L10n.t('标准模式', 'Standard'),
+          'code' => L10n.t('PTC 模式', 'PTC'),
+          'minimal' => L10n.t('极简模式', 'Minimal'),
+          'cordis' => L10n.t('创造模式', 'Creative'),
           _ => '…',
         };
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _card('连接', [
+        _card(L10n.t('连接', 'Connection'), [
           _row(
             leading: const Icon(Icons.computer_outlined),
-            title: '电脑地址',
+            title: L10n.t('电脑地址', 'PC address'),
             sub: api.baseUrls.length > 1
-                ? '${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换 · 点按手动切换'
+                ? L10n.t('${api.baseUrl} · 共 ${api.baseUrls.length} 个地址自动切换 · 点按手动切换',
+                    '${api.baseUrl} · ${api.baseUrls.length} addresses · tap to switch')
                 : api.baseUrl,
             onTap: () => _pickAddress(),
             // 连接状态实时显示（修复：旧版写死「已连接」，断线也显示绿色已连接）
@@ -302,9 +309,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 5),
                 Text(
                   switch (store.connState) {
-                    'connected' => '已连接',
-                    'connecting' => '连接中…',
-                    _ => '离线 · 自动重连',
+                    'connected' => L10n.t('已连接', 'Connected'),
+                    'connecting' => L10n.t('连接中…', 'Connecting…'),
+                    _ => L10n.t('离线 · 自动重连', 'Offline · reconnecting'),
                   },
                   style: TextStyle(
                     fontSize: 12,
@@ -320,34 +327,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           _row(
             leading: const Icon(Icons.settings_outlined),
-            title: '重新配置连接',
-            sub: '更换电脑地址或访问口令',
-            trailing: Text('配置 ▸', style: TextStyle(fontSize: 12, color: brand)),
+            title: L10n.t('重新配置连接', 'Reconfigure connection'),
+            sub: L10n.t('更换电脑地址或访问口令', 'Change PC address or token'),
+            trailing: Text(L10n.t('配置 ▸', 'Configure ▸'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => widget.onReconfigure(),
           ),
         ]),
-        _card('默认配置', [
+        _card(L10n.t('默认配置', 'Defaults'), [
           _row(
             leading: const Icon(Icons.security_outlined),
-            title: '默认权限预设',
-            sub: '作用于之后新建的会话',
+            title: L10n.t('默认权限预设', 'Default permission'),
+            sub: L10n.t('作用于之后新建的会话', 'Applies to new sessions'),
             trailing: Text(permName(store.catalog?.defaults['permissionPreset'] as String?),
                 style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => _pickDefaultPerm(store),
           ),
           _row(
             leading: const Icon(Icons.bolt_outlined),
-            title: '默认 Agent 预设',
-            sub: '作用于之后新建的会话',
+            title: L10n.t('默认 Agent 预设', 'Default agent preset'),
+            sub: L10n.t('作用于之后新建的会话', 'Applies to new sessions'),
             trailing: Text(presetName(store.catalog?.defaults['agentPreset'] as String?),
                 style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => _pickDefaultPreset(store),
           ),
           _row(
             leading: const Icon(Icons.dns_outlined),
-            title: '模型提供商',
-            sub: '与 PC 端「设置 → 模型」同一配置通道',
-            trailing: Text('管理', style: TextStyle(fontSize: 12, color: brand)),
+            title: L10n.t('模型提供商', 'Model providers'),
+            sub: L10n.t('与 PC 端「设置 → 模型」同一配置通道', 'Same channel as PC Settings → Models'),
+            trailing: Text(L10n.t('管理', 'Manage'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
@@ -355,11 +362,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
         ]),
-        _card('账户', [
+        _card(L10n.t('账户', 'Account'), [
           _row(
             leading: const Icon(Icons.account_balance_wallet_outlined),
-            title: '余额',
-            sub: _balanceStatus,
+            title: L10n.t('余额', 'Balance'),
+            sub: _balanceLabel,
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -387,9 +394,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           _row(
             leading: const Icon(Icons.add_card_outlined),
-            title: '充值',
-            sub: '跳转 DeepSeek 开放平台',
-            trailing: Text('去充值 ▸', style: TextStyle(fontSize: 12, color: brand)),
+            title: L10n.t('充值', 'Top up'),
+            sub: L10n.t('跳转 DeepSeek 开放平台', 'Go to DeepSeek Open Platform'),
+            trailing: Text(L10n.t('去充值 ▸', 'Top up ▸'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => launchUrl(
               // 以电脑端插件配置为准（catalog.rechargeUrl），缺省回退官方充值页
               Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
@@ -397,11 +404,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ]),
-        _card('显示', [
+        _card(L10n.t('显示', 'Display'), [
           _row(
             leading: const Icon(Icons.psychology_outlined),
-            title: '思考内容',
-            sub: '活动条思考状态展开时是否显示思考原文（默认关：只显示状态）',
+            title: L10n.t('思考内容', 'Thinking content'),
+            sub: L10n.t('活动条思考状态展开时是否显示思考原文（默认关：只显示状态）',
+                'Show raw thinking text when expanded (default off: status only)'),
             trailing: SizedBox(
               width: 44,
               height: 28,
@@ -424,11 +432,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           _row(
             leading: const Icon(Icons.dark_mode_outlined),
-            title: '深色模式',
+            title: L10n.t('深色模式', 'Dark mode'),
             sub: switch (store.darkMode) {
-              'dark' => '已选深色',
-              'light' => '已选浅色',
-              _ => '跟随系统',
+              'dark' => L10n.t('已选深色', 'Dark'),
+              'light' => L10n.t('已选浅色', 'Light'),
+              _ => L10n.t('跟随系统', 'System'),
             },
             trailing: GestureDetector(
               onTap: () {
@@ -441,38 +449,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
               child: Text(
                 switch (store.darkMode) {
-                  'dark' => '深色',
-                  'light' => '浅色',
-                  _ => '跟随系统',
+                  'dark' => L10n.t('深色', 'Dark'),
+                  'light' => L10n.t('浅色', 'Light'),
+                  _ => L10n.t('跟随系统', 'System'),
                 },
                 style: TextStyle(fontSize: 13, color: brand),
               ),
             ),
           ),
+          _row(
+            leading: const Icon(Icons.language_outlined),
+            title: L10n.t('语言', 'Language'),
+            sub: L10n.t('界面显示语言（即时生效）', 'UI language (applies immediately)'),
+            onTap: () => _pickLanguage(store),
+            trailing: Text(
+              store.language == 'en' ? 'English' : '中文',
+              style: TextStyle(fontSize: 13, color: brand),
+            ),
+          ),
         ]),
-        _card('关于', [
+        _card(L10n.t('关于', 'About'), [
           _row(
             leading: const Icon(Icons.info_outline),
-            title: '版本',
+            title: L10n.t('版本', 'Version'),
             sub: 'App v${_appVersion.isEmpty ? '…' : _appVersion}'
-                ' · 插件 v${api.pluginVersion.isEmpty ? '…' : api.pluginVersion}',
+                ' · ${L10n.t('插件', 'plugin')} v${api.pluginVersion.isEmpty ? '…' : api.pluginVersion}',
           ),
           _row(
             leading: const Icon(Icons.monitor_heart_outlined),
-            title: '环境诊断',
-            sub: _diagLoaded ? '检测完成 · $_diagTime' : '检测当前环境各项能力',
+            title: L10n.t('环境诊断', 'Diagnostics'),
+            sub: _diagLoaded ? '${L10n.t('检测完成 · ', 'Done · ')}$_diagTime' : L10n.t('检测当前环境各项能力', 'Check environment capabilities'),
             trailing: TextButton(
               onPressed: _openDiag,
-              child: Text('查看 ▸', style: TextStyle(fontSize: 12, color: brand)),
+              child: Text(L10n.t('查看 ▸', 'View ▸'), style: TextStyle(fontSize: 12, color: brand)),
             ),
           ),
           _row(
             leading: const Icon(Icons.article_outlined),
-            title: '应用日志',
-            sub: '启动/连接/加载事件（排障用）',
+            title: L10n.t('应用日志', 'App log'),
+            sub: L10n.t('启动/连接/加载事件（排障用）', 'Startup/connection/load events (troubleshooting)'),
             trailing: TextButton(
               onPressed: _openLog,
-              child: Text('查看 ▸', style: TextStyle(fontSize: 12, color: brand)),
+              child: Text(L10n.t('查看 ▸', 'View ▸'), style: TextStyle(fontSize: 12, color: brand)),
             ),
           ),
         ]),
@@ -488,20 +506,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final msgr = ScaffoldMessenger.of(context);
     showChoiceSheet(
       context,
-      title: '默认 Agent 预设',
+      title: L10n.t('默认 Agent 预设', 'Default agent preset'),
       items: [
         for (final p in cat.agentPresets)
           (id: p.id, name: p.name, sub: p.description),
       ],
       selectedId: current,
-      footnote: '作用于之后新建的会话',
+      footnote: L10n.t('作用于之后新建的会话', 'Applies to new sessions'),
       onPick: (id) async {
         try {
           await api.updateDefaults(agentPreset: id);
           await store.refreshAll();
-          _toast(msgr, '已设置默认预设');
+          _toast(msgr, L10n.t('已设置默认预设', 'Default preset set'));
         } catch (e) {
-          _toast(msgr, '设置失败：$e');
+          _toast(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
         }
       },
     );
@@ -515,23 +533,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final msgr = ScaffoldMessenger.of(context);
     showChoiceSheet(
       context,
-      title: '默认权限预设',
+      title: L10n.t('默认权限预设', 'Default permission preset'),
       items: [
         for (final p in cat.permissionPresets)
           (id: p.id, name: p.name, sub: p.description),
       ],
       selectedId: current,
-      footnote: '作用于之后新建的会话',
+      footnote: L10n.t('作用于之后新建的会话', 'Applies to new sessions'),
       onPick: (id) async {
         try {
           await api.updateDefaults(permissionPreset: id);
           await store.refreshAll();
-          _toast(msgr, '已设置默认权限');
+          _toast(msgr, L10n.t('已设置默认权限', 'Default permission set'));
         } catch (e) {
-          _toast(msgr, '设置失败：$e');
+          _toast(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
         }
       },
     );
+  }
+
+  /// 选择界面语言（中文 / English），即时生效 + 持久化。
+  Future<void> _pickLanguage(AppStore store) async {
+    final brand = DshColors.brand(context);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Text(L10n.t('选择语言', 'Choose language'),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+            ),
+            for (final (id, name) in [('zh', '中文'), ('en', 'English')])
+              ListTile(
+                title: Text(name,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: store.language == id ? FontWeight.w700 : FontWeight.w400,
+                        color: store.language == id ? brand : null)),
+                trailing: store.language == id ? Icon(Icons.check, size: 18, color: brand) : null,
+                onTap: () => Navigator.of(ctx).pop(id),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice != null) await store.setLanguage(choice);
   }
 
   void _toast(ScaffoldMessengerState msgr, String text) {
@@ -551,9 +601,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final text = await AppLog.instance.readAll();
     if (!mounted) return;
     final msgr = ScaffoldMessenger.of(context);
-    showSheet(context, '应用日志', [
+    showSheet(context, L10n.t('应用日志', 'App log'), [
       Text(
-        '最近 ${AppLog.instance.lines.length} 条 · 文件 dsh_mobile.log',
+        '${L10n.t('最近 ', 'Last ')}$AppLog.instance.lines.length${L10n.t(' 条 · 文件 dsh_mobile.log', ' entries · file dsh_mobile.log')}',
         textAlign: TextAlign.center,
         style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
       ),
@@ -562,7 +612,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         constraints: const BoxConstraints(maxHeight: 320),
         child: SingleChildScrollView(
           child: SelectableText(
-            text.isEmpty ? '（暂无日志）' : text,
+            text.isEmpty ? L10n.t('（暂无日志）', '(No logs)') : text,
             style: TextStyle(fontSize: 11.5, height: 1.6, color: DshColors.ink(context), fontFamily: 'monospace'),
           ),
         ),
@@ -574,16 +624,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: OutlinedButton(
               onPressed: () async {
                 await AppLog.instance.clear();
-                _toast(msgr, '日志已清空');
+                _toast(msgr, L10n.t('日志已清空', 'Log cleared'));
               },
-              child: const Text('清空'),
+              child: Text(L10n.t('清空', 'Clear')),
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: FilledButton(
               onPressed: () => _copy(text),
-              child: const Text('复制'),
+              child: Text(L10n.t('复制', 'Copy')),
             ),
           ),
         ],
@@ -596,7 +646,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await _loadDiag();
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
-    showSheet(context, '环境诊断', [
+    showSheet(context, L10n.t('环境诊断', 'Diagnostics'), [
       ConstrainedBox(
         constraints: const BoxConstraints(maxHeight: 320),
         child: SingleChildScrollView(
@@ -609,7 +659,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       const SizedBox(height: 12),
       FilledButton(
         onPressed: () => _copy(_diagText),
-        child: const Text('复制'),
+        child: Text(L10n.t('复制', 'Copy')),
       ),
     ]);
   }
@@ -617,7 +667,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _copy(String text) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      showToast(context, '已复制');
+      showToast(context, L10n.t('已复制', 'Copied'));
     }
   }
 }

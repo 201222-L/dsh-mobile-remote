@@ -1,6 +1,7 @@
 // 会话列表页（对齐网页端 sessions screen）
 // 支持归档：主列表只显示活跃会话，长按可归档/恢复；顶部筛选切换已归档视图。
 import 'package:flutter/material.dart';
+import '../l10n.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
@@ -70,12 +71,12 @@ class _SessionsScreenState extends State<SessionsScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.chat_bubble_outline, size: 20),
-              title: const Text('打开', style: TextStyle(fontSize: 14)),
+              title: Text(L10n.t('打开', 'Open'), style: const TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('open'),
             ),
             ListTile(
               leading: Icon(isArchived ? Icons.unarchive_outlined : Icons.archive_outlined, size: 20),
-              title: Text(isArchived ? '恢复（取消归档）' : '归档该会话', style: const TextStyle(fontSize: 14)),
+              title: Text(isArchived ? L10n.t('恢复（取消归档）', 'Restore (unarchive)') : L10n.t('归档该会话', 'Archive this session'), style: const TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop(isArchived ? 'unarchive' : 'archive'),
             ),
             const SizedBox(height: 6),
@@ -92,20 +93,20 @@ class _SessionsScreenState extends State<SessionsScreen> {
       await api.archiveSession(s.id, archive: action == 'archive');
       await widget.store.refreshSessions();
       if (!mounted) return;
-      showToast(context, action == 'archive' ? '已归档' : '已恢复');
+      showToast(context, action == 'archive' ? L10n.t('已归档', 'Archived') : L10n.t('已恢复', 'Restored'));
     } catch (e) {
       if (!mounted) return;
-      showToast(context, '操作失败：$e（桌面端插件需要重启生效）');
+      showToast(context, '${L10n.t('操作失败：', 'Operation failed:')}$e${L10n.t('（桌面端插件需要重启生效）', ' (restart the desktop plugin to take effect)')}');
     }
   }
 
   String _relTime(int ms) {
     final dt = DateTime.fromMillisecondsSinceEpoch(ms);
     final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return '刚刚';
-    if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
-    if (diff.inDays < 1) return '${diff.inHours} 小时前';
-    if (diff.inDays < 7) return '${diff.inDays} 天前';
+    if (diff.inMinutes < 1) return L10n.t('刚刚', 'Just now');
+    if (diff.inHours < 1) return '${diff.inMinutes}${L10n.t(' 分钟前', ' min ago')}';
+    if (diff.inDays < 1) return '${diff.inHours}${L10n.t(' 小时前', ' hr ago')}';
+    if (diff.inDays < 7) return '${diff.inDays}${L10n.t(' 天前', ' d ago')}';
     return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 
@@ -132,7 +133,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                 child: Row(
                   children: [
                     _FilterChip(
-                      label: '全部',
+                      label: L10n.t('全部', 'All'),
                       selected: store.workspacePath == null,
                       onTap: () => store.setWorkspace(null),
                     ),
@@ -155,13 +156,13 @@ class _SessionsScreenState extends State<SessionsScreen> {
           child: Row(
             children: [
               _FilterChip(
-                label: '活跃 ${store.activeSessions.length}',
+                label: '${L10n.t('活跃', 'Active')} ${store.activeSessions.length}',
                 selected: !_showArchived,
                 onTap: () => setState(() => _showArchived = false),
               ),
               const SizedBox(width: 8),
               _FilterChip(
-                label: '已归档 ${store.archivedSessions.length}',
+                label: '${L10n.t('已归档', 'Archived')} ${store.archivedSessions.length}',
                 selected: _showArchived,
                 onTap: () => setState(() => _showArchived = true),
               ),
@@ -170,13 +171,13 @@ class _SessionsScreenState extends State<SessionsScreen> {
         ),
         if (_showArchived && store.archivedSessions.isEmpty)
           Expanded(
-            child: Center(child: Text('暂无归档会话', style: TextStyle(fontSize: 13, color: ink3))),
+            child: Center(child: Text(L10n.t('暂无归档会话', 'No archived sessions'), style: TextStyle(fontSize: 13, color: ink3))),
           )
         else
           Expanded(
             child: sessions.isEmpty
                 ? Center(
-                    child: Text('暂无会话', style: TextStyle(fontSize: 13, color: ink3)),
+                    child: Text(L10n.t('暂无会话', 'No sessions'), style: TextStyle(fontSize: 13, color: ink3)),
                   )
                 : RefreshIndicator(
                   onRefresh: () => widget.store.refreshSessions(),

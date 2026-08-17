@@ -2,6 +2,7 @@
 // 数据与 PC 端同源：任务走 session/jobs 帧 + /api/jobs；子代理/目标走插件端点。
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../l10n.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
@@ -36,9 +37,9 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
           length: 3,
           child: Column(
             children: [
-              const Padding(
-                padding: EdgeInsets.only(top: 12),
-                child: Text('会话工具', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(L10n.t('会话工具', 'Session Tools'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
               ),
               const SizedBox(height: 8),
               TabBar(
@@ -47,10 +48,10 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
                 labelColor: DshColors.brand(context),
                 unselectedLabelColor: ink3,
                 indicatorColor: DshColors.brand(context),
-                tabs: const [
-                  Tab(text: '任务'),
-                  Tab(text: '子代理'),
-                  Tab(text: '目标'),
+                tabs: [
+                  Tab(text: L10n.t('任务', 'Jobs')),
+                  Tab(text: L10n.t('子代理', 'Subagents')),
+                  Tab(text: L10n.t('目标', 'Goal')),
                 ],
               ),
               Expanded(
@@ -105,10 +106,10 @@ class _JobsTabState extends State<_JobsTab> {
   Future<void> _kill(Map<String, dynamic> job) async {
     try {
       await api.jobKill(widget.sessionId, job['id'] as String? ?? '');
-      if (mounted) showToast(context, '已请求取消任务');
+      if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
       _load();
     } catch (e) {
-      if (mounted) showToast(context, '取消失败：$e');
+      if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
     }
   }
 
@@ -125,8 +126,8 @@ class _JobsTabState extends State<_JobsTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('加载失败：$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
-            TextButton(onPressed: _load, child: const Text('重试')),
+            Text('${L10n.t('加载失败：', 'Failed to load: ')}$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
+            TextButton(onPressed: _load, child: Text(L10n.t('重试', 'Retry'))),
           ],
         ),
       );
@@ -136,7 +137,7 @@ class _JobsTabState extends State<_JobsTab> {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
     if (jobs.isEmpty) {
-      return Center(child: Text('暂无任务', style: TextStyle(fontSize: 13, color: ink3)));
+      return Center(child: Text(L10n.t('暂无任务', 'No jobs'), style: TextStyle(fontSize: 13, color: ink3)));
     }
     return RefreshIndicator(
       onRefresh: _load,
@@ -152,7 +153,7 @@ class _JobsTabState extends State<_JobsTab> {
               : (status == 'running' || status == 'stopping')
                   ? warn
                   : (status == 'failed' ? danger : ink3);
-          final label = (j['label'] as String? ?? j['id'] as String? ?? '任务').toString();
+          final label = (j['label'] as String? ?? j['id'] as String? ?? L10n.t('任务', 'Job')).toString();
           final kind = j['kind'] as String?;
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -180,7 +181,7 @@ class _JobsTabState extends State<_JobsTab> {
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    child: Text('取消', style: TextStyle(fontSize: 12, color: danger)),
+                    child: Text(L10n.t('取消', 'Cancel'), style: TextStyle(fontSize: 12, color: danger)),
                   ),
               ],
             ),
@@ -225,9 +226,9 @@ class _SubagentsTabState extends State<_SubagentsTab> {
   Future<void> _interrupt(String childId) async {
     try {
       await api.subagentInterrupt(widget.sessionId, childId);
-      if (mounted) showToast(context, '已请求中断子代理');
+      if (mounted) showToast(context, L10n.t('已请求中断子代理', 'Interrupt requested'));
     } catch (e) {
-      if (mounted) showToast(context, '中断失败：$e');
+      if (mounted) showToast(context, '${L10n.t('中断失败：', 'Interrupt failed: ')}$e');
     }
   }
 
@@ -243,8 +244,8 @@ class _SubagentsTabState extends State<_SubagentsTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('加载失败：$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
-            TextButton(onPressed: _load, child: const Text('重试')),
+            Text('${L10n.t('加载失败：', 'Failed to load: ')}$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
+            TextButton(onPressed: _load, child: Text(L10n.t('重试', 'Retry'))),
           ],
         ),
       );
@@ -254,7 +255,7 @@ class _SubagentsTabState extends State<_SubagentsTab> {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
     if (subs.isEmpty) {
-      return Center(child: Text('暂无子代理', style: TextStyle(fontSize: 13, color: ink3)));
+      return Center(child: Text(L10n.t('暂无子代理', 'No subagents'), style: TextStyle(fontSize: 13, color: ink3)));
     }
     return RefreshIndicator(
       onRefresh: _load,
@@ -297,7 +298,7 @@ class _SubagentsTabState extends State<_SubagentsTab> {
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    child: Text('中断', style: TextStyle(fontSize: 12, color: danger)),
+                    child: Text(L10n.t('中断', 'Interrupt'), style: TextStyle(fontSize: 12, color: danger)),
                   ),
               ],
             ),
@@ -358,10 +359,10 @@ class _GoalTabState extends State<_GoalTab> {
     setState(() => _busy = true);
     try {
       await api.goalAction(action, sessionId: widget.sessionId, objective: objective);
-      if (mounted) showToast(context, '已${action == 'create' ? '创建' : action}');
+      if (mounted) showToast(context, '${L10n.t('已', '')}${action == 'create' ? L10n.t('创建', 'Created') : action}');
       if (action == 'create') _objCtrl.clear();
     } catch (e) {
-      if (mounted) showToast(context, '操作失败：$e');
+      if (mounted) showToast(context, '${L10n.t('操作失败：', 'Action failed: ')}$e');
     } finally {
       // 无论成败都刷新：PC/目标驱动可能已改变状态（如轮次耗尽→受阻），UI 需反映真实情况
       await _load();
@@ -381,8 +382,8 @@ class _GoalTabState extends State<_GoalTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('加载失败：$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
-            TextButton(onPressed: _load, child: const Text('重试')),
+            Text('${L10n.t('加载失败：', 'Failed to load: ')}$_error', style: TextStyle(fontSize: 12.5, color: ink2)),
+            TextButton(onPressed: _load, child: Text(L10n.t('重试', 'Retry'))),
           ],
         ),
       );
@@ -394,24 +395,24 @@ class _GoalTabState extends State<_GoalTab> {
     // 内核 GoalView 状态字段是 phase（active/paused/blocked/complete）
     final phase = (goal?['phase'] as String? ?? '').toString();
     String phaseLabel(String p) => switch (p) {
-          'active' => '进行中',
-          'paused' => '已暂停',
-          'blocked' => '受阻',
-          'complete' => '已完成',
+          'active' => L10n.t('进行中', 'Active'),
+          'paused' => L10n.t('已暂停', 'Paused'),
+          'blocked' => L10n.t('受阻', 'Blocked'),
+          'complete' => L10n.t('已完成', 'Complete'),
           _ => p,
         };
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       children: [
         if (goal == null || goal.isEmpty) ...[
-          Text('当前没有目标', style: TextStyle(fontSize: 13, color: ink3)),
+          Text(L10n.t('当前没有目标', 'No goal yet'), style: TextStyle(fontSize: 13, color: ink3)),
           const SizedBox(height: 10),
           TextField(
             controller: _objCtrl,
             style: const TextStyle(fontSize: 13.5),
             maxLines: 2,
             decoration: InputDecoration(
-              hintText: '输入目标…',
+              hintText: L10n.t('输入目标…', 'Enter a goal…'),
               hintStyle: TextStyle(fontSize: 12.5, color: ink3),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: line)),
               enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: line)),
@@ -420,7 +421,7 @@ class _GoalTabState extends State<_GoalTab> {
           const SizedBox(height: 10),
           FilledButton(
             onPressed: _busy ? null : () => _act('create', objective: _objCtrl.text.trim()),
-            child: const Text('创建目标'),
+            child: Text(L10n.t('创建目标', 'Create Goal')),
           ),
         ] else ...[
           Text(
@@ -430,7 +431,7 @@ class _GoalTabState extends State<_GoalTab> {
           const SizedBox(height: 6),
           Text(
             [
-              '轮次 ${(goal['roundsStarted'] as num?)?.toInt() ?? 0}/${(goal['maxGoalRounds'] as num?)?.toInt() ?? '∞'}',
+              '${L10n.t('轮次 ', 'Rounds: ')}${(goal['roundsStarted'] as num?)?.toInt() ?? 0}/${(goal['maxGoalRounds'] as num?)?.toInt() ?? '∞'}',
               phaseLabel(phase),
             ].join(' · '),
             style: TextStyle(fontSize: 12, color: ink3),
@@ -448,21 +449,21 @@ class _GoalTabState extends State<_GoalTab> {
               Expanded(
                 child: OutlinedButton(
                   onPressed: _busy ? null : () => _act(phase == 'paused' ? 'resume' : 'pause'),
-                  child: Text(phase == 'paused' ? '继续' : '暂停', style: TextStyle(fontSize: 13, color: brand)),
+                  child: Text(phase == 'paused' ? L10n.t('继续', 'Resume') : L10n.t('暂停', 'Pause'), style: TextStyle(fontSize: 13, color: brand)),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton(
                   onPressed: _busy ? null : () => _act('complete'),
-                  child: Text('标记完成', style: TextStyle(fontSize: 13, color: danger)),
+                  child: Text(L10n.t('标记完成', 'Mark Complete'), style: TextStyle(fontSize: 13, color: danger)),
                 ),
               ),
             ],
           ),
         ],
         const SizedBox(height: 8),
-        Text('目标与 PC 端同源（goal 服务）；修改即时生效。', style: TextStyle(fontSize: 11, color: ink3)),
+        Text(L10n.t('目标与 PC 端同源（goal 服务）；修改即时生效。', 'Goal data is synced with the desktop app (goal service); changes take effect immediately.'), style: TextStyle(fontSize: 11, color: ink3)),
       ],
     );
   }

@@ -1,5 +1,6 @@
 // 首页：欢迎 + 最近会话 + 新建会话
 import 'package:flutter/material.dart';
+import '../l10n.dart';
 import '../toast.dart';
 import '../models.dart';
 import '../store.dart';
@@ -59,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onRefresh: () async {
               final ok = await widget.store.refreshAll();
               if (!ok && context.mounted) {
-                showToast(context, '电脑连接不上，正在自动重连…');
+                showToast(context, L10n.t('电脑连接不上，正在自动重连…', 'Cannot reach your PC, reconnecting…'));
               }
             },
             child: LayoutBuilder(
@@ -86,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           const SizedBox(height: 10),
                           // 欢迎
                           Text(
-                            '今天打算设计什么？',
+                            L10n.t('今天打算设计什么？', 'What are you designing today?'),
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 30,
@@ -112,7 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   Padding(
                                     padding: const EdgeInsets.only(top: 12, bottom: 2),
                                     child: Text(
-                                      store.workspaceTitle != null ? '最近会话 · ${store.workspaceTitle}' : '最近会话',
+                                      store.workspaceTitle != null ? '${L10n.t('最近会话', 'Recent Sessions')} · ${store.workspaceTitle}' : L10n.t('最近会话', 'Recent Sessions'),
                                       style: TextStyle(
                                         fontSize: 11.5,
                                         fontWeight: FontWeight.w600,
@@ -122,9 +123,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                   if (store.activeSessions.isEmpty)
-                                    const Padding(
-                                      padding: EdgeInsets.symmetric(vertical: 24),
-                                      child: Center(child: Text('暂无会话，点下方新建', style: TextStyle(color: Colors.grey))),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 24),
+                                      child: Center(child: Text(L10n.t('暂无会话，点下方新建', 'No sessions yet, create one below'), style: const TextStyle(color: Colors.grey))),
                                     )
                                   else
                                     // 恰好完整显示 3 行（约 3×52+分隔线），第 4 行露边提示可滑动
@@ -160,7 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               );
                             }),
-                            child: const Text('＋ 新建会话'),
+                            child: Text(L10n.t('＋ 新建会话', '+ New Session')),
                           ),
                         ],
                       ),
@@ -239,10 +240,10 @@ class _SessionRow extends StatelessWidget {
   String _relTime(int ms) {
     final dt = DateTime.fromMillisecondsSinceEpoch(ms);
     final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return '刚刚';
-    if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
-    if (diff.inDays < 1) return '${diff.inHours} 小时前';
-    if (diff.inDays < 7) return '${diff.inDays} 天前';
+    if (diff.inMinutes < 1) return L10n.t('刚刚', 'Just now');
+    if (diff.inHours < 1) return '${diff.inMinutes}${L10n.t(' 分钟前', ' min ago')}';
+    if (diff.inDays < 1) return '${diff.inHours}${L10n.t(' 小时前', ' hr ago')}';
+    if (diff.inDays < 7) return '${diff.inDays}${L10n.t(' 天前', ' d ago')}';
     return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 }

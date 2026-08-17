@@ -1,6 +1,7 @@
 // 扫码连接：扫描桌面端 dsh 设置页"连接移动端设备"二维码。
 // 二维码内容格式：DSHREMOTE|<电脑地址>|<访问口令>
 import 'package:flutter/material.dart';
+import 'l10n.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 class ScanScreen extends StatefulWidget {
@@ -37,7 +38,7 @@ class _ScanScreenState extends State<ScanScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('扫码连接')),
+      appBar: AppBar(title: Text(L10n.t('扫码连接', 'Scan to Connect'))),
       body: Stack(
         children: [
           MobileScanner(controller: _controller, onDetect: _onDetect),
@@ -60,7 +61,7 @@ class _ScanScreenState extends State<ScanScreen> {
               color: Colors.black.withValues(alpha: 0.7),
               padding: const EdgeInsets.all(16),
               child: Text(
-                '对准电脑屏幕上 dsh 设置页的\n「连接移动端设备」二维码',
+                L10n.t('对准电脑屏幕上 dsh 设置页的\n「连接移动端设备」二维码', 'Point at the "Connect mobile device" QR code\non the dsh settings page on your computer'),
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: scheme.onPrimary),
               ),

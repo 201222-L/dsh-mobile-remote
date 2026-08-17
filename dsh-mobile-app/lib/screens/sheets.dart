@@ -1,6 +1,7 @@
 // 底部弹层组：模型与推理 / 权限预设（含风险确认）/ 新建会话 / 目录选择 / 新建文件夹 / 执行动作
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -149,8 +150,8 @@ void showModelSheet(BuildContext context, AppStore store) {
               Navigator.of(context).pop();
               store
                   .applySessionConfig({'provider': model.provider, 'model': model.id})
-                  .then((_) => _toast(msgr, '已切换模型'))
-                  .catchError((e) => _toast(msgr, '切换失败：$e'));
+                  .then((_) => _toast(msgr, L10n.t('已切换模型', 'Model switched')))
+                  .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
             },
           )),
     ],
@@ -170,20 +171,20 @@ void showModelSheet(BuildContext context, AppStore store) {
             children: [
               Expanded(
                 child: Text(
-                  '还有 ${dormantIds.length} 个提供商未配置',
+                  '${L10n.t('还有 ', '')}${dormantIds.length}${L10n.t(' 个提供商未配置', ' more providers not configured')}',
                   style: TextStyle(fontSize: 12.5, color: DshColors.ink3(context)),
                 ),
               ),
-              Text('前往设置 ➜', style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+              Text(L10n.t('前往设置 ➜', 'Go to Settings ➜'), style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
             ],
           ),
         ),
       ),
   ];
-  showSheet(context, '模型与推理', [
+  showSheet(context, L10n.t('模型与推理', 'Model & Reasoning'), [
     ...sheetChildren,
     const SizedBox(height: 10),
-    const Text('推理强度', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+    Text(L10n.t('推理强度', 'Reasoning Effort'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
     const SizedBox(height: 10),
     Row(
       children: [
@@ -197,7 +198,7 @@ void showModelSheet(BuildContext context, AppStore store) {
                   Navigator.of(context).pop();
                   store
                       .applySessionConfig({'reasoningEffort': e})
-                      .catchError((err) => _toast(msgr, '切换失败：$err'));
+                      .catchError((err) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$err'));
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 9),
@@ -222,7 +223,7 @@ void showModelSheet(BuildContext context, AppStore store) {
       ],
     ),
     const SizedBox(height: 8),
-    Text('与桌面端模型目录一致', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+    Text(L10n.t('与桌面端模型目录一致', 'Same model catalog as the desktop app'), textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
   ]);
 }
 
@@ -230,7 +231,7 @@ void showModelSheet(BuildContext context, AppStore store) {
 void showPermSheet(BuildContext context, AppStore store) {
   final cat = store.catalog;
   if (cat == null) return;
-  showSheet(context, '权限预设', [
+  showSheet(context, L10n.t('权限预设', 'Permission Presets'), [
     ...cat.permissionPresets.map((p) => _sheetItem(
           context,
           name: p.name,
@@ -245,19 +246,19 @@ void showPermSheet(BuildContext context, AppStore store) {
             }
             store
                 .applySessionConfig({'permissionPreset': p.id})
-                .catchError((e) => _toast(msgr, '切换失败：$e'));
+                .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
           },
         )),
-    Text('选择完全访问需确认风险', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+    Text(L10n.t('选择完全访问需确认风险', 'Selecting Full Access requires a risk confirmation'), textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
   ]);
 }
 
 void _showDangerConfirm(BuildContext context, AppStore store) {
-  showSheet(context, '⚠ 风险确认', [
+  showSheet(context, L10n.t('⚠ 风险确认', '⚠ Risk Confirmation'), [
     Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
       child: Text(
-        '完全访问将允许 agent 在电脑上执行任何操作，包括修改或删除工作区以外的文件。',
+        L10n.t('完全访问将允许 agent 在电脑上执行任何操作，包括修改或删除工作区以外的文件。', 'Full Access lets the agent perform any operation on this computer, including modifying or deleting files outside the workspace.'),
         textAlign: TextAlign.center,
         style: TextStyle(fontSize: 14, height: 1.6, color: DshColors.ink2(context)),
       ),
@@ -270,7 +271,7 @@ void _showDangerConfirm(BuildContext context, AppStore store) {
               Navigator.of(context).pop();
               showPermSheet(context, store);
             },
-            child: const Text('取消'),
+            child: Text(L10n.t('取消', 'Cancel')),
           ),
         ),
         const SizedBox(width: 10),
@@ -282,10 +283,10 @@ void _showDangerConfirm(BuildContext context, AppStore store) {
               Navigator.of(context).pop();
               store
                   .applySessionConfig({'permissionPreset': 'danger-full-access', 'confirmDanger': true})
-                  .then((_) => _toast(msgr, '已启用完全访问'))
-                  .catchError((e) => _toast(msgr, '切换失败：$e'));
+                  .then((_) => _toast(msgr, L10n.t('已启用完全访问', 'Full Access enabled')))
+                  .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
             },
-            child: const Text('我理解风险，启用'),
+            child: Text(L10n.t('我理解风险，启用', 'Enable — I understand the risk')),
           ),
         ),
       ],
@@ -316,10 +317,10 @@ Future<void> showNewSessionSheet(
   Future<void> doCreate() async {
     final preset = pendingMode ?? store.catalog?.defaults['agentPreset'] ?? 'standard';
     final name = switch (preset) {
-      'standard' => '标准模式',
-      'code' => 'PTC 模式',
-      'minimal' => '极简模式',
-      'cordis' => '创造模式',
+      'standard' => L10n.t('标准模式', 'Standard'),
+      'code' => L10n.t('PTC 模式', 'PTC Mode'),
+      'minimal' => L10n.t('极简模式', 'Minimal'),
+      'cordis' => L10n.t('创造模式', 'Creative'),
       _ => preset,
     };
     try {
@@ -333,10 +334,10 @@ Future<void> showNewSessionSheet(
       if (!context.mounted) return;
       final msgr = ScaffoldMessenger.of(context);
       Navigator.of(context).pop();
-      _toast(msgr, '已用「$name」新建会话');
+      _toast(msgr, '${L10n.t('已用「', 'Created session: ')}$name${L10n.t('」新建会话', '')}');
       await onCreated(created['sessionId'] as String);
     } catch (e) {
-      if (context.mounted) _toast(ScaffoldMessenger.of(context), '新建失败：$e');
+      if (context.mounted) _toast(ScaffoldMessenger.of(context), '${L10n.t('新建失败：', 'Failed to create: ')}$e');
     }
   }
 
@@ -348,7 +349,7 @@ Future<void> showNewSessionSheet(
     if (!context.mounted) return;
   }
   if (cat == null) {
-    _toast(ScaffoldMessenger.of(context), '模型目录加载失败，请检查连接后下拉刷新重试');
+    _toast(ScaffoldMessenger.of(context), L10n.t('模型目录加载失败，请检查连接后下拉刷新重试', 'Failed to load the model catalog. Check the connection and pull to refresh.'));
     return;
   }
   final catalog = cat; // 非空最终引用，供弹层闭包使用
@@ -377,7 +378,7 @@ Future<void> showNewSessionSheet(
                   ),
                 ),
                 const SizedBox(height: 12),
-                const Text('新建会话', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                Text(L10n.t('新建会话', 'New Session'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
                 // 预设列表可滚动（预设多时不溢出）；取消/创建按钮固定在底部
                 Flexible(
@@ -410,16 +411,16 @@ Future<void> showNewSessionSheet(
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      const Text('工作目录', style: TextStyle(fontSize: 14)),
+                                      Text(L10n.t('工作目录', 'Working Directory'), style: const TextStyle(fontSize: 14)),
                                       Text(
-                                        pendingDir ?? '默认（当前工作区）',
+                                        pendingDir ?? L10n.t('默认（当前工作区）', 'Default (current workspace)'),
                                         style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
                                         overflow: TextOverflow.ellipsis,
                                       ),
                                     ],
                                   ),
                                 ),
-                                Text('选择 ▸', style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+                                Text(L10n.t('选择 ▸', 'Choose ▸'), style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
                               ],
                             ),
                           ),
@@ -434,12 +435,12 @@ Future<void> showNewSessionSheet(
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () => Navigator.of(sheetCtx).pop(),
-                        child: const Text('取消'),
+                        child: Text(L10n.t('取消', 'Cancel')),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: FilledButton(onPressed: doCreate, child: const Text('创建会话')),
+                      child: FilledButton(onPressed: doCreate, child: Text(L10n.t('创建会话', 'Create Session'))),
                     ),
                   ],
                 ),
@@ -511,7 +512,7 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
         dirs = await api.directories(path);
       }
     } catch (e) {
-      error = '读取失败：$e';
+      error = '${L10n.t('读取失败：', 'Failed to read: ')}$e';
     }
     if (mounted) setState(() => loading = false);
   }
@@ -555,20 +556,20 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            const Text('选择工作目录', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            Text(L10n.t('选择工作目录', 'Choose Working Directory'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    current.isEmpty ? '根目录（选择盘符）' : current,
+                    current.isEmpty ? L10n.t('根目录（选择盘符）', 'Root (choose a drive)') : current,
                     style: TextStyle(fontSize: 12.5, color: ink2),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 TextButton(
                   onPressed: _goUp,
-                  child: Text('上级 ▸', style: TextStyle(fontSize: 12, color: brand)),
+                  child: Text(L10n.t('上级 ▸', 'Up ▸'), style: TextStyle(fontSize: 12, color: brand)),
                 ),
               ],
             ),
@@ -583,7 +584,7 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
                             if (current.isEmpty && workspaces.isNotEmpty) ...[
                               Padding(
                                 padding: const EdgeInsets.symmetric(vertical: 4),
-                                child: Text('已注册工作区', style: TextStyle(fontSize: 11, color: ink3)),
+                                child: Text(L10n.t('已注册工作区', 'Registered Workspaces'), style: TextStyle(fontSize: 11, color: ink3)),
                               ),
                               for (final w in workspaces)
                                 InkWell(
@@ -616,14 +617,14 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
                               if (workspaces.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.symmetric(vertical: 4),
-                                  child: Text('所有盘符', style: TextStyle(fontSize: 11, color: ink3)),
+                                  child: Text(L10n.t('所有盘符', 'All Drives'), style: TextStyle(fontSize: 11, color: ink3)),
                                 ),
                             ],
                             if (dirs.isEmpty && !loading && error == null)
                               Padding(
                                 padding: const EdgeInsets.symmetric(vertical: 20),
                                 child: Center(
-                                  child: Text('没有子目录', style: TextStyle(fontSize: 13, color: ink3)),
+                                  child: Text(L10n.t('没有子目录', 'No subdirectories'), style: TextStyle(fontSize: 13, color: ink3)),
                                 ),
                               ),
                             for (final name in dirs)
@@ -653,7 +654,7 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
               onPressed: () => _showNewFolder(context, current, (createdPath) {
                 load(createdPath);
               }),
-              child: const Text('＋ 新建文件夹'),
+              child: Text(L10n.t('＋ 新建文件夹', '+ New Folder')),
             ),
             const SizedBox(height: 8),
             Row(
@@ -661,7 +662,7 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
                 Expanded(
                   child: OutlinedButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('取消'),
+                    child: Text(L10n.t('取消', 'Cancel')),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -673,7 +674,7 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
                       }
                       Navigator.of(context).pop();
                     },
-                    child: const Text('选这里'),
+                    child: Text(L10n.t('选这里', 'Select Here')),
                   ),
                 ),
               ],
@@ -709,12 +710,12 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
               ),
             ),
             const SizedBox(height: 12),
-            const Text('新建文件夹', textAlign: TextAlign.center, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            Text(L10n.t('新建文件夹', 'New Folder'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
             TextField(
               controller: ctrl,
               autofocus: true,
-              decoration: const InputDecoration(labelText: '文件夹名称', hintText: '如：my-project'),
+              decoration: InputDecoration(labelText: L10n.t('文件夹名称', 'Folder Name'), hintText: L10n.t('如：my-project', 'e.g. my-project')),
             ),
             const SizedBox(height: 14),
             Row(
@@ -722,7 +723,7 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
                 Expanded(
                   child: OutlinedButton(
                     onPressed: () => Navigator.of(sheetCtx).pop(),
-                    child: const Text('取消'),
+                    child: Text(L10n.t('取消', 'Cancel')),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -737,10 +738,10 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
                         if (sheetCtx.mounted) Navigator.of(sheetCtx).pop();
                         onCreated(parent ?? name);
                       } catch (e) {
-                        if (sheetCtx.mounted) _toast(ScaffoldMessenger.of(sheetCtx), '创建失败：$e');
+                        if (sheetCtx.mounted) _toast(ScaffoldMessenger.of(sheetCtx), '${L10n.t('创建失败：', 'Failed to create: ')}$e');
                       }
                     },
-                    child: const Text('创建'),
+                    child: Text(L10n.t('创建', 'Create')),
                   ),
                 ),
               ],
@@ -756,11 +757,11 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
 void showActionSheet(BuildContext context, Map<String, dynamic> action) {
   final fields = (action['fields'] as List? ?? []).map((e) => e as Map<String, dynamic>).toList();
   final ctrls = {for (final f in fields) f['key'] as String: TextEditingController()};
-  showSheet(context, action['title'] as String? ?? '执行动作', [
+  showSheet(context, action['title'] as String? ?? L10n.t('执行动作', 'Execute Action'), [
     if (fields.isEmpty)
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Text('直接执行，无需参数', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: DshColors.ink2(context))),
+        child: Text(L10n.t('直接执行，无需参数', 'Runs directly, no parameters needed'), textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: DshColors.ink2(context))),
       ),
     for (final f in fields)
       Padding(
@@ -779,7 +780,7 @@ void showActionSheet(BuildContext context, Map<String, dynamic> action) {
         Expanded(
           child: OutlinedButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
+            child: Text(L10n.t('取消', 'Cancel')),
           ),
         ),
         const SizedBox(width: 10),
@@ -791,12 +792,12 @@ void showActionSheet(BuildContext context, Map<String, dynamic> action) {
               Navigator.of(context).pop();
               try {
                 await api.invokeAction(action['id'] as String, args);
-                _toast(msgr, '已发送给 agent：${action['title']}');
+                _toast(msgr, '${L10n.t('已发送给 agent：', 'Sent to agent: ')}${action['title']}');
               } catch (e) {
-                _toast(msgr, '执行失败：$e');
+                _toast(msgr, '${L10n.t('执行失败：', 'Execution failed: ')}$e');
               }
             },
-            child: const Text('执行'),
+            child: Text(L10n.t('执行', 'Execute')),
           ),
         ),
       ],

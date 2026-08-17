@@ -15,6 +15,7 @@
 - **下拉刷新收集地址**：refreshAll 吸收 bootstrap 的 `server.urls`（蒲公英 / Tailscale 等新地址及时进候选表，回环地址过滤）
 - **聊天草稿保留**：会话级缓存，输入内容退出会话后重进自动恢复（仅内存，不落盘）
 - **首页改版**：移除底部快捷输入框（模型/权限选择移至新建会话弹层与会话页）；欢迎语改为「今天打算设计什么？」；顶部展示 DeepSeek 官网官方 logo；内容块整体上移居中；最近会话卡片固定 3 行完整显示、超出卡片内滑动
+- **界面语言切换**：设置 → 显示 → 语言（中文 / English），即时生效、持久化；主要界面全量双语（首页 / 会话 / 聊天 / 设置 / 连接 / 通知 / 会话工具弹层 / 提供商管理页等）
 
 ### 修复
 - 任务四端点契约对齐内核 schema（`subagent.list` 需 `parentSessionId`、`subagent.interrupt` 需 `parentSessionId + childSessionId + mode`、goal 变更需 `sessionId + ref`；goal POST 的 agent 解析改用 body 的 sessionId）

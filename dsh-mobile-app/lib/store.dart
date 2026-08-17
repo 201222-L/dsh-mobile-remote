@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
+import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
 
@@ -18,6 +19,7 @@ class AppStore extends ChangeNotifier {
   String agentStatus = 'idle'; // idle | running | waiting
   String darkMode = 'system'; // system | dark | light
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
+  String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
   List<Map<String, dynamic>> workspaces = [];
@@ -62,12 +64,15 @@ class AppStore extends ChangeNotifier {
   static const _kReasoning = 'dsh_mr_show_reasoning';
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
+  static const _kLang = 'dsh_mr_language';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     sessionId = prefs.getString(_kSession);
     darkMode = prefs.getString(_kDark) ?? 'system';
     showReasoning = prefs.getBool(_kReasoning) ?? false;
+    language = prefs.getString(_kLang) ?? 'zh';
+    L10n.lang = language;
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
     // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
@@ -124,6 +129,15 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kDark, v);
+  }
+
+  /// 切换界面语言（zh/en），即时生效 + 持久化。
+  Future<void> setLanguage(String v) async {
+    language = v;
+    L10n.lang = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLang, v);
   }
 
   Future<void> setSession(String? id) async {
