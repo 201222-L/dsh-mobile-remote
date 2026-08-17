@@ -68,7 +68,7 @@ class DshTheme {
       // Android 14+ 附带预测性返回动画（PredictiveBackPageTransitionsBuilder）
       pageTransitionsTheme: const PageTransitionsTheme(builders: {
         TargetPlatform.android: ZoomPageTransitionsBuilder(),
-        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.iOS: ZoomPageTransitionsBuilder(),
       }),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? bgDark : bg,
