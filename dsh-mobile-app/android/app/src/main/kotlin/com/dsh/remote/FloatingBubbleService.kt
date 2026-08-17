@@ -381,8 +381,8 @@ class FloatingBubbleService : Service() {
         mainHandler.postDelayed(hideTipRunnable, 5000)
     }
 
-    /** 气泡定位：紧贴球水平两侧（球在左半→右侧；右半→左侧），垂直对齐球中心；
-     *  半隐藏时随球可见部分，越界钳制保证可见。 */
+    /** 气泡定位：球正上方紧贴（8dp），水平居中于球可见部分；顶部空间不足放球下方。
+     *  球贴边时气泡随可见部分贴屏边（始终在球上方区域，不漂移）。 */
     private fun positionTip() {
         val tv = tip ?: return
         if (tv.visibility != View.VISIBLE) return
@@ -392,13 +392,12 @@ class FloatingBubbleService : Service() {
         val metrics = resources.displayMetrics
         val bd = dp(bubbleDp)
         val tipW = dp(170)
-        val onLeft = bp.x + bd / 2 < metrics.widthPixels / 2
-        // 水平：球左半 → 气泡在球右侧；球右半 → 气泡在球左侧（紧贴 8dp）
-        p.x = if (onLeft) bp.x + bd + dp(8) else bp.x - tipW - dp(8)
-        // 越界钳制（半隐藏/贴边时保证可见）
-        p.x = p.x.coerceIn(0, metrics.widthPixels - tipW)
-        // 垂直：对齐球中心（气泡高约 30dp），越界钳制
-        p.y = (bp.y + bd / 2 - dp(15)).coerceIn(dp(8), metrics.heightPixels - dp(60))
+        // 水平：居中于球（可见部分），钳制屏内（球贴边 → 气泡贴边，仍在球上方区域）
+        val visCenter = ((maxOf(0, bp.x) + minOf(metrics.widthPixels, bp.x + bd)) / 2)
+        p.x = (visCenter - tipW / 2).coerceIn(dp(4), metrics.widthPixels - tipW - dp(4))
+        // 垂直：球上方紧贴（气泡高约 32dp + 8dp 间距）；顶部空间不足放球下方
+        val above = bp.y - dp(40)
+        p.y = if (above >= dp(6)) above else bp.y + bd + dp(6)
         wm.updateViewLayout(tv, p)
     }
 
