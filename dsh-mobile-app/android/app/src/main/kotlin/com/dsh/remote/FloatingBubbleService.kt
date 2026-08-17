@@ -90,6 +90,8 @@ class FloatingBubbleService : Service() {
     private var moved = false
     private var lastTap = 0L
     private val longPressRunnable = Runnable { exitBubble("long-press") }
+    /** 贴边后 5 秒无操作才缩进（用户反馈：松手立即缩进导致点击不稳定）。 */
+    private val autoHideRunnable = Runnable { autoHideToEdge() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -143,7 +145,7 @@ class FloatingBubbleService : Service() {
     }
 
     // ── 悬浮球视图（圆形，白底蓝鲸官方图标样式）──
-    /** 自绘圆形 logo 球：BitmapShader 画圆，无 ImageView/clip 兼容问题。 */
+    /** 自绘圆形鲸鱼球：透明背景（无白底圆），圆形裁剪显示鲸鱼。 */
     inner class BubbleView(context: android.content.Context) : View(context) {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
         private val bmp = android.graphics.BitmapFactory.decodeResource(resources, R.drawable.deepseek_logo)
@@ -157,21 +159,15 @@ class FloatingBubbleService : Service() {
         }
 
         override fun onDraw(canvas: android.graphics.Canvas) {
+            if (shader == null || bmp == null) return
             val c = width / 2f
             val r = minOf(width, height) / 2f
-            // 白底圆
-            paint.color = Color.WHITE
-            paint.shader = null
+            // 位图缩放到直径 2r，鲸鱼（占位图 75%）完整落在圆内
+            val m = android.graphics.Matrix()
+            m.setScale(r * 2f / bmp.width, r * 2f / bmp.height)
+            shader.setLocalMatrix(m)
+            paint.shader = shader
             canvas.drawCircle(c, c, r, paint)
-            // logo 圆（居中，留 8% 边距）
-            if (shader != null && bmp != null) {
-                val s = r * 1.8f // 方形位图边长 ≈ 直径
-                val m = android.graphics.Matrix()
-                m.setScale(s / bmp.width, s / bmp.height)
-                shader.setLocalMatrix(m)
-                paint.shader = shader
-                canvas.drawCircle(c, c, r, paint)
-            }
         }
     }
 
@@ -205,7 +201,9 @@ class FloatingBubbleService : Service() {
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(
             size, size, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, // 允许越出屏幕（贴边半隐藏必需）
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
@@ -215,12 +213,18 @@ class FloatingBubbleService : Service() {
 
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                android.util.Log.i("DSHRemote", "bubble: tap confirmed")
+                // 半隐藏状态先滑出（不触发面板），完全露出后再单击才展开面板
+                if (isEdgeHidden()) {
+                    slideOut()
+                    return true
+                }
                 togglePanel()
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                hidePanel()
-                openMain()
+                if (isEdgeHidden()) slideOut()
+                else { hidePanel(); openMain() }
                 return true
             }
             override fun onLongPress(e: MotionEvent) {
@@ -228,6 +232,10 @@ class FloatingBubbleService : Service() {
             }
         })
         root.setOnTouchListener { v, ev ->
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                // 用户操作：取消自动缩进
+                mainHandler.removeCallbacks(autoHideRunnable)
+            }
             gd.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -239,7 +247,7 @@ class FloatingBubbleService : Service() {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - downX; val dy = ev.rawY - downY
-                    if (Math.abs(dx) > dp(6f) || Math.abs(dy) > dp(6f)) {
+                    if (Math.abs(dx) > dp(12f) || Math.abs(dy) > dp(12f)) {
                         moved = true
                         mainHandler.removeCallbacks(longPressRunnable)
                     }
@@ -254,7 +262,11 @@ class FloatingBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     mainHandler.removeCallbacks(longPressRunnable)
-                    if (moved) snapToEdge()
+                    if (moved) {
+                        android.util.Log.i("DSHRemote", "bubble: drag end, snap + schedule auto-hide")
+                        snapToEdgeVisible()
+                        mainHandler.postDelayed(autoHideRunnable, 5000)
+                    }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -313,25 +325,64 @@ class FloatingBubbleService : Service() {
 
     private val hideTipRunnable = Runnable { tip?.visibility = View.GONE }
 
-    private fun snapToEdge() {
+    /** 松手后吸附到边缘（完全露出），供 5 秒无操作后的缩进做基线。 */
+    private fun snapToEdgeVisible() {
         val p = bubbleParams ?: return
         val wm = this.wm ?: return
         val metrics = resources.displayMetrics
-        val right = metrics.widthPixels - dp(bubbleDp)
-        p.x = if (p.x < metrics.widthPixels / 2) 0 else right
+        val bd = dp(bubbleDp)
+        val center = p.x + bd / 2
+        p.x = if (center < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd
         wm.updateViewLayout(bubble, p)
         if (panelVisible) placePanel()
+    }
+
+    /** 5 秒无操作后缩进：只露 16dp，其余藏进屏幕边缘。 */
+    private fun autoHideToEdge() {
+        val p = bubbleParams ?: return
+        val wm = this.wm ?: return
+        val metrics = resources.displayMetrics
+        val edgePeek = dp(16)
+        val bd = dp(bubbleDp)
+        val center = p.x + bd / 2
+        p.x = if (center < metrics.widthPixels / 2) {
+            -bd + edgePeek
+        } else {
+            metrics.widthPixels - edgePeek
+        }
+        android.util.Log.i("DSHRemote", "bubble: auto-hide to x=${p.x}")
+        wm.updateViewLayout(bubble, p)
+    }
+
+    /** 球是否处于贴边半隐藏状态（x 为负 = 左缩进；右侧越出屏幕 = 右缩进）。
+     *  完全露出时 x=0（左）或 x=sw-bd（右，x+bd==sw 正好贴边不算隐藏）。 */
+    private fun isEdgeHidden(): Boolean {
+        val p = bubbleParams ?: return false
+        val metrics = resources.displayMetrics
+        val bd = dp(bubbleDp)
+        return p.x < -dp(2) || p.x + bd > metrics.widthPixels + dp(2)
+    }
+
+    /** 从半隐藏滑出到完全可见。 */
+    private fun slideOut() {
+        val p = bubbleParams ?: return
+        val wm = this.wm ?: return
+        val metrics = resources.displayMetrics
+        val bd = dp(bubbleDp)
+        val target = if (p.x < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd
+        p.x = target
+        wm.updateViewLayout(bubble, p)
     }
 
     // ── 迷你面板（单击展开，球旁小卡片）──
     private fun addPanel() {
         val wm = this.wm ?: return
-        val width = dp(300)
+        val width = dp(248)
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.setPadding(dp(14), dp(10), dp(14), dp(10))
+        root.setPadding(dp(12), dp(8), dp(12), dp(10))
         root.background = GradientDrawable().apply {
-            cornerRadius = dp(16).toFloat()
+            cornerRadius = dp(14).toFloat()
             setColor(Color.parseColor("#F21A1D24"))
         }
         root.visibility = View.GONE
@@ -343,17 +394,17 @@ class FloatingBubbleService : Service() {
         val title = TextView(this)
         title.text = text("DSH Remote", "DSH Remote")
         title.setTextColor(Color.WHITE)
-        title.textSize = 14f
+        title.textSize = 13f
         title.setTypeface(null, android.graphics.Typeface.BOLD)
-        head.addView(title, LinearLayout.LayoutParams(0, dp(30), 1f))
+        head.addView(title, LinearLayout.LayoutParams(0, dp(26), 1f))
         val close = TextView(this)
         close.text = "✕"
         close.setTextColor(Color.parseColor("#9AA3AF"))
-        close.textSize = 16f
+        close.textSize = 15f
         close.gravity = Gravity.CENTER
         close.setPadding(dp(8), 0, 0, 0)
         close.setOnClickListener { hidePanel() }
-        head.addView(close, LinearLayout.LayoutParams(dp(32), dp(30)))
+        head.addView(close, LinearLayout.LayoutParams(dp(30), dp(26)))
         root.addView(head)
 
         // 运行中会话
@@ -374,7 +425,7 @@ class FloatingBubbleService : Service() {
         root.addView(notifsBox)
         panelNotifs = notifsBox
 
-        // 底部按钮
+        // 底部按钮（浅灰胶囊，与深色弹窗协调）
         val btnRow = LinearLayout(this)
         btnRow.orientation = LinearLayout.HORIZONTAL
         btnRow.gravity = Gravity.CENTER_VERTICAL
@@ -384,25 +435,25 @@ class FloatingBubbleService : Service() {
         openBtn.textSize = 12.5f
         openBtn.gravity = Gravity.CENTER
         openBtn.background = GradientDrawable().apply {
-            cornerRadius = dp(9).toFloat()
-            setColor(Color.parseColor("#4D6BFE"))
+            cornerRadius = dp(20).toFloat()
+            setColor(Color.parseColor("#3A3F47"))
         }
         openBtn.setOnClickListener { hidePanel(); openMain() }
-        btnRow.addView(openBtn, LinearLayout.LayoutParams(0, dp(38), 1f))
+        btnRow.addView(openBtn, LinearLayout.LayoutParams(0, dp(36), 1f))
         val chargeBtn = TextView(this)
         chargeBtn.text = text("去充值", "Top up")
         chargeBtn.setTextColor(Color.WHITE)
         chargeBtn.textSize = 12.5f
         chargeBtn.gravity = Gravity.CENTER
         chargeBtn.background = GradientDrawable().apply {
-            cornerRadius = dp(9).toFloat()
-            setColor(Color.parseColor("#E5484D"))
+            cornerRadius = dp(20).toFloat()
+            setColor(Color.parseColor("#3A3F47"))
         }
         chargeBtn.setOnClickListener { hidePanel(); openCharge() }
-        btnRow.addView(chargeBtn, LinearLayout.LayoutParams(0, dp(38), 1f))
+        btnRow.addView(chargeBtn, LinearLayout.LayoutParams(0, dp(36), 1f))
         val gap = View(this)
         btnRow.addView(gap, LinearLayout.LayoutParams(dp(8), 1))
-        root.addView(btnRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+        root.addView(btnRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(36)))
         panelCharge = chargeBtn
 
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -457,9 +508,9 @@ class FloatingBubbleService : Service() {
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
         val metrics = resources.displayMetrics
-        val pw = dp(300)
+        val pw = dp(248)
         // 用面板实际高度（首次打开前未测量时用估算值）
-        val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(340)
+        val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(300)
         val sw = metrics.widthPixels
         val sh = metrics.heightPixels
         val ballRight = bp.x + dp(bubbleDp)
@@ -597,8 +648,8 @@ class FloatingBubbleService : Service() {
             img.alpha = 1f
             img.setGray(false)
         } else {
-            // 暗态：灰度 + 轻微透明（保留鲸鱼辨识度）
-            img.alpha = 0.72f
+            // 暗态：灰度 + 明显降透明（与亮态对比清晰）
+            img.alpha = 0.55f
             img.setGray(true)
         }
         val bd = badge ?: return
