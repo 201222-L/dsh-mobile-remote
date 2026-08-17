@@ -300,8 +300,9 @@ class FloatingBubbleService : Service() {
                         params.x = startX + dx.toInt()
                         params.y = startY + dy.toInt()
                         wm.updateViewLayout(root, params)
-                        // 拖动时收起面板
+                        // 拖动时收起面板；气泡若在显示中则跟随
                         if (panelVisible) hidePanel()
+                        positionTip()
                     }
                     true
                 }
@@ -360,17 +361,34 @@ class FloatingBubbleService : Service() {
 
     private fun showTip(text: String) {
         val tv = tip ?: return
-        val p = tipParams ?: return
-        val bp = bubbleParams ?: return
-        // 气泡跟随球上方，钳制在屏幕内（贴边/顶部时仍可见）
-        val metrics = resources.displayMetrics
-        p.x = bp.x.coerceIn(0, metrics.widthPixels - dp(160))
-        p.y = (bp.y - dp(60)).coerceAtLeast(dp(10))
         tv.text = text
         tv.visibility = View.VISIBLE
-        wm?.updateViewLayout(tv, p)
+        positionTip()
         mainHandler.removeCallbacks(hideTipRunnable)
         mainHandler.postDelayed(hideTipRunnable, 5000)
+    }
+
+    /** 气泡定位：按球可见部分水平居中；优先球上方，顶部空间不足放球下方；
+     *  处理半隐藏与贴边，避免偏移出屏。 */
+    private fun positionTip() {
+        val tv = tip ?: return
+        if (tv.visibility != View.VISIBLE) return
+        val p = tipParams ?: return
+        val bp = bubbleParams ?: return
+        val wm = this.wm ?: return
+        val metrics = resources.displayMetrics
+        val bd = dp(bubbleDp)
+        val tipW = dp(170)
+        // 球可见部分（半隐藏时只算屏内区域）
+        val visLeft = maxOf(0, bp.x)
+        val visRight = minOf(metrics.widthPixels, bp.x + bd)
+        val visCenter = (visLeft + visRight) / 2
+        // 水平：气泡中心对齐可见部分中心，钳制在屏内
+        p.x = (visCenter - tipW / 2).coerceIn(0, metrics.widthPixels - tipW)
+        // 垂直：优先球上方；顶部空间不足（球太靠顶）放球下方
+        val above = bp.y - dp(56)
+        p.y = if (above >= dp(12)) above else bp.y + bd + dp(8)
+        wm.updateViewLayout(tv, p)
     }
 
     private val hideTipRunnable = Runnable { tip?.visibility = View.GONE }
