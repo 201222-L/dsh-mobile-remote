@@ -69,6 +69,14 @@ class FloatingBubbleService : Service() {
     private var panelCharge: View? = null
     private var panelVisible = false
     private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
+    private var lastPanelRefresh = 0L
+    /** 面板打开期间 5 秒周期兜底刷新（事件驱动之外的状态变化也能跟上）。 */
+    private val panelRefreshRunnable = Runnable {
+        if (panelVisible) {
+            refreshPanelData()
+            mainHandler.postDelayed(panelRefreshRunnable, 5000)
+        }
+    }
 
     private var sseThread: Thread? = null
     @Volatile private var sseAlive = false
@@ -524,6 +532,9 @@ class FloatingBubbleService : Service() {
         mainHandler.removeCallbacks(clearNotifRunnable)
         mainHandler.post { setState() }
         refreshPanelData()
+        // 面板开着期间周期刷新（兜底）
+        mainHandler.removeCallbacks(panelRefreshRunnable)
+        mainHandler.postDelayed(panelRefreshRunnable, 5000)
     }
 
     /** 面板贴球展开：随球所在象限选择方向（左上/右上/左下/右下），始终完整在屏内。 */
@@ -560,10 +571,20 @@ class FloatingBubbleService : Service() {
         val p = panel ?: return
         panelVisible = false
         scrim?.visibility = View.GONE
+        mainHandler.removeCallbacks(panelRefreshRunnable)
         // 收起动画：淡出 + 缩小（动画期间若重新打开则不隐藏）
         p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
             .withEndAction { if (!panelVisible) p.visibility = View.GONE }
             .start()
+    }
+
+    /** 事件到达时刷新面板（2 秒节流，面板关闭时 no-op）。 */
+    private fun refreshPanelIfOpen() {
+        if (!panelVisible) return
+        val now = System.currentTimeMillis()
+        if (now - lastPanelRefresh < 2000) return
+        lastPanelRefresh = now
+        mainHandler.post { refreshPanelData() }
     }
 
     private fun refreshPanelData() {
@@ -794,6 +815,8 @@ class FloatingBubbleService : Service() {
                 scheduleIdleCheck()
             }
         }
+        // 面板打开时即时刷新（会话状态变化同步）
+        refreshPanelIfOpen()
     }
 
     /** 每次活动事件后调度空闲检查：3 秒无新事件 → 停止转圈（不再被红点/余额卡住）。 */
@@ -834,6 +857,8 @@ class FloatingBubbleService : Service() {
         } else if (notified) {
             mainHandler.post { setState() }
         }
+        // 面板打开时即时刷新
+        refreshPanelIfOpen()
     }
 
     /** 余额联动：App 侧刷新余额后经 channel 推送（string "total:currency"）。 */
