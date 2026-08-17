@@ -1,5 +1,4 @@
 // DeepSeek 设计令牌（对齐网页端 page.html :root，原型 v7 定稿）
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 /// 设计令牌：配色/圆角/阴影，浅色深色两套。
@@ -65,10 +64,10 @@ class DshTheme {
       ),
       scaffoldBackgroundColor: dark ? bgDark : bg,
       fontFamilyFallback: const ['PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-      // v2.7：统一页面转场——iOS 风格（Cupertino 侧滑：新页从右滑入 + 旧页视差平移）
+      // v2.7：统一页面转场——轻量 iOS 味（新页全宽滑入 + 轻微淡入，旧页静止不重绘，流畅）
       pageTransitionsTheme: const PageTransitionsTheme(builders: {
-        TargetPlatform.android: CupertinoPageTransitionsBuilder(),
-        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.android: _IosLightTransitionsBuilder(),
+        TargetPlatform.iOS: _IosLightTransitionsBuilder(),
       }),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? bgDark : bg,
@@ -114,6 +113,33 @@ class DshTheme {
           borderSide: BorderSide(color: dark ? brandDark : brand, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      ),
+    );
+  }
+}
+
+/// 轻量 iOS 味转场：新页全宽滑入 + 轻微淡入；旧页静止（不参与动画 → 零重绘，流畅）。
+class _IosLightTransitionsBuilder extends PageTransitionsBuilder {
+  const _IosLightTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.7, end: 1.0).animate(curved),
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero).animate(curved),
+        child: child,
       ),
     );
   }
