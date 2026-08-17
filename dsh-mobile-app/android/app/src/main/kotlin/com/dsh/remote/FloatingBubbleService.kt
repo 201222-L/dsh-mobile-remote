@@ -282,6 +282,8 @@ class FloatingBubbleService : Service() {
                     startX = params.x; startY = params.y
                     moved = false
                     mainHandler.postDelayed(longPressRunnable, 600)
+                    // 按压反馈：球轻微缩小（"捏一下"）
+                    root.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).start()
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -301,6 +303,9 @@ class FloatingBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     mainHandler.removeCallbacks(longPressRunnable)
+                    // 回弹到原尺寸（overshoot 手感）
+                    root.animate().scaleX(1f).scaleY(1f).setDuration(140)
+                        .setInterpolator(android.view.animation.OvershootInterpolator(1.6f)).start()
                     if (moved) {
                         android.util.Log.i("DSHRemote", "bubble: drag end, snap + schedule auto-hide")
                         snapToEdgeVisible()
@@ -310,6 +315,7 @@ class FloatingBubbleService : Service() {
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     mainHandler.removeCallbacks(longPressRunnable)
+                    root.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                     true
                 }
                 else -> false
@@ -388,30 +394,43 @@ class FloatingBubbleService : Service() {
     /** 松手后吸附到边缘（完全露出），供 5 秒无操作后的缩进做基线。 */
     private fun snapToEdgeVisible() {
         val p = bubbleParams ?: return
-        val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val bd = dp(bubbleDp)
         val center = p.x + bd / 2
-        p.x = if (center < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd
-        wm.updateViewLayout(bubble, p)
-        if (panelVisible) placePanel()
+        animateX(if (center < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd)
     }
 
     /** 5 秒无操作后缩进：只露 16dp，其余藏进屏幕边缘。 */
     private fun autoHideToEdge() {
         val p = bubbleParams ?: return
-        val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val edgePeek = dp(16)
         val bd = dp(bubbleDp)
         val center = p.x + bd / 2
-        p.x = if (center < metrics.widthPixels / 2) {
+        val target = if (center < metrics.widthPixels / 2) {
             -bd + edgePeek
         } else {
             metrics.widthPixels - edgePeek
         }
-        android.util.Log.i("DSHRemote", "bubble: auto-hide to x=${p.x}")
-        wm.updateViewLayout(bubble, p)
+        android.util.Log.i("DSHRemote", "bubble: auto-hide to x=$target")
+        animateX(target)
+    }
+
+    /** 水平滑动动画（吸附/缩进/滑出统一用）。 */
+    private fun animateX(target: Int) {
+        val p = bubbleParams ?: return
+        val wm = this.wm ?: return
+        val from = p.x
+        if (from == target) return
+        val anim = android.animation.ValueAnimator.ofInt(from, target)
+        anim.duration = 240
+        anim.interpolator = android.view.animation.DecelerateInterpolator()
+        anim.addUpdateListener {
+            p.x = it.animatedValue as Int
+            wm.updateViewLayout(bubble, p)
+            if (panelVisible) placePanel()
+        }
+        anim.start()
     }
 
     /** 球是否处于贴边半隐藏状态（x 为负 = 左缩进；右侧越出屏幕 = 右缩进）。
@@ -426,12 +445,9 @@ class FloatingBubbleService : Service() {
     /** 从半隐藏滑出到完全可见。 */
     private fun slideOut() {
         val p = bubbleParams ?: return
-        val wm = this.wm ?: return
         val metrics = resources.displayMetrics
         val bd = dp(bubbleDp)
-        val target = if (p.x < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd
-        p.x = target
-        wm.updateViewLayout(bubble, p)
+        animateX(if (p.x < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd)
     }
 
     // ── 迷你面板（单击展开，球旁小卡片）──
@@ -730,12 +746,12 @@ class FloatingBubbleService : Service() {
     private fun setState() {
         val img = logoImg ?: return
         if (agentsRunning || lowBalance || notifCount > 0) {
-            // 亮态：原色
-            img.alpha = 1f
+            // 亮态：原色 + 过渡到全不透明
+            animateAlpha(img, 1f)
             img.setGray(false)
         } else {
-            // 暗态：灰度 + 明显降透明（与亮态对比清晰）
-            img.alpha = 0.55f
+            // 暗态：灰度 + 过渡到半透明（亮暗切换不瞬变）
+            animateAlpha(img, 0.55f)
             img.setGray(true)
         }
         val bd = badge ?: return
@@ -745,6 +761,15 @@ class FloatingBubbleService : Service() {
         } else {
             bd.visibility = View.GONE
         }
+    }
+
+    /** 亮度过渡（180ms）：亮/暗切换不瞬变。 */
+    private fun animateAlpha(view: View, target: Float) {
+        if (view.alpha == target) return
+        val anim = android.animation.ValueAnimator.ofFloat(view.alpha, target)
+        anim.duration = 180
+        anim.addUpdateListener { view.alpha = it.animatedValue as Float }
+        anim.start()
     }
 
     /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
