@@ -1,5 +1,6 @@
 // 会话列表页（对齐网页端 sessions screen）
 // 支持归档：主列表只显示活跃会话，长按可归档/恢复；顶部筛选切换已归档视图。
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../l10n.dart';
 import '../toast.dart';
@@ -91,11 +92,16 @@ class _SessionsScreenState extends State<SessionsScreen> {
     }
     try {
       await api.archiveSession(s.id, archive: action == 'archive');
-      await widget.store.refreshSessions();
+      // v2.7.1：乐观更新——本地立即生效（列表秒变），后台静默刷新校准
+      // （服务端列表标题折叠 50+ 会话可达数秒，等它会让"归档要等几秒"）
+      widget.store.applyArchiveLocally(s.id, archived: action == 'archive');
+      unawaited(widget.store.refreshSessions());
       if (!mounted) return;
       showToast(context, action == 'archive' ? L10n.t('已归档', 'Archived') : L10n.t('已恢复', 'Restored'));
     } catch (e) {
       if (!mounted) return;
+      // 失败回滚本地状态（刷新真实列表校准）
+      unawaited(widget.store.refreshSessions());
       showToast(context, '${L10n.t('操作失败：', 'Operation failed:')}$e${L10n.t('（桌面端插件需要重启生效）', ' (restart the desktop plugin to take effect)')}');
     }
   }

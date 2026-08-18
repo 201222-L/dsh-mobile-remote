@@ -440,6 +440,23 @@ class AppStore extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// 归档/取消归档乐观更新（v2.7.1）：本地立即生效（列表秒变），
+  /// 不等慢刷新（服务端列表标题折叠 50+ 会话可达数秒）；由调用方随后静默 refreshSessions 校准。
+  void applyArchiveLocally(String sessionId, {required bool archived}) {
+    final i = sessions.indexWhere((s) => s.id == sessionId);
+    if (i < 0) return;
+    final old = sessions[i];
+    sessions[i] = Session(
+      id: old.id,
+      title: old.title,
+      cwd: old.cwd,
+      createdAt: old.createdAt,
+      archived: archived,
+      lastActivity: old.lastActivity,
+    );
+    notifyListeners();
+  }
+
   Future<void> refreshSessions({bool notify = true}) async {
     try {
       sessions = await api.sessions();
