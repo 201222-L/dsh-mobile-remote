@@ -192,6 +192,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 阈值显示格式：整数不带小数（¥10），非整数两位（¥12.50）。
+  String _fmtThreshold(double v) => v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(2);
+
+  /// 余额预警阈值选择：¥5 / ¥10 / ¥20 / ¥50 / 自定义输入。
+  Future<void> _pickThreshold() async {
+    final presets = [5.0, 10.0, 20.0, 50.0];
+    final current = widget.store.balanceThreshold;
+    final scheme = Theme.of(context);
+    final brand = DshColors.brand(context);
+    final selected = await showModalBottomSheet<double>(
+      context: context,
+      backgroundColor: scheme.scaffoldBackgroundColor,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(L10n.t('余额预警阈值', 'Low-balance threshold'),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              ),
+            ),
+            ...presets.map((p) => ListTile(
+                  dense: true,
+                  title: Text('¥${_fmtThreshold(p)}', style: const TextStyle(fontSize: 15)),
+                  trailing: p == current
+                      ? Icon(Icons.check, size: 18, color: brand)
+                      : null,
+                  onTap: () => Navigator.of(ctx).pop(p),
+                )),
+            ListTile(
+              dense: true,
+              title: Text(L10n.t('自定义…', 'Custom…'), style: const TextStyle(fontSize: 15)),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                final ctrl = TextEditingController(text: current == current.roundToDouble()
+                    ? current.round().toString()
+                    : current.toStringAsFixed(2));
+                final v = await showDialog<String>(
+                  context: context,
+                  builder: (dctx) => AlertDialog(
+                    title: Text(L10n.t('自定义阈值（元）', 'Custom threshold (¥)'),
+                        style: const TextStyle(fontSize: 16)),
+                    content: TextField(
+                      controller: ctrl,
+                      autofocus: true,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(hintText: '10'),
+                    ),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.of(dctx).pop(),
+                          child: Text(L10n.t('取消', 'Cancel'))),
+                      TextButton(
+                        onPressed: () => Navigator.of(dctx).pop(ctrl.text),
+                        child: Text(L10n.t('确定', 'OK'),
+                            style: TextStyle(color: brand)),
+                      ),
+                    ],
+                  ),
+                );
+                if (v != null && v.trim().isNotEmpty) {
+                  final parsed = double.tryParse(v.trim());
+                  if (parsed != null && parsed > 0) {
+                    await widget.store.setBalanceThreshold(parsed);
+                    if (mounted) {
+                      showToast(context,
+                          L10n.t('阈值已设为 ¥', 'Threshold set to ¥') + _fmtThreshold(parsed));
+                    }
+                  } else if (mounted) {
+                    showToast(context, L10n.t('请输入大于 0 的金额', 'Enter an amount greater than 0'));
+                  }
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (selected != null) {
+      await widget.store.setBalanceThreshold(selected);
+    }
+  }
+
   /// 余额状态行（build 时求值：语言切换后即时换语言）。
   String get _balanceLabel {
     if (_busy) return L10n.t('查询中…', 'Loading…');
@@ -476,7 +563,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.notifications_active_outlined),
             title: L10n.t('余额预警', 'Low-balance alert'),
-            sub: L10n.t('余额低于 ¥10 时提醒充值', 'Remind to top up when balance is below ¥10'),
+            // v2.7.1：副标题动态显示当前阈值
+            sub: L10n.t('余额低于 ¥', 'Remind to top up when balance is below ¥') +
+                _fmtThreshold(store.balanceThreshold) +
+                L10n.t(' 时提醒充值（点此修改）', ' — tap to change'),
+            onTap: _pickThreshold,
             trailing: SizedBox(
               width: 44,
               height: 28,

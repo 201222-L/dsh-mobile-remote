@@ -38,6 +38,18 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(true)
                 }
+                "setBalanceAlert" -> {
+                    // 余额预警配置（开关 + 阈值）推给悬浮球：悬浮球的报警判定完全以 App 端设置为依据
+                    val enabled = call.argument<Boolean>("enabled") ?: false
+                    val threshold = call.argument<String>("threshold")?.toDoubleOrNull() ?: 10.0
+                    if (FloatingBubbleService.running) {
+                        val i = Intent(this, FloatingBubbleService::class.java)
+                            .putExtra("alert_enabled", enabled)
+                            .putExtra("alert_threshold", threshold)
+                        startServiceCompat(i)
+                    }
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }

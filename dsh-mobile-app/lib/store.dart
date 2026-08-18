@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
+import 'floating.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
@@ -17,6 +18,10 @@ class AppStore extends ChangeNotifier {
   List<Map<String, dynamic>> actions = [];
   int unread = 0;
   String agentStatus = 'idle'; // idle | running | waiting
+
+  /// v2.7.1：各 agent（会话）最新状态映射（bootstrap + agent/status 帧维护，key = agentId = sessionId）。
+  /// 修复：此前用全局单值 + agents.first 同步，切换工作区/回前台会把状态串成别的会话的。
+  final Map<String, String> agentStatusMap = {};
   String darkMode = 'system'; // system | dark | light
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
@@ -68,6 +73,7 @@ class AppStore extends ChangeNotifier {
   static const _kSessCache = 'dsh_mr_sessions_cache';
   static const _kLang = 'dsh_mr_language';
   static const _kBalanceAlert = 'dsh_mr_balance_alert';
+  static const _kBalanceThreshold = 'dsh_mr_balance_threshold';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -77,6 +83,7 @@ class AppStore extends ChangeNotifier {
     language = prefs.getString(_kLang) ?? 'zh';
     L10n.lang = language;
     balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
+    balanceThreshold = prefs.getDouble(_kBalanceThreshold) ?? 10;
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
     // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
@@ -145,15 +152,28 @@ class AppStore extends ChangeNotifier {
   }
 
   /// 余额预警开关（低于阈值时提醒充值）。
+  /// v2.7.1：开关变化立即同步悬浮球（关闭 → 悬浮球不再因余额报警/亮起）。
   Future<void> setBalanceAlert(bool v) async {
     balanceAlert = v;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kBalanceAlert, v);
+    unawaited(Floating.setBalanceAlert(v, balanceThreshold));
+  }
+
+  /// 余额预警阈值（元），持久化并同步悬浮球（悬浮球的判定完全以 App 端设置为依据）。
+  Future<void> setBalanceThreshold(double v) async {
+    balanceThreshold = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_kBalanceThreshold, v);
+    unawaited(Floating.setBalanceAlert(balanceAlert, v));
   }
 
   Future<void> setSession(String? id) async {
     sessionId = id;
+    // v2.7.1：打开会话时立即按该会话的状态显示（不等下一帧 agent/status）
+    applyAgentStatusForSession();
     notifyListeners();
     if (id != null) {
       final prefs = await SharedPreferences.getInstance();
@@ -344,14 +364,31 @@ class AppStore extends ChangeNotifier {
     return ok;
   }
 
-  /// 从 bootstrap 响应同步 agent 状态（连接/重连/下拉刷新时按钮立即反映 PC 真实状态）。
+  /// 从 bootstrap 响应同步各 agent 状态（连接/重连/下拉刷新时按钮立即反映 PC 真实状态）。
+  /// v2.7.1 修复：不再用 agents.first（注册序第一个，与当前会话无关，会把状态串成别的会话的）——
+  /// 全量入映射，只按当前 sessionId 取。
   void _syncAgentStatus(Map<String, dynamic> d) {
     final agents = d['agents'] as List? ?? const [];
-    if (agents.isEmpty) return;
-    final st = (agents.first as Map?)?['status'] ?? 'idle';
-    final next = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
-    if (next != agentStatus) {
-      agentStatus = next;
+    for (final a in agents) {
+      if (a is Map) {
+        final id = a['id'];
+        if (id is String && id.isNotEmpty) {
+          final st = a['status'];
+          agentStatusMap[id] = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+        }
+      }
+    }
+    applyAgentStatusForSession();
+  }
+
+  /// 把「当前打开会话」的状态应用到显示值；未打开会话或该会话不在映射中时不覆盖。
+  void applyAgentStatusForSession() {
+    final id = sessionId;
+    if (id == null) return;
+    final st = agentStatusMap[id];
+    if (st == null) return;
+    if (st != agentStatus) {
+      agentStatus = st;
       notifyListeners();
     }
   }
@@ -573,6 +610,8 @@ class AppStore extends ChangeNotifier {
     if (type == 'hello') {
       _setConnState('connected');
       _catchup();
+      // v2.7.1：重连成功后按已知映射恢复当前会话状态（bootstrap 可能没跑到，帧也可能漏）
+      applyAgentStatusForSession();
       // 连接成功：收集电脑全部地址（LAN + Tailscale），供断线时自动轮换
       unawaited(api.collectUrls());
       // 重连成功：补拉会话/通知/目录/工作区（桌面端重启后 App 无需手动刷新即可完整恢复）
@@ -682,10 +721,17 @@ class AppStore extends ChangeNotifier {
         onChatEvent?.call(ChatEvent.fromJson(event));
       }
     } else if (type == 'agent/status') {
+      // v2.7.1 修复：状态是"每个 agent"的——全量入映射；
+      // 仅当前会话（或无会话时的兜底）才更新显示值并转发聊天页，避免别的会话状态串台。
+      final aid = frame['agentId'] as String?;
       final st = frame['status'];
-      agentStatus = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
-      notifyListeners();
-      onChatEvent?.call(ChatEvent(type: 'agent/status', data: {'status': st}));
+      final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+      if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
+      if (aid == null || sessionId == null || aid == sessionId) {
+        agentStatus = norm;
+        notifyListeners();
+        onChatEvent?.call(ChatEvent(type: 'agent/status', data: {'status': st}));
+      }
     }
   }
 
@@ -705,7 +751,8 @@ class AppStore extends ChangeNotifier {
     if (_retry >= 3) {
       _retryTimer = Timer(const Duration(seconds: 2), () async {
         try {
-          await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+          final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
+          _syncAgentStatus(d);
           _retry = 0;
           connect();
         } catch (_) {

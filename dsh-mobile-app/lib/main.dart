@@ -1,12 +1,14 @@
 // DSH Remote — 手机远程操作 DeepSeek Harness
 // 原生 App：抽屉导航（首页/会话/设置）+ 通知 + 连接配置 + 扫码连接。
 // 界面与功能对齐网页端 dsh-mobile-remote（DeepSeek 配色，Claude 式布局）。
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'l10n.dart';
 import 'api.dart';
 import 'store.dart';
+import 'floating.dart';
 import 'theme.dart';
 import 'logger.dart';
 import 'scan_screen.dart';
@@ -44,6 +46,8 @@ void main() async {
   };
   await api.load();
   await store.loadPrefs();
+  // v2.7.1：启动即把余额预警配置同步给悬浮球（可能已在后台运行，判定以 App 端设置为准）
+  unawaited(Floating.setBalanceAlert(store.balanceAlert, store.balanceThreshold));
   runApp(const DshApp());
 }
 

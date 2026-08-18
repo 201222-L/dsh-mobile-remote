@@ -66,6 +66,7 @@ class FloatingBubbleService : Service() {
     private var panelNotifsSec: View? = null
     private var panelNotifsBadge: TextView? = null
     private var panelCharge: View? = null
+    private var panelBalance: TextView? = null
     private var panelVisible = false
     private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
     private var lastPanelRefresh = 0L
@@ -81,6 +82,12 @@ class FloatingBubbleService : Service() {
     @Volatile private var sseAlive = false
     @Volatile private var agentsRunning = false
     @Volatile private var lowBalance = false
+    @Volatile private var balanceTotal: Double? = null // 最近一次余额（面板常驻显示）
+    // 余额预警（v2.7.1）：判定完全以 App 端推送的配置为准；报警为事件式（亮 60s 消退，不常亮）
+    @Volatile private var alertEnabled = false
+    @Volatile private var alertThreshold = 10.0
+    @Volatile private var balanceAlerting = false // 事件式亮起中（60s 自动消退）
+    private var lastBalanceAlertAt = 0L // 上次报警时间（30 分钟防抖）
     private var notifCount = 0
     private var lastActivity = 0L
     private var lastNotif = 0L
@@ -177,6 +184,9 @@ class FloatingBubbleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.getStringExtra("balance")?.let { onBalance(it) }
+        // 余额预警配置（App 端推送：开关 + 阈值，悬浮球判定以此为准）
+        intent?.getBooleanExtra("alert_enabled", alertEnabled)?.let { alertEnabled = it }
+        intent?.getDoubleExtra("alert_threshold", alertThreshold)?.let { alertThreshold = it }
         // NOT_STICKY：只有用户主动开开关才启动；App 被杀/覆盖安装后系统不自动复活
         // （修复：设置页开关是"关"但悬浮球却出现的现象）
         return START_NOT_STICKY
@@ -245,12 +255,23 @@ class FloatingBubbleService : Service() {
         bd.textSize = 9f
         bd.setTextColor(Color.WHITE)
         bd.gravity = Gravity.CENTER
+        bd.setPadding(dp(5), 0, dp(5), 0)
+        bd.setMinWidth(dp(14))
+        // v2.7.1：胶囊徽标（圆角=高一半），骑在球右上外缘（上移/右移出球）
         bd.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(8).toFloat()
             setColor(Color.parseColor("#E5484D"))
         }
         bd.visibility = View.GONE
-        root.addView(bd, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.TOP or Gravity.END))
+        val badgeLp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, dp(16), Gravity.TOP or Gravity.END
+        )
+        badgeLp.topMargin = -dp(3)
+        badgeLp.rightMargin = -dp(2)
+        root.clipChildren = false
+        root.clipToPadding = false
+        root.addView(bd, badgeLp)
 
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
@@ -537,24 +558,38 @@ class FloatingBubbleService : Service() {
         val notifHead = LinearLayout(this)
         notifHead.orientation = LinearLayout.HORIZONTAL
         notifHead.gravity = Gravity.CENTER_VERTICAL
-        val secNotifs = sectionLabel(text("最近通知", "Notifications"))
+        // 行内标题（不走 sectionLabel：它带区块级上下 padding，会破坏水平对齐）
+        val secNotifs = TextView(this)
+        secNotifs.text = text("最近通知", "Notifications")
+        secNotifs.setTextColor(Color.parseColor("#9AA3AF"))
+        secNotifs.textSize = 10.5f
+        // 文本在容器内垂直居中 + 去掉字体上下留白：与徽标/查看全部的视觉中心对齐
+        secNotifs.gravity = Gravity.CENTER_VERTICAL
+        secNotifs.setIncludeFontPadding(false)
         notifHead.addView(secNotifs, LinearLayout.LayoutParams(0, dp(24), 1f))
         val badgeUnread = TextView(this)
         badgeUnread.text = "0"
         badgeUnread.setTextColor(Color.WHITE)
-        badgeUnread.textSize = 8.5f
+        badgeUnread.textSize = 8f
         badgeUnread.gravity = Gravity.CENTER
-        badgeUnread.setPadding(dp(3), 0, dp(3), 0)
+        // 去掉字体上下留白：小字号胶囊在固定高度容器里数字不再视觉偏下
+        badgeUnread.setIncludeFontPadding(false)
+        badgeUnread.setPadding(dp(4), 0, dp(4), 0)
+        // 最小宽度要足够大：单数字（"1"）时若只有 12dp 会接近正圆，
+        // 18dp 保证单数字也呈现胶囊（两端半圆 + 平段）
+        badgeUnread.setMinWidth(dp(18))
         badgeUnread.background = GradientDrawable().apply {
-            cornerRadius = dp(7).toFloat()
+            cornerRadius = dp(6).toFloat()
             setColor(Color.parseColor("#E5484D"))
         }
         badgeUnread.visibility = View.GONE
-        notifHead.addView(badgeUnread, LinearLayout.LayoutParams(dp(20), dp(14)))
+        notifHead.addView(badgeUnread, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(12)))
         val viewAll = TextView(this)
         viewAll.text = text("查看全部 →", "View all →")
         viewAll.setTextColor(Color.parseColor("#6C8CFF"))
         viewAll.textSize = 10.5f
+        viewAll.gravity = Gravity.CENTER_VERTICAL
+        viewAll.setIncludeFontPadding(false)
         viewAll.setPadding(dp(8), 0, 0, 0)
         viewAll.setOnClickListener { hidePanel(); openNotifs() }
         notifHead.addView(viewAll, LinearLayout.LayoutParams(dp(64), dp(24)))
@@ -565,6 +600,15 @@ class FloatingBubbleService : Service() {
         notifsBox.orientation = LinearLayout.VERTICAL
         root.addView(notifsBox)
         panelNotifs = notifsBox
+
+        // 常驻余额行（点击去充值；低余额红色，正常白色，未拉到数据显示占位）
+        val balanceRow = TextView(this)
+        balanceRow.gravity = Gravity.CENTER_VERTICAL
+        balanceRow.textSize = 12.5f
+        balanceRow.setPadding(dp(2), dp(6), dp(2), 0)
+        balanceRow.setOnClickListener { hidePanel(); openCharge() }
+        root.addView(balanceRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(26)))
+        panelBalance = balanceRow
 
         // 底部按钮（浅灰胶囊，与深色弹窗协调）
         val btnRow = LinearLayout(this)
@@ -777,6 +821,26 @@ class FloatingBubbleService : Service() {
                     conn.disconnect()
                 } catch (_: Exception) {}
 
+                // 余额（面板打开时顺带刷新常驻余额行，静默不弹提示）
+                try {
+                    val conn = URL("$b/m/api/balance").openConnection() as HttpURLConnection
+                    conn.connectTimeout = 5000
+                    conn.setRequestProperty("x-mobile-token", token)
+                    if (conn.responseCode == 200) {
+                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
+                        val first = infos?.optJSONObject(0)
+                        val total = first?.opt("total_balance")
+                        val v = when (total) {
+                            is Number -> total.toDouble()
+                            is String -> total.toDoubleOrNull() ?: 0.0
+                            else -> 0.0
+                        }
+                        if (v > 0) applyBalance(v, tip = false)
+                    }
+                    conn.disconnect()
+                } catch (_: Exception) {}
+
                 mainHandler.post {
                     // 面板打开 = 已看：更新未读基线（下次增量从当前起算）
                     lastUnreadCount = unreadCount
@@ -792,9 +856,15 @@ class FloatingBubbleService : Service() {
         box.removeAllViews()
         val secS = panelSessionsSec
         if (running.isEmpty()) {
-            // 无运行中会话 → 整个区块隐藏（不留占位文案）
-            secS?.visibility = View.GONE
-            box.visibility = View.GONE
+            // 无运行中会话 → 区块保留，显示占位文案（面板不空）
+            secS?.visibility = View.VISIBLE
+            box.visibility = View.VISIBLE
+            val empty = TextView(this)
+            empty.text = text("暂无运行中的会话", "No active sessions")
+            empty.setTextColor(Color.parseColor("#5C6470"))
+            empty.textSize = 11f
+            empty.setPadding(0, dp(2), 0, dp(2))
+            box.addView(empty)
         } else {
             secS?.visibility = View.VISIBLE
             box.visibility = View.VISIBLE
@@ -816,9 +886,16 @@ class FloatingBubbleService : Service() {
         val secN = panelNotifsSec
         val badgeN = panelNotifsBadge
         if (notifs.isEmpty()) {
-            // 无通知 → 整个区块隐藏
-            secN?.visibility = View.GONE
-            nbox.visibility = View.GONE
+            // 无通知 → 区块保留，显示占位文案（面板不空）
+            secN?.visibility = View.VISIBLE
+            nbox.visibility = View.VISIBLE
+            badgeN?.visibility = View.GONE
+            val empty = TextView(this)
+            empty.text = text("暂无通知", "No notifications")
+            empty.setTextColor(Color.parseColor("#5C6470"))
+            empty.textSize = 11f
+            empty.setPadding(0, dp(2), 0, dp(2))
+            nbox.addView(empty)
         } else {
             secN?.visibility = View.VISIBLE
             nbox.visibility = View.VISIBLE
@@ -866,12 +943,14 @@ class FloatingBubbleService : Service() {
                 setColor(Color.parseColor("#3A3F47"))
             }
         }
+        updateBalanceRow()
     }
 
     // ── 状态渲染 ──
     private fun setState() {
         val img = logoImg ?: return
-        if (agentsRunning || lowBalance || notifCount > 0) {
+        // 亮态：任务/通知/余额报警中（余额报警为事件式：60s 消退，不因余额低常亮）
+        if (agentsRunning || balanceAlerting || notifCount > 0) {
             // 亮态：原色 + 过渡到全不透明
             animateAlpha(img, 1f)
             img.setGray(false)
@@ -1044,10 +1123,46 @@ class FloatingBubbleService : Service() {
     private fun onBalance(s: String) {
         val parts = s.split(":")
         val total = parts.firstOrNull()?.toDoubleOrNull() ?: return
-        lowBalance = total < 10.0
+        applyBalance(total, tip = true)
+    }
+
+    /** 应用余额：存值 + 更新面板常驻余额行；tip=true 时按 App 预警配置报警（事件式，不常亮）。 */
+    private fun applyBalance(total: Double, tip: Boolean) {
+        balanceTotal = total
+        lowBalance = alertEnabled && total < alertThreshold
         mainHandler.post {
             setState()
-            if (lowBalance) showTip(text("余额不足 ¥" + String.format("%.1f", total) + "，点我去充值", "Low balance ¥" + String.format("%.1f", total) + " — tap to top up"))
+            updateBalanceRow()
+            if (tip && lowBalance) {
+                // 事件式提醒：亮 60 秒自动消退；30 分钟防抖（余额持续低时不反复打扰）
+                val now = System.currentTimeMillis()
+                if (now - lastBalanceAlertAt >= 30 * 60 * 1000L) {
+                    lastBalanceAlertAt = now
+                    balanceAlerting = true
+                    mainHandler.removeCallbacks(clearBalanceAlertRunnable)
+                    mainHandler.postDelayed(clearBalanceAlertRunnable, 60000)
+                    showTip(text("余额不足 ¥" + String.format("%.2f", total) + "，点我去充值", "Low balance ¥" + String.format("%.2f", total) + " — tap to top up"))
+                }
+            }
+        }
+    }
+
+    /** 余额报警亮起消退（60 秒后回到暗态）。 */
+    private val clearBalanceAlertRunnable = Runnable {
+        balanceAlerting = false
+        mainHandler.post { setState() }
+    }
+
+    /** 面板常驻余额行：有值显示余额（低余额红色），无值显示占位。 */
+    private fun updateBalanceRow() {
+        val tv = panelBalance ?: return
+        val t = balanceTotal
+        if (t == null) {
+            tv.text = text("余额 --", "Balance --")
+            tv.setTextColor(Color.parseColor("#9AA3AF"))
+        } else {
+            tv.text = text("余额 ¥" + String.format("%.2f", t), "Balance ¥" + String.format("%.2f", t))
+            tv.setTextColor(if (lowBalance) Color.parseColor("#FF6B6B") else Color.WHITE)
         }
     }
 

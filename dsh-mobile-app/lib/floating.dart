@@ -23,6 +23,14 @@ class Floating {
   static Future<void> notifyBalance(double total) =>
       _channel.invokeMethod('notifyBalance', {'value': total.toStringAsFixed(2)});
 
+  /// 余额预警配置同步给悬浮球（开关 + 阈值；悬浮球的报警判定完全以此为准，
+  /// 开关关闭 → 悬浮球不因余额报警/亮起，仅常驻显示余额数值）。
+  static Future<void> setBalanceAlert(bool enabled, double threshold) =>
+      _channel.invokeMethod('setBalanceAlert', {
+        'enabled': enabled,
+        'threshold': threshold.toStringAsFixed(2),
+      });
+
   /// 悬浮球单击打开的面板标志（一次性消费）。
   static Future<bool> consumeOpenPanel() async =>
       (await _channel.invokeMethod<bool>('consumeOpenPanel')) ?? false;
