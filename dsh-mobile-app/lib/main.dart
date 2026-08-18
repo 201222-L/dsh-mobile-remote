@@ -135,6 +135,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   bool _reconfiguring = false; // 重新配置进行中：显示连接页但保留旧配置，取消可回退
   final _drawerKey = GlobalKey<ScaffoldState>();
   OverlayEntry? _bannerEntry;
+  Timer? _bannerTimer; // v2.7.1：消失计时改为可管理 Timer（后台冻结/异常时序下 Future.delayed 会丢失）
   DateTime _lastBannerAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
@@ -157,6 +158,9 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     final now = DateTime.now();
     if (now.difference(_lastBannerAt).inSeconds < 10) return;
     _lastBannerAt = now;
+    // v2.7.1：显示新横幅前取消旧计时器/移除旧横幅，杜绝叠加
+    _bannerTimer?.cancel();
+    _bannerTimer = null;
     final overlay = Overlay.of(context);
     _bannerEntry?.remove();
     late OverlayEntry entry;
@@ -172,7 +176,10 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
               color: Colors.transparent,
               child: GestureDetector(
                 onTap: () {
-                  entry.remove();
+                  _bannerTimer?.cancel();
+                  _bannerTimer = null;
+                  if (entry.mounted) entry.remove();
+                  if (_bannerEntry == entry) _bannerEntry = null;
                   store.markNotifsSeen();
                   _openNotifications();
                 },
@@ -211,10 +218,13 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     );
     _bannerEntry = entry;
     overlay.insert(entry);
-    // 2.5 秒自动消失
-    Future.delayed(const Duration(milliseconds: 2500), () {
+    // 2.5 秒自动消失：无条件移除 + 引用清理（不依赖 mounted 判断，防异常时序残留）；
+    // 同时更新未读基线——同一批通知只提示一次，后续刷新不会反复弹。
+    _bannerTimer = Timer(const Duration(milliseconds: 2500), () {
+      _bannerTimer = null;
       if (entry.mounted) entry.remove();
       if (_bannerEntry == entry) _bannerEntry = null;
+      store.markNotifsSeen();
     });
   }
 
@@ -224,6 +234,10 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _bannerTimer?.cancel();
+    _bannerTimer = null;
+    _bannerEntry?.remove();
+    _bannerEntry = null;
     store.removeListener(_onStore);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
