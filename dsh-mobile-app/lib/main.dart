@@ -59,10 +59,18 @@ class DshApp extends StatefulWidget {
 }
 
 class _DshAppState extends State<DshApp> {
+  // v2.7.1：通知横幅全局状态（MaterialApp.builder 渲染在所有 route 之上；
+  // 页面内 Stack 会被 push 的聊天页/通知页遮挡，OverlayEntry 又有 remove 残留 bug）
+  int? _bannerCount;
+  Timer? _bannerTimer;
+  DateTime _lastBannerAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   @override
   void initState() {
     super.initState();
     store.addListener(_onStore);
+    // 新增未读通知 → 全局顶部横幅
+    store.onNewNotifications = _onNewNotifications;
     // 悬浮球迷你面板动作（原生 → Flutter）：打开会话 / 去充值
     const MethodChannel('dsh/floating').setMethodCallHandler((call) async {
       final nav = rootNavigatorKey.currentState;
@@ -95,12 +103,39 @@ class _DshAppState extends State<DshApp> {
 
   @override
   void dispose() {
+    _bannerTimer?.cancel();
+    _bannerTimer = null;
     store.removeListener(_onStore);
     super.dispose();
   }
 
   void _onStore() {
     if (mounted) setState(() {});
+  }
+
+  /// 新增未读通知横幅：顶部滑入，2.5 秒自动消失，点击跳通知页；10 秒内不重复。
+  /// force=true（悬浮球跳转/回前台）时绕过防抖——"错过的也提醒"。
+  void _onNewNotifications(int count, {bool force = false}) {
+    final now = DateTime.now();
+    if (!force && now.difference(_lastBannerAt).inSeconds < 10) {
+      AppLog.instance.log('Banner: 防抖拦截（距上次 ${now.difference(_lastBannerAt).inSeconds}s）');
+      return;
+    }
+    _lastBannerAt = now;
+    _bannerTimer?.cancel();
+    _bannerTimer = null;
+    if (!mounted) return;
+    setState(() => _bannerCount = count);
+    AppLog.instance.log('Banner: 出现 count=$count');
+    // 2.5 秒自动消失（setState 驱动，框架保证移除）；同时更新未读基线防反复弹。
+    _bannerTimer = Timer(const Duration(milliseconds: 2500), () {
+      _bannerTimer = null;
+      AppLog.instance.log('Banner: 到期 timer 触发');
+      if (!mounted) return;
+      setState(() => _bannerCount = null);
+      store.markNotifsSeen();
+      AppLog.instance.log('Banner: 到期清理完成');
+    });
   }
 
   @override
@@ -118,6 +153,75 @@ class _DshAppState extends State<DshApp> {
       darkTheme: DshTheme.dark(),
       themeMode: mode,
       home: const RootScreen(),
+      // 全局横幅：渲染在 Navigator（所有 route）之上
+      builder: (context, child) {
+        final bannerCount = _bannerCount;
+        if (bannerCount != null) {
+          AppLog.instance.log('Banner: builder 渲染中 count=$bannerCount');
+        }
+        if (bannerCount == null) return child!;
+        return Stack(
+          children: [
+            child!,
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: GestureDetector(
+                      onTap: () {
+                        AppLog.instance.log('Banner: 点击关闭');
+                        _bannerTimer?.cancel();
+                        _bannerTimer = null;
+                        if (!mounted) return;
+                        setState(() => _bannerCount = null);
+                        store.markNotifsSeen();
+                        final nav = rootNavigatorKey.currentState;
+                        if (nav != null) {
+                          nav.push(MaterialPageRoute(
+                            builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
+                          ));
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                        decoration: BoxDecoration(
+                          // 跟随主题：浅色=白底深字，深色=深底浅字
+                          color: Theme.of(context).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
+                          borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
+                          ],
+                          border: Theme.of(context).brightness == Brightness.dark
+                              ? null
+                              : Border.all(color: DshColors.line(context)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.notifications_active, size: 17, color: DshColors.brand(context)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                L10n.t('有 $bannerCount 条新通知', '$bannerCount new notification${bannerCount > 1 ? 's' : ''}'),
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(context)),
+                              ),
+                            ),
+                            Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(context)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -134,9 +238,6 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   int _index = 0;
   bool _reconfiguring = false; // 重新配置进行中：显示连接页但保留旧配置，取消可回退
   final _drawerKey = GlobalKey<ScaffoldState>();
-  OverlayEntry? _bannerEntry;
-  Timer? _bannerTimer; // v2.7.1：消失计时改为可管理 Timer（后台冻结/异常时序下 Future.delayed 会丢失）
-  DateTime _lastBannerAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -145,87 +246,10 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     // 全局状态变化（工作区切换、未读数、连接状态等）→ 重建自身（含抽屉），
     // 否则 const RootScreen 会被父级重建跳过，抽屉里的工作区选中态不会跟着变。
     store.addListener(_onStore);
-    // 新增未读通知 → 顶部横幅提示（重连/离线期间新增也能提示）
-    store.onNewNotifications = _onNewNotifications;
     _configured = api.baseUrl.isNotEmpty && api.token.isNotEmpty;
     if (_configured) {
       _boot();
     }
-  }
-
-  /// 新增未读通知横幅：顶部滑入，2.5 秒自动消失，点击跳通知页；10 秒内不重复。
-  void _onNewNotifications(int count) {
-    final now = DateTime.now();
-    if (now.difference(_lastBannerAt).inSeconds < 10) return;
-    _lastBannerAt = now;
-    // v2.7.1：显示新横幅前取消旧计时器/移除旧横幅，杜绝叠加
-    _bannerTimer?.cancel();
-    _bannerTimer = null;
-    final overlay = Overlay.of(context);
-    _bannerEntry?.remove();
-    late OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (ctx) => Positioned(
-        top: 0,
-        left: 0,
-        right: 0,
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Material(
-              color: Colors.transparent,
-              child: GestureDetector(
-                onTap: () {
-                  _bannerTimer?.cancel();
-                  _bannerTimer = null;
-                  if (entry.mounted) entry.remove();
-                  if (_bannerEntry == entry) _bannerEntry = null;
-                  store.markNotifsSeen();
-                  _openNotifications();
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                  decoration: BoxDecoration(
-                    // 跟随主题：浅色=白底深字，深色=深底浅字
-                    color: Theme.of(ctx).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
-                    borderRadius: BorderRadius.circular(DshTheme.radiusMd),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
-                    ],
-                    border: Theme.of(ctx).brightness == Brightness.dark
-                        ? null
-                        : Border.all(color: DshColors.line(ctx)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.notifications_active, size: 17, color: DshColors.brand(ctx)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          L10n.t('有 $count 条新通知', '$count new notification${count > 1 ? 's' : ''}'),
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(ctx)),
-                        ),
-                      ),
-                      Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(ctx)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    _bannerEntry = entry;
-    overlay.insert(entry);
-    // 2.5 秒自动消失：无条件移除 + 引用清理（不依赖 mounted 判断，防异常时序残留）；
-    // 同时更新未读基线——同一批通知只提示一次，后续刷新不会反复弹。
-    _bannerTimer = Timer(const Duration(milliseconds: 2500), () {
-      _bannerTimer = null;
-      if (entry.mounted) entry.remove();
-      if (_bannerEntry == entry) _bannerEntry = null;
-      store.markNotifsSeen();
-    });
   }
 
   void _onStore() {
@@ -234,10 +258,6 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    _bannerTimer?.cancel();
-    _bannerTimer = null;
-    _bannerEntry?.remove();
-    _bannerEntry = null;
     store.removeListener(_onStore);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -247,7 +267,13 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // App 回到前台：主动探测电脑端在线状态（PC 退出/恢复实时反映，无需清后台重进）
     if (state == AppLifecycleState.resumed && _configured) {
-      store.resume();
+      store.resume().then((_) {
+        // v2.7.1：错过的也提醒——悬浮球跳转/切回 App 时若有未读（后台期间错过的），
+        // 强制弹横幅（绕过防抖；后台时横幅已触发过但用户没看到，基线已同步所以增量不触发）
+        if (store.unread > 0) {
+          store.onNewNotifications?.call(store.unread, force: true);
+        }
+      });
     }
   }
 

@@ -60,6 +60,10 @@ class AppStore extends ChangeNotifier {
   void Function(ChatEvent ev)? onChatEvent;
   VoidCallback? onSessionsChanged; // 标题/预设变化 → 外部刷新
 
+  /// 新增未读通知回调（横幅提示用）：参数 = 新增条数；force=true 时绕过 10 秒防抖
+  /// （v2.7.1：悬浮球跳转/回前台时"错过的也提醒"）。
+  void Function(int count, {bool force})? onNewNotifications;
+
   // ── SSE 内部 ──
   StreamSubscription<Map<String, dynamic>>? _sub;
   int _retry = 0;
@@ -473,8 +477,6 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  /// 新增未读通知回调（横幅提示用）：参数 = 新增条数。
-  void Function(int count)? onNewNotifications;
   int _lastUnread = 0;
   bool _firstUnreadSeen = false;
 
