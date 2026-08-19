@@ -127,6 +127,9 @@ class AppStore extends ChangeNotifier {
     return p;
   }
 
+  /// 路径规范化（外部复用：新建会话弹层等工作目录匹配用）。
+  static String normPath(String s) => _normPath(s);
+
   /// 切换当前工作区（null = 全部）。
   Future<void> setWorkspace(String? path) async {
     workspacePath = path == null ? null : _normPath(path);

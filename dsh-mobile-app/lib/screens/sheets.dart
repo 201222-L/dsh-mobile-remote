@@ -302,16 +302,22 @@ Future<void> showNewSessionSheet(
 ) async {
   String? pendingMode;
   String? pendingDir;
-  // 默认工作目录 = 当前选中的工作区（未选时回退第一个已注册工作区）
-  try {
-    final ws = await api.workspaces();
-    if (ws.isNotEmpty) {
-      final selected = store.workspacePath;
-      pendingDir = (selected != null && ws.any((w) => w['path'] == selected))
-          ? selected
-          : ws.first['path'] as String?;
-    }
-  } catch (_) {}
+  // 默认工作目录 = 当前选中的工作区（未选时回退第一个已注册工作区）。
+  // v2.7.1：用已规范化的 store.workspaces 匹配（api.workspaces() 原始路径大小写/斜杠
+  // 与 workspacePath 不一致会导致匹配失败，永远回退到第一个工作区）。
+  var ws = store.workspaces;
+  if (ws.isEmpty) {
+    try {
+      final raw = await api.workspaces();
+      ws = raw.map((w) => {...w, 'path': AppStore.normPath(w['path'] as String? ?? '')}).toList();
+    } catch (_) {}
+  }
+  if (ws.isNotEmpty) {
+    final selected = store.workspacePath;
+    pendingDir = (selected != null && ws.any((w) => w['path'] == selected))
+        ? selected
+        : ws.first['path'] as String?;
+  }
   if (!context.mounted) return;
 
   Future<void> doCreate() async {
@@ -414,6 +420,41 @@ Future<void> showNewSessionSheet(
                                       Text(L10n.t('工作目录', 'Working Directory'), style: const TextStyle(fontSize: 14)),
                                       Text(
                                         pendingDir ?? L10n.t('默认（当前工作区）', 'Default (current workspace)'),
+                                        style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text(L10n.t('选择 ▸', 'Choose ▸'), style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+                              ],
+                            ),
+                          ),
+                        ),
+                        // v2.7.1：模型与推理入口（新建会话时选模型/调推理强度；选择写入 sessionConfig，
+                        // doCreate 会带上）
+                        InkWell(
+                          onTap: () {
+                            showModelSheet(context, store);
+                            // showModelSheet 选择后 pop 返回，刷新本弹层显示当前值
+                            Future<void>.delayed(const Duration(milliseconds: 400), () {
+                              if (sheetCtx.mounted) refresh();
+                            });
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
+                            child: Row(
+                              children: [
+                                Icon(Icons.smart_toy_outlined, size: 15, color: DshColors.ink3(context)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(L10n.t('模型与推理强度', 'Model & Reasoning Effort'), style: const TextStyle(fontSize: 14)),
+                                      Text(
+                                        '${store.sessionConfig.model ?? L10n.t('选择模型', 'Select model')}'
+                                        ' · ${store.sessionConfig.reasoningEffort ?? 'max'}',
                                         style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
                                         overflow: TextOverflow.ellipsis,
                                       ),
