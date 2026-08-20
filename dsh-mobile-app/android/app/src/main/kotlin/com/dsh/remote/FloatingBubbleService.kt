@@ -101,6 +101,7 @@ class FloatingBubbleService : Service() {
     private var lastScreenH = 0
     private var edgeSide = 1 // 贴边目标侧：-1 左 / +1 右
     private var edgeHidden = false // 是否处于贴边半隐藏缩进态
+    private var lastRenderX = 0 // 最近一次稳定位置的渲染 x（旋转判断贴左/贴右用）
 
     // 未读增量对比（补"事件驱动之外的提示"：重连窗口/离线期间新增的通知）
     private var lastUnreadCount = 0
@@ -309,23 +310,14 @@ class FloatingBubbleService : Service() {
         if (lastScreenW <= 0) lastScreenW = size.x
         val bd = dp(bubbleDp)
         val offX = overlayInsetLeft()
-        val rx = p.x + offX // 当前渲染 x（旋转前坐标系）
-        val wasNearLeft = rx <= dp(8)
-        val wasNearRight = rx + bd >= lastScreenW - dp(8)
-        val minX = -bd + dp(16)
-        val maxX = maxOf(minX, size.x - dp(16))
-        val newRenderX: Int
-        if (wasNearLeft || wasNearRight) {
-            // 旋转前贴边：按同侧 + 同隐藏状态在新屏尺寸上恢复
-            edgeSide = if (wasNearLeft) -1 else 1
-            newRenderX = if (edgeSide < 0) {
-                if (edgeHidden) -bd + dp(16) else 0
-            } else {
-                if (edgeHidden) size.x - dp(16) else size.x - bd
-            }
+        // 无条件贴边（v2.7.2 修正）：按旋转前渲染位置判断贴左/贴右，保持隐藏状态——
+        // 不再保留"自由位置"，竖屏↔横屏/翻转 180°/页面跳转后球都自动回到边上
+        val center = lastRenderX + bd / 2
+        edgeSide = if (center < lastScreenW / 2) -1 else 1
+        val newRenderX = if (edgeSide < 0) {
+            if (edgeHidden) -bd + dp(16) else 0
         } else {
-            // 自由位置：按宽度比例保持相对位置，钳制在允许范围内
-            newRenderX = (rx.toLong() * size.x / lastScreenW).toInt().coerceIn(minX, maxX)
+            if (edgeHidden) size.x - dp(16) else size.x - bd
         }
         p.x = newRenderX - offX
         val offY = overlayInsetTop()
@@ -333,6 +325,7 @@ class FloatingBubbleService : Service() {
         p.y = ry.coerceIn(0, size.y - bd) - offY
         lastScreenW = size.x
         lastScreenH = size.y
+        lastRenderX = newRenderX
         wm.updateViewLayout(root, p)
         positionTip()
         if (panelVisible) placePanel()
@@ -388,6 +381,7 @@ class FloatingBubbleService : Service() {
         edgeSide = 1
         edgeHidden = false
         params.x = initSize.x - size
+        lastRenderX = initSize.x - size
         params.y = dp(240)
         wm.addView(root, params)
         // 启动后 5 秒无操作自动缩进（贴边常驻，无需先拖动）
@@ -463,6 +457,7 @@ class FloatingBubbleService : Service() {
                         val ry = (startY + dy.toInt() + offY).coerceIn(0, size.y - bd)
                         params.x = rx - offX
                         params.y = ry - offY
+                        lastRenderX = rx // 拖动中旋转也能按当前渲染位置贴边
                         wm.updateViewLayout(root, params)
                         // 拖动时收起面板；气泡若在显示中则跟随
                         if (panelVisible) hidePanel()
@@ -593,6 +588,7 @@ class FloatingBubbleService : Service() {
         lastScreenW = size.x
         lastScreenH = size.y
         val renderX = if (edgeSide < 0) 0 else size.x - bd
+        lastRenderX = renderX
         animateX(renderX - overlayInsetLeft())
     }
 
@@ -608,6 +604,7 @@ class FloatingBubbleService : Service() {
         lastScreenW = size.x
         lastScreenH = size.y
         val renderX = if (edgeSide < 0) -bd + edgePeek else size.x - edgePeek
+        lastRenderX = renderX
         val target = renderX - overlayInsetLeft()
         android.util.Log.i("DSHRemote", "bubble: auto-hide to renderX=$renderX target=$target")
         animateX(target)
@@ -651,6 +648,7 @@ class FloatingBubbleService : Service() {
         lastScreenH = size.y
         val rx = p.x + overlayInsetLeft()
         val renderX = if (rx < size.x / 2) 0 else size.x - bd
+        lastRenderX = renderX
         animateX(renderX - overlayInsetLeft())
     }
 
