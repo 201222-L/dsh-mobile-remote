@@ -255,32 +255,82 @@ class FloatingBubbleService : Service() {
         return android.graphics.Point(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
     }
 
-    /** 旋转/配置变更：按新屏尺寸恢复贴边（横屏不再飘到屏幕中间）。 */
+    /**
+     * 系统给 overlay 窗口应用的水平/垂直偏移（v2.7.2 修复）：
+     * 渲染位置 = attrs.x + offsetX、attrs.y + offsetY。
+     * 横屏（ROTATION_90）时系统会把窗口整体右移（挖孔/状态栏安全区，实测 144px），
+     * 不扣除偏移会导致贴边计算把球推到屏幕外（"横屏悬浮球消失"）。
+     */
+    /**
+     * 系统给 overlay 窗口应用的水平/垂直偏移（渲染位置 = attrs.x + offsetX、attrs.y + offsetY）。
+     * 实测 rootWindowInsets 在 overlay 窗口上不可靠（本机返回 108 而实际 144），
+     * 改用 display 级权威数据 defaultDisplay.cutout（API 29+）：
+     * - 竖屏：挖孔在顶部 → safeInsetTop（本机 144）
+     * - 横屏 ROTATION_90：挖孔转到左侧 → safeInsetLeft（144）
+     * - 翻转 180°（ROTATION_270）：挖孔转到右侧 → safeInsetLeft=0（系统右侧收窄，左不推）
+     */
+    private fun overlayInsetLeft(): Int {
+        val wm = this.wm ?: return 0
+        if (Build.VERSION.SDK_INT >= 29) {
+            val c = wm.defaultDisplay.cutout
+            if (c != null && c.safeInsetLeft > 0) return c.safeInsetLeft
+        }
+        @Suppress("DEPRECATION")
+        return bubble?.rootWindowInsets?.systemWindowInsetLeft ?: 0
+    }
+
+    private fun overlayInsetTop(): Int {
+        val wm = this.wm ?: return 0
+        if (Build.VERSION.SDK_INT >= 29) {
+            val c = wm.defaultDisplay.cutout
+            if (c != null && c.safeInsetTop > 0) return c.safeInsetTop
+        }
+        @Suppress("DEPRECATION")
+        return bubble?.rootWindowInsets?.systemWindowInsetTop ?: 0
+    }
+
+    /** 球当前渲染位置（attrs + 系统偏移）。 */
+    private fun bubbleRenderX(): Int = (bubbleParams?.x ?: 0) + overlayInsetLeft()
+    private fun bubbleRenderY(): Int = (bubbleParams?.y ?: 0) + overlayInsetTop()
+
+    /** 旋转/配置变更：按新屏尺寸恢复贴边（渲染坐标计算，扣除系统 inset 偏移）。 */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        repositionForOrientation()
+        // relayout 完成后 insets 才更新为最新方向的值，用新值再校正一次
+        bubble?.post { repositionForOrientation() }
+    }
+
+    private fun repositionForOrientation() {
         val p = bubbleParams ?: return
         val root = bubble ?: return
         val wm = this.wm ?: return
         val size = screenSize()
         if (lastScreenW <= 0) lastScreenW = size.x
         val bd = dp(bubbleDp)
-        val wasNearLeft = p.x <= dp(8)
-        val wasNearRight = p.x + bd >= lastScreenW - dp(8)
-        val newX: Int
+        val offX = overlayInsetLeft()
+        val rx = p.x + offX // 当前渲染 x（旋转前坐标系）
+        val wasNearLeft = rx <= dp(8)
+        val wasNearRight = rx + bd >= lastScreenW - dp(8)
+        val minX = -bd + dp(16)
+        val maxX = maxOf(minX, size.x - dp(16))
+        val newRenderX: Int
         if (wasNearLeft || wasNearRight) {
             // 旋转前贴边：按同侧 + 同隐藏状态在新屏尺寸上恢复
             edgeSide = if (wasNearLeft) -1 else 1
-            newX = if (edgeSide < 0) {
+            newRenderX = if (edgeSide < 0) {
                 if (edgeHidden) -bd + dp(16) else 0
             } else {
                 if (edgeHidden) size.x - dp(16) else size.x - bd
             }
         } else {
             // 自由位置：按宽度比例保持相对位置，钳制在允许范围内
-            newX = (p.x.toLong() * size.x / lastScreenW).toInt().coerceIn(-bd + dp(16), size.x - dp(16))
+            newRenderX = (rx.toLong() * size.x / lastScreenW).toInt().coerceIn(minX, maxX)
         }
-        p.x = newX
-        p.y = p.y.coerceIn(0, size.y - bd)
+        p.x = newRenderX - offX
+        val offY = overlayInsetTop()
+        val ry = p.y + offY
+        p.y = ry.coerceIn(0, size.y - bd) - offY
         lastScreenW = size.x
         lastScreenH = size.y
         wm.updateViewLayout(root, p)
@@ -372,10 +422,15 @@ class FloatingBubbleService : Service() {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     // v2.7.2：自愈——若球因旋转等落在越界位置，先钳回允许范围再开始拖
+                    // （按渲染坐标钳制，扣除系统 inset 偏移后写回 attrs）
                     val size = screenSize()
                     val bd = dp(bubbleDp)
-                    val cx = params.x.coerceIn(-bd + dp(16), size.x - dp(16))
-                    val cy = params.y.coerceIn(0, size.y - bd)
+                    val offX = overlayInsetLeft()
+                    val offY = overlayInsetTop()
+                    val minX = -bd + dp(16)
+                    val maxX = maxOf(minX, size.x - dp(16))
+                    val cx = (params.x + offX).coerceIn(minX, maxX) - offX
+                    val cy = (params.y + offY).coerceIn(0, size.y - bd) - offY
                     if (cx != params.x || cy != params.y) {
                         params.x = cx
                         params.y = cy
@@ -396,11 +451,18 @@ class FloatingBubbleService : Service() {
                         mainHandler.removeCallbacks(longPressRunnable)
                     }
                     if (moved) {
-                        // v2.7.2：拖动钳制——永远拖不出屏（允许贴边半隐藏的 16dp 探出）
+                        // v2.7.2：拖动钳制——永远拖不出屏（允许贴边半隐藏的 16dp 探出；
+                        // 按渲染坐标钳制，扣除系统 inset 偏移后写回 attrs）
                         val size = screenSize()
                         val bd = dp(bubbleDp)
-                        params.x = (startX + dx.toInt()).coerceIn(-bd + dp(16), size.x - dp(16))
-                        params.y = (startY + dy.toInt()).coerceIn(0, size.y - bd)
+                        val offX = overlayInsetLeft()
+                        val offY = overlayInsetTop()
+                        val minX = -bd + dp(16)
+                        val maxX = maxOf(minX, size.x - dp(16))
+                        val rx = (startX + dx.toInt() + offX).coerceIn(minX, maxX)
+                        val ry = (startY + dy.toInt() + offY).coerceIn(0, size.y - bd)
+                        params.x = rx - offX
+                        params.y = ry - offY
                         wm.updateViewLayout(root, params)
                         // 拖动时收起面板；气泡若在显示中则跟随
                         if (panelVisible) hidePanel()
@@ -483,12 +545,14 @@ class FloatingBubbleService : Service() {
         val bd = dp(bubbleDp)
         // 实际宽度（首次显示未测量时用估算，布局完成后重定位）
         val tipW = if (tv.width > 0) tv.width else dp(170)
-        // 水平：居中于球可见部分，钳制屏内
-        val visCenter = (maxOf(0, bp.x) + minOf(size.x, bp.x + bd)) / 2
+        // 水平：居中于球可见部分（渲染坐标），钳制屏内
+        val bx = bp.x + overlayInsetLeft()
+        val visCenter = (maxOf(0, bx) + minOf(size.x, bx + bd)) / 2
         p.x = (visCenter - tipW / 2).coerceIn(dp(4), size.x - tipW - dp(4))
         // 垂直：球上方紧贴（气泡高约 30dp + 8dp 间距）；顶部空间不足放球下方
-        val above = bp.y - dp(38)
-        p.y = if (above >= dp(6)) above else bp.y + bd + dp(6)
+        val by = bp.y + overlayInsetTop()
+        val above = by - dp(38)
+        p.y = if (above >= dp(6)) above else by + bd + dp(6)
         wm.updateViewLayout(tv, p)
         // 首次测量前定位：布局完成后按实际宽度重新定位
         if (tv.width == 0) {
@@ -523,12 +587,13 @@ class FloatingBubbleService : Service() {
         val p = bubbleParams ?: return
         val size = screenSize()
         val bd = dp(bubbleDp)
-        val center = p.x + bd / 2
+        val center = bubbleRenderX() + bd / 2
         edgeSide = if (center < size.x / 2) -1 else 1
         edgeHidden = false
         lastScreenW = size.x
         lastScreenH = size.y
-        animateX(if (edgeSide < 0) 0 else size.x - bd)
+        val renderX = if (edgeSide < 0) 0 else size.x - bd
+        animateX(renderX - overlayInsetLeft())
     }
 
     /** 5 秒无操作后缩进：只露 16dp，其余藏进屏幕边缘。 */
@@ -537,13 +602,14 @@ class FloatingBubbleService : Service() {
         val size = screenSize()
         val edgePeek = dp(16)
         val bd = dp(bubbleDp)
-        val center = p.x + bd / 2
+        val center = bubbleRenderX() + bd / 2
         edgeSide = if (center < size.x / 2) -1 else 1
         edgeHidden = true
         lastScreenW = size.x
         lastScreenH = size.y
-        val target = if (edgeSide < 0) -bd + edgePeek else size.x - edgePeek
-        android.util.Log.i("DSHRemote", "bubble: auto-hide to x=$target")
+        val renderX = if (edgeSide < 0) -bd + edgePeek else size.x - edgePeek
+        val target = renderX - overlayInsetLeft()
+        android.util.Log.i("DSHRemote", "bubble: auto-hide to renderX=$renderX target=$target")
         animateX(target)
     }
 
@@ -566,12 +632,13 @@ class FloatingBubbleService : Service() {
     }
 
     /** 球是否处于贴边半隐藏状态（x 为负 = 左缩进；右侧越出屏幕 = 右缩进）。
-     *  完全露出时 x=0（左）或 x=sw-bd（右，x+bd==sw 正好贴边不算隐藏）。 */
+     *  完全露出时 x=0（左）或 x=sw-bd（右，x+bd==sw 正好贴边不算隐藏）。按渲染坐标判断。 */
     private fun isEdgeHidden(): Boolean {
         val p = bubbleParams ?: return false
         val size = screenSize()
         val bd = dp(bubbleDp)
-        return p.x < -dp(2) || p.x + bd > size.x + dp(2)
+        val rx = p.x + overlayInsetLeft()
+        return rx < -dp(2) || rx + bd > size.x + dp(2)
     }
 
     /** 从半隐藏滑出到完全可见。 */
@@ -582,7 +649,9 @@ class FloatingBubbleService : Service() {
         edgeHidden = false
         lastScreenW = size.x
         lastScreenH = size.y
-        animateX(if (p.x < size.x / 2) 0 else size.x - bd)
+        val rx = p.x + overlayInsetLeft()
+        val renderX = if (rx < size.x / 2) 0 else size.x - bd
+        animateX(renderX - overlayInsetLeft())
     }
 
     // ── 迷你面板（单击展开，球旁小卡片）──
@@ -750,8 +819,10 @@ class FloatingBubbleService : Service() {
         // 生长动画：从球方向位移 + 放大 + 淡入（球在左→从左长出，球在上→从上长出）
         val bp = bubbleParams ?: return
         val size = screenSize()
-        val dirX = if (bp.x < size.x / 2) -1f else 1f
-        val dirY = if (bp.y < size.y / 2) -1f else 1f
+        val bx = bp.x + overlayInsetLeft()
+        val by = bp.y + overlayInsetTop()
+        val dirX = if (bx < size.x / 2) -1f else 1f
+        val dirY = if (by < size.y / 2) -1f else 1f
         p.translationX = dirX * dp(28).toFloat()
         p.translationY = dirY * dp(16).toFloat()
         p.alpha = 0f
@@ -799,17 +870,20 @@ class FloatingBubbleService : Service() {
         val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(300)
         val sw = size.x
         val sh = size.y
-        val ballRight = bp.x + dp(bubbleDp)
-        val ballBottom = bp.y + dp(bubbleDp)
+        // 用渲染坐标（球实际显示位置）计算面板位置
+        val bx = bp.x + overlayInsetLeft()
+        val by = bp.y + overlayInsetTop()
+        val ballRight = bx + dp(bubbleDp)
+        val ballBottom = by + dp(bubbleDp)
         // 水平：球在左半 → 面板放球右侧；右半 → 面板放球左侧（贴边）
-        val onLeftSide = bp.x < sw / 2
-        pp.x = if (onLeftSide) ballRight + dp(4) else bp.x - pw - dp(4)
+        val onLeftSide = bx < sw / 2
+        pp.x = if (onLeftSide) ballRight + dp(4) else bx - pw - dp(4)
         if (pp.x < 0) pp.x = 0
         if (pp.x + pw > sw) pp.x = sw - pw
         // 垂直：球在上半 → 面板顶部对齐球顶部；下半 → 面板底部对齐球底部
-        val onTop = bp.y < sh / 2
+        val onTop = by < sh / 2
         if (onTop) {
-            pp.y = bp.y
+            pp.y = by
         } else {
             pp.y = ballBottom - ph
         }
