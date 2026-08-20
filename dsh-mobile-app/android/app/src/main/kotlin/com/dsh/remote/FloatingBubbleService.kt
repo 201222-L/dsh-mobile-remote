@@ -93,9 +93,14 @@ class FloatingBubbleService : Service() {
     private var lastNotif = 0L
     private var lastNotifKey = ""
     private var lastNotifAt = 0L
-    private val seenJobs = mutableSetOf<String>()
     @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
     private var bubbleDp = 52
+
+    // v2.7.2：屏幕尺寸与贴边状态跟踪（旋转后按新尺寸重贴边）
+    private var lastScreenW = 0
+    private var lastScreenH = 0
+    private var edgeSide = 1 // 贴边目标侧：-1 左 / +1 右
+    private var edgeHidden = false // 是否处于贴边半隐藏缩进态
 
     // 未读增量对比（补"事件驱动之外的提示"：重连窗口/离线期间新增的通知）
     private var lastUnreadCount = 0
@@ -240,6 +245,49 @@ class FloatingBubbleService : Service() {
         }
     }
 
+    /** 当前屏幕尺寸（v2.7.2，API 30+ 用 currentWindowMetrics——旋转后最可靠）。 */
+    private fun screenSize(): android.graphics.Point {
+        val wm = this.wm
+        if (wm != null && Build.VERSION.SDK_INT >= 30) {
+            val b = wm.currentWindowMetrics.bounds
+            return android.graphics.Point(b.width(), b.height())
+        }
+        return android.graphics.Point(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+    }
+
+    /** 旋转/配置变更：按新屏尺寸恢复贴边（横屏不再飘到屏幕中间）。 */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val p = bubbleParams ?: return
+        val root = bubble ?: return
+        val wm = this.wm ?: return
+        val size = screenSize()
+        if (lastScreenW <= 0) lastScreenW = size.x
+        val bd = dp(bubbleDp)
+        val wasNearLeft = p.x <= dp(8)
+        val wasNearRight = p.x + bd >= lastScreenW - dp(8)
+        val newX: Int
+        if (wasNearLeft || wasNearRight) {
+            // 旋转前贴边：按同侧 + 同隐藏状态在新屏尺寸上恢复
+            edgeSide = if (wasNearLeft) -1 else 1
+            newX = if (edgeSide < 0) {
+                if (edgeHidden) -bd + dp(16) else 0
+            } else {
+                if (edgeHidden) size.x - dp(16) else size.x - bd
+            }
+        } else {
+            // 自由位置：按宽度比例保持相对位置，钳制在允许范围内
+            newX = (p.x.toLong() * size.x / lastScreenW).toInt().coerceIn(-bd + dp(16), size.x - dp(16))
+        }
+        p.x = newX
+        p.y = p.y.coerceIn(0, size.y - bd)
+        lastScreenW = size.x
+        lastScreenH = size.y
+        wm.updateViewLayout(root, p)
+        positionTip()
+        if (panelVisible) placePanel()
+    }
+
     private fun addBubble() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
@@ -284,7 +332,12 @@ class FloatingBubbleService : Service() {
         )
         params.gravity = Gravity.TOP or Gravity.START
         // 启动即贴右边缘（完全露出，无需手动拖动吸附）
-        params.x = resources.displayMetrics.widthPixels - size
+        val initSize = screenSize()
+        lastScreenW = initSize.x
+        lastScreenH = initSize.y
+        edgeSide = 1
+        edgeHidden = false
+        params.x = initSize.x - size
         params.y = dp(240)
         wm.addView(root, params)
         // 启动后 5 秒无操作自动缩进（贴边常驻，无需先拖动）
@@ -318,6 +371,16 @@ class FloatingBubbleService : Service() {
             gd.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    // v2.7.2：自愈——若球因旋转等落在越界位置，先钳回允许范围再开始拖
+                    val size = screenSize()
+                    val bd = dp(bubbleDp)
+                    val cx = params.x.coerceIn(-bd + dp(16), size.x - dp(16))
+                    val cy = params.y.coerceIn(0, size.y - bd)
+                    if (cx != params.x || cy != params.y) {
+                        params.x = cx
+                        params.y = cy
+                        wm.updateViewLayout(root, params)
+                    }
                     downX = ev.rawX; downY = ev.rawY
                     startX = params.x; startY = params.y
                     moved = false
@@ -333,8 +396,11 @@ class FloatingBubbleService : Service() {
                         mainHandler.removeCallbacks(longPressRunnable)
                     }
                     if (moved) {
-                        params.x = startX + dx.toInt()
-                        params.y = startY + dy.toInt()
+                        // v2.7.2：拖动钳制——永远拖不出屏（允许贴边半隐藏的 16dp 探出）
+                        val size = screenSize()
+                        val bd = dp(bubbleDp)
+                        params.x = (startX + dx.toInt()).coerceIn(-bd + dp(16), size.x - dp(16))
+                        params.y = (startY + dy.toInt()).coerceIn(0, size.y - bd)
                         wm.updateViewLayout(root, params)
                         // 拖动时收起面板；气泡若在显示中则跟随
                         if (panelVisible) hidePanel()
@@ -413,13 +479,13 @@ class FloatingBubbleService : Service() {
         val p = tipParams ?: return
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val bd = dp(bubbleDp)
         // 实际宽度（首次显示未测量时用估算，布局完成后重定位）
         val tipW = if (tv.width > 0) tv.width else dp(170)
         // 水平：居中于球可见部分，钳制屏内
-        val visCenter = (maxOf(0, bp.x) + minOf(metrics.widthPixels, bp.x + bd)) / 2
-        p.x = (visCenter - tipW / 2).coerceIn(dp(4), metrics.widthPixels - tipW - dp(4))
+        val visCenter = (maxOf(0, bp.x) + minOf(size.x, bp.x + bd)) / 2
+        p.x = (visCenter - tipW / 2).coerceIn(dp(4), size.x - tipW - dp(4))
         // 垂直：球上方紧贴（气泡高约 30dp + 8dp 间距）；顶部空间不足放球下方
         val above = bp.y - dp(38)
         p.y = if (above >= dp(6)) above else bp.y + bd + dp(6)
@@ -455,24 +521,28 @@ class FloatingBubbleService : Service() {
     /** 松手后吸附到边缘（完全露出），供 5 秒无操作后的缩进做基线。 */
     private fun snapToEdgeVisible() {
         val p = bubbleParams ?: return
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val bd = dp(bubbleDp)
         val center = p.x + bd / 2
-        animateX(if (center < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd)
+        edgeSide = if (center < size.x / 2) -1 else 1
+        edgeHidden = false
+        lastScreenW = size.x
+        lastScreenH = size.y
+        animateX(if (edgeSide < 0) 0 else size.x - bd)
     }
 
     /** 5 秒无操作后缩进：只露 16dp，其余藏进屏幕边缘。 */
     private fun autoHideToEdge() {
         val p = bubbleParams ?: return
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val edgePeek = dp(16)
         val bd = dp(bubbleDp)
         val center = p.x + bd / 2
-        val target = if (center < metrics.widthPixels / 2) {
-            -bd + edgePeek
-        } else {
-            metrics.widthPixels - edgePeek
-        }
+        edgeSide = if (center < size.x / 2) -1 else 1
+        edgeHidden = true
+        lastScreenW = size.x
+        lastScreenH = size.y
+        val target = if (edgeSide < 0) -bd + edgePeek else size.x - edgePeek
         android.util.Log.i("DSHRemote", "bubble: auto-hide to x=$target")
         animateX(target)
     }
@@ -499,17 +569,20 @@ class FloatingBubbleService : Service() {
      *  完全露出时 x=0（左）或 x=sw-bd（右，x+bd==sw 正好贴边不算隐藏）。 */
     private fun isEdgeHidden(): Boolean {
         val p = bubbleParams ?: return false
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val bd = dp(bubbleDp)
-        return p.x < -dp(2) || p.x + bd > metrics.widthPixels + dp(2)
+        return p.x < -dp(2) || p.x + bd > size.x + dp(2)
     }
 
     /** 从半隐藏滑出到完全可见。 */
     private fun slideOut() {
         val p = bubbleParams ?: return
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val bd = dp(bubbleDp)
-        animateX(if (p.x < metrics.widthPixels / 2) 0 else metrics.widthPixels - bd)
+        edgeHidden = false
+        lastScreenW = size.x
+        lastScreenH = size.y
+        animateX(if (p.x < size.x / 2) 0 else size.x - bd)
     }
 
     // ── 迷你面板（单击展开，球旁小卡片）──
@@ -676,9 +749,9 @@ class FloatingBubbleService : Service() {
         p.visibility = View.VISIBLE
         // 生长动画：从球方向位移 + 放大 + 淡入（球在左→从左长出，球在上→从上长出）
         val bp = bubbleParams ?: return
-        val metrics = resources.displayMetrics
-        val dirX = if (bp.x < metrics.widthPixels / 2) -1f else 1f
-        val dirY = if (bp.y < metrics.heightPixels / 2) -1f else 1f
+        val size = screenSize()
+        val dirX = if (bp.x < size.x / 2) -1f else 1f
+        val dirY = if (bp.y < size.y / 2) -1f else 1f
         p.translationX = dirX * dp(28).toFloat()
         p.translationY = dirY * dp(16).toFloat()
         p.alpha = 0f
@@ -720,12 +793,12 @@ class FloatingBubbleService : Service() {
         val pp = panelParams ?: return
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
-        val metrics = resources.displayMetrics
+        val size = screenSize()
         val pw = dp(248)
         // 用面板实际高度（首次打开前未测量时用估算值）
         val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(300)
-        val sw = metrics.widthPixels
-        val sh = metrics.heightPixels
+        val sw = size.x
+        val sh = size.y
         val ballRight = bp.x + dp(bubbleDp)
         val ballBottom = bp.y + dp(bubbleDp)
         // 水平：球在左半 → 面板放球右侧；右半 → 面板放球左侧（贴边）
@@ -1051,6 +1124,7 @@ class FloatingBubbleService : Service() {
         when (o.optString("type")) {
             "session/event" -> handleSessionEvent(o)
             "session/jobs" -> handleJobs(o)
+            "mobile/notify" -> handleNotify(o) // v2.7.2：插件端"真结束"判定后推送的通知帧
             "mobile/frame" -> {
                 val f = o.optJSONObject("frame") ?: return
                 val ft = f.optString("type")
@@ -1059,6 +1133,21 @@ class FloatingBubbleService : Service() {
                 }
             }
         }
+    }
+
+    /** v2.7.2：插件端真结束判定后推送的通知（完成/失败/需要回答），与 App 通知中心同源。 */
+    private fun handleNotify(o: JSONObject) {
+        val n = o.optJSONObject("notification") ?: return
+        val kind = n.optString("kind")
+        val sid = n.optString("sessionId")
+        val label = when (kind) {
+            "completed" -> text("任务完成", "Task done")
+            "failed" -> text("任务失败", "Task failed")
+            "needs-answer" -> text("需要你回答", "Your input needed")
+            else -> text("通知", "Notification")
+        }
+        val short = if (sid.length > 8) sid.take(8) else sid
+        markNotif("notif-${n.optString("id")}", "$label · $short")
     }
 
     private fun handleSessionEvent(o: JSONObject) {
@@ -1074,13 +1163,7 @@ class FloatingBubbleService : Service() {
                 mainHandler.post { setState() }
             }
             type == "turn/end" -> {
-                val data = ev.optJSONObject("data") ?: JSONObject()
-                val reason = data.optJSONObject("reason")
-                val kind = reason?.optString("kind") ?: ""
-                // 轮次结束即提醒（红点+气泡）；同类 5 秒防抖合并、红点 60 秒自动消退，不残留
-                if (kind == "completed") markNotif("turn-completed", text("任务完成", "Task done"))
-                else if (kind == "failed" || kind == "error") markNotif("task-failed", text("任务失败", "Task failed"))
-                else if (kind == "needs-answer") markNotif("needs-answer", text("需要你回答", "Your input needed"))
+                // v2.7.2：通知改由插件端"真结束"判定后推 mobile/notify 帧，这里不再按轮次弹
                 // 轮次结束 → 回到暗态（无通知时）；等下一轮 turn/start 再亮
                 agentsRunning = false
                 lastActivity = System.currentTimeMillis()
@@ -1094,25 +1177,17 @@ class FloatingBubbleService : Service() {
     private fun handleJobs(o: JSONObject) {
         val jobs = o.optJSONArray("jobs") ?: return
         var running = false
-        var notified = false
-        val replay = firstJobsFrame
         firstJobsFrame = false
         for (i in 0 until jobs.length()) {
             val j = jobs.optJSONObject(i) ?: continue
             val st = j.optString("status")
-            val id = j.optString("id")
             if (st == "running" || st == "stopping") running = true
-            // 任务终态：每个 job 只通知一次；连接回放帧只学习不通知（避免重启后误报历史任务）
-            if ((st == "completed" || st == "failed") && id.isNotEmpty() && seenJobs.add(id) && !replay) {
-                markNotif("job-$id", if (st == "completed") text("任务完成", "Task done") else text("任务失败", "Task failed"))
-                notified = true
-            }
         }
+        // v2.7.2：任务终态通知由插件端 mobile/notify 帧统一驱动（真结束判定），
+        // 这里只保留运行状态指示；连接回放帧只学习不弹
         agentsRunning = running
         if (running) {
             lastActivity = System.currentTimeMillis()
-            mainHandler.post { setState() }
-        } else if (notified) {
             mainHandler.post { setState() }
         }
         // 面板打开时即时刷新

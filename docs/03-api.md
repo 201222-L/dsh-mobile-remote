@@ -189,8 +189,9 @@
 | type | 说明 |
 |---|---|
 | `session/context` | `{ sessionId, contextWindow }`——模型上下文窗口（`request/context` 事件，PC 端圆环同源） |
-| `agent/status` | `{ agentId, status }`——running / waiting / idle |
+| `agent/status` | `{ agentId, sessionId, status, child }`——running / waiting / idle；`sessionId` 为去 `session:` 前缀的会话 id，`child` 标记子代理会话（v2.7.2 起携带后两字段） |
 | `notifications/changed` | 通知记录增删（如移动端删除后），客户端刷新列表与角标 |
+| `mobile/notify` | `{ notification: { id, kind, sessionId, title, detail, time } }`——插件"真结束"判定后推送的通知（completed / failed / needs-answer），悬浮球/App 与通知中心同源渲染（v2.7.2） |
 | `mobile/frame` | 内核瞬态帧（问询/审批/队列）。`frame` 字段为 `question/requested`（含 `rpcId`、`questions[]`）、`question/resolved`（`questionRpcId`）、`approval/requested`（`rpcId`、`approvalId`、`toolName`、`reason?`）、`approval/resolved`（`approvalId`）、`session/queue`。**App 断线重连时服务端补发挂起的待答帧**（`pendingFrames` 回放） |
 
 客户端应按 `type` 分派；未知 type 一律忽略（前向兼容）。
