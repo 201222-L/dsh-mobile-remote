@@ -23,6 +23,8 @@ class MainActivity : FlutterActivity() {
         floatingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/floating")
         // 引擎就绪：投递冷启动暂存的面板动作
         deliverPendingAction()
+        // v2.7.2 review：Dart 侧 handler 注册可能晚于本回调——延迟再投一次 + consume 兜底
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ deliverPendingAction() }, 800)
         floatingChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
@@ -38,6 +40,11 @@ class MainActivity : FlutterActivity() {
                 "openOverlaySettings" -> {
                     openOverlaySettingsPage()
                     result.success(true)
+                }
+                // v2.7.2 review：冷启动动作兜底——Dart 首帧后主动拉取（投递失败时动作不丢）
+                "consumeOpenPanel" -> {
+                    result.success(pendingOpenAction)
+                    pendingOpenAction = null
                 }
                 "notifyBalance" -> {
                     val v = call.argument<String>("value") ?: ""

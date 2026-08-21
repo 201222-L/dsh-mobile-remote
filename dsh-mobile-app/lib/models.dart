@@ -166,7 +166,9 @@ class ChatEvent {
   final int? seq;
   final String type;
   final Map<String, dynamic>? data;
-  ChatEvent({this.seq, required this.type, this.data});
+  // v2.7.2 review(M1)：事件所属会话（store 广播时附加）——叠层聊天页各收各的
+  final String? sessionId;
+  ChatEvent({this.seq, required this.type, this.data, this.sessionId});
   factory ChatEvent.fromJson(Map<String, dynamic> j) => ChatEvent(
         seq: (j['seq'] as num?)?.toInt(),
         type: j['type'] as String,

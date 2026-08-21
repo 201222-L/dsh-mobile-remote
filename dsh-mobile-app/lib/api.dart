@@ -489,6 +489,11 @@ class Api {
     // send() 永久挂起，旧版因此卡死在 connecting 状态、看门狗与地址轮换全部失效。
     // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
     _client.send(req).timeout(const Duration(seconds: 8)).then((res) {
+      // v2.7.2 review：取消发生在 send 完成前的竞态——订阅已关闭，补挂的响应流立即取消
+      if (controller.isClosed) {
+        bodySub?.cancel();
+        return;
+      }
       if (res.statusCode != 200) {
         if (!controller.isClosed) {
           controller.addError(ApiException('SSE HTTP ${res.statusCode}'));

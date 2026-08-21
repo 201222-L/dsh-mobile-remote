@@ -799,13 +799,14 @@ class AppStore extends ChangeNotifier {
       if (evType == 'turn/end') {
         _debounceNotifs();
       }
-      // 排障日志：帧到达与过滤（高频 chunk 不记）
+      // 排障日志：帧到达与归属（高频 chunk 不记）
       if (evType != 'assistant/chunk' && evType != 'tool/call' && evType != 'tool/result') {
-        AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"} ${sessionId != null && fsid != sessionId ? "（被过滤）" : ""}');
+        AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"}');
       }
-      if (sessionId == null || fsid == sessionId) {
-        _emitChatEvent(ChatEvent.fromJson(event));
-      }
+      // v2.7.2 review(M1)：不再按全局 sessionId 过滤——全部广播并携带 sessionId，
+      // 各 ChatScreen 按自己的会话过滤（叠层页面各收各的，旧页不被新会话事件污染）
+      final ce = ChatEvent.fromJson(event);
+      _emitChatEvent(ChatEvent(seq: ce.seq, type: ce.type, data: ce.data, sessionId: fsid as String?));
     } else if (type == 'agent/status') {
       // v2.7.1 修复：状态是"每个 agent"的——全量入映射；
       // 仅当前会话（或无会话时的兜底）才更新显示值并转发聊天页，避免别的会话状态串台。

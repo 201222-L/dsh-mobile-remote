@@ -1242,16 +1242,19 @@ class FloatingBubbleService : Service() {
             // v2.7.2：通知（含审批/提问 needs-answer）统一由插件端 mobile/notify 帧驱动，
             // mobile/frame 只承载弹窗数据（App 消费），悬浮球不再自行 markNotif，避免双弹
             "mobile/notify" -> handleNotify(o)
-            // v2.7.2 review(M3)：顶层 agent/status 帧——running 立即亮，idle 且无近期活动则暗
+            // v2.7.2 review：顶层 agent/status 帧——running 立即亮，idle 且无近期活动则暗；
+            // 忽略子代理帧（child=true，插件端已标记），避免子代理状态干扰全局球
             "agent/status" -> {
-                val st = o.optString("status")
-                if (st == "running") {
-                    agentsRunning = true
-                    lastActivity = System.currentTimeMillis()
-                    mainHandler.post { setState() }
-                } else if (st == "idle" && System.currentTimeMillis() - lastActivity > 3000) {
-                    agentsRunning = false
-                    mainHandler.post { setState() }
+                if (!o.optBoolean("child")) {
+                    val st = o.optString("status")
+                    if (st == "running") {
+                        agentsRunning = true
+                        lastActivity = System.currentTimeMillis()
+                        mainHandler.post { setState() }
+                    } else if (st == "idle" && System.currentTimeMillis() - lastActivity > 3000) {
+                        agentsRunning = false
+                        mainHandler.post { setState() }
+                    }
                 }
             }
         }
@@ -1316,12 +1319,12 @@ class FloatingBubbleService : Service() {
             if (st == "running" || st == "stopping") running = true
         }
         // v2.7.2：任务终态通知由插件端 mobile/notify 帧统一驱动（真结束判定），
-        // 这里只保留运行状态指示；连接回放帧只学习不弹
+        // 这里只保留运行状态指示；连接回放帧只学习不弹。
+        // review：false 路径也刷新 UI（否则球被 turn/start 点亮后，
+        // 最后一帧"无运行 job"把 flag 置 false 但界面仍亮，且绕过 5 分钟回落）
         agentsRunning = running
-        if (running) {
-            lastActivity = System.currentTimeMillis()
-            mainHandler.post { setState() }
-        }
+        if (running) lastActivity = System.currentTimeMillis()
+        mainHandler.post { setState() }
         // 面板打开时即时刷新
         refreshPanelIfOpen()
     }

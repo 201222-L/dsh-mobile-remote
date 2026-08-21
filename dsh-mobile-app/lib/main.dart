@@ -81,31 +81,58 @@ class _DshAppState extends State<DshApp> {
         case 'openSessionRequested':
           final id = call.arguments as String?;
           if (id == null || id.isEmpty) break;
-          final prev = store.sessionId;
-          await store.setSession(id);
-          store.refreshSessionConfig();
-          final route = nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
-          // v2.7.2 review(M1)：从悬浮球进入的会话页返回后恢复原会话
-          if (prev != null && prev != id) {
-            route.then((_) => store.setSession(prev));
-          }
+          await _handleFloatingAction('session:$id');
           break;
         case 'openChargeRequested':
-          await launchUrl(
-            Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
-            mode: LaunchMode.externalApplication,
-          );
+          await _handleFloatingAction('charge');
           break;
         case 'openNotifsRequested':
           // 打开通知页（与抽屉入口同款：先切到首页再推通知页）
-          await store.refreshNotifs();
-          nav.push(MaterialPageRoute(
-            builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
-          ));
+          await _handleFloatingAction('notifs');
           break;
       }
       return null;
     });
+    // v2.7.2 review：冷启动面板动作兜底——Dart handler 注册晚于原生 deliver，
+    // 首帧后主动拉取原生暂存的动作（可能已被 handler 消费，幂等）
+    WidgetsBinding.instance.addPostFrameCallback((_) => _consumePendingFloatingAction());
+  }
+
+  /// 统一处理悬浮球面板动作（热启动 handler 与冷启动 consume 共用）。
+  Future<void> _handleFloatingAction(String action) async {
+    final nav = rootNavigatorKey.currentState;
+    if (nav == null) return;
+    if (action.startsWith('session:')) {
+      final id = action.substring(8);
+      if (id.isEmpty) return;
+      final prev = store.sessionId;
+      await store.setSession(id);
+      store.refreshSessionConfig();
+      final route = nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
+      // v2.7.2 review(M1)：从悬浮球进入的会话页返回后恢复原会话
+      if (prev != null && prev != id) {
+        route.then((_) => store.setSession(prev));
+      }
+    } else if (action == 'charge') {
+      await launchUrl(
+        Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
+        mode: LaunchMode.externalApplication,
+      );
+    } else if (action == 'notifs') {
+      // 打开通知页（与抽屉入口同款：先切到首页再推通知页）
+      await store.refreshNotifs();
+      nav.push(MaterialPageRoute(
+        builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
+      ));
+    }
+  }
+
+  /// 冷启动兜底：拉取原生暂存的面板动作（configureFlutterEngine 投递时 Dart 侧可能未就绪）。
+  Future<void> _consumePendingFloatingAction() async {
+    final action = await Floating.consumeOpenPanel();
+    if (action == null || action.isEmpty) return;
+    AppLog.instance.log('Floating: 冷启动消费动作 $action');
+    await _handleFloatingAction(action);
   }
 
   @override

@@ -36,6 +36,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _draft = '';
   bool _streaming = false;
   int _lastSeq = 0;
+  // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
+  String? _mySessionId;
   int _earliestSeq = 0; // live 窗口最旧条目的 seq（"查看更早"分页起点）
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
@@ -76,6 +78,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final pa = widget.store.pendingApproval;
     _question = pq != null && pq.sessionId == widget.store.sessionId ? pq : null;
     _approval = pa != null && pa.sessionId == widget.store.sessionId ? pa : null;
+    _mySessionId = widget.store.sessionId; // v2.7.2 review(M1)：绑定本页会话
     widget.store.addChatListener(_handleEvent); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
     _scrollCtrl.addListener(_onScrollTick);
     _load();
@@ -517,6 +520,8 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── 事件处理（对齐网页端 handleEvent） ──
   void _handleEvent(ChatEvent ev) {
     if (!mounted) return;
+    // v2.7.2 review(M1)：只处理本页会话的事件（store 全量广播，叠层页面各收各的）
+    if (ev.sessionId != null && ev.sessionId != _mySessionId) return;
     if (ev.type == '_catchup') {
       _catchup();
       return;
@@ -624,7 +629,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _catchup() async {
-    final id = widget.store.sessionId;
+    // v2.7.2 review(M1)：按本页绑定的会话补拉（此前用全局 sessionId，叠层时旧页会拉到新会话的增量）
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _lastSeq <= 0) return;
     try {
       final events = await api.history(id, after: _lastSeq, limit: 100);
