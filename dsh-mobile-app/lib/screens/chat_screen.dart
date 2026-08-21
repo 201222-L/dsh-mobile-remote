@@ -103,9 +103,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// v2.7：输入变化 → 按会话保存草稿（返回/重进后恢复；清空即移除）。
+  /// v2.7.2(B 方案)：输入变化同时刷新「排队发送」胶囊的显隐。
   void _onDraftChanged() {
     final sid = widget.store.sessionId;
     if (sid != null) widget.store.saveDraft(sid, _inputCtrl.text);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -1413,7 +1415,35 @@ class _ChatScreenState extends State<ChatScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    // v2.7.2(B 方案)：运行中输入文字 → 输入框上方出现「排队发送」胶囊，
+                    // 点击=普通发送排队（消息进 dock 可编辑/插话/删除）；原发送按钮功能不变
+                    if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: GestureDetector(
+                            onTap: _sending ? null : _send,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(color: brand, borderRadius: BorderRadius.circular(14)),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.schedule_send, size: 13, color: Colors.white),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    L10n.t('排队发送', 'Queue send'),
+                                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      const SizedBox(height: 4),
                     Row(
                       children: [
                         Expanded(
@@ -1440,13 +1470,12 @@ class _ChatScreenState extends State<ChatScreen> {
                           _ContextRing(ratio: _contextRatio!),
                           const SizedBox(width: 8),
                         ],
+                        // v2.7.2：发送按钮恢复原设计——运行中=停止（对齐 PC 端），空闲=发送；
+                        // 长按=插队发送；运行中普通发送走上方「排队发送」胶囊（B 方案）
                         GestureDetector(
-                          // 运行中 → 停止（对齐 PC 端蓝底白方块按钮）；空闲 → 发送
                           onTap: _sending
                               ? null
                               : (widget.store.agentStatus == 'running' ? _stop : _send),
-                          // v2.7.2：长按 = 插队发送（agent 运行中把消息插到下一步执行，
-                          // 适合 team 插件子会话向主会话插队场景）
                           onLongPress: _sending
                               ? null
                               : () => _send(null, 'steer'),
