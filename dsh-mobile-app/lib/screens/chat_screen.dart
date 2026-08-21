@@ -759,6 +759,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _queueBusy = true;
     try {
       await api.updateQueueMessage(id, itemId, {'kind': 'remove'});
+      // v2.7.2 review：内核 remove 不校验结果——若消息已被 agent 认领（正在执行），
+      // 仍返回 accepted:true 但实际没删掉。删除后立即复查队列，还在则明确提示。
+      final q = await api.queue(id);
+      if (mounted && q.any((r) => r['id'] == itemId)) {
+        showToast(context, L10n.t('该消息已被 agent 开始处理，未能删除', 'The agent already picked it up — could not remove'));
+      }
       _refreshQueue();
     } catch (e) {
       if (mounted) {
@@ -790,10 +796,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// 队列停靠区（composer 顶部，对齐 PC 端 Queue Dock）：空队列不渲染。
+  /// v2.7.2 review：只显示可操作的 queued 行（对齐 PC 端 QueueDock 的
+  /// `placement === "queued"` 过滤）——steering 行是"插话中"消息、即将执行，
+  /// 显示并允许操作会误导（删除大概率来不及，插话按钮也被隐藏）。
   Widget _buildQueueDock() {
-    if (_queue.isEmpty) return const SizedBox.shrink();
-    final collapsed = _queueCollapsed && _queue.length > 1;
-    final visible = collapsed ? _queue.take(1).toList() : _queue;
+    final rows = _queue.where((r) => r['placement'] != 'steering').toList();
+    if (rows.isEmpty) return const SizedBox.shrink();
+    final collapsed = _queueCollapsed && rows.length > 1;
+    final visible = collapsed ? rows.take(1).toList() : rows;
     final ink3 = DshColors.ink3(context);
     final brand = DshColors.brand(context);
     return Container(
@@ -810,7 +820,7 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (_queue.length > 1)
+              if (rows.length > 1)
                 InkWell(
                   onTap: () => setState(() => _queueCollapsed = !_queueCollapsed),
                   child: Padding(
@@ -821,7 +831,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            L10n.t('${_queue.length} 条排队消息（点击展开）', '${_queue.length} queued (tap to expand)'),
+                            L10n.t('${rows.length} 条排队消息（点击展开）', '${rows.length} queued (tap to expand)'),
                             style: TextStyle(fontSize: 11.5, color: ink3),
                           ),
                         ),
