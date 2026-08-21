@@ -436,9 +436,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLoggedCount = itemCount;
       AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length}');
     }
+    // v2.7.2：消息少时（≤50 条）内容贴顶 + 底部弹性留白——修复"新对话上方一大半空白"。
+    // reverse 列表内容不足一屏时默认贴底,用 Column+shrinkWrap+Spacer 让内容贴顶、底部留白。
+    final compact = _items.length <= 50;
     final list = ListView.builder(
       controller: _scrollCtrl,
       reverse: true,
+      shrinkWrap: compact,
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       itemCount: itemCount,
       itemBuilder: (context, index) {
@@ -460,6 +464,15 @@ class _ChatScreenState extends State<ChatScreen> {
         return _buildItem(_items[index - (hasDraft ? 1 : 0)]);
       },
     );
+    if (compact && !_infiniteMode) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Flexible(child: list),
+          const Spacer(), // 视觉底部弹性留白（内容贴顶）
+        ],
+      );
+    }
     if (!_infiniteMode) return list;
     return NotificationListener<ScrollNotification>(
       onNotification: _onLiveScroll,
