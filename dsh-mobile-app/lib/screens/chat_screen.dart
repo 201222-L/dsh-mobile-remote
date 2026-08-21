@@ -38,6 +38,12 @@ class _ChatScreenState extends State<ChatScreen> {
   int _lastSeq = 0;
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
+  // v2.7.2：排队消息停靠区（对齐 PC 端 Queue Dock）——可见、自解释，无需操作手册
+  List<Map<String, dynamic>> _queue = [];
+  bool _queueCollapsed = true; // 多条时折叠成计数头
+  String? _editingQueueId;
+  final _queueEditCtrl = TextEditingController();
+  Timer? _queueRefreshTimer;
   int _earliestSeq = 0; // live 窗口最旧条目的 seq（"查看更早"分页起点）
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
@@ -104,6 +110,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _draftTimer?.cancel();
     _activityTimer?.cancel();
+    _queueRefreshTimer?.cancel();
+    _queueEditCtrl.dispose();
     _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.removeChatListener(_handleEvent); // v2.7.2 review(M1)
@@ -239,6 +247,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _earliestSeq = events.first.seq ?? 0;
           if (fetchedLast > _lastSeq) _lastSeq = fetchedLast;
         }
+        // v2.7.2：进入会话时同步排队消息停靠区
+        _refreshQueue();
         if (keep.isNotEmpty) {
           final newest = keep.first.seq;
           if (newest != null && newest > _lastSeq) _lastSeq = newest;
@@ -625,6 +635,8 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _appendEvent(ev));
     // 历史浏览期间收到新消息：live 列表已更新，标记"有新消息"提示
     if (_inHistory) _pendingNew = true;
+    // v2.7.2：事件驱动队列刷新（节流）
+    _scheduleQueueRefresh();
     _scrollToBottom();
   }
 
@@ -643,6 +655,215 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       });
     } catch (_) {}
+  }
+
+  /// v2.7.2：拉取本会话排队消息（对齐 PC 端 Queue Dock 数据源 agent.inbox）。
+  Future<void> _refreshQueue() async {
+    final id = _mySessionId ?? widget.store.sessionId;
+    if (id == null) return;
+    try {
+      final q = await api.queue(id);
+      if (!mounted) return;
+      setState(() {
+        _queue = q;
+        if (q.isEmpty) _queueCollapsed = true;
+      });
+    } catch (_) {
+      // 队列接口失败不打扰（如会话已休眠）
+    }
+  }
+
+  /// 事件驱动的队列刷新（节流：chunk 高频期间 timer 持续重置，流结束后才拉一次）。
+  void _scheduleQueueRefresh() {
+    _queueRefreshTimer?.cancel();
+    _queueRefreshTimer = Timer(const Duration(milliseconds: 400), () {
+      _queueRefreshTimer = null;
+      _refreshQueue();
+    });
+  }
+
+  /// 编辑排队消息（对齐 PC 端 Queue Dock 的 edit）。
+  Future<void> _queueEdit(String itemId) async {
+    final text = _queueEditCtrl.text.trim();
+    if (text.isEmpty) return;
+    final id = widget.store.sessionId;
+    if (id == null) return;
+    try {
+      await api.updateQueueMessage(id, itemId, {
+        'kind': 'edit',
+        'content': [
+          {'type': 'text', 'text': text}
+        ],
+      });
+      if (mounted) setState(() => _editingQueueId = null);
+      _refreshQueue();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _editingQueueId = null);
+      showToast(context, '${L10n.t('编辑失败：', 'Edit failed: ')}$e');
+      _refreshQueue(); // 失败通常=消息已被处理,刷新队列同步真实状态
+    }
+  }
+
+  /// 删除排队消息（对齐 PC 端 Queue Dock 的 remove）。
+  Future<void> _queueRemove(String itemId) async {
+    final id = widget.store.sessionId;
+    if (id == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('删除这条排队消息？', 'Remove this queued message?')),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(L10n.t('取消', 'Cancel'))),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(L10n.t('删除', 'Remove'))),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await api.updateQueueMessage(id, itemId, {'kind': 'remove'});
+      _refreshQueue();
+    } catch (e) {
+      if (mounted) {
+        showToast(context, '${L10n.t('删除失败：', 'Remove failed: ')}$e');
+        _refreshQueue();
+      }
+    }
+  }
+
+  /// 插话：把排队消息插到 agent 下一步执行（对齐 PC 端 Queue Dock 的 steer）。
+  Future<void> _queueSteer(String itemId) async {
+    final id = widget.store.sessionId;
+    if (id == null) return;
+    try {
+      await api.updateQueueMessage(id, itemId, {'kind': 'steer'});
+      _refreshQueue();
+    } catch (e) {
+      if (mounted) {
+        showToast(context, '${L10n.t('插话失败：', 'Steer failed: ')}$e');
+        _refreshQueue();
+      }
+    }
+  }
+
+  /// 队列停靠区（composer 顶部，对齐 PC 端 Queue Dock）：空队列不渲染。
+  Widget _buildQueueDock() {
+    if (_queue.isEmpty) return const SizedBox.shrink();
+    final collapsed = _queueCollapsed && _queue.length > 1;
+    final visible = collapsed ? _queue.take(1).toList() : _queue;
+    final ink3 = DshColors.ink3(context);
+    final brand = DshColors.brand(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171B22) : const Color(0xFFF2F4F7),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_queue.length > 1)
+            InkWell(
+              onTap: () => setState(() => _queueCollapsed = !_queueCollapsed),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 15, color: ink3),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        L10n.t('${_queue.length} 条排队消息（点击展开）', '${_queue.length} queued (tap to expand)'),
+                        style: TextStyle(fontSize: 11.5, color: ink3),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          for (final row in visible) _buildQueueRow(row),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQueueRow(Map<String, dynamic> row) {
+    final id = row['id'] as String? ?? '';
+    final text = row['text'] as String? ?? '';
+    final ink3 = DshColors.ink3(context);
+    final brand = DshColors.brand(context);
+    final editing = _editingQueueId == id;
+    if (editing) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _queueEditCtrl,
+                style: const TextStyle(fontSize: 13),
+                decoration: const InputDecoration(isDense: true, border: InputBorder.none),
+                onSubmitted: (_) => _queueEdit(id),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.check, size: 17),
+              color: brand,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _queueEdit(id),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, size: 17),
+              color: ink3,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => setState(() => _editingQueueId = null),
+            ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule_send, size: 15, color: Color(0xFF6C8CFF)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 16),
+            color: ink3,
+            visualDensity: VisualDensity.compact,
+            tooltip: L10n.t('编辑', 'Edit'),
+            onPressed: () {
+              _queueEditCtrl.text = text;
+              setState(() => _editingQueueId = id);
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.play_arrow, size: 17),
+            color: brand,
+            visualDensity: VisualDensity.compact,
+            tooltip: L10n.t('插话', 'Steer'),
+            onPressed: () => _queueSteer(id),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, size: 16),
+            color: ink3,
+            visualDensity: VisualDensity.compact,
+            tooltip: L10n.t('删除', 'Remove'),
+            onPressed: () => _queueRemove(id),
+          ),
+        ],
+      ),
+    );
   }
 
   /// live 列表追加一条事件（最新在前：insert 头部）。
@@ -815,6 +1036,8 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final mid = await api.send(id, text, mode: mode);
       AppLog.instance.log('Chat: 发送成功 mid=$mid');
+      // v2.7.2：发送后刷新队列停靠区（新消息入队即显示）
+      _scheduleQueueRefresh();
       if (!mounted) return;
       setState(() {
         // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）
@@ -1099,6 +1322,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // v2.7.2：队列停靠区（空队列不渲染）
+                    _buildQueueDock(),
                     SizedBox(
                       height: 28,
                       child: ListView(

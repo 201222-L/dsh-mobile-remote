@@ -339,6 +339,17 @@ class Api {
   }
 
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
+
+  /// v2.7.2：排队中消息列表（对齐 PC 端 Queue Dock）。
+  Future<List<Map<String, dynamic>>> queue(String sessionId) async {
+    final data = await getJson('/api/queue?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    return (data['queue'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// v2.7.2：对排队中消息操作（edit / remove / steer，对齐 PC 端 session.updateQueue）。
+  Future<void> updateQueueMessage(String sessionId, String itemId, Map<String, dynamic> action) async {
+    await postJson('/api/messages', {'sessionId': sessionId, 'itemId': itemId, 'action': action});
+  }
   Future<String> send(String sessionId, String text, {String mode = 'followup'}) async {
     // v2.7.2：mode=steer 插队发送（插到 agent 下一步执行）；默认 followup 排队
     final r = await postJson('/api/send', {
