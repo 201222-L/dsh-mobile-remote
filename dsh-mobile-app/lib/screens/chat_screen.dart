@@ -1412,38 +1412,19 @@ class _ChatScreenState extends State<ChatScreen> {
                             label: _permName(store.sessionConfig.permissionPreset),
                             onTap: () => showPermSheet(context, store),
                           ),
+                          // v2.7.2(B 方案)：运行中且输入非空 → 「排队发送」胶囊（与模型/权限同款样式）
+                          if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            _Pill(
+                              label: L10n.t('排队发送', 'Queue send'),
+                              onTap: () => _send(),
+                            ),
+                          ],
                         ],
                       ),
                     ),
-                    // v2.7.2(B 方案)：运行中输入文字 → 输入框上方出现「排队发送」胶囊，
-                    // 点击=普通发送排队（消息进 dock 可编辑/插话/删除）；原发送按钮功能不变
-                    if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: GestureDetector(
-                            onTap: _sending ? null : _send,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(color: brand, borderRadius: BorderRadius.circular(14)),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.schedule_send, size: 13, color: Colors.white),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    L10n.t('排队发送', 'Queue send'),
-                                    style: const TextStyle(fontSize: 12, color: Colors.white),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      )
-                    else
-                      const SizedBox(height: 4),
+                    const SizedBox(height: 4),
+                    const SizedBox(height: 4),
                     Row(
                       children: [
                         Expanded(
