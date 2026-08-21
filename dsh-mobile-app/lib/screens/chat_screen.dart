@@ -76,7 +76,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final pa = widget.store.pendingApproval;
     _question = pq != null && pq.sessionId == widget.store.sessionId ? pq : null;
     _approval = pa != null && pa.sessionId == widget.store.sessionId ? pa : null;
-    widget.store.onChatEvent = _handleEvent;
+    widget.store.addChatListener(_handleEvent); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
     _scrollCtrl.addListener(_onScrollTick);
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
@@ -103,7 +103,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _activityTimer?.cancel();
     _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
-    widget.store.onChatEvent = null;
+    widget.store.removeChatListener(_handleEvent); // v2.7.2 review(M1)
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -210,6 +210,10 @@ class _ChatScreenState extends State<ChatScreen> {
           for (final m in _items) {
             if (m.seq != null && m.seq! > fetchedLast) {
               keep.add(m);
+            } else if (m.seq == null && m.kind == _MsgKind.user) {
+              // review：无 seq 的乐观消息（刚发送尚未回显）也保留，避免重建后短暂消失
+              keep.add(m);
+              continue;
             } else {
               break; // _items 最新在前：一旦遇到 seq ≤ fetchedLast 即可停止
             }
@@ -937,6 +941,7 @@ class _ChatScreenState extends State<ChatScreen> {
           final childId = await api.forkSession(id, atSeq: seq);
           if (!mounted) return;
           showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
+          final prevId = widget.store.sessionId;
           await widget.store.setSession(childId);
           widget.store.refreshSessions();
           if (!mounted) return;
@@ -945,6 +950,10 @@ class _ChatScreenState extends State<ChatScreen> {
               builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onTitleChanged),
             ),
           );
+          // v2.7.2 review(M1)：分支页返回后恢复原会话（否则原聊天页事件被按 sessionId 过滤）
+          if (mounted && prevId != null && prevId != childId) {
+            await widget.store.setSession(prevId);
+          }
         } catch (e) {
           if (!mounted) return;
           showToast(context, '${L10n.t('分支失败：', 'Fork failed: ')}$e');

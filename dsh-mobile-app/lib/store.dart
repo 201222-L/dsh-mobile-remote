@@ -58,7 +58,20 @@ class AppStore extends ChangeNotifier {
       jobsBySession[sessionId]?.any((j) => j['status'] == 'running' || j['status'] == 'stopping') ?? false;
 
   // ── 事件监听（聊天页挂载） ──
-  void Function(ChatEvent ev)? onChatEvent;
+  // v2.7.2 review(M1)：单回调 → 监听器列表——叠层 ChatScreen（分支/悬浮球打开会话）
+  // 不再互相覆盖，旧页 pop 回来仍能收到 SSE 事件（此前新页覆盖、dispose 置 null 导致旧页冻结）
+  final List<void Function(ChatEvent ev)> _chatListeners = [];
+  void addChatListener(void Function(ChatEvent ev) l) => _chatListeners.add(l);
+  void removeChatListener(void Function(ChatEvent ev) l) => _chatListeners.remove(l);
+  void _emitChatEvent(ChatEvent ev) {
+    for (final l in List.of(_chatListeners)) {
+      try {
+        l(ev);
+      } catch (_) {
+        // 单个监听器异常不影响其他页面
+      }
+    }
+  }
   VoidCallback? onSessionsChanged; // 标题/预设变化 → 外部刷新
 
   /// 新增未读通知回调（横幅提示用）：参数 = 新增条数；force=true 时绕过 10 秒防抖
@@ -185,6 +198,8 @@ class AppStore extends ChangeNotifier {
     if (!floatingEnabled) return;
     if (await Floating.isRunning()) return;
     if (!await Floating.canDrawOverlay()) return;
+    // v2.7.2 review(M7)：异步恢复期间用户可能已关掉开关（stop 与 start 竞态），复查一次
+    if (!floatingEnabled) return;
     await Floating.start();
     // 服务是新起的，需要把余额预警配置补给它
     unawaited(Floating.setBalanceAlert(balanceAlert, balanceThreshold));
@@ -410,14 +425,19 @@ class AppStore extends ChangeNotifier {
     applyAgentStatusForSession();
   }
 
-  /// 把「当前打开会话」的状态应用到显示值；未打开会话或该会话不在映射中时不覆盖。
+  /// 把「当前打开会话」的状态应用到显示值。
+  /// v2.7.2 review(M8)：该会话无状态映射时重置为 idle（此前沿用上一会话的 running，
+  /// 导致发送键误变"停止"、插队误判降级，甚至停错会话）。
   void applyAgentStatusForSession() {
     final id = sessionId;
-    if (id == null) return;
-    final st = agentStatusMap[id];
-    if (st == null) return;
-    if (st != agentStatus) {
-      agentStatus = st;
+    String next;
+    if (id == null) {
+      next = 'idle';
+    } else {
+      next = agentStatusMap[id] ?? 'idle';
+    }
+    if (next != agentStatus) {
+      agentStatus = next;
       notifyListeners();
     }
   }
@@ -666,10 +686,10 @@ class AppStore extends ChangeNotifier {
         pendingApproval = null;
         notifyListeners();
         if (hadQ != null) {
-          onChatEvent?.call(ChatEvent(type: 'question/resolved', data: {'rpcId': hadQ.rpcId}));
+          _emitChatEvent(ChatEvent(type: 'question/resolved', data: {'rpcId': hadQ.rpcId}));
         }
         if (hadA != null) {
-          onChatEvent?.call(ChatEvent(type: 'approval/resolved', data: {'approvalId': hadA.approvalId}));
+          _emitChatEvent(ChatEvent(type: 'approval/resolved', data: {'approvalId': hadA.approvalId}));
         }
       }
       // 连接成功：收集电脑全部地址（LAN + Tailscale），供断线时自动轮换
@@ -683,6 +703,12 @@ class AppStore extends ChangeNotifier {
     }
     if (type == 'notifications/changed') {
       // 通知被增删（如移动端删除记录）：刷新列表与未读角标
+      refreshNotifs();
+      return;
+    }
+    if (type == 'mobile/notify') {
+      // v2.7.2 review(M6)：通知帧（含审批/提问 needs-answer）与悬浮球同源——
+      // 即时刷新通知中心/角标，不再等 turn/end 或 notifications/changed 兜底
       refreshNotifs();
       return;
     }
@@ -700,7 +726,7 @@ class AppStore extends ChangeNotifier {
               .toList(),
         );
         notifyListeners();
-        onChatEvent?.call(ChatEvent(type: 'question/requested',
+        _emitChatEvent(ChatEvent(type: 'question/requested',
             data: {'rpcId': pendingQuestion!.rpcId, 'sessionId': pendingQuestion!.sessionId}));
         return;
       }
@@ -711,7 +737,7 @@ class AppStore extends ChangeNotifier {
           notifyListeners();
         }
         // 无条件转发：即使本地已在提交/取消时提前清空，聊天页也要据此收起卡片
-        onChatEvent?.call(ChatEvent(type: 'question/resolved', data: {'rpcId': rid}));
+        _emitChatEvent(ChatEvent(type: 'question/resolved', data: {'rpcId': rid}));
         return;
       }
       if (ftype == 'approval/requested') {
@@ -724,7 +750,7 @@ class AppStore extends ChangeNotifier {
           reason: f['reason'] as String?,
         );
         notifyListeners();
-        onChatEvent?.call(ChatEvent(type: 'approval/requested',
+        _emitChatEvent(ChatEvent(type: 'approval/requested',
             data: {'rpcId': pendingApproval!.rpcId, 'sessionId': pendingApproval!.sessionId}));
         return;
       }
@@ -735,7 +761,7 @@ class AppStore extends ChangeNotifier {
           notifyListeners();
         }
         // 无条件转发：聊天页据此收起审批卡片
-        onChatEvent?.call(ChatEvent(type: 'approval/resolved', data: {'approvalId': aid}));
+        _emitChatEvent(ChatEvent(type: 'approval/resolved', data: {'approvalId': aid}));
         return;
       }
       return;
@@ -744,7 +770,7 @@ class AppStore extends ChangeNotifier {
       // 上下文窗口实时帧：转发给聊天页（圆环即时刷新，无需重进会话）
       final fsid = frame['sessionId'];
       if (sessionId == null || fsid == sessionId) {
-        onChatEvent?.call(ChatEvent(type: 'session/context', data: {'contextWindow': frame['contextWindow']}));
+        _emitChatEvent(ChatEvent(type: 'session/context', data: {'contextWindow': frame['contextWindow']}));
       }
       return;
     }
@@ -755,7 +781,7 @@ class AppStore extends ChangeNotifier {
         jobsBySession[fsid] = (frame['jobs'] as List? ?? []).cast<Map<String, dynamic>>();
         notifyListeners();
         if (sessionId == null || fsid == sessionId) {
-          onChatEvent?.call(ChatEvent(type: 'session/jobs', data: {'sessionId': fsid, 'jobs': jobsBySession[fsid]}));
+          _emitChatEvent(ChatEvent(type: 'session/jobs', data: {'sessionId': fsid, 'jobs': jobsBySession[fsid]}));
         }
       }
       return;
@@ -778,7 +804,7 @@ class AppStore extends ChangeNotifier {
         AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"} ${sessionId != null && fsid != sessionId ? "（被过滤）" : ""}');
       }
       if (sessionId == null || fsid == sessionId) {
-        onChatEvent?.call(ChatEvent.fromJson(event));
+        _emitChatEvent(ChatEvent.fromJson(event));
       }
     } else if (type == 'agent/status') {
       // v2.7.1 修复：状态是"每个 agent"的——全量入映射；
@@ -790,7 +816,7 @@ class AppStore extends ChangeNotifier {
       if (aid == null || sessionId == null || aid == sessionId) {
         agentStatus = norm;
         notifyListeners();
-        onChatEvent?.call(ChatEvent(type: 'agent/status', data: {'status': st}));
+        _emitChatEvent(ChatEvent(type: 'agent/status', data: {'status': st}));
       }
     }
   }
@@ -799,7 +825,7 @@ class AppStore extends ChangeNotifier {
     final id = sessionId;
     if (id == null) return;
     // 聊天页自己管理 lastSeq；这里仅触发一次历史补拉回调
-    onChatEvent?.call(ChatEvent(type: '_catchup', data: {}));
+    _emitChatEvent(ChatEvent(type: '_catchup', data: {}));
   }
 
   void _scheduleReconnect() {

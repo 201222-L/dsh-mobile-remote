@@ -81,9 +81,14 @@ class _DshAppState extends State<DshApp> {
         case 'openSessionRequested':
           final id = call.arguments as String?;
           if (id == null || id.isEmpty) break;
+          final prev = store.sessionId;
           await store.setSession(id);
           store.refreshSessionConfig();
-          nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
+          final route = nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
+          // v2.7.2 review(M1)：从悬浮球进入的会话页返回后恢复原会话
+          if (prev != null && prev != id) {
+            route.then((_) => store.setSession(prev));
+          }
           break;
         case 'openChargeRequested':
           await launchUrl(

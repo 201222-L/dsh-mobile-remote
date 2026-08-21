@@ -47,12 +47,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _initBubbleState() async {
     final on = await Floating.isRunning();
     final want = widget.store.floatingEnabled;
+    final canOverlay = await Floating.canDrawOverlay();
     // v2.7.2：偏好是开但服务没跑（清理后台/重启后）→ 自动拉起，开关保持开
-    if (want && !on && await Floating.canDrawOverlay()) {
+    if (want && !on && canOverlay) {
       await Floating.start();
       unawaited(Floating.setBalanceAlert(widget.store.balanceAlert, widget.store.balanceThreshold));
     }
-    if (mounted) setState(() => _bubbleOn = want || on);
+    // v2.7.2 review(M7)：权限被撤销时开关显示关（此前 want||on 会假开——球实际不在）
+    if (mounted) setState(() => _bubbleOn = on || (want && canOverlay));
   }
 
   /// 悬浮球开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
@@ -84,12 +86,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
         return; // 授权后由用户重新打开开关（或重进页面状态同步）
       }
-      await Floating.start();
-      widget.store.setFloatingEnabled(true); // v2.7.2：持久化开关
+      try {
+        await Floating.start();
+      } catch (e) {
+        if (mounted) {
+          setState(() => _bubbleOn = false);
+          showToast(context, '${L10n.t('悬浮球启动失败：', 'Bubble start failed: ')}$e');
+        }
+        return;
+      }
+      await widget.store.setFloatingEnabled(true); // v2.7.2：持久化开关（await 确保落盘）
       if (mounted) setState(() => _bubbleOn = true);
     } else {
       await Floating.stop();
-      widget.store.setFloatingEnabled(false); // v2.7.2：持久化开关
+      await widget.store.setFloatingEnabled(false); // v2.7.2：持久化开关
       if (mounted) setState(() => _bubbleOn = false);
     }
   }

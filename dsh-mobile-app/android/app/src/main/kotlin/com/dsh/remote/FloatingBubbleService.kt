@@ -97,6 +97,8 @@ class FloatingBubbleService : Service() {
     private var lastNotifAt = 0L
     @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
     private var bubbleDp = 52
+    // v2.7.2 review：已弹通知 id 集合（去重，上限 200）
+    private val seenNotifIds = java.util.LinkedHashSet<String>()
 
     // v2.7.2：屏幕尺寸与贴边状态跟踪（旋转后按新尺寸重贴边）
     private var lastScreenW = 0
@@ -108,10 +110,16 @@ class FloatingBubbleService : Service() {
     // 未读增量对比（补"事件驱动之外的提示"：重连窗口/离线期间新增的通知）
     private var lastUnreadCount = 0
     private var firstUnreadCheck = true // 首次检查只记录基线，不提示存量
-    /** 每 60 秒对比未读数，增量则提示（防抖：最近 60 秒已提示过则只更新基线）。 */
+    /** 每 60 秒对比未读数，增量则提示（防抖：最近 60 秒已提示过则只更新基线）。
+     *  v2.7.2 review(M3)：顺带做运行状态超时回落——漏收 turn/end（断档）时球不再永远亮着。 */
     private val unreadCheckRunnable: Runnable = object : Runnable {
         override fun run() {
             checkUnreadDelta()
+            // 5 分钟无任何活动且无通知 → 回暗态（兜底：事件断档时球不常亮）
+            if (agentsRunning && notifCount == 0 && System.currentTimeMillis() - lastActivity > 5 * 60 * 1000L) {
+                agentsRunning = false
+                mainHandler.post { setState() }
+            }
             mainHandler.postDelayed(this, 60000)
         }
     }
@@ -281,7 +289,8 @@ class FloatingBubbleService : Service() {
      */
     private fun overlayInsetLeft(): Int {
         val wm = this.wm ?: return 0
-        if (Build.VERSION.SDK_INT >= 29) {
+        // v2.7.2 review(M5)：Display.getCutout 是 API 28+（Android 9 首个挖孔版本），门限用 28
+        if (Build.VERSION.SDK_INT >= 28) {
             val c = wm.defaultDisplay.cutout
             if (c != null && c.safeInsetLeft > 0) return c.safeInsetLeft
         }
@@ -291,7 +300,7 @@ class FloatingBubbleService : Service() {
 
     private fun overlayInsetTop(): Int {
         val wm = this.wm ?: return 0
-        if (Build.VERSION.SDK_INT >= 29) {
+        if (Build.VERSION.SDK_INT >= 28) {
             val c = wm.defaultDisplay.cutout
             if (c != null && c.safeInsetTop > 0) return c.safeInsetTop
         }
@@ -424,6 +433,8 @@ class FloatingBubbleService : Service() {
             gd.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    // v2.7.2 review(M2)：开始拖动前取消进行中的贴边/缩进动画（否则动画下一帧会覆盖拖动位置）
+                    bubbleAnim?.cancel()
                     // v2.7.2：自愈——若球因旋转等落在越界位置，先钳回允许范围再开始拖
                     // （按渲染坐标钳制，扣除系统 inset 偏移后写回 attrs）
                     val size = screenSize()
@@ -958,7 +969,9 @@ class FloatingBubbleService : Service() {
                             val a = agents.optJSONObject(i) ?: continue
                             val st = a.optString("status")
                             if (st == "running" || st == "waiting") {
-                                running.add(a.optString("id").replace("session:", "") to st)
+                                // v2.7.2 review(M4)：agent.id 即 session.id（内核校验 id === session.id），
+                                // 无需剥前缀；直接传原始 id 给 App（显示短码在 renderPanel 派生）
+                                running.add(a.optString("id") to st)
                             }
                         }
                     }
@@ -1039,8 +1052,8 @@ class FloatingBubbleService : Service() {
             for ((id, st) in running.take(3)) {
                 val row = TextView(this)
                 val dot = if (st == "waiting") "◉" else "●"
-                // id 形如 "session:<uuid>"，去掉前缀显示短码
-                val short = id.removePrefix("session:").take(8)
+                // 显示短码；openSession 必须传原始 id（App 按 sessionId 与 SSE 帧比对）
+                val short = id.takeLast(8).ifEmpty { id }
                 row.text = "$dot $short"
                 row.setTextColor(Color.WHITE)
                 row.textSize = 12.5f
@@ -1229,6 +1242,18 @@ class FloatingBubbleService : Service() {
             // v2.7.2：通知（含审批/提问 needs-answer）统一由插件端 mobile/notify 帧驱动，
             // mobile/frame 只承载弹窗数据（App 消费），悬浮球不再自行 markNotif，避免双弹
             "mobile/notify" -> handleNotify(o)
+            // v2.7.2 review(M3)：顶层 agent/status 帧——running 立即亮，idle 且无近期活动则暗
+            "agent/status" -> {
+                val st = o.optString("status")
+                if (st == "running") {
+                    agentsRunning = true
+                    lastActivity = System.currentTimeMillis()
+                    mainHandler.post { setState() }
+                } else if (st == "idle" && System.currentTimeMillis() - lastActivity > 3000) {
+                    agentsRunning = false
+                    mainHandler.post { setState() }
+                }
+            }
         }
     }
 
@@ -1244,7 +1269,17 @@ class FloatingBubbleService : Service() {
             else -> text("通知", "Notification")
         }
         val short = if (sid.length > 8) sid.take(8) else sid
-        markNotif("notif-${n.optString("id")}", "$label · $short")
+        // v2.7.2 review：seen 集合按通知 id 去重（重连补发同一通知不再重复弹），有上限
+        val nid = "notif-${n.optString("id")}"
+        if (!seenNotifIds.add(nid)) return
+        if (seenNotifIds.size > 200) {
+            val it = seenNotifIds.iterator()
+            if (it.hasNext()) {
+                it.next()
+                it.remove()
+            }
+        }
+        markNotif(nid, "$label · $short")
     }
 
     private fun handleSessionEvent(o: JSONObject) {
