@@ -17,7 +17,9 @@
 | 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
 | GET | `/m/api/bootstrap` | 初始状态：地址、认证要求、agent 摘要、会话列表 | 是 |
-| POST | `/m/api/send` | 向指定/默认 agent 注入消息 | 是 |
+| POST | `/m/api/send` | 向指定/默认 agent 注入消息（v2.7.2 支持 `mode: "steer"` 插队） | 是 |
+| GET | `/m/api/queue` | 排队消息列表（对齐 PC 端 Queue Dock；`placement: "queued"` 可插话、`"steering"` 不可，v2.7.2） | 是 |
+| POST | `/m/api/messages` | 排队消息操作：`{ sessionId, itemId, action: { kind: "edit"|"remove"|"steer", content? } }`（转发内核 `session.updateQueue`；错误码如 `queue-item-not-found`/`steer-unavailable` 透传，v2.7.2） | 是 |
 | GET | `/m/api/sessions` | 会话列表 | 是 |
 | GET | `/m/api/history` | 指定会话的事件历史（增量） | 是 |
 | GET | `/m/api/events` | SSE 事件流（session/event 摘要） | 是 |
