@@ -80,6 +80,8 @@ class FloatingBubbleService : Service() {
 
     private var sseThread: Thread? = null
     @Volatile private var sseAlive = false
+    // v2.7.2 review(FS2)：持有当前 SSE 连接，onDestroy 时 disconnect 解除 readLine 阻塞
+    @Volatile private var sseConn: java.net.HttpURLConnection? = null
     @Volatile private var agentsRunning = false
     @Volatile private var lowBalance = false
     @Volatile private var balanceTotal: Double? = null // 最近一次余额（面板常驻显示）
@@ -178,7 +180,14 @@ class FloatingBubbleService : Service() {
     override fun onDestroy() {
         running = false
         sseAlive = false
+        // v2.7.2 review(FS2/FS4)：interrupt 对阻塞在 socket readLine 的线程无效——
+        // 必须 disconnect 连接才能解除阻塞；动画也要取消，否则下一帧 updateViewLayout
+        // 操作已移除的视图 → IllegalArgumentException 崩溃
+        runCatching { sseConn?.disconnect() }
+        sseConn = null
         sseThread?.interrupt()
+        bubbleAnim?.cancel()
+        bubbleAnim = null
         mainHandler.removeCallbacksAndMessages(null)
         bubble?.let { runCatching { wm?.removeView(it) } }
         tip?.let { runCatching { wm?.removeView(it) } }
@@ -610,21 +619,35 @@ class FloatingBubbleService : Service() {
         animateX(target)
     }
 
-    /** 水平滑动动画（吸附/缩进/滑出统一用）；球移动时气泡同步跟随。 */
+    /** 水平滑动动画（吸附/缩进/滑出统一用）；球移动时气泡同步跟随。
+     *  v2.7.2 review(FS4)：持有 animator 引用，onDestroy 取消、新动画前取消旧动画。 */
+    private var bubbleAnim: android.animation.ValueAnimator? = null
     private fun animateX(target: Int) {
         val p = bubbleParams ?: return
         val wm = this.wm ?: return
+        val root = bubble ?: return
         val from = p.x
         if (from == target) return
+        bubbleAnim?.cancel()
         val anim = android.animation.ValueAnimator.ofInt(from, target)
+        bubbleAnim = anim
         anim.duration = 240
         anim.interpolator = android.view.animation.DecelerateInterpolator()
         anim.addUpdateListener {
+            if (bubble == null) return@addUpdateListener // 服务已销毁：停止动画帧
             p.x = it.animatedValue as Int
-            wm.updateViewLayout(bubble, p)
+            wm.updateViewLayout(root, p)
             if (panelVisible) placePanel()
             positionTip() // 气泡跟随球移动（缩进/滑出期间不错位）
         }
+        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (bubbleAnim === animation) bubbleAnim = null
+            }
+            override fun onAnimationCancel(animation: android.animation.Animator) {
+                if (bubbleAnim === animation) bubbleAnim = null
+            }
+        })
         anim.start()
     }
 
@@ -1167,6 +1190,7 @@ class FloatingBubbleService : Service() {
         if (baseUrl.endsWith("/m")) baseUrl = baseUrl.dropLast(2)
         val url = URL("$baseUrl/m/api/events")
         val conn = url.openConnection() as HttpURLConnection
+        sseConn = conn // v2.7.2 review(FS2)：onDestroy 时 disconnect 解除 readLine 阻塞
         conn.connectTimeout = 8000
         conn.readTimeout = 0
         conn.setRequestProperty("x-mobile-token", token)
@@ -1174,12 +1198,17 @@ class FloatingBubbleService : Service() {
         val code = conn.responseCode
         if (code != 200) {
             conn.disconnect()
+            sseConn = null
             return false
         }
         val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
         var line: String?
         while (sseAlive) {
-            line = reader.readLine() ?: break
+            try {
+                line = reader.readLine() ?: break
+            } catch (_: Exception) {
+                break // onDestroy disconnect 后 readLine 抛 IOException → 正常退出
+            }
             if (!line.startsWith("data: ")) continue
             val data = line.removePrefix("data: ")
             try {
@@ -1188,7 +1217,8 @@ class FloatingBubbleService : Service() {
             }
         }
         runCatching { reader.close() }
-        conn.disconnect()
+        runCatching { conn.disconnect() }
+        if (sseConn === conn) sseConn = null
         return false
     }
 
@@ -1196,14 +1226,9 @@ class FloatingBubbleService : Service() {
         when (o.optString("type")) {
             "session/event" -> handleSessionEvent(o)
             "session/jobs" -> handleJobs(o)
-            "mobile/notify" -> handleNotify(o) // v2.7.2：插件端"真结束"判定后推送的通知帧
-            "mobile/frame" -> {
-                val f = o.optJSONObject("frame") ?: return
-                val ft = f.optString("type")
-                if (ft == "question/requested" || ft == "approval/requested") {
-                    markNotif("frame-${f.optString("rpcId")}", text("需要你回答", "Your input needed"))
-                }
-            }
+            // v2.7.2：通知（含审批/提问 needs-answer）统一由插件端 mobile/notify 帧驱动，
+            // mobile/frame 只承载弹窗数据（App 消费），悬浮球不再自行 markNotif，避免双弹
+            "mobile/notify" -> handleNotify(o)
         }
     }
 

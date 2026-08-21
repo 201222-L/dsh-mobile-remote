@@ -7,6 +7,14 @@
 - **子代理会话不再单独通知完成/失败**：它是父任务的一部分，父任务结束才通知；「需要你回答」仍立即通知（交互式提问不能等）
 - **通知帧直推 SSE（`mobile/notify`）**：悬浮球/App 与插件通知中心同源渲染，悬浮球不再自行按轮次/job 弹"任务完成"
 - max-tokens 截断的完成通知会标注「max-tokens 截断」，避免误以为任务完整完成
+- **审批/提问提醒补全**：`approval/requested`、`question/requested` 立即生成 `needs-answer` 通知 + 推送桥（App 后台/被杀、悬浮球未开时也能收到）；悬浮球提醒统一由 `mobile/notify` 驱动（与弹窗帧去重，不再双弹）
+
+### 修复
+- **修复崩溃级 bug**：`mobile/notify` 广播中 shorthand `{ time }` 引用未声明变量（漏写 `time: now`）→ 每次通知都抛 ReferenceError，`armDone` 定时器异步回调中的异常在 Node 15+ 默认按 unhandledRejection 抛出 → **整个 DSH 进程崩溃**；已修正并给定时器回调整体加 try/catch 兜底
+
+### 插队发送
+- `/send` 端点新增 `mode: "steer"` 参数：插队发送（消息插到 agent 下一步执行），适合 team 插件子会话向主会话插队场景；agent 空闲时自动降级排队并在响应中标注
+- 手机端：**长按发送按钮 = 插队发送**；agent 空闲时提示并降级普通发送
 
 ### 悬浮球横屏修复
 - **旋转/跳转后无条件自动贴边**：监听配置变更（`onConfigurationChanged`），按旋转前渲染位置（`lastRenderX`）判断贴左/贴右、保持隐藏状态——竖屏↔横屏、翻转 180°、页面跳转后球都自动回到边上，无需手动拖动

@@ -339,8 +339,13 @@ class Api {
   }
 
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
-  Future<String> send(String sessionId, String text) async {
-    final r = await postJson('/api/send', {'sessionId': sessionId, 'text': text});
+  Future<String> send(String sessionId, String text, {String mode = 'followup'}) async {
+    // v2.7.2：mode=steer 插队发送（插到 agent 下一步执行）；默认 followup 排队
+    final r = await postJson('/api/send', {
+      'sessionId': sessionId,
+      'text': text,
+      if (mode == 'steer') 'mode': 'steer',
+    });
     return r['messageId'] as String? ?? '';
   }
   /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
@@ -470,21 +475,30 @@ class Api {
   void Function()? onSseKeepalive;
 
   Stream<Map<String, dynamic>> eventsRaw() {
-    final controller = StreamController<Map<String, dynamic>>();
+    // v2.7.2 review(FS3)：onCancel 必须取消底层响应流订阅，否则订阅取消后
+    // await-for 消费循环仍读 socket → 每条 SSE 长连接在 App 存活期间永不释放
+    StreamSubscription<dynamic>? bodySub;
+    final controller = StreamController<Map<String, dynamic>>(
+      onCancel: () {
+        bodySub?.cancel();
+      },
+    );
     final req = http.Request('GET', _uri('/api/events'));
     req.headers.addAll(_headers);
     // 连接超时：地址不可达但"黑洞"（不拒绝也不响应，如组网 IP 在手机端隧道关闭时）会让
     // send() 永久挂起，旧版因此卡死在 connecting 状态、看门狗与地址轮换全部失效。
     // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
-    _client.send(req).timeout(const Duration(seconds: 8)).then((res) async {
+    _client.send(req).timeout(const Duration(seconds: 8)).then((res) {
       if (res.statusCode != 200) {
-        controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
-        controller.close();
+        if (!controller.isClosed) {
+          controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
+          controller.close();
+        }
         return;
       }
       final stream = res.stream.transform(utf8.decoder);
       final buf = StringBuffer();
-      await for (final chunk in stream) {
+      bodySub = stream.listen((chunk) {
         buf.write(chunk);
         var s = buf.toString();
         var idx = s.indexOf('\n\n');
@@ -504,11 +518,16 @@ class Api {
         buf
           ..clear()
           ..write(s);
-      }
-      controller.close();
+      }, onDone: () {
+        if (!controller.isClosed) controller.close();
+      }, onError: (e) {
+        if (!controller.isClosed) controller.addError(e);
+      }, cancelOnError: true);
     }).catchError((e) {
-      controller.addError(e);
-      controller.close();
+      if (!controller.isClosed) {
+        controller.addError(e);
+        controller.close();
+      }
     });
     return controller.stream;
   }

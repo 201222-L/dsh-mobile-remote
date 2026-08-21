@@ -46,7 +46,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _initBubbleState() async {
     final on = await Floating.isRunning();
-    if (mounted) setState(() => _bubbleOn = on);
+    final want = widget.store.floatingEnabled;
+    // v2.7.2：偏好是开但服务没跑（清理后台/重启后）→ 自动拉起，开关保持开
+    if (want && !on && await Floating.canDrawOverlay()) {
+      await Floating.start();
+      unawaited(Floating.setBalanceAlert(widget.store.balanceAlert, widget.store.balanceThreshold));
+    }
+    if (mounted) setState(() => _bubbleOn = want || on);
   }
 
   /// 悬浮球开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
@@ -79,9 +85,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return; // 授权后由用户重新打开开关（或重进页面状态同步）
       }
       await Floating.start();
+      widget.store.setFloatingEnabled(true); // v2.7.2：持久化开关
       if (mounted) setState(() => _bubbleOn = true);
     } else {
       await Floating.stop();
+      widget.store.setFloatingEnabled(false); // v2.7.2：持久化开关
       if (mounted) setState(() => _bubbleOn = false);
     }
   }

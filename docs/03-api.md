@@ -81,18 +81,19 @@
 **请求**
 
 ```json
-{ "sessionId": "session-abc", "text": "帮我跑一下测试" }
+{ "sessionId": "session-abc", "text": "帮我跑一下测试", "mode": "steer" }
 ```
 
 - `sessionId` 可选：指定会话（必须存在且其 agent 存活）；缺省 → 第一个 root agent。
+- `mode` 可选（v2.7.2）：`"followup"`（默认，排队到下一轮）| `"steer"`（插队：消息插到 agent 下一步执行，适合 team 插件子会话向主会话插队）。agent 空闲时 `steer` 自动降级为 `followup`，响应 `note: "agent-idle-followup"`。
 **响应**
 
-- `200 { "ok": true, "agentId": "session-abc", "messageId": "m_<uuid>" }`
+- `200 { "ok": true, "agentId": "session-abc", "messageId": "m_<uuid>", "mode": "followup" | "steer" }`
 - `400 { "error": "empty-text" }`：text 为空或非字符串
 - `404 { "error": "session-not-found" }`：指定会话不存在
 - `503 { "error": "no-live-agent" }`：无匹配的运行中 agent
 - `503 { "error": "agents-unavailable" }`：agents 服务不可用（非 web 组合或启动中）
-**语义**：服务端构造 `createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 后调用 `agent.followup(message)`。`followup` 会持久化消息并唤醒空闲驱动器；不等待执行结果（结果经 SSE 回流）。
+**语义**：服务端构造 `createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 后调用 `agent.followup(message)`（排队）或 `agent.steer(message)`（插队）。`followup` 会持久化消息并唤醒空闲驱动器；不等待执行结果（结果经 SSE 回流）。
 ### 3.3 GET /m/api/sessions
 
 **响应 200**

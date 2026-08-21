@@ -780,15 +780,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _send([String? preset]) async {
+  Future<void> _send([String? preset, String mode = 'followup']) async {
     final text = (preset ?? _inputCtrl.text).trim();
     final id = widget.store.sessionId;
     if (text.isEmpty || id == null || _sending) return;
-    AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}');
+    AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}');
+    // v2.7.2 插队：agent 空闲时插队无意义 → 降级普通发送并提示
+    if (mode == 'steer' && widget.store.agentStatus != 'running') {
+      showToast(context, L10n.t('agent 空闲，已按普通消息发送', 'Agent idle — sent as a normal message'));
+      mode = 'followup';
+    }
     // 收起键盘，输入框回到原位
     FocusScope.of(context).unfocus();
-    // agent 忙时提示（避免用户以为没反应而重复发送）
-    if (widget.store.agentStatus == 'running' && preset == null) {
+    // agent 忙时提示（避免用户以为没反应而重复发送）；插队时不提示排队
+    if (widget.store.agentStatus == 'running' && preset == null && mode != 'steer') {
       showToast(context, L10n.t('agent 正在处理上一轮，消息会排队等待', 'The agent is still processing the last turn — your message will be queued'));
     }
     setState(() {
@@ -798,7 +803,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
-      final mid = await api.send(id, text);
+      final mid = await api.send(id, text, mode: mode);
       AppLog.instance.log('Chat: 发送成功 mid=$mid');
       if (!mounted) return;
       setState(() {
@@ -1128,6 +1133,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           onTap: _sending
                               ? null
                               : (widget.store.agentStatus == 'running' ? _stop : _send),
+                          // v2.7.2：长按 = 插队发送（agent 运行中把消息插到下一步执行，
+                          // 适合 team 插件子会话向主会话插队场景）
+                          onLongPress: _sending
+                              ? null
+                              : () => _send(null, 'steer'),
                           child: Container(
                             width: 32,
                             height: 32,

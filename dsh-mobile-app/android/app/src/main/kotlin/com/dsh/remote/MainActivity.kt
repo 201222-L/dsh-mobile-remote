@@ -9,10 +9,20 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
+    // v2.7.2 review(FS1)：悬浮球面板动作可能发生在冷启动（进程已被系统杀死时点"打开会话/充值/通知"），
+    // 此时走 onCreate 而非 onNewIntent；Flutter 引擎未就绪前先暂存，configureFlutterEngine 后再投递。
+    private var pendingOpenAction: String? = null // "charge" | "notifs" | "session:<id>"
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleIntentExtras(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         floatingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/floating")
+        // 引擎就绪：投递冷启动暂存的面板动作
+        deliverPendingAction()
         floatingChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
@@ -57,17 +67,34 @@ class MainActivity : FlutterActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // 悬浮球迷你面板动作：通知 Flutter 侧执行（App 可能正在前台）
-        if (intent.getBooleanExtra("open_charge", false)) {
-            floatingChannel?.invokeMethod("openChargeRequested", null)
+        // 悬浮球迷你面板动作（热启动路径）：暂存后投递（引擎就绪时立即生效）
+        handleIntentExtras(intent)
+    }
+
+    /** 解析悬浮球面板动作 extra；onCreate（冷启动）与 onNewIntent（热启动）共用。 */
+    private fun handleIntentExtras(intent: Intent?) {
+        if (intent == null) return
+        when {
+            intent.getBooleanExtra("open_charge", false) -> pendingOpenAction = "charge"
+            intent.getBooleanExtra("open_notifs", false) -> pendingOpenAction = "notifs"
+            else -> intent.getStringExtra("open_session")?.let { pendingOpenAction = "session:$it" }
         }
-        if (intent.getBooleanExtra("open_notifs", false)) {
-            floatingChannel?.invokeMethod("openNotifsRequested", null)
+        deliverPendingAction()
+    }
+
+    /** 投递暂存的面板动作到 Flutter 侧（引擎未就绪时 no-op，等 configureFlutterEngine 再投）。 */
+    private fun deliverPendingAction() {
+        val action = pendingOpenAction ?: return
+        val ch = floatingChannel ?: return
+        when {
+            action == "charge" -> ch.invokeMethod("openChargeRequested", null)
+            action == "notifs" -> ch.invokeMethod("openNotifsRequested", null)
+            action.startsWith("session:") -> {
+                val sid = action.removePrefix("session:")
+                if (sid.isNotEmpty()) ch.invokeMethod("openSessionRequested", sid)
+            }
         }
-        val session = intent.getStringExtra("open_session")
-        if (session != null && session.isNotEmpty()) {
-            floatingChannel?.invokeMethod("openSessionRequested", session)
-        }
+        pendingOpenAction = null
     }
 
     private fun startBubbleService() {

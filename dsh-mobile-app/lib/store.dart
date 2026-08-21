@@ -27,6 +27,7 @@ class AppStore extends ChangeNotifier {
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
   bool balanceAlert = false; // 余额预警开关（v2.7：低于阈值提醒充值）
   double balanceThreshold = 10; // 预警阈值（元）
+  bool floatingEnabled = false; // 悬浮球开关（v2.7.2：持久化，清理后台/重启后记住）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
   List<Map<String, dynamic>> workspaces = [];
@@ -78,6 +79,7 @@ class AppStore extends ChangeNotifier {
   static const _kLang = 'dsh_mr_language';
   static const _kBalanceAlert = 'dsh_mr_balance_alert';
   static const _kBalanceThreshold = 'dsh_mr_balance_threshold';
+  static const _kFloating = 'dsh_mr_floating';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -88,6 +90,7 @@ class AppStore extends ChangeNotifier {
     L10n.lang = language;
     balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
     balanceThreshold = prefs.getDouble(_kBalanceThreshold) ?? 10;
+    floatingEnabled = prefs.getBool(_kFloating) ?? false;
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
     // 会话本地缓存：App 打开瞬间先显示上次的列表，后台静默刷新（解决"进去要等一会才有数据"）
@@ -166,6 +169,25 @@ class AppStore extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kBalanceAlert, v);
     unawaited(Floating.setBalanceAlert(v, balanceThreshold));
+  }
+
+  /// 悬浮球开关持久化（v2.7.2：清理后台/重启 App 后记住用户选择，不再每次重开）。
+  Future<void> setFloatingEnabled(bool v) async {
+    floatingEnabled = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kFloating, v);
+  }
+
+  /// App 启动自动恢复悬浮球（v2.7.2）：上次开启过且服务没在跑 → 自动拉起。
+  /// 悬浮窗权限被撤销（罕见）时不强启，等用户到设置页重新开启。
+  Future<void> restoreFloating() async {
+    if (!floatingEnabled) return;
+    if (await Floating.isRunning()) return;
+    if (!await Floating.canDrawOverlay()) return;
+    await Floating.start();
+    // 服务是新起的，需要把余额预警配置补给它
+    unawaited(Floating.setBalanceAlert(balanceAlert, balanceThreshold));
   }
 
   /// 余额预警阈值（元），持久化并同步悬浮球（悬浮球的判定完全以 App 端设置为依据）。
@@ -634,6 +656,22 @@ class AppStore extends ChangeNotifier {
       _catchup();
       // v2.7.1：重连成功后按已知映射恢复当前会话状态（bootstrap 可能没跑到，帧也可能漏）
       applyAgentStatusForSession();
+      // v2.7.2（审批残留修复）：后台冻帧可能丢失 resolved 帧（PC 端已回答但手机仍显示卡片）——
+      // 重连后先清空本地 pending 问询/审批，服务端随后补发的挂起帧才是权威状态；
+      // 未补发 = 已解决，卡片正确销毁
+      if (pendingQuestion != null || pendingApproval != null) {
+        final hadQ = pendingQuestion;
+        final hadA = pendingApproval;
+        pendingQuestion = null;
+        pendingApproval = null;
+        notifyListeners();
+        if (hadQ != null) {
+          onChatEvent?.call(ChatEvent(type: 'question/resolved', data: {'rpcId': hadQ.rpcId}));
+        }
+        if (hadA != null) {
+          onChatEvent?.call(ChatEvent(type: 'approval/resolved', data: {'approvalId': hadA.approvalId}));
+        }
+      }
       // 连接成功：收集电脑全部地址（LAN + Tailscale），供断线时自动轮换
       unawaited(api.collectUrls());
       // 重连成功：补拉会话/通知/目录/工作区（桌面端重启后 App 无需手动刷新即可完整恢复）
