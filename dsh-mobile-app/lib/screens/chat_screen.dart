@@ -230,6 +230,10 @@ class _ChatScreenState extends State<ChatScreen> {
               // review：无 seq 的乐观消息（刚发送尚未回显）也保留，避免重建后短暂消失
               keep.add(m);
               continue;
+            } else if (m.seq == null) {
+              // v2.7.2 乱序排查：无 seq 的非用户条目（如"发送失败"提示条）在头部时
+              // 不能 break——否则其后的真新事件被丢弃/错位；跳过继续向上收集
+              continue;
             } else {
               break; // _items 最新在前：一旦遇到 seq ≤ fetchedLast 即可停止
             }
@@ -997,7 +1001,11 @@ class _ChatScreenState extends State<ChatScreen> {
         //    全列表查找而非只看 out.first：turn/start 等事件可能先于回显插入，
         //    把乐观消息挤到非首位（否则会出现"同一条消息显示两次"）。
         if (!history) {
-          final idx = out.indexWhere((m) =>
+          // v2.7.2 乱序排查：合并到"最旧"的未回显乐观消息（lastIndexWhere）——
+          // 同文本连发时回显按发送顺序到达，合并顺序必须与发送顺序一致；
+          // 此前 indexWhere 从头部（最新）找，先到的回显会合并到最新一条，
+          // 造成 seq 与视觉顺序错配（后续重建时可能乱序）。
+          final idx = out.lastIndexWhere((m) =>
               m.kind == _MsgKind.user && m.messageId == null && m.text.trim() == text.trim());
           if (idx != -1) {
             out[idx] = out[idx].copyWith(seq: ev.seq, messageId: mid);
