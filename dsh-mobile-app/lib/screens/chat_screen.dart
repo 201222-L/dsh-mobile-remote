@@ -805,44 +805,44 @@ class _ChatScreenState extends State<ChatScreen> {
     final collapsed = _queueCollapsed && rows.length > 1;
     final visible = collapsed ? rows.take(1).toList() : rows;
     final ink3 = DshColors.ink3(context);
-    final brand = DshColors.brand(context);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
-      decoration: BoxDecoration(
-        color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171B22) : const Color(0xFFF2F4F7),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: ConstrainedBox(
-        // v2.7.2 review：高度上限 + 可滚动——多条展开时 composer 不再溢出、按钮不被挤出屏外
-        constraints: const BoxConstraints(maxHeight: 200),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (rows.length > 1)
-                InkWell(
-                  onTap: () => setState(() => _queueCollapsed = !_queueCollapsed),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      children: [
-                        Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 15, color: ink3),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            L10n.t('${rows.length} 条排队消息（点击展开）', '${rows.length} queued (tap to expand)'),
-                            style: TextStyle(fontSize: 11.5, color: ink3),
-                          ),
-                        ),
-                      ],
+    // v2.7.2：独立于输入框的轻量条——无背景块、不与消息/输入框挤压，
+    // 多条时标题行可点击折叠；单条直接显示内容行
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 2, 14, 0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (rows.length > 1)
+            InkWell(
+              onTap: () => setState(() => _queueCollapsed = !_queueCollapsed),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.schedule_send, size: 14, color: Color(0xFF6C8CFF)),
+                    const SizedBox(width: 5),
+                    Text(
+                      L10n.t('${rows.length} 条排队消息', '${rows.length} queued'),
+                      style: TextStyle(fontSize: 12, color: ink3, fontWeight: FontWeight.w600),
                     ),
-                  ),
+                    const SizedBox(width: 3),
+                    Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 16, color: ink3),
+                  ],
                 ),
-              for (final row in visible) _buildQueueRow(row),
-            ],
+              ),
+            ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 160),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [for (final row in visible) _buildQueueRow(row)],
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1379,6 +1379,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
+          // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
+          _buildQueueDock(),
           // composer
           SafeArea(
             top: false,
@@ -1394,8 +1396,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // v2.7.2：队列停靠区（空队列不渲染）
-                    _buildQueueDock(),
                     SizedBox(
                       height: 28,
                       child: ListView(
