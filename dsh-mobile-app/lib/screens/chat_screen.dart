@@ -823,14 +823,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.schedule_send, size: 14, color: Color(0xFF6C8CFF)),
+                    // v2.7.2：图标统一灰色系（与模型/权限 pill 同风格，去蓝色）
+                    Icon(Icons.schedule_send, size: 13, color: ink3),
                     const SizedBox(width: 5),
                     Text(
                       L10n.t('${rows.length} 条排队消息', '${rows.length} queued'),
-                      style: TextStyle(fontSize: 12, color: ink3, fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 11.5, color: ink3, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(width: 3),
-                    Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 16, color: ink3),
+                    Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 15, color: ink3),
                   ],
                 ),
               ),
@@ -889,22 +890,23 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          Icon(Icons.schedule_send, size: 15, color: brand), // v2.7.2 review：主题品牌色
-          const SizedBox(width: 6),
+          // v2.7.2：图标统一灰色系、尺寸缩小（与模型/权限 pill 同风格，去蓝色）
+          Icon(Icons.schedule_send, size: 13, color: ink3),
+          const SizedBox(width: 5),
           Expanded(
             child: Text(
               text,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12.5, fontStyle: hasText ? FontStyle.normal : FontStyle.italic, color: hasText ? null : ink3),
+              style: TextStyle(fontSize: 12, fontStyle: hasText ? FontStyle.normal : FontStyle.italic, color: hasText ? null : ink3),
             ),
           ),
           if (hasText)
             IconButton(
-              icon: const Icon(Icons.edit_outlined, size: 16),
+              icon: const Icon(Icons.edit_outlined, size: 15),
               color: ink3,
               visualDensity: VisualDensity.compact,
               tooltip: L10n.t('编辑', 'Edit'),
@@ -918,14 +920,14 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           if (steerable)
             IconButton(
-              icon: const Icon(Icons.play_arrow, size: 17),
-              color: brand,
+              icon: const Icon(Icons.play_arrow, size: 16),
+              color: ink3,
               visualDensity: VisualDensity.compact,
               tooltip: L10n.t('插话', 'Steer'),
               onPressed: _queueBusy ? null : () => _queueSteer(id),
             ),
           IconButton(
-            icon: const Icon(Icons.delete_outline, size: 16),
+            icon: const Icon(Icons.delete_outline, size: 15),
             color: ink3,
             visualDensity: VisualDensity.compact,
             tooltip: L10n.t('删除', 'Remove'),
