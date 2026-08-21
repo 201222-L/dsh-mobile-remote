@@ -823,7 +823,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// `placement === "queued"` 过滤）——steering 行是"插话中"消息、即将执行，
   /// 显示并允许操作会误导（删除大概率来不及，插话按钮也被隐藏）。
   Widget _buildQueueDock() {
-    final rows = _queue.where((r) => r['placement'] != 'steering').toList();
+    // v2.7.2：只显示可操作的 queued 行（对齐 PC 端 QueueDock）；
+    // steering/context（插话中/上下文注入）不可操作,不显示
+    final rows = _queue.where((r) => r['placement'] == 'queued').toList();
     if (rows.isEmpty) return const SizedBox.shrink();
     final collapsed = _queueCollapsed && rows.length > 1;
     final visible = collapsed ? rows.take(1).toList() : rows;
