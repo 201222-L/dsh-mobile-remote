@@ -1320,11 +1320,14 @@ class FloatingBubbleService : Service() {
         }
         // v2.7.2：任务终态通知由插件端 mobile/notify 帧统一驱动（真结束判定），
         // 这里只保留运行状态指示；连接回放帧只学习不弹。
-        // review：false 路径也刷新 UI（否则球被 turn/start 点亮后，
-        // 最后一帧"无运行 job"把 flag 置 false 但界面仍亮，且绕过 5 分钟回落）
-        agentsRunning = running
-        if (running) lastActivity = System.currentTimeMillis()
-        mainHandler.post { setState() }
+        // review：false 路径不再覆盖 agentsRunning——jobs 帧不校验 sessionId，
+        // 任何会话"无运行 job"都会把球误灭（与主轮次 turn/start 是两套信号）；
+        // 熄灭交给 turn/end 与 unreadCheckRunnable 的 5 分钟回落
+        if (running) {
+            agentsRunning = true
+            lastActivity = System.currentTimeMillis()
+            mainHandler.post { setState() }
+        }
         // 面板打开时即时刷新
         refreshPanelIfOpen()
     }

@@ -92,6 +92,8 @@ class _JobsTabState extends State<_JobsTab> {
   }
 
   Future<void> _load() async {
+    // v2.7.2 review：弹层可下滑关闭,异步回调后必须防 setState-after-dispose
+    if (!mounted) return;
     setState(() => _jobs = null);
     try {
       final list = await api.jobs(widget.sessionId);
@@ -107,7 +109,7 @@ class _JobsTabState extends State<_JobsTab> {
     try {
       await api.jobKill(widget.sessionId, job['id'] as String? ?? '');
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
-      _load();
+      if (mounted) _load();
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
     }
@@ -365,7 +367,8 @@ class _GoalTabState extends State<_GoalTab> {
       if (mounted) showToast(context, '${L10n.t('操作失败：', 'Action failed: ')}$e');
     } finally {
       // 无论成败都刷新：PC/目标驱动可能已改变状态（如轮次耗尽→受阻），UI 需反映真实情况
-      await _load();
+      // v2.7.2 review：弹层可下滑关闭,await 后必须防 setState-after-dispose
+      if (mounted) await _load();
       if (mounted) setState(() => _busy = false);
     }
   }

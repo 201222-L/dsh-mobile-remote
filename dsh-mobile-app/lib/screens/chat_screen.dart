@@ -442,6 +442,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     // v2.7.2：消息少时（≤50 条）内容贴顶 + 底部弹性留白——修复"新对话上方一大半空白"。
     // reverse 列表内容不足一屏时默认贴底,用 Column+shrinkWrap+Spacer 让内容贴顶、底部留白。
+    // （注意：_infiniteMode 恒为 true，此前 `&& !_infiniteMode` 使本分支永远不可达——已修正）
     final compact = _items.length <= 50;
     final list = ListView.builder(
       controller: _scrollCtrl,
@@ -468,8 +469,9 @@ class _ChatScreenState extends State<ChatScreen> {
         return _buildItem(_items[index - (hasDraft ? 1 : 0)]);
       },
     );
-    if (compact && !_infiniteMode) {
-      return Column(
+    Widget body = list;
+    if (compact) {
+      body = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Flexible(child: list),
@@ -477,11 +479,13 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       );
     }
-    if (!_infiniteMode) return list;
-    return NotificationListener<ScrollNotification>(
-      onNotification: _onLiveScroll,
-      child: list,
-    );
+    if (_infiniteMode) {
+      return NotificationListener<ScrollNotification>(
+        onNotification: _onLiveScroll,
+        child: body,
+      );
+    }
+    return body;
   }
 
   /// 历史分段浏览：普通列表（最旧在顶部，offset 0 安全），顶部翻页控制条。
@@ -1137,8 +1141,10 @@ class _ChatScreenState extends State<ChatScreen> {
       // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
       _scheduleQueueRefresh();
       setState(() {
-        // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）
-        final idx = _items.indexWhere(
+        // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）。
+        // v2.7.2 review：与回显合并对称用 lastIndexWhere（合并到最旧未回显）——
+        // 同文本多条时 mid 不会挂错条目
+        final idx = _items.lastIndexWhere(
             (m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
         if (idx != -1) _items[idx] = _items[idx].copyWith(messageId: mid);
       });
