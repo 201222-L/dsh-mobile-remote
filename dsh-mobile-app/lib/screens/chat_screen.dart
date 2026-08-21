@@ -1105,6 +1105,10 @@ class _ChatScreenState extends State<ChatScreen> {
       final mid = await api.send(id, text, mode: mode);
       AppLog.instance.log('Chat: 发送成功 mid=$mid');
       if (!mounted) return;
+      // v2.7.2：插队成功明确提示（否则和普通发送看起来一样，用户会困惑）
+      if (mode == 'steer') {
+        showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
+      }
       // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
       _scheduleQueueRefresh();
       setState(() {
