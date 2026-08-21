@@ -61,15 +61,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await api.markNotifsRead(ids: [n.id]);
       _refresh();
     } catch (_) {}
-    await widget.store.setSession(n.sessionId);
-    widget.store.refreshSessionConfig();
     if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onOpenSession),
-      ),
-    );
-    widget.store.refreshSessions();
+    // Phase 2(A4)：统一打开会话流程（openChat 内 setSession+refreshSessionConfig+push+onReturn）
+    await openChat(context, widget.store, n.sessionId,
+        onTitleChanged: widget.onOpenSession,
+        onReturn: () => widget.store.refreshSessions());
   }
 
   Future<void> _readAll() async {

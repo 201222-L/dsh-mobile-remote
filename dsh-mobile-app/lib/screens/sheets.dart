@@ -5,6 +5,7 @@ import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
+import '../toast.dart';
 import 'providers_screen.dart';
 
 /// 通用底部弹层容器（对齐网页端 sheet：圆角顶、拖拽把手、标题）。
@@ -150,8 +151,8 @@ void showModelSheet(BuildContext context, AppStore store) {
               Navigator.of(context).pop();
               store
                   .applySessionConfig({'provider': model.provider, 'model': model.id})
-                  .then((_) => _toast(msgr, L10n.t('已切换模型', 'Model switched')))
-                  .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
+                  .then((_) => showToastAt(msgr, L10n.t('已切换模型', 'Model switched')))
+                  .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
             },
           )),
     ],
@@ -162,9 +163,8 @@ void showModelSheet(BuildContext context, AppStore store) {
         child: InkWell(
           onTap: () {
             Navigator.of(context).pop();
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
-            );
+            // Phase 2：与设置页共用提供商页打开入口
+            openProviders(context, store);
           },
           borderRadius: BorderRadius.circular(8),
           child: Row(
@@ -198,7 +198,7 @@ void showModelSheet(BuildContext context, AppStore store) {
                   Navigator.of(context).pop();
                   store
                       .applySessionConfig({'reasoningEffort': e})
-                      .catchError((err) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$err'));
+                      .catchError((err) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$err'));
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 9),
@@ -246,7 +246,7 @@ void showPermSheet(BuildContext context, AppStore store) {
             }
             store
                 .applySessionConfig({'permissionPreset': p.id})
-                .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
+                .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
           },
         )),
     Text(L10n.t('选择完全访问需确认风险', 'Selecting Full Access requires a risk confirmation'), textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
@@ -283,8 +283,8 @@ void _showDangerConfirm(BuildContext context, AppStore store) {
               Navigator.of(context).pop();
               store
                   .applySessionConfig({'permissionPreset': 'danger-full-access', 'confirmDanger': true})
-                  .then((_) => _toast(msgr, L10n.t('已启用完全访问', 'Full Access enabled')))
-                  .catchError((e) => _toast(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
+                  .then((_) => showToastAt(msgr, L10n.t('已启用完全访问', 'Full Access enabled')))
+                  .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
             },
             child: Text(L10n.t('我理解风险，启用', 'Enable — I understand the risk')),
           ),
@@ -340,10 +340,10 @@ Future<void> showNewSessionSheet(
       if (!context.mounted) return;
       final msgr = ScaffoldMessenger.of(context);
       Navigator.of(context).pop();
-      _toast(msgr, '${L10n.t('已用「', 'Created session: ')}$name${L10n.t('」新建会话', '')}');
+      showToastAt(msgr, '${L10n.t('已用「', 'Created session: ')}$name${L10n.t('」新建会话', '')}');
       await onCreated(created['sessionId'] as String);
     } catch (e) {
-      if (context.mounted) _toast(ScaffoldMessenger.of(context), '${L10n.t('新建失败：', 'Failed to create: ')}$e');
+      if (context.mounted) showToastAt(ScaffoldMessenger.of(context), '${L10n.t('新建失败：', 'Failed to create: ')}$e');
     }
   }
 
@@ -355,7 +355,7 @@ Future<void> showNewSessionSheet(
     if (!context.mounted) return;
   }
   if (cat == null) {
-    _toast(ScaffoldMessenger.of(context), L10n.t('模型目录加载失败，请检查连接后下拉刷新重试', 'Failed to load the model catalog. Check the connection and pull to refresh.'));
+    showToastAt(ScaffoldMessenger.of(context), L10n.t('模型目录加载失败，请检查连接后下拉刷新重试', 'Failed to load the model catalog. Check the connection and pull to refresh.'));
     return;
   }
   final catalog = cat; // 非空最终引用，供弹层闭包使用
@@ -779,7 +779,7 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
                         if (sheetCtx.mounted) Navigator.of(sheetCtx).pop();
                         onCreated(parent ?? name);
                       } catch (e) {
-                        if (sheetCtx.mounted) _toast(ScaffoldMessenger.of(sheetCtx), '${L10n.t('创建失败：', 'Failed to create: ')}$e');
+                        if (sheetCtx.mounted) showToastAt(ScaffoldMessenger.of(sheetCtx), '${L10n.t('创建失败：', 'Failed to create: ')}$e');
                       }
                     },
                     child: Text(L10n.t('创建', 'Create')),
@@ -833,9 +833,9 @@ void showActionSheet(BuildContext context, Map<String, dynamic> action) {
               Navigator.of(context).pop();
               try {
                 await api.invokeAction(action['id'] as String, args);
-                _toast(msgr, '${L10n.t('已发送给 agent：', 'Sent to agent: ')}${action['title']}');
+                showToastAt(msgr, '${L10n.t('已发送给 agent：', 'Sent to agent: ')}${action['title']}');
               } catch (e) {
-                _toast(msgr, '${L10n.t('执行失败：', 'Execution failed: ')}$e');
+                showToastAt(msgr, '${L10n.t('执行失败：', 'Execution failed: ')}$e');
               }
             },
             child: Text(L10n.t('执行', 'Execute')),
@@ -844,16 +844,4 @@ void showActionSheet(BuildContext context, Map<String, dynamic> action) {
       ],
     ),
   ]);
-}
-
-void _toast(ScaffoldMessengerState messenger, String text) {
-  // 与全局 showToast 一致的短滞留 + 悬浮样式
-  messenger
-    ..clearSnackBars()
-    ..showSnackBar(SnackBar(
-      content: Text(text),
-      duration: const Duration(milliseconds: 1600),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-    ));
 }

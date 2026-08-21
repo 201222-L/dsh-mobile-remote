@@ -3,8 +3,13 @@
 import 'package:flutter/material.dart';
 
 void showToast(BuildContext context, String msg) {
+  showToastAt(ScaffoldMessenger.of(context), msg);
+}
+
+/// 面向已持有 messenger 的调用点（弹层/异步回调后 context 可能已失效，用捕获的 messenger）。
+void showToastAt(ScaffoldMessengerState msgr, String msg) {
   final ms = msg.length > 50 ? 3000 : 1600;
-  ScaffoldMessenger.of(context)
+  msgr
     ..clearSnackBars()
     ..showSnackBar(SnackBar(
       content: Text(msg),

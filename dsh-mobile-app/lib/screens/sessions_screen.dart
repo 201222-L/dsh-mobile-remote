@@ -8,6 +8,7 @@ import '../api.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
+import '../fmt.dart';
 import 'chat_screen.dart';
 
 class SessionsScreen extends StatefulWidget {
@@ -40,15 +41,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
   }
 
   Future<void> _open(Session s) async {
-    await widget.store.setSession(s.id);
-    widget.store.refreshSessionConfig();
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onOpenSession),
-      ),
-    );
-    widget.store.refreshSessions();
+    // Phase 2(A4)：统一打开会话流程（openChat 内 setSession+refreshSessionConfig+push）
+    await openChat(context, widget.store, s.id,
+        onTitleChanged: widget.onOpenSession,
+        onReturn: () => widget.store.refreshSessions());
   }
 
   Future<void> _showActions(Session s) async {
@@ -104,16 +100,6 @@ class _SessionsScreenState extends State<SessionsScreen> {
       unawaited(widget.store.refreshSessions());
       showToast(context, '${L10n.t('操作失败：', 'Operation failed:')}$e${L10n.t('（桌面端插件需要重启生效）', ' (restart the desktop plugin to take effect)')}');
     }
-  }
-
-  String _relTime(int ms) {
-    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return L10n.t('刚刚', 'Just now');
-    if (diff.inHours < 1) return '${diff.inMinutes}${L10n.t(' 分钟前', ' min ago')}';
-    if (diff.inDays < 1) return '${diff.inHours}${L10n.t(' 小时前', ' hr ago')}';
-    if (diff.inDays < 7) return '${diff.inDays}${L10n.t(' 天前', ' d ago')}';
-    return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -221,7 +207,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                                     Text(s.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
                                     const SizedBox(height: 1),
                                     Text(
-                                      '${_relTime(s.sortKey)}${s.cwd != null ? ' · ${s.cwd}' : ''}',
+                                      '${relTime(s.sortKey)}${s.cwd != null ? ' · ${s.cwd}' : ''}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(fontSize: 11.5, color: ink2),

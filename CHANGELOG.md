@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.8.0（2026-08-22）— 代码收敛重构（Phase 0/1/2，行为保持）
+
+### 服务端（lib/index.js）
+- **Phase 0 公共 helper**：新增 `agentSessionId` / `isLoopback` / `firstAgent` / `shortSessionId` / `notifyTitle` / `guardRes` 六个 helper，统一散落各处的重复写法（会话 id 归一、回环判定、标题兜底短码、响应防崩守卫）
+- **Phase 1 三收敛**：
+  - `readJson(req, res)` 收敛 20 处 `JSON.parse(await readBody(req))` + try/catch 样板（失败统一 400/413 响应）
+  - `rpcError(err, code)` 收敛 9 处 apiRpc 失败映射（传输层 502 / 超时中止 504 / 内核错误透传 status+code）
+  - `requireGet` / `requirePost` 收敛 29 处 405 方法检查；`/events` 保持严格 GET-only（HEAD 会悬挂 SSE 连接）
+- `/sessions` 列表标题统一兜底短码（live 与归档分支一致，标题永不裸 null）
+
+### 悬浮球（FloatingBubbleService.kt）
+- 新增 `baseUrl` / `httpGet` / `postState` / `openApp` / `roundedRect` / `isActive` / `isBusy` 七个 helper：统一 HTTP 请求骨架（含 finally disconnect）、主线程刷新、跳转、圆角背景、状态判定
+- `mainIntent` 统一前台通知与面板跳转的 Intent 构造（extra 类型守卫：String/Boolean/Int，成对传参）
+- 清理 3 个未使用 import；未读增量检查失败不再消费首次基线（消除瞬时失败误报）
+
+### App（Flutter）
+- 新建 `lib/fmt.dart`：`relTime` / `fmtTokens` / `permNameOf` 共享格式化（首页/会话页/聊天页/设置页收敛）
+- `toast.dart` 新增 `showToastAt(messenger, msg)`：sheets/settings 的本地 `_toast` 全部收敛
+- `theme.dart` 新增 `DshSwitch`：设置页三处开关统一
+- `openChat`（chat_screen.dart 顶层）统一 7 处打开会话流程（含悬浮球/新建/分支，返回后恢复语义保持）
+- `openNotificationsScreen`（main.dart 顶层）统一 3 处通知页入口；`openProviders`（providers_screen.dart）统一 2 处提供商页入口
+- `_persistPrefs` 收敛 8 个 setter 的 SharedPreferences 样板（不支持类型快速失败）；`_isNoiseText` 收敛消息噪声过滤；删除死代码 `api.events()`
+- 行为变化说明：assistant 消息现在与 user 消息一致地过滤 `background job ` 前缀注入帧（与 PC 端 GUI 对称）
+
+### 其他
+- 版本号统一 2.8.0（package.json / pubspec 2.8.0+3）
+- 纯收敛重构 + 少量 UI 修正，全部改动经多轮 Code Review
+- **UI 行为变化（v2.8.0 修复）**：
+  - 对话消息列表统一为普通列表（最旧在顶、最新在底）：消息少时内容贴顶、列表占满可滚动——修复旧版"下半部分空白死区 + 滑动消息消失"；根治 50/51 条边界列表方向翻转的滚动位置跳变
+  - 输入框胶囊行：容器内边距对称、胶囊行与输入框左缘对齐；模型胶囊超长省略号截断（防溢出）；插队按钮图标由播放三角改为右向箭头
+  - 悬浮球余额自查：JSON 解析兜底 try/catch（200 但畸形响应体不再产生异常噪音）
+
 ## v2.7.2（2026-08-21）— 通知改"真结束"判定 + 悬浮球横屏修复
 
 ### 通知（服务端 + App/悬浮球同源）

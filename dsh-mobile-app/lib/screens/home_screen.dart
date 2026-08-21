@@ -5,6 +5,7 @@ import '../toast.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
+import '../fmt.dart';
 import 'chat_screen.dart';
 import 'sheets.dart';
 
@@ -35,15 +36,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openSession(Session s) async {
-    await widget.store.setSession(s.id);
-    widget.store.refreshSessionConfig();
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onOpenSession),
-      ),
-    );
-    widget.store.refreshSessions();
+    // Phase 2(A4)：统一打开会话流程（openChat 内 setSession+refreshSessionConfig+push）
+    await openChat(context, widget.store, s.id,
+        onTitleChanged: widget.onOpenSession,
+        onReturn: () => widget.store.refreshSessions());
   }
 
   @override
@@ -152,14 +148,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           FilledButton(
                             style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
                             onPressed: () => showNewSessionSheet(context, store, (id) async {
-                              await store.setSession(id);
+                              // Phase 2(A4)：openChat 内统一 setSession+refreshSessionConfig+push，这里只刷列表
                               store.refreshSessions();
                               if (!context.mounted) return;
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => ChatScreen(store: store, onTitleChanged: widget.onOpenSession),
-                                ),
-                              );
+                              await openChat(context, store, id,
+                                  onTitleChanged: widget.onOpenSession);
                             }),
                             child: Text(L10n.t('＋ 新建会话', '+ New Session')),
                           ),
@@ -209,7 +202,7 @@ class _SessionRow extends StatelessWidget {
                   const SizedBox(height: 1),
                   Row(
                     children: [
-                      Text(_relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
+                      Text(relTime(session.sortKey), style: TextStyle(fontSize: 11.5, color: ink2)),
                       // 所属工作区小字标注（与 PC 端分组同源）；长标题省略号防溢出
                       if (workspace != null) ...[
                         Text(' · ', style: TextStyle(fontSize: 11, color: ink3)),
@@ -234,16 +227,5 @@ class _SessionRow extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  /// 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期。
-  String _relTime(int ms) {
-    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return L10n.t('刚刚', 'Just now');
-    if (diff.inHours < 1) return '${diff.inMinutes}${L10n.t(' 分钟前', ' min ago')}';
-    if (diff.inDays < 1) return '${diff.inHours}${L10n.t(' 小时前', ' hr ago')}';
-    if (diff.inDays < 7) return '${diff.inDays}${L10n.t(' 天前', ' d ago')}';
-    return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 }

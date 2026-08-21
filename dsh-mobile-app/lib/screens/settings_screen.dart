@@ -11,6 +11,7 @@ import '../logger.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
+import '../fmt.dart';
 import 'sheets.dart';
 import 'providers_screen.dart';
 
@@ -430,12 +431,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final warn = DshColors.warn(context);
     final danger = DshColors.danger(context);
 
-    String permName(String? id) => switch (id) {
-          'read-only' => 'Read Only',
-          'workspace-write' => 'Workspace Write',
-          'danger-full-access' => 'Danger Full Access',
-          _ => '…',
-        };
+    String permName(String? id) => permNameOf(id) ?? '…';
     String presetName(String? id) => switch (id) {
           'standard' => L10n.t('标准模式', 'Standard'),
           'code' => L10n.t('PTC 模式', 'PTC'),
@@ -522,9 +518,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub: L10n.t('与 PC 端「设置 → 模型」同一配置通道', 'Same channel as PC Settings → Models'),
             trailing: Text(L10n.t('管理', 'Manage'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
-              );
+              // Phase 2：与模型弹层共用提供商页打开入口
+              openProviders(context, store);
             },
           ),
         ]),
@@ -586,23 +581,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _fmtThreshold(store.balanceThreshold) +
                 L10n.t(' 时提醒充值（点此修改）', ' — tap to change'),
             onTap: _pickThreshold,
-            trailing: SizedBox(
-              width: 44,
-              height: 28,
-              child: FittedBox(
-                fit: BoxFit.contain,
-                child: Switch(
-                  value: store.balanceAlert,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  activeTrackColor: DshColors.brand(context),
-                  activeThumbColor: Colors.white,
-                  inactiveTrackColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
-                  inactiveThumbColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
-                  onChanged: (v) => store.setBalanceAlert(v),
-                ),
-              ),
+            trailing: DshSwitch(
+              value: store.balanceAlert,
+              onChanged: (v) => store.setBalanceAlert(v),
             ),
           ),
         ]),
@@ -612,24 +593,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: L10n.t('思考内容', 'Thinking content'),
             sub: L10n.t('活动条思考状态展开时是否显示思考原文（默认关：只显示状态）',
                 'Show raw thinking text when expanded (default off: status only)'),
-            trailing: SizedBox(
-              width: 44,
-              height: 28,
-              child: FittedBox(
-                fit: BoxFit.contain,
-                child: Switch(
-                  value: store.showReasoning,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  // 色调适配：打开 = 品牌蓝；关闭 = 浅灰白（深色模式用柔和深灰）
-                  activeTrackColor: DshColors.brand(context),
-                  activeThumbColor: Colors.white,
-                  inactiveTrackColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
-                  inactiveThumbColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
-                  onChanged: (v) => store.setShowReasoning(v),
-                ),
-              ),
+            trailing: DshSwitch(
+              value: store.showReasoning,
+              onChanged: (v) => store.setShowReasoning(v),
             ),
           ),
           _row(
@@ -674,23 +640,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: L10n.t('悬浮球', 'Floating bubble'),
             sub: L10n.t('桌面悬浮球：agent 运行/通知/余额低时亮起，单击展开面板（默认关）',
                 'Floating bubble: lights up on activity, tap to open panel (off by default)'),
-            trailing: SizedBox(
-              width: 44,
-              height: 28,
-              child: FittedBox(
-                fit: BoxFit.contain,
-                child: Switch(
-                  value: _bubbleOn,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  activeTrackColor: DshColors.brand(context),
-                  activeThumbColor: Colors.white,
-                  inactiveTrackColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
-                  inactiveThumbColor:
-                      Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
-                  onChanged: _toggleBubble,
-                ),
-              ),
+            trailing: DshSwitch(
+              value: _bubbleOn,
+              onChanged: _toggleBubble,
             ),
           ),
           _row(
@@ -750,9 +702,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         try {
           await api.updateDefaults(agentPreset: id);
           await store.refreshAll();
-          _toast(msgr, L10n.t('已设置默认预设', 'Default preset set'));
+          showToastAt(msgr, L10n.t('已设置默认预设', 'Default preset set'));
         } catch (e) {
-          _toast(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
+          showToastAt(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
         }
       },
     );
@@ -777,9 +729,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         try {
           await api.updateDefaults(permissionPreset: id);
           await store.refreshAll();
-          _toast(msgr, L10n.t('已设置默认权限', 'Default permission set'));
+          showToastAt(msgr, L10n.t('已设置默认权限', 'Default permission set'));
         } catch (e) {
-          _toast(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
+          showToastAt(msgr, '${L10n.t('设置失败：', 'Failed: ')}$e');
         }
       },
     );
@@ -890,18 +842,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (choice != null) await store.setLanguage(choice);
   }
 
-  void _toast(ScaffoldMessengerState msgr, String text) {
-    // 与全局 showToast 一致的短滞留 + 悬浮样式
-    msgr
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(text),
-        duration: const Duration(milliseconds: 1600),
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      ));
-  }
-
   /// 应用日志：查看 / 复制 / 清空
   Future<void> _openLog() async {
     final text = await AppLog.instance.readAll();
@@ -930,7 +870,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: OutlinedButton(
               onPressed: () async {
                 await AppLog.instance.clear();
-                _toast(msgr, L10n.t('日志已清空', 'Log cleared'));
+                showToastAt(msgr, L10n.t('日志已清空', 'Log cleared'));
               },
               child: Text(L10n.t('清空', 'Clear')),
             ),

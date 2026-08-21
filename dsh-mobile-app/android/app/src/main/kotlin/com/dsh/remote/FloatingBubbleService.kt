@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Outline
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -20,10 +19,8 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
@@ -118,7 +115,7 @@ class FloatingBubbleService : Service() {
             // 5 分钟无任何活动且无通知 → 回暗态（兜底：事件断档时球不常亮）
             if (agentsRunning && notifCount == 0 && System.currentTimeMillis() - lastActivity > 5 * 60 * 1000L) {
                 agentsRunning = false
-                mainHandler.post { setState() }
+                postState()
             }
             mainHandler.postDelayed(this, 60000)
         }
@@ -158,28 +155,19 @@ class FloatingBubbleService : Service() {
         override fun run() {
             Thread({
                 try {
-                    val base = prefs("flutter.dsh_mr_base") ?: return@Thread
-                    val token = prefs("flutter.dsh_mr_token") ?: return@Thread
-                    var b = base.trim()
-                    if (b.endsWith("/")) b = b.dropLast(1)
-                    if (b.endsWith("/m")) b = b.dropLast(2)
-                    val conn = URL("$b/m/api/balance").openConnection() as HttpURLConnection
-                    conn.connectTimeout = 8000
-                    conn.setRequestProperty("x-mobile-token", token)
-                    if (conn.responseCode == 200) {
-                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
-                        val first = infos?.optJSONObject(0)
-                        val total = first?.opt("total_balance")
-                        val v = when (total) {
-                            is Number -> total.toDouble()
-                            is String -> total.toDoubleOrNull() ?: 0.0
-                            else -> 0.0
-                        }
-                        if (v > 0) onBalance("$v:")
+                    val txt = httpGet("balance", 8000) ?: return@Thread
+                    val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
+                    val first = infos?.optJSONObject(0)
+                    val total = first?.opt("total_balance")
+                    val v = when (total) {
+                        is Number -> total.toDouble()
+                        is String -> total.toDoubleOrNull() ?: 0.0
+                        else -> 0.0
                     }
-                    conn.disconnect()
-                } catch (_: Exception) {}
+                    if (v > 0) onBalance("$v:")
+                } catch (_: Exception) {
+                    // v2.8.0 review：httpGet 只吞网络/HTTP 异常，200 但畸形响应体的 JSONException 需在此兜底
+                }
             }, "dsh-bubble-balance").start()
             mainHandler.postDelayed(this, 30 * 60 * 1000L)
         }
@@ -224,9 +212,8 @@ class FloatingBubbleService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val openIntent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        val pi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
+        // Phase 2(K3)：Intent 构造与 openApp 共用（mainIntent 收敛）
+        val pi = PendingIntent.getActivity(this, 0, mainIntent(), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(text("DSH Remote 悬浮球运行中", "DSH Remote bubble is running"))
             .setContentText(text("点击回到 App", "Tap to open the app"))
@@ -367,11 +354,7 @@ class FloatingBubbleService : Service() {
         bd.setPadding(dp(5), 0, dp(5), 0)
         bd.setMinWidth(dp(14))
         // v2.7.1：胶囊徽标（圆角=高一半），骑在球右上外缘（上移/右移出球）
-        bd.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(8).toFloat()
-            setColor(Color.parseColor("#E5484D"))
-        }
+        bd.background = roundedRect(Color.parseColor("#E5484D"), 8f)
         bd.visibility = View.GONE
         val badgeLp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, dp(16), Gravity.TOP or Gravity.END
@@ -519,10 +502,7 @@ class FloatingBubbleService : Service() {
         tv.setTextColor(Color.WHITE)
         tv.textSize = 12f
         tv.setPadding(dp(12), dp(7), dp(12), dp(7))
-        tv.background = GradientDrawable().apply {
-            cornerRadius = dp(8).toFloat()
-            setColor(Color.parseColor("#E61A1D24"))
-        }
+        tv.background = roundedRect(Color.parseColor("#E61A1D24"), 8f)
         tv.visibility = View.GONE
         tv.setOnClickListener { openMain() }
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -693,10 +673,7 @@ class FloatingBubbleService : Service() {
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.setPadding(dp(12), dp(8), dp(12), dp(10))
-        root.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(Color.parseColor("#F21A1D24"))
-        }
+        root.background = roundedRect(Color.parseColor("#F21A1D24"), 14f)
         root.visibility = View.GONE
 
         // 标题行
@@ -752,10 +729,7 @@ class FloatingBubbleService : Service() {
         // 最小宽度要足够大：单数字（"1"）时若只有 12dp 会接近正圆，
         // 18dp 保证单数字也呈现胶囊（两端半圆 + 平段）
         badgeUnread.setMinWidth(dp(18))
-        badgeUnread.background = GradientDrawable().apply {
-            cornerRadius = dp(6).toFloat()
-            setColor(Color.parseColor("#E5484D"))
-        }
+        badgeUnread.background = roundedRect(Color.parseColor("#E5484D"), 6f)
         badgeUnread.visibility = View.GONE
         notifHead.addView(badgeUnread, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(12)))
         val viewAll = TextView(this)
@@ -793,10 +767,7 @@ class FloatingBubbleService : Service() {
         openBtn.setTextColor(Color.WHITE)
         openBtn.textSize = 12.5f
         openBtn.gravity = Gravity.CENTER
-        openBtn.background = GradientDrawable().apply {
-            cornerRadius = dp(20).toFloat()
-            setColor(Color.parseColor("#3A3F47"))
-        }
+        openBtn.background = roundedRect(Color.parseColor("#3A3F47"), 20f)
         openBtn.setOnClickListener { hidePanel(); openMain() }
         btnRow.addView(openBtn, LinearLayout.LayoutParams(0, dp(36), 1f))
         val chargeBtn = TextView(this)
@@ -804,10 +775,7 @@ class FloatingBubbleService : Service() {
         chargeBtn.setTextColor(Color.WHITE)
         chargeBtn.textSize = 12.5f
         chargeBtn.gravity = Gravity.CENTER
-        chargeBtn.background = GradientDrawable().apply {
-            cornerRadius = dp(20).toFloat()
-            setColor(Color.parseColor("#3A3F47"))
-        }
+        chargeBtn.background = roundedRect(Color.parseColor("#3A3F47"), 20f)
         chargeBtn.setOnClickListener { hidePanel(); openCharge() }
         btnRow.addView(chargeBtn, LinearLayout.LayoutParams(0, dp(36), 1f))
         val gap = View(this)
@@ -884,7 +852,7 @@ class FloatingBubbleService : Service() {
         // 打开面板 = 已读：清红点
         notifCount = 0
         mainHandler.removeCallbacks(clearNotifRunnable)
-        mainHandler.post { setState() }
+        postState()
         refreshPanelData()
         // 面板开着期间周期刷新（兜底）
         mainHandler.removeCallbacks(panelRefreshRunnable)
@@ -949,86 +917,65 @@ class FloatingBubbleService : Service() {
 
     private fun refreshPanelData() {
         Thread({
-            try {
-                val base = prefs("flutter.dsh_mr_base") ?: return@Thread
-                val token = prefs("flutter.dsh_mr_token") ?: return@Thread
-                var b = base.trim()
-                if (b.endsWith("/")) b = b.dropLast(1)
-                if (b.endsWith("/m")) b = b.dropLast(2)
-
-                // 运行中会话（bootstrap agents）
-                val running = mutableListOf<Pair<String, String>>()
-                try {
-                    val conn = URL("$b/m/api/bootstrap").openConnection() as HttpURLConnection
-                    conn.connectTimeout = 5000
-                    conn.setRequestProperty("x-mobile-token", token)
-                    if (conn.responseCode == 200) {
-                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val agents = JSONObject(txt).optJSONArray("agents") ?: JSONArray()
-                        for (i in 0 until agents.length()) {
-                            val a = agents.optJSONObject(i) ?: continue
-                            val st = a.optString("status")
-                            if (st == "running" || st == "waiting") {
-                                // v2.7.2 review(M4)：agent.id 即 session.id（内核校验 id === session.id），
-                                // 无需剥前缀；直接传原始 id 给 App（显示短码在 renderPanel 派生）
-                                running.add(a.optString("id") to st)
-                            }
+            // v2.8.0 review：三段独立 runCatching——任一段畸形响应只跳过该段，
+            // 不牵连后续请求与 renderPanel（旧单 try 会在解析异常时整轮跳过面板刷新）
+            // 运行中会话（bootstrap agents）
+            val running = mutableListOf<Pair<String, String>>()
+            runCatching {
+                httpGet("bootstrap")?.let { txt ->
+                    val agents = JSONObject(txt).optJSONArray("agents") ?: JSONArray()
+                    for (i in 0 until agents.length()) {
+                        val a = agents.optJSONObject(i) ?: continue
+                        val st = a.optString("status")
+                        if (isActive(st)) {
+                            // v2.7.2 review(M4)：agent.id 即 session.id（内核校验 id === session.id），
+                            // 无需剥前缀；直接传原始 id 给 App（显示短码在 renderPanel 派生）
+                            running.add(a.optString("id") to st)
                         }
                     }
-                    conn.disconnect()
-                } catch (_: Exception) {}
-
-                // 最近通知（标题/未读/时间；字段与插件端 items 一致）
-                val notifs = mutableListOf<Map<String, Any>>()
-                var unreadCount = 0
-                try {
-                    val conn = URL("$b/m/api/notifications").openConnection() as HttpURLConnection
-                    conn.connectTimeout = 5000
-                    conn.setRequestProperty("x-mobile-token", token)
-                    if (conn.responseCode == 200) {
-                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val j = JSONObject(txt)
-                        val list = j.optJSONArray("items") ?: JSONArray()
-                        unreadCount = j.optInt("unread")
-                        for (i in 0 until Math.min(3, list.length())) {
-                            val n = list.optJSONObject(i) ?: continue
-                            notifs.add(mapOf(
-                                "title" to n.optString("title").ifEmpty { text("通知", "Notification") },
-                                "unread" to n.optBoolean("unread"),
-                                "time" to n.optLong("time"),
-                            ))
-                        }
-                    }
-                    conn.disconnect()
-                } catch (_: Exception) {}
-
-                // 余额（面板打开时顺带刷新常驻余额行，静默不弹提示）
-                try {
-                    val conn = URL("$b/m/api/balance").openConnection() as HttpURLConnection
-                    conn.connectTimeout = 5000
-                    conn.setRequestProperty("x-mobile-token", token)
-                    if (conn.responseCode == 200) {
-                        val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
-                        val first = infos?.optJSONObject(0)
-                        val total = first?.opt("total_balance")
-                        val v = when (total) {
-                            is Number -> total.toDouble()
-                            is String -> total.toDoubleOrNull() ?: 0.0
-                            else -> 0.0
-                        }
-                        if (v > 0) applyBalance(v, tip = false)
-                    }
-                    conn.disconnect()
-                } catch (_: Exception) {}
-
-                mainHandler.post {
-                    // 面板打开 = 已看：更新未读基线（下次增量从当前起算）
-                    lastUnreadCount = unreadCount
-                    firstUnreadCheck = false
-                    renderPanel(running, notifs, unreadCount)
                 }
-            } catch (_: Exception) {}
+            }
+
+            // 最近通知（标题/未读/时间；字段与插件端 items 一致）
+            val notifs = mutableListOf<Map<String, Any>>()
+            var unreadCount = 0
+            runCatching {
+                httpGet("notifications")?.let { txt ->
+                    val j = JSONObject(txt)
+                    val list = j.optJSONArray("items") ?: JSONArray()
+                    unreadCount = j.optInt("unread")
+                    for (i in 0 until Math.min(3, list.length())) {
+                        val n = list.optJSONObject(i) ?: continue
+                        notifs.add(mapOf(
+                            "title" to n.optString("title").ifEmpty { text("通知", "Notification") },
+                            "unread" to n.optBoolean("unread"),
+                            "time" to n.optLong("time"),
+                        ))
+                    }
+                }
+            }
+
+            // 余额（面板打开时顺带刷新常驻余额行，静默不弹提示）
+            runCatching {
+                httpGet("balance")?.let { txt ->
+                    val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
+                    val first = infos?.optJSONObject(0)
+                    val total = first?.opt("total_balance")
+                    val v = when (total) {
+                        is Number -> total.toDouble()
+                        is String -> total.toDoubleOrNull() ?: 0.0
+                        else -> 0.0
+                    }
+                    if (v > 0) applyBalance(v, tip = false)
+                }
+            }
+
+            mainHandler.post {
+                // 面板打开 = 已看：更新未读基线（下次增量从当前起算）
+                lastUnreadCount = unreadCount
+                firstUnreadCheck = false
+                renderPanel(running, notifs, unreadCount)
+            }
         }, "dsh-bubble-panel").apply { isDaemon = true; start() }
     }
 
@@ -1114,15 +1061,9 @@ class FloatingBubbleService : Service() {
         }
         panelCharge?.visibility = View.VISIBLE // 充值按钮常显（余额低时红色强调，见 renderPanel）
         if (lowBalance) {
-            (panelCharge as? TextView)?.background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(Color.parseColor("#E5484D"))
-            }
+            (panelCharge as? TextView)?.background = roundedRect(Color.parseColor("#E5484D"), 20f)
         } else {
-            (panelCharge as? TextView)?.background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(Color.parseColor("#3A3F47"))
-            }
+            (panelCharge as? TextView)?.background = roundedRect(Color.parseColor("#3A3F47"), 20f)
         }
         updateBalanceRow()
     }
@@ -1174,7 +1115,7 @@ class FloatingBubbleService : Service() {
 
     private val clearNotifRunnable = Runnable {
         notifCount = 0
-        mainHandler.post { setState() }
+        postState()
     }
 
     // ── SSE：自己连插件事件流 ──
@@ -1196,12 +1137,9 @@ class FloatingBubbleService : Service() {
     }
 
     private fun connectSse(): Boolean {
-        val base = prefs("flutter.dsh_mr_base") ?: return true
+        val base = baseUrl() ?: return true
         val token = prefs("flutter.dsh_mr_token") ?: return true
-        var baseUrl = base.trim()
-        if (baseUrl.endsWith("/")) baseUrl = baseUrl.dropLast(1)
-        if (baseUrl.endsWith("/m")) baseUrl = baseUrl.dropLast(2)
-        val url = URL("$baseUrl/m/api/events")
+        val url = URL("$base/m/api/events")
         val conn = url.openConnection() as HttpURLConnection
         sseConn = conn // v2.7.2 review(FS2)：onDestroy 时 disconnect 解除 readLine 阻塞
         conn.connectTimeout = 8000
@@ -1250,10 +1188,10 @@ class FloatingBubbleService : Service() {
                     if (st == "running") {
                         agentsRunning = true
                         lastActivity = System.currentTimeMillis()
-                        mainHandler.post { setState() }
+                        postState()
                     } else if (st == "idle" && System.currentTimeMillis() - lastActivity > 3000) {
                         agentsRunning = false
-                        mainHandler.post { setState() }
+                        postState()
                     }
                 }
             }
@@ -1295,14 +1233,14 @@ class FloatingBubbleService : Service() {
                 type == "agent/status" && ev.optJSONObject("data")?.optString("status") == "running" -> {
                 agentsRunning = true
                 lastActivity = System.currentTimeMillis()
-                mainHandler.post { setState() }
+                postState()
             }
             type == "turn/end" -> {
                 // v2.7.2：通知改由插件端"真结束"判定后推 mobile/notify 帧，这里不再按轮次弹
                 // 轮次结束 → 回到暗态（无通知时）；等下一轮 turn/start 再亮
                 agentsRunning = false
                 lastActivity = System.currentTimeMillis()
-                mainHandler.post { setState() }
+                postState()
             }
         }
         // 面板打开时即时刷新（会话状态变化同步）
@@ -1316,7 +1254,7 @@ class FloatingBubbleService : Service() {
         for (i in 0 until jobs.length()) {
             val j = jobs.optJSONObject(i) ?: continue
             val st = j.optString("status")
-            if (st == "running" || st == "stopping") running = true
+            if (isBusy(st)) running = true
         }
         // v2.7.2：任务终态通知由插件端 mobile/notify 帧统一驱动（真结束判定），
         // 这里只保留运行状态指示；连接回放帧只学习不弹。
@@ -1326,7 +1264,7 @@ class FloatingBubbleService : Service() {
         if (running) {
             agentsRunning = true
             lastActivity = System.currentTimeMillis()
-            mainHandler.post { setState() }
+            postState()
         }
         // 面板打开时即时刷新
         refreshPanelIfOpen()
@@ -1363,7 +1301,7 @@ class FloatingBubbleService : Service() {
     /** 余额报警亮起消退（60 秒后回到暗态）。 */
     private val clearBalanceAlertRunnable = Runnable {
         balanceAlerting = false
-        mainHandler.post { setState() }
+        postState()
     }
 
     /** 面板常驻余额行：有值显示余额（低余额红色），无值显示占位。 */
@@ -1380,33 +1318,14 @@ class FloatingBubbleService : Service() {
     }
 
     // ── 动作 ──
-    private fun openMain() {
-        val i = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        startActivity(i)
-    }
+    private fun openMain() = openApp()
 
-    private fun openSession(sessionId: String) {
-        val i = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .putExtra("open_session", sessionId)
-        startActivity(i)
-    }
+    private fun openSession(sessionId: String) = openApp("open_session", sessionId)
 
-    private fun openCharge() {
-        val i = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .putExtra("open_charge", true)
-        startActivity(i)
-    }
+    private fun openCharge() = openApp("open_charge", true)
 
     /** 打开 App 通知页（MainActivity extra，Flutter 侧处理）。 */
-    private fun openNotifs() {
-        val i = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .putExtra("open_notifs", true)
-        startActivity(i)
-    }
+    private fun openNotifs() = openApp("open_notifs", true)
 
     /** 相对时间：刚刚 / N 分钟前 / N 小时前 / 日期。 */
     private fun relTime(ms: Long): String {
@@ -1424,42 +1343,99 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    /** 未读增量对比：重连/离线期间新增的通知也能提示（不只靠实时事件）。 */
+    // ── 公共 helper（Phase 0 收敛：统一 HTTP 骨架/刷新/跳转/圆角/状态判断） ──
+    /** 规范化插件 base URL（去尾部 / 与 /m）。 */
+    private fun baseUrl(): String? {
+        val base = prefs("flutter.dsh_mr_base") ?: return null
+        var b = base.trim()
+        if (b.endsWith("/")) b = b.dropLast(1)
+        if (b.endsWith("/m")) b = b.dropLast(2)
+        return b
+    }
+
+    /** GET 一个 /m/api 端点；非 200 或异常返回 null（各调用点语义一致：失败静默）。 */
+    private fun httpGet(path: String, timeoutMs: Int = 5000): String? {
+        val base = baseUrl() ?: return null
+        val token = prefs("flutter.dsh_mr_token") ?: return null
+        return try {
+            val conn = URL("$base/m/api/$path").openConnection() as HttpURLConnection
+            conn.connectTimeout = timeoutMs
+            conn.setRequestProperty("x-mobile-token", token)
+            try {
+                if (conn.responseCode != 200) return null
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 主线程刷新 UI。 */
+    private fun postState() = mainHandler.post { setState() }
+
+    /** 主 App 启动 Intent（悬浮球跳转与前台通知共用）。
+     *  extra 仅支持 String/Boolean/Int（对应 Intent.putExtra 重载）；两个参数必须成对传或都不传。 */
+    private fun mainIntent(extraName: String? = null, extraValue: Any? = null): Intent {
+        require((extraName == null) == (extraValue == null)) { "extraName/extraValue must be passed together" }
+        val i = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (extraName != null && extraValue != null) {
+            when (extraValue) {
+                is String -> i.putExtra(extraName, extraValue)
+                is Boolean -> i.putExtra(extraName, extraValue)
+                is Int -> i.putExtra(extraName, extraValue)
+                else -> throw IllegalArgumentException("unsupported extra type: ${extraValue::class.java.simpleName}")
+            }
+        }
+        return i
+    }
+
+    /** 打开主 App，可携带一个面板动作 extra。 */
+    private fun openApp(extraName: String? = null, extraValue: Any? = null) {
+        startActivity(mainIntent(extraName, extraValue))
+    }
+
+    /** 圆角矩形背景。 */
+    private fun roundedRect(color: Int, rDp: Float): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(rDp).toFloat()
+            setColor(color)
+        }
+
+    /** 状态是否为"有任务/等待中"（bootstrap 判定）。 */
+    private fun isActive(st: String) = st == "running" || st == "waiting"
+
+    /** 状态是否为"执行中/停止中"（jobs 判定）。 */
+    private fun isBusy(st: String) = st == "running" || st == "stopping"
+
+    /** 未读增量对比：重连/离线期间新增的通知也能提示（不只靠实时事件）。
+     *  Phase 0 收敛：HTTP 失败直接跳过——基线只在首次成功时建立，
+     *  瞬时失败不会把基线清零导致下次误报存量（review 确认：比旧逻辑更稳）。 */
     private fun checkUnreadDelta() {
         if (panelVisible) return // 面板开着=正在看，不打扰
         Thread({
             try {
-                val base = prefs("flutter.dsh_mr_base") ?: return@Thread
-                val token = prefs("flutter.dsh_mr_token") ?: return@Thread
-                var b = base.trim()
-                if (b.endsWith("/")) b = b.dropLast(1)
-                if (b.endsWith("/m")) b = b.dropLast(2)
-                val conn = URL("$b/m/api/notifications").openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.setRequestProperty("x-mobile-token", token)
-                var unread = 0
-                if (conn.responseCode == 200) {
-                    val txt = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    unread = JSONObject(txt).optInt("unread")
-                }
-                conn.disconnect()
-                val u = unread
+                val txt = httpGet("notifications") ?: return@Thread
+                val unread = JSONObject(txt).optInt("unread")
                 mainHandler.post {
                     if (firstUnreadCheck) {
                         // 首次（服务启动）：只记录基线，不提示存量
                         firstUnreadCheck = false
-                        lastUnreadCount = u
+                        lastUnreadCount = unread
                         return@post
                     }
-                    if (u > lastUnreadCount) {
-                        val diff = u - lastUnreadCount
+                    if (unread > lastUnreadCount) {
+                        val diff = unread - lastUnreadCount
                         // 防抖：事件驱动刚提示过（60 秒内）则只更新基线，避免重复气泡
                         if (System.currentTimeMillis() - lastNotifAt > 60000) {
                             markNotif("unread-delta", text("有 $diff 条新通知", "$diff new notification" + if (diff > 1) "s" else ""))
                         }
-                        lastUnreadCount = u
+                        lastUnreadCount = unread
                     } else {
-                        lastUnreadCount = u
+                        lastUnreadCount = unread
                     }
                 }
             } catch (_: Exception) {}

@@ -24,6 +24,15 @@ final AppStore store = AppStore();
 /// 全局导航 key（悬浮球面板等跨页面入口用）。
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
+/// Phase 2(A8)：打开通知页（抽屉/悬浮球/banner 三入口共用，可选"打开会话后"回调）。
+void openNotificationsScreen({VoidCallback? onOpenSession}) {
+  final nav = rootNavigatorKey.currentState;
+  if (nav == null) return;
+  nav.push(MaterialPageRoute(
+    builder: (_) => NotificationsScreen(store: store, onOpenSession: onOpenSession ?? () {}),
+  ));
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppLog.instance.init();
@@ -106,13 +115,11 @@ class _DshAppState extends State<DshApp> {
       final id = action.substring(8);
       if (id.isEmpty) return;
       final prev = store.sessionId;
-      await store.setSession(id);
-      store.refreshSessionConfig();
-      final route = nav.push(MaterialPageRoute(builder: (_) => ChatScreen(store: store, onTitleChanged: () {})));
-      // v2.7.2 review(M1)：从悬浮球进入的会话页返回后恢复原会话
-      if (prev != null && prev != id) {
-        route.then((_) => store.setSession(prev));
-      }
+      // Phase 2(A4)：统一打开会话流程；返回后恢复原会话（悬浮球进入的会话页不改变主会话）
+      await openChat(nav.context, store, id,
+          onReturn: () async {
+        if (prev != null && prev != id) await store.setSession(prev);
+      });
     } else if (action == 'charge') {
       await launchUrl(
         Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
@@ -121,9 +128,7 @@ class _DshAppState extends State<DshApp> {
     } else if (action == 'notifs') {
       // 打开通知页（与抽屉入口同款：先切到首页再推通知页）
       await store.refreshNotifs();
-      nav.push(MaterialPageRoute(
-        builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
-      ));
+      openNotificationsScreen();
     }
   }
 
@@ -147,7 +152,7 @@ class _DshAppState extends State<DshApp> {
     if (mounted) setState(() {});
   }
 
-  /// 新增未读通知横幅：顶部滑入，2.5 秒自动消失，点击跳通知页；10 秒内不重复。
+  /// 新增未读通知横幅：顶部滑入，6 秒自动消失（可左右滑动手动关闭），点击跳通知页；10 秒内不重复。
   /// force=true（悬浮球跳转/回前台）时绕过防抖——"错过的也提醒"。
   void _onNewNotifications(int count, {bool force = false}) {
     final now = DateTime.now();
@@ -161,8 +166,8 @@ class _DshAppState extends State<DshApp> {
     if (!mounted) return;
     setState(() => _bannerCount = count);
     AppLog.instance.log('Banner: 出现 count=$count');
-    // 2.5 秒自动消失（setState 驱动，框架保证移除）；同时更新未读基线防反复弹。
-    _bannerTimer = Timer(const Duration(milliseconds: 2500), () {
+    // v2.8.0：滞留 6 秒自动消失（可左右滑动手动关闭，所以敢放长）；同时更新未读基线防反复弹。
+    _bannerTimer = Timer(const Duration(milliseconds: 6000), () {
       _bannerTimer = null;
       AppLog.instance.log('Banner: 到期 timer 触发');
       if (!mounted) return;
@@ -204,48 +209,57 @@ class _DshAppState extends State<DshApp> {
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: GestureDetector(
-                      onTap: () {
-                        AppLog.instance.log('Banner: 点击关闭');
-                        _bannerTimer?.cancel();
-                        _bannerTimer = null;
-                        if (!mounted) return;
-                        setState(() => _bannerCount = null);
-                        store.markNotifsSeen();
-                        final nav = rootNavigatorKey.currentState;
-                        if (nav != null) {
-                          nav.push(MaterialPageRoute(
-                            builder: (_) => NotificationsScreen(store: store, onOpenSession: () {}),
-                          ));
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                        decoration: BoxDecoration(
-                          // 跟随主题：浅色=白底深字，深色=深底浅字
-                          color: Theme.of(context).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
-                          borderRadius: BorderRadius.circular(DshTheme.radiusMd),
-                          boxShadow: const [
-                            BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
-                          ],
-                          border: Theme.of(context).brightness == Brightness.dark
-                              ? null
-                              : Border.all(color: DshColors.line(context)),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.notifications_active, size: 17, color: DshColors.brand(context)),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                L10n.t('有 $bannerCount 条新通知', '$bannerCount new notification${bannerCount > 1 ? 's' : ''}'),
-                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(context)),
+                  // v2.8.0：左右滑动关闭横幅（Dismissible，横向双向）；滑掉即消失+清未读基线
+                  child: Dismissible(
+                    key: const ValueKey('notif-banner'),
+                    direction: DismissDirection.horizontal,
+                    onDismissed: (_) {
+                      AppLog.instance.log('Banner: 滑动关闭');
+                      _bannerTimer?.cancel();
+                      _bannerTimer = null;
+                      if (!mounted) return;
+                      setState(() => _bannerCount = null);
+                      store.markNotifsSeen();
+                    },
+                    child: Material(
+                      color: Colors.transparent,
+                      child: GestureDetector(
+                        onTap: () {
+                          AppLog.instance.log('Banner: 点击关闭');
+                          _bannerTimer?.cancel();
+                          _bannerTimer = null;
+                          if (!mounted) return;
+                          setState(() => _bannerCount = null);
+                          store.markNotifsSeen();
+                          // Phase 2(A8)：与抽屉/悬浮球入口共用通知页打开逻辑
+                          openNotificationsScreen();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                          decoration: BoxDecoration(
+                            // 跟随主题：浅色=白底深字，深色=深底浅字
+                            color: Theme.of(context).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
+                            borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+                            boxShadow: const [
+                              BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
+                            ],
+                            border: Theme.of(context).brightness == Brightness.dark
+                                ? null
+                                : Border.all(color: DshColors.line(context)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.notifications_active, size: 17, color: DshColors.brand(context)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  L10n.t('有 $bannerCount 条新通知', '$bannerCount new notification${bannerCount > 1 ? 's' : ''}'),
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(context)),
+                                ),
                               ),
-                            ),
-                            Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(context)),
-                          ],
+                              Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(context)),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -335,26 +349,12 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     setState(() => _reconfiguring = true);
   }
 
-  void _openNotifications() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => NotificationsScreen(store: store, onOpenSession: () {
-          if (mounted) setState(() => _index = 0);
-        }),
-      ),
-    );
-  }
-
   void _openNewSession() {
     showNewSessionSheet(context, store, (id) async {
-      await store.setSession(id);
+      // Phase 2(A4)：openChat 内统一 setSession+refreshSessionConfig+push，这里只刷列表
       store.refreshSessions();
       if (!mounted) return;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => ChatScreen(store: store, onTitleChanged: () {}),
-        ),
-      );
+      await openChat(context, store, id);
     });
   }
 
@@ -445,7 +445,10 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
               ),
               child: const Icon(Icons.notifications_none, size: 20),
             ),
-            onPressed: _openNotifications,
+            onPressed: () => openNotificationsScreen(onOpenSession: () {
+              // 通知页里打开会话后回到首页 tab（原抽屉入口行为）
+              if (mounted) setState(() => _index = 0);
+            }),
           ),
           const SizedBox(width: 8),
         ],

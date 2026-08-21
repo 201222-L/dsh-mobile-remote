@@ -10,8 +10,24 @@ import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../md.dart';
+import '../fmt.dart';
 import 'sheets.dart';
 import 'session_tools_sheet.dart';
+
+/// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
+/// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
+Future<void> openChat(BuildContext context, AppStore store, String sessionId,
+    {VoidCallback? onTitleChanged, Future<void> Function()? onReturn}) async {
+  await store.setSession(sessionId);
+  store.refreshSessionConfig();
+  if (!context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ChatScreen(store: store, onTitleChanged: onTitleChanged ?? () {}),
+    ),
+  );
+  if (onReturn != null) await onReturn();
+}
 
 class ChatScreen extends StatefulWidget {
   final AppStore store;
@@ -26,7 +42,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
-  // live 视图：最新在前（reverse 列表 index 0 = 最新，视觉底部）
+  // live 视图：最新在前（普通列表渲染时倒序，最新位于列表底部）
   final List<_MsgItem> _items = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
@@ -125,10 +141,13 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  /// 滚动监听：上翻超过阈值显示"回到底部"浮钮，回到 offset 0 时隐藏。
+  /// 滚动监听：上翻超过阈值显示"回到底部"浮钮，回到最新位置时隐藏。
+  /// v2.8.0：live 视图统一普通（非 reverse）列表，"最新"恒在 maxScrollExtent。
   void _onScrollTick() {
     if (!mounted || _inHistory) return;
-    final visible = _scrollCtrl.hasClients && _scrollCtrl.position.pixels > 160;
+    final pos = _scrollCtrl.position;
+    if (!pos.hasContentDimensions) return;
+    final visible = pos.maxScrollExtent - pos.pixels > 160;
     if (visible != _showJumpToLatest) {
       setState(() => _showJumpToLatest = visible);
     }
@@ -138,11 +157,12 @@ class _ChatScreenState extends State<ChatScreen> {
   void _jumpToLatest() {
     if (!_scrollCtrl.hasClients) return;
     final pos = _scrollCtrl.position;
-    AppLog.instance.log('Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)}');
-    if (pos.pixels > 4000) {
-      _scrollCtrl.jumpTo(0);
+    final target = pos.maxScrollExtent;
+    AppLog.instance.log('Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}');
+    if ((pos.pixels - target).abs() > 4000) {
+      _scrollCtrl.jumpTo(target);
     } else {
-      _scrollCtrl.animateTo(0, duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
+      _scrollCtrl.animateTo(target, duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
     }
   }
 
@@ -174,19 +194,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// 滚动到最新消息。live 视图为 reverse 列表（最新固定在 offset 0），
-  /// 一行 jumpTo(0) 即到底；历史浏览视图不跟随滚动。
+  /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
+  /// 历史浏览视图不跟随滚动。
   void _scrollToBottom({bool force = false}) {
     if (_inHistory) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtrl.hasClients) return;
       final pos = _scrollCtrl.position;
+      final target = pos.maxScrollExtent;
       if (force || !_scrolledLogged) {
         _scrolledLogged = true;
-        AppLog.instance.log('Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)}');
+        AppLog.instance.log('Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}');
       }
-      if (force || pos.pixels < 220) {
-        _scrollCtrl.jumpTo(0);
+      if (force || pos.pixels > pos.maxScrollExtent - 220) {
+        _scrollCtrl.jumpTo(target);
       }
     });
   }
@@ -246,7 +267,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _reasoningExpanded = false;
         _draft = '';
         _streaming = false;
-        // 最新在前：reverse 列表 index 0 = 最新（视觉底部）
+        // 最新在前（渲染时倒序，最新位于列表底部）
         for (final ev in events.reversed) {
           if (ev.seq != null && ev.seq! > fetchedLast) continue; // 已在 keep 中
           _appendEvent(ev, history: true, tail: true);
@@ -278,7 +299,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── 无限上翻（微信式） ──
   /// 滑到 live 顶部时静默加载更早一页：追加到 _items 尾部（reverse 视觉顶部）。
-  /// reverse 列表偏移锚定在最新端，尾部增长不会跳动，视觉连续无缝。
+  /// 列表偏移锚定在最新端，尾部增长不会跳动，视觉连续无缝（普通列表，最新在底部）。
   Future<void> _loadMoreInfinite() async {
     final id = widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) return;
@@ -309,9 +330,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
+  /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
   bool _onLiveScroll(ScrollNotification n) {
     if (!_infiniteMode || !n.metrics.hasContentDimensions) return false;
-    if (n.metrics.maxScrollExtent - n.metrics.pixels < 80) {
+    if (n.metrics.pixels < 80) {
       _loadMoreInfinite();
     }
     return false;
@@ -429,8 +451,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom(force: true);
   }
 
-  /// live 视图：reverse 列表（index 0 = 最新，视觉底部）。
-  /// 无限模式：滑到顶部静默加载更早（微信式无缝）；分段模式：顶部"查看更早"入口。
+  /// live 视图：普通列表（非 reverse，最旧在顶、最新在底、草稿末尾），
+  /// 列表占满高度、可正常滚动、内容贴顶——无"下半空白死区 + 滑动消息消失"问题（v2.8.0）。
+  /// 统一单一方向（不再按条数切换 reverse）：根治 50/51 条边界翻转导致滚动位置跳变
+  /// （review P1-1）；无限模式上翻加载更早时新数据出现在视觉顶部，阅读位置不跳动。
   Widget _buildLiveView() {
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
@@ -440,52 +464,37 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLoggedCount = itemCount;
       AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length}');
     }
-    // v2.7.2：消息少时（≤50 条）内容贴顶 + 底部弹性留白——修复"新对话上方一大半空白"。
-    // reverse 列表内容不足一屏时默认贴底,用 Column+shrinkWrap+Spacer 让内容贴顶、底部留白。
-    // （注意：_infiniteMode 恒为 true，此前 `&& !_infiniteMode` 使本分支永远不可达——已修正）
-    final compact = _items.length <= 50;
-    final list = ListView.builder(
-      controller: _scrollCtrl,
-      reverse: true,
-      shrinkWrap: compact,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-      itemCount: itemCount,
-      itemBuilder: (context, index) {
-        // reverse 布局：最后一个 index 在视觉最顶部
-        if (topButton && index == itemCount - 1) {
-          return _OlderButton(busy: _loadingMore, onTap: _openHistory);
-        }
-        if (loadingTail && index == itemCount - 1) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: 10),
-            child: Center(
-              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-            ),
-          );
-        }
-        if (hasDraft && index == 0) {
-          return _AssistantBubble(text: _draft, streaming: true);
-        }
-        return _buildItem(_items[index - (hasDraft ? 1 : 0)]);
-      },
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onLiveScroll,
+      child: ListView.builder(
+        controller: _scrollCtrl,
+        reverse: false,
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+        itemCount: itemCount,
+        itemBuilder: (context, index) {
+          // 普通列表：index 0 = 视觉顶部 → 顶部按钮/加载条 → 消息（最旧→最新）→ 草稿
+          if (topButton && index == 0) {
+            return _OlderButton(busy: _loadingMore, onTap: _openHistory);
+          }
+          if (loadingTail && index == 0) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Center(
+                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+            );
+          }
+          final dataIndex = index - (topButton || loadingTail ? 1 : 0);
+          if (dataIndex < _items.length) {
+            return _buildItem(_items[_items.length - 1 - dataIndex]);
+          }
+          if (hasDraft) {
+            return _AssistantBubble(text: _draft, streaming: true);
+          }
+          return const SizedBox.shrink();
+        },
+      ),
     );
-    Widget body = list;
-    if (compact) {
-      body = Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Flexible(child: list),
-          const Spacer(), // 视觉底部弹性留白（内容贴顶）
-        ],
-      );
-    }
-    if (_infiniteMode) {
-      return NotificationListener<ScrollNotification>(
-        onNotification: _onLiveScroll,
-        child: body,
-      );
-    }
-    return body;
   }
 
   /// 历史分段浏览：普通列表（最旧在顶部，offset 0 安全），顶部翻页控制条。
@@ -943,7 +952,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           if (steerable)
             IconButton(
-              icon: const Icon(Icons.play_arrow, size: 16),
+              // v2.8.0：插队图标 = 向上小箭头（语义=插到 agent 下一步执行，区别于发送的向上箭头尺寸更小）
+              icon: const Icon(Icons.arrow_upward, size: 15),
               color: ink3,
               visualDensity: VisualDensity.compact,
               tooltip: L10n.t('插话', 'Steer'),
@@ -980,6 +990,13 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
+  /// 上下文快照 / 后台任务通知。
+  bool _isNoiseText(String text) =>
+      text.contains('Current runtime context') ||
+      text.contains('This snapshot supersedes') ||
+      text.startsWith('background job ');
+
   /// 将事件构建为消息条目并插入 out（live 语义：最新在前，insert(0)；
   /// 历史分段：旧→新顺序，追加到末尾）。
   /// [tail] 见 [_appendEvent]：历史页（history=true, tail=false）跳过 chunk、
@@ -991,12 +1008,8 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'user/message':
         final text = d?['text'] as String? ?? '';
         // 过滤 dsh 注入的系统上下文快照与后台任务通知（PC 端 GUI 也不显示）
-        if (text.contains('Current runtime context') || text.contains('This snapshot supersedes')) {
-          AppLog.instance.log('Chat: 过滤快照消息 seq=${ev.seq}');
-          return;
-        }
-        if (text.startsWith('background job ')) {
-          AppLog.instance.log('Chat: 过滤后台任务通知 seq=${ev.seq}');
+        if (_isNoiseText(text)) {
+          AppLog.instance.log('Chat: 过滤注入消息 seq=${ev.seq}');
           return;
         }
         final mid = d?['messageId'] as String?;
@@ -1026,14 +1039,7 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
         // 过滤系统注入的上下文快照与后台任务通知
-        if (body.contains('Current runtime context') || body.contains('This snapshot supersedes')) {
-          if (!history || tail) {
-            _draft = '';
-            _streaming = false;
-          }
-          return;
-        }
-        if (body.startsWith('background job ')) {
+        if (_isNoiseText(body)) {
           if (!history || tail) {
             _draft = '';
             _streaming = false;
@@ -1276,18 +1282,15 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!mounted) return;
           showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
           final prevId = widget.store.sessionId;
-          await widget.store.setSession(childId);
           widget.store.refreshSessions();
-          if (!mounted) return;
-          await Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ChatScreen(store: widget.store, onTitleChanged: widget.onTitleChanged),
-            ),
-          );
-          // v2.7.2 review(M1)：分支页返回后恢复原会话（否则原聊天页事件被按 sessionId 过滤）
-          if (mounted && prevId != null && prevId != childId) {
-            await widget.store.setSession(prevId);
-          }
+          // Phase 2(A4)：统一打开会话流程；返回后恢复原会话（分支页不改变主会话）
+          await openChat(context, widget.store, childId,
+              onTitleChanged: widget.onTitleChanged,
+              onReturn: () async {
+            if (mounted && prevId != null && prevId != childId) {
+              await widget.store.setSession(prevId);
+            }
+          });
         } catch (e) {
           if (!mounted) return;
           showToast(context, '${L10n.t('分支失败：', 'Fork failed: ')}$e');
@@ -1342,7 +1345,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: TextStyle(fontSize: 11.5, color: ink3),
               ),
             ),
-          // 消息流：live 视图（reverse，最新固定在 offset 0）或历史分段浏览；
+          // v2.8.0：后台任务卡片移到对话框顶部（不再与问询/审批卡堆在底部），可收纳、默认收起
+          if (!_inHistory && widget.store.hasRunningJobs(widget.store.sessionId ?? ''))
+            _JobCard(
+              jobs: widget.store.jobsOf(widget.store.sessionId ?? ''),
+              onOpen: _openTools,
+              onKill: _killJob,
+            ),
+          // 消息流：live 视图（普通列表，最新在底部）或历史分段浏览；
           // 上翻时右下角浮出"回到底部"圆钮（位于输入框正上方，不在消息流内）
           Expanded(
             child: Stack(
@@ -1366,13 +1376,6 @@ class _ChatScreenState extends State<ChatScreen> {
               showContent: widget.store.showReasoning,
               tools: _activeTools.values.toList(),
               onToggleReasoning: () => setState(() => _reasoningExpanded = !_reasoningExpanded),
-            ),
-          // v2.7：进行中任务卡片（有任务才出现，完成自动消失）
-          if (!_inHistory && widget.store.hasRunningJobs(widget.store.sessionId ?? ''))
-            _JobCard(
-              jobs: widget.store.jobsOf(widget.store.sessionId ?? ''),
-              onOpen: _openTools,
-              onKill: _killJob,
             ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
@@ -1420,7 +1423,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
               child: Container(
-                padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
                 decoration: BoxDecoration(
                   color: surface,
                   borderRadius: BorderRadius.circular(20),
@@ -1429,21 +1432,26 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // v2.8.0：胶囊行靠左——与输入框文字左缘对齐；「排队发送」与模型/权限同行
+                    //（运行中且输入非空时出现；放输入框行会挤窄打字区域，已移回胶囊行）
                     SizedBox(
                       height: 28,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
+                      child: Row(
                         children: [
-                          _Pill(
-                            label: store.sessionConfig.model ?? L10n.t('选择模型', 'Select model'),
-                            onTap: () => showModelSheet(context, store),
+                          // v2.8.0 review(P1-2)：模型胶囊包 Flexible——模型名超长时省略号截断
+                          //（胶囊无滚动能力，长名必须可收缩；权限保持固有宽度）
+                          Flexible(
+                            child: _Pill(
+                              label: store.sessionConfig.model ?? L10n.t('选择模型', 'Select model'),
+                              onTap: () => showModelSheet(context, store),
+                            ),
                           ),
                           const SizedBox(width: 6),
                           _Pill(
                             label: _permName(store.sessionConfig.permissionPreset),
                             onTap: () => showPermSheet(context, store),
                           ),
-                          // v2.7.2(B 方案)：运行中且输入非空 → 「排队发送」胶囊（与模型/权限同款样式）
+                          // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）
                           if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
                             const SizedBox(width: 6),
                             _Pill(
@@ -1454,8 +1462,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    const SizedBox(height: 4),
+                    // v2.8.0 review(L4)：两个连续 4px 间距合并为 8px（行为不变）
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
@@ -1528,28 +1536,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String _fmtUsage(Map<String, dynamic> u) {
-    String t(num? n) {
-      final v = (n ?? 0).toInt();
-      if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
-      if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}k';
-      return '$v';
-    }
-
     final input = (u['inputTokens'] as num?)?.toInt() ?? 0;
     final read = (u['cacheReadTokens'] as num?)?.toInt() ?? 0;
     final write = (u['cacheWriteTokens'] as num?)?.toInt() ?? 0;
     final out = (u['outputTokens'] as num?)?.toInt() ?? 0;
     final billed = input + read + write;
     final hit = billed > 0 ? ((read / billed) * 100).round() : 0;
-    return '${L10n.t('本会话：输入 ', 'This session: in ')}${t(input)}${L10n.t(' · 缓存 ', ' · cache ')}${t(read)}${L10n.t(' · 输出 ', ' · out ')}${t(out)}${L10n.t(' · 命中率 ', ' · hit rate ')}$hit%';
+    return '${L10n.t('本会话：输入 ', 'This session: in ')}${fmtTokens(input)}${L10n.t(' · 缓存 ', ' · cache ')}${fmtTokens(read)}${L10n.t(' · 输出 ', ' · out ')}${fmtTokens(out)}${L10n.t(' · 命中率 ', ' · hit rate ')}$hit%';
   }
 
-  String _permName(String? id) => switch (id) {
-        'read-only' => 'Read Only',
-        'workspace-write' => 'Workspace Write',
-        'danger-full-access' => 'Danger Full Access',
-        _ => L10n.t('权限', 'Permission'),
-      };
+  String _permName(String? id) => permNameOf(id) ?? L10n.t('权限', 'Permission');
 
   /// 上下文占用比例（已用 tokens / 模型上下文窗口），数据缺失时为 null。
   /// 上下文窗口来自服务端 usage 接口（request/context 事件捕获，与 PC 端圆环同源）。
@@ -1687,20 +1683,13 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   }
 
   String _fmtMsgUsage(Map<String, dynamic> u) {
-    String t(num? n) {
-      final v = (n ?? 0).toInt();
-      if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
-      if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}k';
-      return '$v';
-    }
-
     final input = (u['inputTokens'] as num?)?.toInt() ?? 0;
     final read = (u['cacheReadTokens'] as num?)?.toInt() ?? 0;
     final write = (u['cacheWriteTokens'] as num?)?.toInt() ?? 0;
     final out = (u['outputTokens'] as num?)?.toInt() ?? 0;
     final total = input + read + write;
     final hit = total > 0 ? ((read / total) * 100).round() : 0;
-    return '↑${t(input)} ↓${t(out)} · ${L10n.t('缓存 ', 'cache ')}$hit%';
+    return '↑${fmtTokens(input)} ↓${fmtTokens(out)} · ${L10n.t('缓存 ', 'cache ')}$hit%';
   }
 }
 
@@ -1809,11 +1798,20 @@ class _ActivityBar extends StatelessWidget {
 }
 
 /// v2.7：进行中任务卡片（活动条下方；运行中的后台任务实时状态，点击进工具弹层）。
-class _JobCard extends StatelessWidget {
+/// v2.8.0：后台任务卡片——移到对话框顶部、可收纳（默认收起成一行，点标题展开/收起）、
+/// 精简为单任务行 + 计数，避免底部弹窗堆叠与卡片过大。
+class _JobCard extends StatefulWidget {
   final List<Map<String, dynamic>> jobs;
   final VoidCallback onOpen;
   final void Function(String jobId) onKill;
   const _JobCard({required this.jobs, required this.onOpen, required this.onKill});
+
+  @override
+  State<_JobCard> createState() => _JobCardState();
+}
+
+class _JobCardState extends State<_JobCard> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
@@ -1822,71 +1820,86 @@ class _JobCard extends StatelessWidget {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final surface = DshColors.surface(context);
-    final running = jobs.where((j) => j['status'] == 'running' || j['status'] == 'stopping').toList();
+    final running = widget.jobs.where((j) => j['status'] == 'running' || j['status'] == 'stopping').toList();
+    final extra = running.length - 1;
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      margin: const EdgeInsets.fromLTRB(12, 2, 12, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: surface,
         border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            onTap: onOpen,
+            onTap: () => setState(() => _expanded = !_expanded),
             borderRadius: BorderRadius.circular(8),
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
+              padding: const EdgeInsets.symmetric(vertical: 1),
               child: Row(
                 children: [
-                  Icon(Icons.hourglass_top_outlined, size: 15, color: brand),
-                  const SizedBox(width: 6),
+                  Icon(Icons.hourglass_top_outlined, size: 14, color: brand),
+                  const SizedBox(width: 5),
                   Expanded(
                     child: Text(
                       running.length > 1
                           ? L10n.t('后台任务 ${running.length} 个进行中', '${running.length} background tasks running')
                           : L10n.t('后台任务进行中', 'Background task running'),
-                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: ink2),
                     ),
                   ),
-                  Text(L10n.t('详情 ▸', 'Details ▸'), style: TextStyle(fontSize: 11.5, color: ink3)),
+                  Icon(_expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                      size: 16, color: ink3),
                 ],
               ),
             ),
           ),
-          for (final j in running.take(2))
+          if (_expanded)
+            for (final j in running.take(2))
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Row(
+                  children: [
+                    Icon(Icons.circle, size: 6, color: brand),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        (j['label'] as String? ?? j['id'] as String? ?? L10n.t('任务', 'Task')).toString(),
+                        style: const TextStyle(fontSize: 11.5),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: j['status'] == 'stopping' ? null : () => widget.onKill(j['id'] as String? ?? ''),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 24),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        j['status'] == 'stopping'
+                            ? L10n.t('停止中', 'Stopping')
+                            : L10n.t('取消', 'Cancel'),
+                        style: TextStyle(fontSize: 11, color: j['status'] == 'stopping' ? ink3 : DshColors.danger(context)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          if (_expanded && extra > 0)
             Padding(
-              padding: const EdgeInsets.only(top: 3),
-              child: Row(
-                children: [
-                  Icon(Icons.circle, size: 7, color: brand),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      (j['label'] as String? ?? j['id'] as String? ?? L10n.t('任务', 'Task')).toString(),
-                      style: const TextStyle(fontSize: 12),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: j['status'] == 'stopping' ? null : () => onKill(j['id'] as String? ?? ''),
-                    style: TextButton.styleFrom(
-                      minimumSize: const Size(0, 28),
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(
-                      j['status'] == 'stopping'
-                          ? L10n.t('停止中', 'Stopping')
-                          : L10n.t('取消', 'Cancel'),
-                      style: TextStyle(fontSize: 11.5, color: j['status'] == 'stopping' ? ink3 : DshColors.danger(context)),
-                    ),
-                  ),
-                ],
+              padding: const EdgeInsets.only(top: 2),
+              child: InkWell(
+                onTap: widget.onOpen,
+                borderRadius: BorderRadius.circular(6),
+                child: Text(
+                  L10n.t('还有 $extra 个任务 ▸', '$extra more tasks ▸'),
+                  style: TextStyle(fontSize: 11, color: brand),
+                ),
               ),
             ),
         ],
@@ -2025,7 +2038,13 @@ class _Pill extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
         decoration: BoxDecoration(color: line, borderRadius: BorderRadius.circular(999)),
-        child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: ink2)),
+        // v2.8.0 review(P1-2)：单行 + 省略号，避免长模型名撑爆胶囊行（旧 ListView 可滚、Row 不可）
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: ink2),
+        ),
       ),
     );
   }

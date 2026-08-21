@@ -547,46 +547,4 @@ class Api {
     });
     return controller.stream;
   }
-
-  /// SSE 事件流：返回可取消的事件流（session/event 摘要帧）
-  Stream<ChatEvent> events(String sessionId) {
-    final controller = StreamController<ChatEvent>();
-    final req = http.Request('GET', _uri('/api/events'));
-    req.headers.addAll(_headers);
-    _client.send(req).then((res) async {
-      if (res.statusCode != 200) {
-        controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
-        controller.close();
-        return;
-      }
-      final stream = res.stream.transform(utf8.decoder);
-      final buf = StringBuffer();
-      await for (final chunk in stream) {
-        buf.write(chunk);
-        var s = buf.toString();
-        var idx = s.indexOf('\n\n');
-        while (idx >= 0) {
-          final frame = s.substring(0, idx);
-          s = s.substring(idx + 2);
-          idx = s.indexOf('\n\n');
-          if (frame.startsWith('data: ')) {
-            try {
-              final f = jsonDecode(frame.substring(6)) as Map<String, dynamic>;
-              if (f['type'] == 'session/event' && f['sessionId'] == sessionId) {
-                controller.add(ChatEvent.fromJson(f['event'] as Map<String, dynamic>));
-              }
-            } catch (_) {/* 忽略坏帧 */}
-          }
-        }
-        buf
-          ..clear()
-          ..write(s);
-      }
-      controller.close();
-    }).catchError((e) {
-      controller.addError(e);
-      controller.close();
-    });
-    return controller.stream;
-  }
 }

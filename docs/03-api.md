@@ -134,7 +134,7 @@
 
 - `touch` 响应：`200 { "ok": true, "lastActivity": 1750000123456 }`
 - `archive` / `unarchive` 响应：`200 { "ok": true, "archived": true|false }`
-- `stop` 响应：`200 { "ok": true, "accepted": true }`；会话未激活时 `500 { "error": "cancel-failed" }`
+- `stop` 响应：`200 { "ok": true, "accepted": true }`；失败时 `400 { "error": "cancel-failed" }`（v2.8.0 起统一 rpcError 映射：内核错误透传 status+code、传输层 502、超时 504；旧版固定 500）
 - 归档状态即内核 `workspaceRegistry.archivedSessionIds`（与 PC 端同一份）：PC 端归档的会话在移动端同样显示为已归档，反之亦然。归档会话仍出现在 3.3 列表中（`archived: true`），由客户端分栏展示。
 
 ### 3.5 GET /m/api/history

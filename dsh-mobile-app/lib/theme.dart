@@ -159,3 +159,35 @@ class DshColors {
   static Color surface(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.surfaceDark : DshTheme.surface;
   static Color ink(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.inkDark : DshTheme.ink;
 }
+
+/// 设置项专用开关：小尺寸胶囊（44×28）+ 品牌蓝/浅灰白色调。
+/// Phase 0 收敛：原三处设置开关各自手写同一套 SizedBox+FittedBox+Switch。
+class DshSwitch extends StatelessWidget {
+  const DshSwitch({super.key, required this.value, required this.onChanged});
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 44,
+      height: 28,
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: Switch(
+          value: value,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          // 色调适配：打开 = 品牌蓝；关闭 = 浅灰白（深色模式用柔和深灰）
+          activeTrackColor: DshColors.brand(context),
+          activeThumbColor: Colors.white,
+          inactiveTrackColor:
+              Theme.of(context).brightness == Brightness.dark ? const Color(0xFF3C424A) : const Color(0xFFE5E7EB),
+          inactiveThumbColor:
+              Theme.of(context).brightness == Brightness.dark ? const Color(0xFF9AA3AF) : Colors.white,
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+}

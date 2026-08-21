@@ -146,23 +146,36 @@ class AppStore extends ChangeNotifier {
   /// 路径规范化（外部复用：新建会话弹层等工作目录匹配用）。
   static String normPath(String s) => _normPath(s);
 
+  /// 单值持久化（Phase 0 收敛：原各 setter 的 getInstance+setX 样板统一；null = 删除键）。
+  Future<void> _persistPrefs(String key, Object? value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value is String) {
+      await prefs.setString(key, value);
+    } else if (value is bool) {
+      await prefs.setBool(key, value);
+    } else if (value is double) {
+      await prefs.setDouble(key, value);
+    } else if (value is int) {
+      await prefs.setInt(key, value);
+    } else if (value == null) {
+      await prefs.remove(key);
+    } else {
+      // 静默丢配置比崩溃更难排查：不支持的类型快速失败
+      throw ArgumentError('unsupported pref type: ${value.runtimeType}');
+    }
+  }
+
   /// 切换当前工作区（null = 全部）。
   Future<void> setWorkspace(String? path) async {
     workspacePath = path == null ? null : _normPath(path);
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    if (workspacePath == null) {
-      await prefs.remove(_kWorkspace);
-    } else {
-      await prefs.setString(_kWorkspace, workspacePath!);
-    }
+    await _persistPrefs(_kWorkspace, workspacePath);
   }
 
   Future<void> setDarkMode(String v) async {
     darkMode = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kDark, v);
+    await _persistPrefs(_kDark, v);
   }
 
   /// 切换界面语言（zh/en），即时生效 + 持久化。
@@ -170,8 +183,7 @@ class AppStore extends ChangeNotifier {
     language = v;
     L10n.lang = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kLang, v);
+    await _persistPrefs(_kLang, v);
   }
 
   /// 余额预警开关（低于阈值时提醒充值）。
@@ -179,8 +191,7 @@ class AppStore extends ChangeNotifier {
   Future<void> setBalanceAlert(bool v) async {
     balanceAlert = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kBalanceAlert, v);
+    await _persistPrefs(_kBalanceAlert, v);
     unawaited(Floating.setBalanceAlert(v, balanceThreshold));
   }
 
@@ -188,8 +199,7 @@ class AppStore extends ChangeNotifier {
   Future<void> setFloatingEnabled(bool v) async {
     floatingEnabled = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kFloating, v);
+    await _persistPrefs(_kFloating, v);
   }
 
   /// App 启动自动恢复悬浮球（v2.7.2）：上次开启过且服务没在跑 → 自动拉起。
@@ -209,8 +219,7 @@ class AppStore extends ChangeNotifier {
   Future<void> setBalanceThreshold(double v) async {
     balanceThreshold = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_kBalanceThreshold, v);
+    await _persistPrefs(_kBalanceThreshold, v);
     unawaited(Floating.setBalanceAlert(balanceAlert, v));
   }
 
@@ -220,8 +229,7 @@ class AppStore extends ChangeNotifier {
     applyAgentStatusForSession();
     notifyListeners();
     if (id != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kSession, id);
+      await _persistPrefs(_kSession, id);
       // 记录打开时间（"最近会话"排序依据之一），失败静默
       unawaited(api.touchSession(id));
     }
@@ -370,8 +378,7 @@ class AppStore extends ChangeNotifier {
   Future<void> setShowReasoning(bool v) async {
     showReasoning = v;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kReasoning, v);
+    await _persistPrefs(_kReasoning, v);
   }
 
   // ── 启动加载（对齐网页端 bootstrap） ──

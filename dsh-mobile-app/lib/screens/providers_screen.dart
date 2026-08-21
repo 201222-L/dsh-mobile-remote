@@ -8,6 +8,13 @@ import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
 
+/// Phase 2：统一打开「模型提供商」管理页（设置页与模型弹层共用入口）。
+void openProviders(BuildContext context, AppStore store) {
+  Navigator.of(context).push(
+    MaterialPageRoute(builder: (_) => ProvidersScreen(store: store)),
+  );
+}
+
 class ProvidersScreen extends StatefulWidget {
   final AppStore store;
   const ProvidersScreen({super.key, required this.store});
