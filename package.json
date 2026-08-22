@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "dsh-mobile-remote",
-  "version": "3.0.0",
-  "description": "DSH Mobile：把 DeepSeek Harness 变成随身控制台 —— 手机远程发消息派活、看进度、收通知、审批决策、管理会话；配套 Flutter App（当前 Android 端，iOS 未开发）",
+  "version": "3.0.1",
+  "description": "DSH Mobile锛氭妸 DeepSeek Harness 鍙樻垚闅忚韩鎺у埗鍙?鈥斺€?鎵嬫満杩滅▼鍙戞秷鎭淳娲汇€佺湅杩涘害銆佹敹閫氱煡銆佸鎵瑰喅绛栥€佺鐞嗕細璇濓紱閰嶅 Flutter App锛堝綋鍓?Android 绔紝iOS 鏈紑鍙戯級",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
