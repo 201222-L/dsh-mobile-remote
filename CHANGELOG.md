@@ -1,5 +1,44 @@
 # Changelog
 
+## v2.9.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）
+
+### 背景
+DSH Desktop（0.1.1-rc.2 / v2.0.2）强制 webserver 只听 `127.0.0.1`——`dsh-plugin-desktop` 在 profile 组装时把 webserver 行替换为 `DesktopWebServer`（构造器对非回环 host 直接 throw，用户 patch 无法覆盖，唯一旋钮是端口），手机无法直连桌面版。旧版（rc.5 web profile）能 `0.0.0.0:3080` 所以手机可连。
+
+### 新能力：插件内置 LAN 桥（`lanBridge` 配置，默认关闭）
+- 插件在 DSH 进程内**自建第二个 HTTP 监听**（默认 `0.0.0.0:3080`），把 `${path}`（默认 `/m`）前缀请求**流式转发**到回环 webserver——手机填/扫 `http://<电脑局域网IP>:3080/m` 即可使用，**无需穿透、无需装任何工具、不改 DSH**（桌面版/web 版通用）
+- **安全边界**（代码强制）：
+  - 只转发移动端面（`/m/*`）；桌面 `/api` RPC 网关、`/m/api/qr-config`（含 token）、`/m/qr.png`（仅本机语义）一律 404 不转发 —— 桥不扩大桌面攻击面
+  - 未配置 **authToken 拒绝启动**（LAN 暴露必须强口令，docs/04-security.md）
+  - Host 头重写为回环信任值 → 下游 hostAllowed 自然放行；真实鉴权仍由 token 把关
+- **扫码/自动地址联动**：`lanBridge` 启用时 bootstrap `urls` 与桌面二维码（qr-config）首选地址自动变为桥地址（`http://<IP>:3080/m`），App 扫码即连，无需手动填
+- 诊断：`/m/api/diagnostics` `runtime.lanBridge` 上报 `{enabled, host, port, listening}`；插件日志打印监听状态与错误
+- 清理：插件卸载时桥随 effect 关闭
+
+### 配置（cordis.patch.yml，用户侧）
+```yaml
+lanBridge:
+  enabled: true
+  port: 3080        # 冲突可改；防火墙需放行该端口
+  host: 0.0.0.0     # 默认全接口；仅本机测也可用 127.0.0.1
+```
+
+### 未推送说明
+功能开发完成并通过 PC 侧全链路验证（正向/SSE 透传/安全边界）；**App 真机局域网实测通过后再推送**。
+
+## v2.8.2（2026-08-22）— 适配 DSH 0.1.1-rc.2（DSH Desktop v2.0.2）
+
+### 服务端（lib/index.js）
+- **CRITICAL 修复：`rpcError` 返回改为 `[status, code, message]` 元组**。调用展开 `error(res, ...rpcError(...))` 走迭代器协议，普通对象字面量与 `Object.create(null)` 均不可展开——**2.8.1 起全部 11 处 API 错误路径（队列/归档/fork/取消/模型/子代理/命令/goal）抛 `Spread syntax requires ...iterable[Symbol.iterator]`**，该 TypeError 上抛到 `handleApi` 外层 catch，统一退化为 `500 { error: "internal" }`，真实状态码/内核错误码/详情全部丢失。已实测复现（修复前 `500 internal` → 修复后 `400 session-not-found + detail`）
+- **错误码收窄为仅非空 string**：内核自定义错误码是契约字符串（`session-not-found` / `target-not-found` 等）；`DOMException.code` 等数字码不在契约内 → 落 fallbackCode（注释记录依据）
+- **GET `/m/api/commands` 拆分条件**：`commands` 服务未注册 → `200 { ok, commands: [], unavailable: true }`（优雅降级，App 端弹「无可用命令」，不硬 503）；服务在而会话不存在 → `404 session-not-found`（不再被空列表掩盖真实原因）
+- **POST `/m/api/commands` 适配内核四参签名**：`commands.execute(agent, line, images, signal)`（0.1.1-rc.2；2.8.1 旧三参调用会把 `AbortSignal` 误传 `images` 槽，已改正）；`images` 恒为空数组，`signal` 15s 超时；未知/畸形命令仍 `404 command-not-found`，服务缺失 `503` 附 detail；同样拆分 `!agent` → `404 session-not-found`（与 GET 一致）
+- 文档：03-api.md 补 §6.15 斜杠命令契约与端点总表行（2.8.0 引入时遗漏）
+
+### 验证
+- 修复后实测（DSH Desktop v2.0.2 / 0.1.1-rc.2，真实会话）：archive/fork 假会话 → `400 session-not-found + detail`；goal pause 无目标 → `400 no-active-goal`；feedback none 幂等 200 / positive 不存在消息 → `404 target-not-found`；commands GET 真会话 200 真实列表、假会话 404、POST `/goal` 200 真执行结果、`/bogus` 404、非斜杠 400 —— 全量通过
+- 三路 Code Review（服务端两轮：首轮发现 CRITICAL、复核通过 PASS；App 全量零改动）并修复发现项；App 侧维持 v2.8.1
+
 ## v2.8.1（2026-08-22）— 消息操作栏 + 输入栏重构 + 命令入口 + 反馈增强
 
 ### 消息操作栏（替代长按）

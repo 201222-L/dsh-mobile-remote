@@ -1,6 +1,6 @@
 # 03 API 接口设计文档 — dsh-mobile-remote
 
-> 版本：v2.7.0 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
+> 版本：v2.8.2 · 状态：已实现 · 配套：00-开发总纲.md、02-architecture.md、04-security.md、09-compatibility.md
 > 前缀：`/m`（可配置项 `path`，默认 `/m`）。以下所有路径均以前缀开头。
 > 服务端 API 同时服务 Flutter App（dsh-mobile-app）与桌面设置页客户端模块；不含网页版页面（v2.1 起移除）。
 ## 1. 通用约定
@@ -53,6 +53,7 @@
 | GET | `/m/api/subagents` | 子代理列表（v2.7，按父会话 `subagent.list`） | 是 |
 | POST | `/m/api/subagents/interrupt` | 中断子代理（v2.7，`subagent.interrupt`） | 是 |
 | GET/POST | `/m/api/goal` | 当前目标 / 创建·暂停·继续·完成（v2.7，goal RPC 同源） | 是 |
+| GET/POST | `/m/api/commands` | 斜杠命令目录/执行（v2.8.0；v2.8.2 适配内核 0.1.1-rc.2 四参签名，服务缺失优雅降级） | 是 |
 
 ## 3. 端点详述（v1 既有端点）
 ### 3.1 GET /m/api/bootstrap
@@ -509,6 +510,28 @@
 ```
 - 映射内核 goal RPC（契约一致：create 需 `sessionId + objective`；pause/resume/complete 需 `sessionId + ref`，ref 由插件经 `goals.get(agent)` 自动取得）
 - 缺参 `400 sessionId-required / objective-required`；无当前目标 `400 no-active-goal`；非法 action `400 bad-action`
+
+### 6.15 斜杠命令（v2.8.0 引入 / v2.8.2 适配内核 0.1.1-rc.2）
+
+**GET `/m/api/commands?sessionId=…`** — 命令目录（对齐内核 `ctx.commands`）
+```json
+{ "ok": true, "commands": [
+  { "name": "goal", "description": "set or view the goal for a long-running task",
+    "input": { "hint": "[<objective>|clear|edit <objective>|pause|resume]", "images": true } }
+] }
+```
+- 命令条目：`name` / `description` 必填；`input`（`hint` / `images`）可选，有则返回
+- `commands` 服务未注册（无 dsh-commands host 服务）→ `200 { ok, commands: [], unavailable: true }`（App 端弹「无可用命令」，不硬 503）
+- 会话不存在 → `404 session-not-found`；缺 `sessionId` → `400 bad-request`
+
+**POST `/m/api/commands`** — 执行斜杠命令
+```json
+请求: { "sessionId": "…", "line": "/goal" }
+响应: { "ok": true, "result": { "commandId": "cmd-…", "result": { "kind": "success", "text": "…" } } }
+```
+- 映射内核 `commands.execute(agent, line, images, signal)`（0.1.1-rc.2 四参签名；本插件 `images` 恒为空数组，`signal` 为 15s 超时中止；2.8.1 的旧三参调用会把 AbortSignal 误传 images 槽，已改正）
+- `line` 必须以 `/` 开头（否则 `400 bad-request`）；未知/畸形命令 `404 command-not-found`；服务未注册 `503 commands-unavailable`（带 detail）；服务在而会话不存在 `404 session-not-found`（与 GET 拆分语义一致）
+- `result` 为内核 settle 对象（`commandId` + `result.{kind,text}`），与 PC 端一致
 
 
 

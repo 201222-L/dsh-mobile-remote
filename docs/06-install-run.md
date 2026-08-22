@@ -94,6 +94,24 @@ npx @deepseek-ai/dsh web
 
 口令生成建议：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 
+## 4b. 局域网直连（同一 WiFi，v2.9.0 新增：桌面版终于可以连了）
+
+> **背景**：DSH Desktop（0.1.1-rc.2 起）强制 web 服务只听 `127.0.0.1`（内核硬限制，改不了），手机无法直连；web 版 DSH 无此限制。v2.9.0 起插件内置 **LAN 桥**：在 DSH 进程内自建监听，把 `/m` 请求转发给回环服务——手机走局域网 IP 即可连，**无需穿透、无需额外工具、不改 DSH**。
+
+1. **开桥**：`cordis.patch.yml` 的 `mobile-remote` 行 `config` 加：
+```yaml
+        lanBridge:
+          enabled: true
+          port: 3080        # 与其它服务冲突可改；改后手机地址的端口同步改
+          host: 0.0.0.0     # 默认全接口；单机调试可用 127.0.0.1
+```
+2. **重启** DSH，首次监听 `0.0.0.0` 时 Windows 防火墙弹窗点「允许」；或手动放行：
+   `netsh advfirewall firewall add rule name="DSH Mobile LAN" dir=in action=allow protocol=TCP localport=3080`
+3. **手机连**：设置 → 重新配置连接 → 扫码（桌面设置页二维码已自动变为桥地址）或手动填 `http://<电脑局域网IP>:3080/m` + 口令。
+4. **安全**：`authToken` **必须** 配置强口令（桥拒绝无口令启动）；桥只转发 `/m/*`，桌面 `/api` 网关与 `qr-config`/`qr.png` 不转发，不扩大攻击面。
+5. **排查**：`GET /m/api/diagnostics` → `runtime.lanBridge.listening` 应为 `true`；插件日志会打印监听地址；连不上先查防火墙与 IP（`ipconfig`，VMware 虚拟网卡地址手机不可达）。
+6. **升级自检**：App 断线会自动轮换地址（局域网 IP 优先），出门场景仍走第 5 节组网方案，两者不冲突。
+
 ## 5. 外出访问（人不在家）
 
 > 共同前提：家里电脑保持开机、dsh 运行。**推荐方案：蒲公英组网**（已真机实测通过，国内可用、免费版够用）。原理是"虚拟局域网"——电脑和手机加入同一个虚拟网，手机无论在家 WiFi 还是户外流量都能直达电脑。**禁止把 3080 端口直接映射/穿透到公网裸奔**。
