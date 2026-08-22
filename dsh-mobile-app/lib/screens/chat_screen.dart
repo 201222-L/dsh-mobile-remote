@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -1256,9 +1257,17 @@ class _ChatScreenState extends State<ChatScreen> {
         final b = await f.readAsBytes();
         if (!mounted) return;
         if (b.isEmpty) continue;
-        final mediaType = _mediaTypeOf(f.name);
+        // v3.0.1：按字节魔数嗅探真实类型（微信/浏览器保存的 WebP 常带 .jpg/.png 名字，
+        // 扩展名声明与内核字节校验不符会报 "Declared image type does not match its bytes"）；
+        // 嗅探失败再退回扩展名。服务端 /send 亦有同款纠正（双保险）。
+        final real = _sniffMediaType(b);
+        final mediaType = real ?? _mediaTypeOf(f.name);
         if (!mediaTypes.contains(mediaType)) {
-          showToast(context, L10n.t('仅支持 PNG/JPEG/WebP/GIF 图片', 'Only PNG/JPEG/WebP/GIF images are supported'));
+          if (real != null) {
+            showToast(context, L10n.t('不支持的图片格式：$mediaType', 'Unsupported image format: $mediaType'));
+          } else {
+            showToast(context, L10n.t('仅支持 PNG/JPEG/WebP/GIF 图片', 'Only PNG/JPEG/WebP/GIF images are supported'));
+          }
           return;
         }
         if (b.length > maxBytes) {
@@ -1323,6 +1332,28 @@ class _ChatScreenState extends State<ChatScreen> {
     if (n.endsWith('.webp')) return 'image/webp';
     if (n.endsWith('.gif')) return 'image/gif';
     return '';
+  }
+
+  /// v3.0.1：按字节魔数嗅探图片真实类型（见 [_sendImages] 说明）；无法识别返回 null。
+  static String? _sniffMediaType(Uint8List b) {
+    if (b.length < 12) return null;
+    bool startsWith(List<int> m, [int off = 0]) {
+      if (b.length < off + m.length) return false;
+      for (var i = 0; i < m.length; i++) {
+        if (b[off + i] != m[i]) return false;
+      }
+      return true;
+    }
+
+    if (startsWith(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) return 'image/png';
+    if (startsWith(const [0xFF, 0xD8, 0xFF])) return 'image/jpeg';
+    if (startsWith(const [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
+    if (startsWith(const [0x52, 0x49, 0x46, 0x46]) && startsWith(const [0x57, 0x45, 0x42, 0x50], 8)) return 'image/webp';
+    if (startsWith(const [0x66, 0x74, 0x79, 0x70], 4)) {
+      final brand = String.fromCharCodes(b.sublist(8, 12));
+      if (const ['heic', 'heix', 'hevc', 'mif1'].contains(brand)) return 'image/heic';
+    }
+    return null;
   }
 
   static int _mbOf(int bytes) => bytes ~/ (1024 * 1024);

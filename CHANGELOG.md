@@ -7,6 +7,13 @@
 - **修复**：`readJson` 接受并透传 `limit`（其余 20 处调用不变，仍 64KB）；`/send` 增加 `content-length` 预检——声明超 64MB 直接回 `413 payload-too-large` JSON（桥可透传），不再让客户端只看到 RST/502 拿不到原因；无 content-length 时仍由 `readBody` 流式兜底。
 - **验证**：140KB 图片 payload 实测——修复前桥返回 502「upstream webserver unreachable」；修复后正常解析进 `/send` 语义（agent 不存在 → `404 session-not-found` JSON）。App 端无需改动（服务端热修，无需重装 APK）。
 
+### 图像发送两个误报修复（2026-08-23 热修 02）
+- **「发送未被接受」误报**：插件图片路径（steer/running 持存/idle 三处）的 200 响应缺 `accepted` 字段，App 端 `r['accepted']==null` → 误弹「发送未被接受」（其实图片已发出，用户以为没发出会重复发送）。修复：图片路径响应补 `accepted: true`；文本路径不受影响。
+- **「Declared image type does not match its bytes」**：App 按**文件扩展名**声明 mediaType，微信/浏览器保存的图片常是 WebP 顶 `.jpg/.png` 名字，与真实字节不符 → 内核字节校验拒绝。修复（双保险）：
+  - 服务端 `/send`：对每张图片按字节魔数（PNG/JPEG/GIF/WebP/HEIC）嗅探真实类型，声明不符**自动纠正**（warn 记录），未识别原样交内核裁决；
+  - App `_sendImages`：发送前按字节嗅探（扩展名只作兜底），嗅到白名单外类型（如 HEIC）给出明确「不支持的图片格式」提示（随下个 APK 版本生效）。
+- **验证**：嗅探器单元验证——PNG/JPEG/WebP 前缀识别正确、jpg 名 WebP 字节纠正为 webp、随机字节返回 null；服务端热修随 DSH 重启生效，App 侧修复随下个 APK 生效。
+
 ### 队列"发送出去/删不掉"修复（移动端 ↔ 内核队列一致性）
 - **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致)；② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示；③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义;④ **移动端与 PC 端观感差异**——PC 端 queued 行只进 Queue Dock、不渲染进对话窗口,移动端则插入乐观气泡,看起来"消息被发送出去了"
 - **方案 A（移动端排队语义改造,与 PC 端观感对齐）**：运行中 `followup` **不再进内核 next-turn**（内核会在当前轮结束瞬间自动认领执行 = "被发送出去"的根源）——改为**插件侧持存**（`~/.dsh/mobile-remote/held-queue.json`,重启不丢）:

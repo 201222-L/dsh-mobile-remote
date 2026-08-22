@@ -95,7 +95,7 @@
 
 - `sessionId` 可选：指定会话（必须存在且其 agent 存活）；缺省 → 第一个 root agent。
 - `mode` 可选（v2.7.2）：`"followup"`（默认，排队到下一轮）| `"steer"`（插队：消息插到 agent 下一步执行，适合 team 插件子会话向主会话插队）。agent 空闲时 `steer` 自动降级为 `followup`，响应 `note: "agent-idle-followup"`。
-- `images` 可选（v3.0.0）：`[{ mediaType(仅 png/jpeg/webp/gif), data(canonical base64 原始字节), name? }]`——经内核 `session.prompt` 图片通道（内核限额/降采样/附件落盘，与 PC 端完全同一通路；纯文本仍走 followup）。超限/非规范 → `attachment-error`（`IMAGE_TOO_LARGE`/`INVALID_IMAGE_BASE64` 等）。请求体上限 64MB。
+- `images` 可选（v3.0.0）：`[{ mediaType(仅 png/jpeg/webp/gif), data(canonical base64 原始字节), name? }]`——经内核 `session.prompt` 图片通道（内核限额/降采样/附件落盘，与 PC 端完全同一通路；纯文本仍走 followup）。超限/非规范 → `attachment-error`（`IMAGE_TOO_LARGE`/`INVALID_IMAGE_BASE64` 等）。请求体上限 64MB。**mediaType 纠正（v3.0.0 热修 02）**：服务端按字节魔数（PNG/JPEG/GIF/WebP/HEIC）嗅探真实类型，声明与字节不符自动纠正（warn 记录）；未识别类型原样交内核裁决。图片路径 200 响应带 `accepted: true`（与文本路径语义一致）。
 - **v3.0.0（方案 A）**：`followup` 且 agent **运行中**时，消息**不进内核 next-turn**（内核会在当前轮结束瞬间自动认领执行，PC 端同款语义），而是**插件侧持存**——只出现在 Queue Dock/移动端 dock，**不渲染进对话窗口**（与 PC 端一致）；agent 真正空闲（整个任务/目标结束）后按序自动释放为 `followup`。持存期间消息可经 `/messages` 删除/编辑/插队（全部插件侧执行，无认领竞态）。响应 `mode: "queued", note: "held-until-idle"`。持存文件 `~/.dsh/mobile-remote/held-queue.json`，插件重启不丢。图片持存同样支持（base64 随持存落盘，重启恢复；插队=立即 prompt steer）。
 **响应**
 
