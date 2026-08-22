@@ -1243,7 +1243,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // 限额（与 PC 端同源数字：内核 imageLimits）
       final limits = widget.store.catalog?.imageLimits ?? const {};
       final maxBytes = ((limits['maxImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
-      // v3.0.1：兜底对齐内核默认（DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB；此前误写 20MB，
+      // v3.0.0：兜底对齐内核默认（DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB；此前误写 20MB，
       // catalog 缺失时总大小被错误限制在单张额度）
       final maxTotal = ((limits['maxMessageImageBytes'] as num?)?.toInt() ?? 200 * 1024 * 1024);
       final mediaTypes = (limits['mediaTypes'] as List?)?.map((e) => e.toString()).toSet() ??
@@ -1259,7 +1259,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final b = await f.readAsBytes();
         if (!mounted) return;
         if (b.isEmpty) continue;
-        // v3.0.1：按字节魔数嗅探真实类型（微信/浏览器保存的 WebP 常带 .jpg/.png 名字，
+        // v3.0.0：按字节魔数嗅探真实类型（微信/浏览器保存的 WebP 常带 .jpg/.png 名字，
         // 扩展名声明与内核字节校验不符会报 "Declared image type does not match its bytes"）；
         // 嗅探失败再退回扩展名。服务端 /send 亦有同款纠正（双保险）。
         final real = _sniffMediaType(b);
@@ -1295,6 +1295,11 @@ class _ChatScreenState extends State<ChatScreen> {
       final (accepted, note) = await api.sendImages(id, text, images, mode: mode);
       if (!mounted) return;
       _scheduleQueueRefresh();
+      if (!accepted) {
+        // v3.0.0：先判 accepted，避免与下方 note 提示产生矛盾（不弹"已排队"却弹"未被接受"）
+        showToast(context, L10n.t('发送未被接受', 'Send was not accepted'));
+        return;
+      }
       if (note == 'held-until-idle') {
         showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
       } else if (note == 'steer-degraded-held') {
@@ -1302,12 +1307,8 @@ class _ChatScreenState extends State<ChatScreen> {
       } else if (mode == 'steer') {
         showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
       }
-      if (!accepted) {
-        showToast(context, L10n.t('发送未被接受', 'Send was not accepted'));
-        return;
-      }
       setState(() => _pendingImages.clear());
-      // v3.0.1：发送成功（含排队持存）即清空输入框——此前文字残留，用户误以为没发出而重复发送
+      // v3.0.0：发送成功（含排队持存）即清空输入框——此前文字残留，用户误以为没发出而重复发送
       if (_inputCtrl.text == text) _inputCtrl.clear();
     } catch (e) {
       if (mounted) {
@@ -1338,7 +1339,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return '';
   }
 
-  /// v3.0.1：按字节魔数嗅探图片真实类型（见 [_sendImages] 说明）；无法识别返回 null。
+  /// v3.0.0：按字节魔数嗅探图片真实类型（见 [_sendImages] 说明）；无法识别返回 null。
   static String? _sniffMediaType(Uint8List b) {
     if (b.length < 12) return null;
     bool startsWith(List<int> m, [int off = 0]) {
@@ -2257,7 +2258,7 @@ class _MsgImageState extends State<_MsgImage> {
   Widget build(BuildContext context) {
     final w = (widget.image['width'] as num?)?.toDouble() ?? 4;
     final h = (widget.image['height'] as num?)?.toDouble() ?? 3;
-    // v3.0.1：竖图完整显示——比例不再硬收进方形（旧：clamp 0.4~2.5 且高上限 236 = 方形裁剪），
+    // v3.0.0：竖图完整显示——比例不再硬收进方形（旧：clamp 0.4~2.5 且高上限 236 = 方形裁剪），
     // 上限放宽到 480 并配合 BoxFit.contain（cover 会把竖图裁成中间一条，即"显示不全"的根因）
     final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.3, 3.0) : 1.5;
     final boxW = 236.0;
