@@ -163,11 +163,13 @@ npx @deepseek-ai/dsh web
         authToken: <口令>
         pushUrls:
           - name: 微信
+            # Server酱³（推荐）：SendKey 页面可复制 API URL，形如
+            # https://<uid>.push.ft07.com/send/<sendkey>.send （key 以 sctp…t 开头）
             url: https://sctapi.ftqq.com/<你的SendKey>.send
             format: serverchan
 ```
 
-SendKey 获取：手机微信扫码打开 `https://sct.ftqq.com` → 登录 → 复制 SendKey。
+Server酱³ SendKey 获取：手机微信扫码打开 `https://sc3.ft07.com/sendkey` → 复制 **API URL**（推荐，`push.ft07.com` 官方入口）。老 Turbo 接口 `sctapi.ftqq.com` 域名偶发不可用（实测 400/连接失败，2026-08），建议用 ³ 官方 URL；`format: serverchan` 两者通用（form: title/desp）。
 ### ntfy（安卓系统通知栏，开源自托管友好）
 ```yaml
         pushUrls:
