@@ -652,9 +652,8 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
       _status = L10n.t('连接中…', 'Connecting…');
     });
     try {
-      final probe = Api()
-        ..baseUrl = base
-        ..token = _tokenCtrl.text.trim();
+      // v3.0.0：探测客户端与 save() 同源的地址/路径规范化（防 /m 重复拼接 404）
+      final probe = Api.forProbe(base, _tokenCtrl.text.trim());
       await probe.getJson('/api/bootstrap');
       await api.save(base: base, token: _tokenCtrl.text.trim());
       if (!mounted) return;
@@ -662,7 +661,11 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
       widget.onConnected();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _status = '${L10n.t('连接失败：', 'Connection failed:')}$e');
+      // v3.0.0：网络原因引导（MiUI 智能网络/蜂窝把局域网流量分流时会表现为超时或 404）
+      final hint = L10n.t(
+          '；请确认手机与电脑在同一 Wi-Fi，并关闭手机流量/智能网络后重试',
+          '; make sure the phone is on the same Wi-Fi as the PC, and turn off mobile data / smart network switch');
+      setState(() => _status = '${L10n.t('连接失败：', 'Connection failed:')}$e$hint');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

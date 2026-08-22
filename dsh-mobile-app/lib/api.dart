@@ -128,16 +128,20 @@ class Api {
   /// 返回 null 表示可达；否则返回错误描述。
   Future<String?> probeBase(String base) async {
     try {
-      final probe = Api()
-        ..baseUrl = _normBase(base)
-        ..path = _pathOf(base)
-        ..token = token;
-      await probe.getJson('/api/bootstrap');
+      await (Api.forProbe(base, token)).getJson('/api/bootstrap');
       return null;
     } catch (e) {
       return e.toString();
     }
   }
+
+  /// v3.0.0：构造只读探测客户端——地址/路径规范化和 save() 同源逻辑，
+  /// 避免"地址含 /m、路径默认 /m"拼接成 `/m/m/...` 而 404。
+  static Api forProbe(String base, String token) =>
+      Api()
+        ..baseUrl = _normBase(base)
+        ..path = _pathOf(base)
+        ..token = token;
 
   /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）
   /// + 校正挂载路径（v3.0.0 review：服务端为权威来源）。

@@ -15,6 +15,7 @@
 
 ### 二次 Code Review 落实
 - **必改**:`md.dart` 列表/表格后段落乱序(`- a\n- b\nprose` 把 prose 渲染到列表上方);`notifications_screen` await 后补 mounted 守卫(pop 后 setState 崩溃);`sheets` 新建会话/文件夹 **busy 锁**(双击双建)+ 文件夹名 Windows 非法字符前置校验
+- **连接加固(实测定位)**:探测客户端地址/路径归一化与 save() 同源(`Api.forProbe`,防二维码地址带 `/m` 拼成 `/m/m/api/bootstrap` 404);连接失败提示追加网络原因引导(手机蜂窝/智能网络分流绕过局域网时,表现为同地址间歇 200/404/超时)
 - **中低**:`logger` 去每行 fsync(SSE 流式期间掉帧),文件体积改近似记账;`_MsgItem.copyWith` 显式断言(防未来复用静默变用户消息);`agent/status` child 注释缩进
 - **文档**:03-api §3.6b 帧表更新(`mobile/queue` 独立行,`mobile/frame` 收窄为问询/审批)
 
