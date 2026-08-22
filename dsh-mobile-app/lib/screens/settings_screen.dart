@@ -862,8 +862,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ConstrainedBox(
         constraints: const BoxConstraints(maxHeight: 320),
         child: SingleChildScrollView(
+          // v3.0.0：日志倒序展示——最新日志在最上面，不用每次翻到底部
           child: SelectableText(
-            text.isEmpty ? L10n.t('（暂无日志）', '(No logs)') : text,
+            text.isEmpty ? L10n.t('（暂无日志）', '(No logs)') : _reverseLog(text),
             style: TextStyle(fontSize: 11.5, height: 1.6, color: DshColors.ink(context), fontFamily: 'monospace'),
           ),
         ),
@@ -890,6 +891,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     ]);
+  }
+
+  /// v3.0.0：日志倒序展示（最新在上，省去翻到底部）——逐行倒排，丢弃尾部空行。
+  static String _reverseLog(String text) {
+    final lines = text.split('\n');
+    return lines.reversed.where((l) => l.isNotEmpty).join('\n');
   }
 
   Future<void> _openDiag() async {
