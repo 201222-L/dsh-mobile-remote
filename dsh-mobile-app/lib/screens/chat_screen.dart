@@ -75,6 +75,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _draftTimer; // 流式草稿节流刷新（chunk 合并，避免每帧全量重建）
   int _lastLoggedCount = -1; // 排障：itemCount 变化时打日志
   bool _scrolledLogged = false; // 排障：滚动状态打一次日志
+  // v2.8.0 review(P2-2)：反馈提交中集合（按 messageId），防快速连点 toggle 竞态
+  final Set<String> _feedbackInFlight = {};
 
   // ── 分段历史浏览（超长会话的安全阀，仅当无限模式不可用时启用） ──
   static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
@@ -1201,54 +1203,11 @@ class _ChatScreenState extends State<ChatScreen> {
     showSessionToolsSheet(context, widget.store, sid);
   }
 
-  /// 消息操作面板（长按 agent 回复）：复制 / 好的回答 / 有问题的回答 / 在新对话中分支。
-  Future<void> _showMessageActions(_MsgItem item) async {
+  /// 执行消息操作（v2.8.0：常驻操作栏入口）：copy / positive / negative / fork。
+  /// 反馈支持 toggle：再点已选的评级 = 取消（rating=none，与 PC 端一致），本地图标同步高亮。
+  Future<void> _runMessageAction(_MsgItem item, String action) async {
     final id = widget.store.sessionId;
     if (id == null) return;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.auto_awesome, size: 15, color: Color(0xFF426EFE)),
-                  const SizedBox(width: 6),
-                  Text(L10n.t('消息操作', 'Message actions'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                ],
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.content_copy, size: 20),
-              title: Text(L10n.t('复制回答', 'Copy answer'), style: TextStyle(fontSize: 14)),
-              onTap: () => Navigator.of(ctx).pop('copy'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.thumb_up_alt_outlined, size: 20),
-              title: Text(L10n.t('好的回答', 'Good answer'), style: TextStyle(fontSize: 14)),
-              onTap: () => Navigator.of(ctx).pop('positive'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.thumb_down_alt_outlined, size: 20),
-              title: Text(L10n.t('有问题的回答', 'Bad answer'), style: TextStyle(fontSize: 14)),
-              onTap: () => Navigator.of(ctx).pop('negative'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.call_split, size: 20),
-              title: Text(L10n.t('在新对话中分支', 'Fork in a new chat'), style: TextStyle(fontSize: 14)),
-              onTap: () => Navigator.of(ctx).pop('fork'),
-            ),
-            const SizedBox(height: 6),
-          ],
-        ),
-      ),
-    );
-    if (action == null || !mounted) return;
     switch (action) {
       case 'copy':
         await Clipboard.setData(ClipboardData(text: item.text));
@@ -1261,15 +1220,40 @@ class _ChatScreenState extends State<ChatScreen> {
           showToast(context, L10n.t('该消息暂不支持反馈（旧消息无 messageId）', 'Feedback is not available for this message (older messages lack a message ID)'));
           return;
         }
+        // v2.8.0 review(P2-2)：同消息反馈提交中则忽略连点（防 toggle 竞态：服务端与本地状态错乱）
+        if (_feedbackInFlight.contains(mid)) return;
+        _feedbackInFlight.add(mid);
+        // toggle：再点当前已选的评级 → 取消反馈
+        final target = item.rating == action ? 'none' : action;
         try {
-          await api.putFeedback(id, mid, action);
+          await api.putFeedback(id, mid, target);
           if (!mounted) return;
-          showToast(context, action == 'positive'
-              ? L10n.t('已标记：好的回答 ✓', 'Marked: good answer ✓')
-              : L10n.t('已标记：有问题的回答 ✓', 'Marked: bad answer ✓'));
+          // 服务端确认后更新本地状态（驱动操作栏图标高亮/熄灭）。
+          // 按 messageId 匹配而非对象引用——SSE 回显合并/重建会产生新对象，引用查找会漏；
+          // live 列表 _items 与历史段 _histItems 都同步更新（review P2-1：历史页图标也要变）
+          final newRating = target == 'none' ? null : target;
+          void updRating(List<_MsgItem> list) {
+            final i = list.indexWhere((m) => m.kind == _MsgKind.assistant && m.messageId == mid);
+            if (i == -1) return;
+            final old = list[i];
+            list[i] = _MsgItem.assistant(old.text,
+                usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating);
+          }
+
+          setState(() {
+            updRating(_items);
+            updRating(_histItems);
+          });
+          showToast(context, switch (target) {
+            'positive' => L10n.t('已标记：好的回答 ✓', 'Marked: good answer ✓'),
+            'negative' => L10n.t('已标记：有问题的回答 ✓', 'Marked: bad answer ✓'),
+            _ => L10n.t('已取消反馈', 'Feedback removed'),
+          });
         } catch (e) {
           if (!mounted) return;
           showToast(context, '${L10n.t('反馈失败：', 'Feedback failed: ')}$e');
+        } finally {
+          _feedbackInFlight.remove(mid);
         }
       case 'fork':
         final seq = item.seq;
@@ -1417,7 +1401,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
           _buildQueueDock(),
-          // composer
+          // composer（v2.8.0 重构为两层，对齐 PC 端 InputBar）：
+          // 第一层 = [/命令] + 输入框（独占最宽）；第二层 = 模型/权限/排队胶囊 + 上下文圆环 + 发送
           SafeArea(
             top: false,
             child: Padding(
@@ -1432,38 +1417,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // v2.8.0：胶囊行靠左——与输入框文字左缘对齐；「排队发送」与模型/权限同行
-                    //（运行中且输入非空时出现；放输入框行会挤窄打字区域，已移回胶囊行）
-                    SizedBox(
-                      height: 28,
-                      child: Row(
-                        children: [
-                          // v2.8.0 review(P1-2)：模型胶囊包 Flexible——模型名超长时省略号截断
-                          //（胶囊无滚动能力，长名必须可收缩；权限保持固有宽度）
-                          Flexible(
-                            child: _Pill(
-                              label: store.sessionConfig.model ?? L10n.t('选择模型', 'Select model'),
-                              onTap: () => showModelSheet(context, store),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          _Pill(
-                            label: _permName(store.sessionConfig.permissionPreset),
-                            onTap: () => showPermSheet(context, store),
-                          ),
-                          // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）
-                          if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
-                            const SizedBox(width: 6),
-                            _Pill(
-                              label: L10n.t('排队发送', 'Queue send'),
-                              onTap: () => _send(),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    // v2.8.0 review(L4)：两个连续 4px 间距合并为 8px（行为不变）
-                    const SizedBox(height: 8),
+                    // 第一层：输入框（独占最宽）
                     Row(
                       children: [
                         Expanded(
@@ -1484,14 +1438,68 @@ class _ChatScreenState extends State<ChatScreen> {
                             onSubmitted: (_) => _send(),
                           ),
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 第二层：⊕命令入口 + 模型/权限胶囊（省略显示）+ 排队发送 + 上下文圆环 + 发送
+                    Row(
+                      children: [
+                        // v2.8.0：命令入口——浅灰圆 +（对齐 PC 端 command，点击弹命令列表）
+                        InkWell(
+                          onTap: _showCommandMenu,
+                          borderRadius: BorderRadius.circular(16),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: DshColors.line(context),
+                              shape: BoxShape.circle,
+                            ),
+                            // v2.8.0 review(P2-3)：图标用 ink3 主题自适应（深色下不再黑压黑）
+                            child: Icon(Icons.add, size: 17, color: DshColors.ink3(context)),
+                          ),
+                        ),
                         const SizedBox(width: 8),
-                        // 上下文窗口占用圆环（对齐 PC 端；数据齐全时才显示）
+                        // 左侧弹性组：⊕ + 模型/权限（可收缩省略）+ 排队（固定）——
+                        // 整体包 Expanded，剩余空间在组内消化；右侧圆环/发送在组外固定，永不挤出
+                        Expanded(
+                          child: Row(
+                            children: [
+                              // 模型胶囊：名称省略；Flexible 空间不足时收缩（省略号），充足时自然宽
+                              Flexible(
+                                child: _Pill(
+                                  label: _shortModel(store.sessionConfig.model),
+                                  onTap: () => showModelSheet(context, store),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              // 权限胶囊：同上
+                              Flexible(
+                                child: _Pill(
+                                  label: _shortPerm(_permName(store.sessionConfig.permissionPreset)),
+                                  onTap: () => showPermSheet(context, store),
+                                ),
+                              ),
+                              // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）；
+                              // 固定宽度（不参与收缩，始终完整显示）
+                              if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
+                                const SizedBox(width: 6),
+                                _Pill(
+                                  label: L10n.t('排队发送', 'Queue send'),
+                                  onTap: () => _send(),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // 上下文窗口占用圆环（对齐 PC 端；数据齐全时才显示）——组外固定
                         if (_contextRatio != null) ...[
                           _ContextRing(ratio: _contextRatio!),
                           const SizedBox(width: 8),
                         ],
                         // v2.7.2：发送按钮恢复原设计——运行中=停止（对齐 PC 端），空闲=发送；
-                        // 长按=插队发送；运行中普通发送走上方「排队发送」胶囊（B 方案）
+                        // 长按=插队发送；运行中普通发送走「排队发送」胶囊——组外固定
                         GestureDetector(
                           onTap: _sending
                               ? null
@@ -1547,6 +1555,73 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _permName(String? id) => permNameOf(id) ?? L10n.t('权限', 'Permission');
 
+  /// v2.8.0：模型名省略显示（胶囊空间有限，截断到 ~10 字符 + …）。
+  String _shortModel(String? model) {
+    final m = model ?? L10n.t('选择模型', 'Select model');
+    return m.length > 10 ? '${m.substring(0, 9)}…' : m;
+  }
+
+  /// v2.8.0：权限名省略显示（"Danger Full Access" → "Danger Full…"）。
+  String _shortPerm(String perm) => perm.length > 14 ? '${perm.substring(0, 13)}…' : perm;
+
+  /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令，点选填入输入框。
+  Future<void> _showCommandMenu() async {
+    final id = widget.store.sessionId;
+    if (id == null) return;
+    List<Map<String, dynamic>> cmds;
+    try {
+      cmds = await api.commands(id);
+    } catch (e) {
+      if (!mounted) return;
+      showToast(context, '${L10n.t('命令列表加载失败：', 'Failed to load commands: ')}$e');
+      return;
+    }
+    if (!mounted) return;
+    if (cmds.isEmpty) {
+      showToast(context, L10n.t('当前会话没有可用命令', 'No commands available for this session'));
+      return;
+    }
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.code, size: 15, color: Color(0xFF426EFE)),
+                  const SizedBox(width: 6),
+                  Text(L10n.t('命令', 'Commands'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+            // v2.8.0 review(P3-6)：过滤无名命令，避免填入 '/null'
+            for (final c in cmds.where((c) => c['name'] is String && (c['name'] as String).isNotEmpty))
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.tag, size: 18),
+                title: Text('/${c['name']}', style: const TextStyle(fontSize: 14)),
+                subtitle: c['description'] is String && (c['description'] as String).isNotEmpty
+                    ? Text(c['description'] as String, style: TextStyle(fontSize: 12, color: DshColors.ink3(ctx)))
+                    : null,
+                onTap: () => Navigator.of(ctx).pop('/${c['name']}'),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    // 对齐 PC 端 leadingInput：命令名填入输入框，用户可补参数后发送
+    _inputCtrl.text = '$picked ';
+    _inputCtrl.selection = TextSelection.collapsed(offset: _inputCtrl.text.length);
+    _onDraftChanged();
+  }
+
   /// 上下文占用比例（已用 tokens / 模型上下文窗口），数据缺失时为 null。
   /// 上下文窗口来自服务端 usage 接口（request/context 事件捕获，与 PC 端圆环同源）。
   /// 口径与 PC 端一致：最近一次请求的 prompt 侧 token（pressureTokens），
@@ -1580,10 +1655,17 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       case _MsgKind.assistant:
-        // 长按弹出消息操作：复制 / 好的回答 / 有问题的回答 / 在新对话中分支
-        return GestureDetector(
-          onLongPress: () => _showMessageActions(item),
-          child: _AssistantBubble(text: item.text, usage: item.usage, streaming: false),
+        // v2.8.0：常驻操作栏（对齐 PC 端 MessageIconActions）——复制/好的回答/有问题的回答/分支，
+        // 移除长按弹面板（操作可见即用）；逻辑与 _showMessageActions 共用 _runMessageAction
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _AssistantBubble(text: item.text, usage: item.usage, streaming: false),
+            _MessageActionsBar(
+              item: item,
+              onAction: (a) => _runMessageAction(item, a),
+            ),
+          ],
         );
       case _MsgKind.divider:
         return Padding(
@@ -1605,16 +1687,20 @@ class _MsgItem {
   final Map<String, dynamic>? usage;
   final int? seq;
   final String? messageId;
+  // v2.8.0：本地反馈状态（positive / negative / null=未评），驱动操作栏图标高亮与 toggle
+  final String? rating;
   _MsgItem.user(this.text, {this.seq, this.messageId})
       : kind = _MsgKind.user,
-        usage = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId})
+        usage = null,
+        rating = null;
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating})
       : kind = _MsgKind.assistant;
   _MsgItem.divider(this.text)
       : kind = _MsgKind.divider,
         usage = null,
         seq = null,
-        messageId = null;
+        messageId = null,
+        rating = null;
 
   _MsgItem copyWith({int? seq, String? messageId}) => _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId);
 }
@@ -1690,6 +1776,85 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
     final total = input + read + write;
     final hit = total > 0 ? ((read / total) * 100).round() : 0;
     return '↑${fmtTokens(input)} ↓${fmtTokens(out)} · ${L10n.t('缓存 ', 'cache ')}$hit%';
+  }
+}
+
+/// v2.8.0：消息常驻操作栏（对齐 PC 端 MessageIconActions）——复制 / 好的回答 / 有问题的回答 / 在新对话中分支。
+/// 小尺寸图标一行，置于消息气泡下方；逻辑经 onAction 回调复用 _runMessageAction。
+/// 反馈选中态对齐 PC 端 data-active：品牌蓝图标 + 浅蓝圆底（positive/negative 同色，与 PC 一致）。
+class _MessageActionsBar extends StatelessWidget {
+  final _MsgItem item;
+  final void Function(String action) onAction;
+  const _MessageActionsBar({required this.item, required this.onAction});
+
+  @override
+  Widget build(BuildContext context) {
+    final rating = item.rating;
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 14),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ActionIcon(
+            icon: Icons.content_copy,
+            tooltip: L10n.t('复制', 'Copy'),
+            onTap: () => onAction('copy'),
+          ),
+          _ActionIcon(
+            icon: Icons.thumb_up_alt_outlined,
+            active: rating == 'positive',
+            tooltip: rating == 'positive'
+                ? L10n.t('好的回答（已选，点此取消）', 'Good answer (selected, tap to clear)')
+                : L10n.t('好的回答', 'Good answer'),
+            onTap: () => onAction('positive'),
+          ),
+          _ActionIcon(
+            icon: Icons.thumb_down_alt_outlined,
+            active: rating == 'negative',
+            tooltip: rating == 'negative'
+                ? L10n.t('有问题的回答（已选，点此取消）', 'Bad answer (selected, tap to clear)')
+                : L10n.t('有问题的回答', 'Bad answer'),
+            onTap: () => onAction('negative'),
+          ),
+          _ActionIcon(
+            icon: Icons.call_split,
+            tooltip: L10n.t('在新对话中分支', 'Fork in a new chat'),
+            onTap: () => onAction('fork'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionIcon extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  // v2.8.0：选中态（对齐 PC 端 data-active）= 品牌蓝图标 + 浅蓝圆底
+  final bool active;
+  const _ActionIcon({required this.icon, required this.tooltip, required this.onTap, this.active = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final brandSoft = DshColors.brandSoft(context);
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(28),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: active ? brandSoft : Colors.transparent,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, size: 15, color: active ? brand : DshColors.ink3(context)),
+        ),
+      ),
+    );
   }
 }
 

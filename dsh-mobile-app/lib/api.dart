@@ -338,6 +338,18 @@ class Api {
     await postJson('/api/feedback', {'sessionId': sessionId, 'messageId': messageId, 'rating': rating});
   }
 
+  /// v2.8.0：斜杠命令目录（对齐 PC 端 ctx.commands）。
+  Future<List<Map<String, dynamic>>> commands(String sessionId) async {
+    final data = await getJson('/api/commands?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    return (data['commands'] as List? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  /// v2.8.0：执行斜杠命令（line 形如 "/plan 目标"）。
+  /// 预留契约：当前命令入口走"填入输入框由用户发送"（PC 端 leadingInput 语义），本方法暂未调用。
+  Future<Map<String, dynamic>?> runCommand(String sessionId, String line) async {
+    return await postJson('/api/commands', {'sessionId': sessionId, 'line': line});
+  }
+
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
 
   /// v2.7.2：排队中消息列表（对齐 PC 端 Queue Dock）。
