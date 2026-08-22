@@ -378,14 +378,16 @@ class Api {
   Future<void> updateQueueMessage(String sessionId, String itemId, Map<String, dynamic> action) async {
     await postJson('/api/messages', {'sessionId': sessionId, 'itemId': itemId, 'action': action});
   }
-  Future<String> send(String sessionId, String text, {String mode = 'followup'}) async {
+  /// v3.0.0：返回 (messageId, note)。note=held-until-idle 表示消息被插件持存
+  /// （运行中排队，任务结束才释放）——排队消息不进对话窗口，只进 dock（与 PC 端一致）。
+  Future<(String, String?)> send(String sessionId, String text, {String mode = 'followup'}) async {
     // v2.7.2：mode=steer 插队发送（插到 agent 下一步执行）；默认 followup 排队
     final r = await postJson('/api/send', {
       'sessionId': sessionId,
       'text': text,
       if (mode == 'steer') 'mode': 'steer',
     });
-    return r['messageId'] as String? ?? '';
+    return (r['messageId'] as String? ?? '', r['note'] as String?);
   }
   /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
   /// 避免一次解析/渲染数百条事件导致手机卡死。

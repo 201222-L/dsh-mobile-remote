@@ -3,9 +3,14 @@
 ## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）（二次 Code Review 落实集成于本版本内）
 
 ### 队列"发送出去/删不掉"修复（移动端 ↔ 内核队列一致性）
-- **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致,非 bug);② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示;③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义
-- **服务端**:mux 把 `session/queue` 归一化为 **`mobile/queue` 帧**(`{sessionId, rows:[{id,text,placement}]}`,与 GET /queue 同款形状),认领/删除/编辑即时镜像;LAN 桥 SSE 空闲超时从"完全取消"收窄为 **60s**(>25s 心跳,防误杀且保留僵尸回收)
-- **App**:`store` 新增 `queueBySession` 镜像 + **帧权威**策略(帧永远覆盖,REST 仅无帧可依时兜底,防止旧 REST 快照覆盖新帧);chat dock 以帧为权威源——被认领瞬间行消失;删除/插话/编辑失败按 `queue-item-not-found` / `steer-unavailable` **语义化提示**;`ApiException` 增加 `code` 字段
+- **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致)；② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示；③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义;④ **移动端与 PC 端观感差异**——PC 端 queued 行只进 Queue Dock、不渲染进对话窗口,移动端则插入乐观气泡,看起来"消息被发送出去了"
+- **方案 A（移动端排队语义改造,与 PC 端观感对齐）**：运行中 `followup` **不再进内核 next-turn**（内核会在当前轮结束瞬间自动认领执行 = "被发送出去"的根源）——改为**插件侧持存**（`~/.dsh/mobile-remote/held-queue.json`,重启不丢）:
+  - 排队消息**只进 dock,不渲染进对话窗口**（对齐 PC 端:被认领执行时 user/message 回显才上屏）——`_send` 不再为排队路径插入乐观气泡
+  - agent 真正空闲（整个任务/目标结束）后按序自动释放为 `followup`（新轮次执行）
+  - 持存期删除/编辑**永远成功**(插件侧,无"已被认领"竞态);插队=立即 `steer` 注入当前运行（下一步边界执行,与 PC 端一致——**插队不废**）
+  - 响应 `mode: "queued", note: "held-until-idle"`,App 端提示"已排队:当前任务结束后自动发送"
+- **服务端**:mux 把 `session/queue` 归一化为 **`mobile/queue` 帧**(`{sessionId, rows:[{id,text,placement}]}`,与 GET /queue 同款形状,合并持存行),认领/删除/编辑即时镜像;LAN 桥 SSE 空闲超时从"完全取消"收窄为 **60s**(>25s 心跳,防误杀且保留僵尸回收)
+- **App**:`store` 新增 `queueBySession` 镜像 + **帧权威**策略(帧永远覆盖,REST 仅无帧可依时兜底,防止旧 REST 快照覆盖新帧);chat dock 以帧为权威源——被认领瞬间行消失;删除/插话/编辑失败按 `queue-item-not-found` / `steer-unavailable` **语义化提示**;`ApiException` 增加 `code` 字段;`api.send` 返回 `(messageId, note)` 记录
 - **悬浮球**:SSE `readTimeout 0→50s`(插件 25s 心跳保活,静默死链 50s 内自动重连,通知不再断供);`markNotif` 收敛主线程(消 SSE 线程/主线程并发丢计数);`placePanel` 判空守卫 + onDestroy 取消面板动画/置空 panelParams(修 after-destroy `updateViewLayout(null)` 主线程 NPE 杀进程)
 
 ### 二次 Code Review 落实

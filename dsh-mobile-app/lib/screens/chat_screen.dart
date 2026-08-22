@@ -1157,6 +1157,9 @@ class _ChatScreenState extends State<ChatScreen> {
       showToast(context, L10n.t('agent 空闲，已按普通消息发送', 'Agent idle — sent as a normal message'));
       mode = 'followup';
     }
+    // v3.0.0：运行中排队（followup）→ 消息**不进对话窗口**（与 PC 端一致：仅进 Queue Dock，
+    // 被 agent 认领执行时 user/message 回显才上屏）——乐观气泡只保留给「立即生效」的发送
+    final queued = mode != 'steer' && widget.store.agentStatus == 'running';
     // 收起键盘，输入框回到原位
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）；插队时不提示排队
@@ -1165,20 +1168,38 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     setState(() {
       _sending = true;
-      _items.insert(0, _MsgItem.user(text)); // 最新在前：插入头部（视觉底部）
+      if (!queued) _items.insert(0, _MsgItem.user(text)); // 最新在前：插入头部（视觉底部）
     });
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
-      final mid = await api.send(id, text, mode: mode);
-      AppLog.instance.log('Chat: 发送成功 mid=$mid');
+      final (mid, note) = await api.send(id, text, mode: mode);
+      AppLog.instance.log('Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}');
       if (!mounted) return;
+      // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
+      _scheduleQueueRefresh();
+      if (queued) {
+        // 排队：无乐观气泡；插件持存（任务结束才释放）时明确提示
+        if (note == 'held-until-idle') {
+          showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+        } else if (note == 'steer-degraded-held') {
+          showToast(context, L10n.t('已排队（插队不可用）：任务结束后自动发送', 'Queued (steer unavailable): will send after the task finishes'));
+        }
+        return;
+      }
+      // 服务端实际持存但本地状态判断偏差（SSE 断线期间 agentStatus 停滞）：
+      // 撤回乐观气泡，保持"排队消息不进对话窗口"一致
+      if (note == 'held-until-idle' || note == 'steer-degraded-held') {
+        setState(() {
+          _items.removeWhere((m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
+        });
+        showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+        return;
+      }
       // v2.7.2：插队成功明确提示（否则和普通发送看起来一样，用户会困惑）
       if (mode == 'steer') {
         showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
       }
-      // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
-      _scheduleQueueRefresh();
       setState(() {
         // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）。
         // v2.7.2 review：与回显合并对称用 lastIndexWhere（合并到最旧未回显）——
@@ -1189,7 +1210,10 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     } catch (e) {
       if (mounted) {
-        setState(() => _items.insert(0, _MsgItem.divider('⚠ ${L10n.t('发送失败：', 'Send failed: ')}$e')));
+        // 排队路径未插入气泡，失败不画错误分隔条（避免"对话里出现假消息"）
+        if (!queued) {
+          setState(() => _items.insert(0, _MsgItem.divider('⚠ ${L10n.t('发送失败：', 'Send failed: ')}$e')));
+        }
         showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}$e');
       }
     } finally {

@@ -89,14 +89,15 @@
 
 - `sessionId` 可选：指定会话（必须存在且其 agent 存活）；缺省 → 第一个 root agent。
 - `mode` 可选（v2.7.2）：`"followup"`（默认，排队到下一轮）| `"steer"`（插队：消息插到 agent 下一步执行，适合 team 插件子会话向主会话插队）。agent 空闲时 `steer` 自动降级为 `followup`，响应 `note: "agent-idle-followup"`。
+- **v3.0.0（方案 A）**：`followup` 且 agent **运行中**时，消息**不进内核 next-turn**（内核会在当前轮结束瞬间自动认领执行，PC 端同款语义），而是**插件侧持存**——只出现在 Queue Dock/移动端 dock，**不渲染进对话窗口**（与 PC 端一致）；agent 真正空闲（整个任务/目标结束）后按序自动释放为 `followup`。持存期间消息可经 `/messages` 删除/编辑/插队（全部插件侧执行，无认领竞态）。响应 `mode: "queued", note: "held-until-idle"`。持存文件 `~/.dsh/mobile-remote/held-queue.json`，插件重启不丢。
 **响应**
 
-- `200 { "ok": true, "agentId": "session-abc", "messageId": "m_<uuid>", "mode": "followup" | "steer" }`
+- `200 { "ok": true, "agentId": "session-abc", "messageId": "m_<uuid>", "mode": "followup" | "steer" | "queued" }`（`mode: "queued"` 时附 `note`）
 - `400 { "error": "empty-text" }`：text 为空或非字符串
 - `404 { "error": "session-not-found" }`：指定会话不存在
 - `503 { "error": "no-live-agent" }`：无匹配的运行中 agent
 - `503 { "error": "agents-unavailable" }`：agents 服务不可用（非 web 组合或启动中）
-**语义**：服务端构造 `createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 后调用 `agent.followup(message)`（排队）或 `agent.steer(message)`（插队）。`followup` 会持久化消息并唤醒空闲驱动器；不等待执行结果（结果经 SSE 回流）。
+**语义**：服务端构造 `createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })` 后调用 `agent.followup(message)`（排队/空闲释放）或 `agent.steer(message)`（插队）；运行中 `followup` 走持存（见上）。`followup` 会持久化消息并唤醒空闲驱动器；不等待执行结果（结果经 SSE 回流）。
 ### 3.3 GET /m/api/sessions
 
 **响应 200**
