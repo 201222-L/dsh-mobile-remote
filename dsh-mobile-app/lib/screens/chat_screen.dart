@@ -105,6 +105,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _question = pq != null && pq.sessionId == widget.store.sessionId ? pq : null;
     _approval = pa != null && pa.sessionId == widget.store.sessionId ? pa : null;
     _mySessionId = widget.store.sessionId; // v2.7.2 review(M1)：绑定本页会话
+    _queue = widget.store.queueOf(_mySessionId ?? ''); // v3.0.0：初始即取镜像快照（帧/缓存）
     widget.store.addChatListener(_handleEvent); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
     _scrollCtrl.addListener(_onScrollTick);
     _load();
@@ -617,6 +618,17 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) setState(() {});
       return;
     }
+    // v3.0.0：队列快照帧（认领/删除/编辑即时反映）→ 本页 dock 即时同步
+    if (ev.type == 'mobile/queue') {
+      final sid = ev.data?['sessionId'] as String?;
+      if (sid != null && sid == _mySessionId) {
+        setState(() {
+          _queue = widget.store.queueOf(sid);
+          if (_queue.isEmpty) _queueCollapsed = true;
+        });
+      }
+      return;
+    }
     // 关键事件日志（排除高频 chunk，便于排障）
     if (ev.type != 'assistant/chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
       AppLog.instance.log('Chat: SSE 事件 ${ev.type} seq=${ev.seq}');
@@ -705,10 +717,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final q = await api.queue(id);
       if (!mounted || seq != _queueRefreshSeq) return;
-      setState(() {
-        _queue = q;
-        if (q.isEmpty) _queueCollapsed = true;
-      });
+      // v3.0.0：统一经 store 镜像——帧为权威源（认领/删除即时反映且不落后）；
+      // 无帧可依时（SSE 断线等）REST 结果兜底生效，任务栏即时收敛
+      widget.store.applyQueue(id, q, fromFrame: false);
       // v2.7.2 review：dock 可见时周期兜底刷新（PC 端改动/无本会话事件帧时不过期）
       _queuePollTimer?.cancel();
       if (q.isNotEmpty) {
@@ -768,7 +779,12 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _editingQueueId = null);
-      showToast(context, '${L10n.t('编辑失败：', 'Edit failed: ')}$e');
+      if (e is ApiException && e.code == 'queue-item-not-found') {
+        // v3.0.0：已被 agent 认领（正在执行）——语义化提示，行由帧/REST 刷新移除
+        showToast(context, L10n.t('该消息已被 agent 处理，无法编辑', 'The agent already picked it up — cannot edit'));
+      } else {
+        showToast(context, '${L10n.t('编辑失败：', 'Edit failed: ')}$e');
+      }
       _refreshQueue(); // 失败通常=消息已被处理,刷新队列同步真实状态
     } finally {
       _queueBusy = false;
@@ -803,7 +819,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _refreshQueue();
     } catch (e) {
       if (mounted) {
-        showToast(context, '${L10n.t('删除失败：', 'Remove failed: ')}$e');
+        if (e is ApiException && e.code == 'queue-item-not-found') {
+          // v3.0.0：已被 agent 认领（正在执行）——内核返回 queue-item-not-found，
+          // 语义化提示 + 即时刷新（帧/REST 会移除该行，不再残留陈旧行）
+          showToast(context, L10n.t('该消息已被 agent 开始处理，未能删除', 'The agent already picked it up — could not remove'));
+        } else {
+          showToast(context, '${L10n.t('删除失败：', 'Remove failed: ')}$e');
+        }
         _refreshQueue();
       }
     } finally {
@@ -822,7 +844,12 @@ class _ChatScreenState extends State<ChatScreen> {
       _refreshQueue();
     } catch (e) {
       if (mounted) {
-        showToast(context, '${L10n.t('插话失败：', 'Steer failed: ')}$e');
+        if (e is ApiException && (e.code == 'queue-item-not-found' || e.code == 'steer-unavailable')) {
+          // v3.0.0：已被处理/当前轮不再接受插话——语义化提示
+          showToast(context, L10n.t('该消息已被 agent 处理，无法插话', 'The agent already picked it up — cannot steer'));
+        } else {
+          showToast(context, '${L10n.t('插话失败：', 'Steer failed: ')}$e');
+        }
         _refreshQueue();
       }
     } finally {
@@ -1715,7 +1742,12 @@ class _MsgItem {
         messageId = null,
         rating = null;
 
-  _MsgItem copyWith({int? seq, String? messageId}) => _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId);
+  _MsgItem copyWith({int? seq, String? messageId}) {
+    // v3.0.0：本方法仅用于 user 乐观消息补 messageId/seq——若未来复用到
+    // assistant/divider 会静默变成用户消息，这里显式断言防住
+    assert(kind == _MsgKind.user, 'copyWith only supports user items');
+    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId);
+  }
 }
 
 // ── 气泡组件 ──

@@ -126,6 +126,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     _deleting = true;
     try {
       await api.deleteNotifs(ids: ids, all: all);
+      // v3.0.0：await 后必须查 mounted——删除请求在途时用户按返回，页面已 dispose
+      if (!mounted) return;
       setState(() {
         _selected.clear();
         _selecting = false;

@@ -320,7 +320,11 @@ Future<void> showNewSessionSheet(
   }
   if (!context.mounted) return;
 
+  // v3.0.0：创建中标志——连点「创建会话」会并发建两个会话（无撤销），先到先得
+  var creating = false;
   Future<void> doCreate() async {
+    if (creating) return;
+    creating = true;
     final preset = pendingMode ?? store.catalog?.defaults['agentPreset'] ?? 'standard';
     final name = switch (preset) {
       'standard' => L10n.t('标准模式', 'Standard'),
@@ -344,6 +348,8 @@ Future<void> showNewSessionSheet(
       await onCreated(created['sessionId'] as String);
     } catch (e) {
       if (context.mounted) showToastAt(ScaffoldMessenger.of(context), '${L10n.t('新建失败：', 'Failed to create: ')}$e');
+    } finally {
+      creating = false;
     }
   }
 
@@ -736,60 +742,82 @@ void _showNewFolder(BuildContext context, String current, void Function(String) 
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(DshTheme.radiusLg)),
     ),
-    builder: (sheetCtx) => SafeArea(
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(18, 10, 18, 18 + MediaQuery.of(sheetCtx).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(color: DshColors.line(context), borderRadius: BorderRadius.circular(2)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(L10n.t('新建文件夹', 'New Folder'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              autofocus: true,
-              decoration: InputDecoration(labelText: L10n.t('文件夹名称', 'Folder Name'), hintText: L10n.t('如：my-project', 'e.g. my-project')),
-            ),
-            const SizedBox(height: 14),
-            Row(
+    builder: (sheetCtx) => StatefulBuilder(
+      builder: (sheetCtx, setFolder) {
+        // v3.0.0：busy 锁（防连点双建目录）+ 客户端文件名合法性校验（与服务端一致：拒绝
+        // Windows 保留字符与 . / ..，避免一路提交到拒绝/产生重复目录才报错）
+        var busy = false;
+        Future<void> create() async {
+          if (busy) return;
+          final name = ctrl.text.trim();
+          if (name.isEmpty) return;
+          if (name == '.' || name == '..' || RegExp(r'[\\/:*?"<>|]').hasMatch(name)) {
+            if (sheetCtx.mounted) {
+              showToastAt(ScaffoldMessenger.of(sheetCtx),
+                  L10n.t('文件夹名包含非法字符（\\ / : * ? " < > |）', 'Folder name contains invalid characters (\\ / : * ? " < > |)'));
+            }
+            return;
+          }
+          busy = true;
+          setFolder(() {});
+          final parent = current.isEmpty ? null : current;
+          try {
+            await api.createDirectory(path: parent, name: name);
+            if (sheetCtx.mounted) Navigator.of(sheetCtx).pop();
+            onCreated(parent ?? name);
+          } catch (e) {
+            if (sheetCtx.mounted) showToastAt(ScaffoldMessenger.of(sheetCtx), '${L10n.t('创建失败：', 'Failed to create: ')}$e');
+          } finally {
+            busy = false;
+            if (sheetCtx.mounted) setFolder(() {});
+          }
+        }
+
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(18, 10, 18, 18 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.of(sheetCtx).pop(),
-                    child: Text(L10n.t('取消', 'Cancel')),
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(color: DshColors.line(context), borderRadius: BorderRadius.circular(2)),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: () async {
-                      final name = ctrl.text.trim();
-                      if (name.isEmpty) return;
-                      final parent = current.isEmpty ? null : current;
-                      try {
-                        await api.createDirectory(path: parent, name: name);
-                        if (sheetCtx.mounted) Navigator.of(sheetCtx).pop();
-                        onCreated(parent ?? name);
-                      } catch (e) {
-                        if (sheetCtx.mounted) showToastAt(ScaffoldMessenger.of(sheetCtx), '${L10n.t('创建失败：', 'Failed to create: ')}$e');
-                      }
-                    },
-                    child: Text(L10n.t('创建', 'Create')),
-                  ),
+                const SizedBox(height: 12),
+                Text(L10n.t('新建文件夹', 'New Folder'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  decoration: InputDecoration(labelText: L10n.t('文件夹名称', 'Folder Name'), hintText: L10n.t('如：my-project', 'e.g. my-project')),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: busy ? null : () => Navigator.of(sheetCtx).pop(),
+                        child: Text(L10n.t('取消', 'Cancel')),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: busy ? null : create,
+                        child: Text(busy ? L10n.t('创建中…', 'Creating…') : L10n.t('创建', 'Create')),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     ),
   );
 }

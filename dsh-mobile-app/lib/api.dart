@@ -8,7 +8,9 @@ import 'models.dart';
 
 class ApiException implements Exception {
   final String message;
-  ApiException(this.message);
+  /// v3.0.0：内核错误码（如 queue-item-not-found / steer-unavailable），供 UI 区分语义
+  final String? code;
+  ApiException(this.message, {this.code});
   @override
   String toString() => message;
 }
@@ -206,7 +208,8 @@ class Api {
     }
     if (res.statusCode != 200) {
       throw ApiException(
-          (body?['detail'] as String?) ?? (body?['error'] as String?) ?? 'HTTP ${res.statusCode}');
+          (body?['detail'] as String?) ?? (body?['error'] as String?) ?? 'HTTP ${res.statusCode}',
+          code: body?['error'] is String ? (body?['error'] as String) : null);
     }
     if (body == null) throw ApiException('HTTP ${res.statusCode}');
     return body;

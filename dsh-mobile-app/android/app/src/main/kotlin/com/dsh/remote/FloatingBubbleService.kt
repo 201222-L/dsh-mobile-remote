@@ -87,6 +87,8 @@ class FloatingBubbleService : Service() {
     @Volatile private var alertThreshold = 10.0
     @Volatile private var balanceAlerting = false // 事件式亮起中（60s 自动消退）
     private var lastBalanceAlertAt = 0L // 上次报警时间（30 分钟防抖）
+    // v3.0.0：以下字段仅 mainHandler 线程读写（markNotif 统一 mainHandler.post）——消除 SSE
+    // 线程与主线程并发导致 notifCount 丢失/去重误判的竞态
     private var notifCount = 0
     private var lastActivity = 0L
     private var lastNotif = 0L
@@ -191,12 +193,15 @@ class FloatingBubbleService : Service() {
         sseThread?.interrupt()
         bubbleAnim?.cancel()
         bubbleAnim = null
+        // v3.0.0：面板展开/收起是 ViewPropertyAnimator（Choreographer 驱动，removeCallbacksAndMessages
+        // 取消不了），销毁时显式取消——配 placePanel 判空双保险，杜绝 after-destroy NPE
+        panel?.let { runCatching { it.animate().cancel() } }
         mainHandler.removeCallbacksAndMessages(null)
         bubble?.let { runCatching { wm?.removeView(it) } }
         tip?.let { runCatching { wm?.removeView(it) } }
         panel?.let { runCatching { wm?.removeView(it) } }
         scrim?.let { runCatching { wm?.removeView(it) } }
-        bubble = null; tip = null; panel = null; scrim = null
+        bubble = null; tip = null; panel = null; panelParams = null; scrim = null
         super.onDestroy()
     }
 
@@ -875,13 +880,18 @@ class FloatingBubbleService : Service() {
 
     /** 面板贴球展开：随球所在象限选择方向（左上/右上/左下/右下），始终完整在屏内。 */
     private fun placePanel() {
+        // v3.0.0：onDestroy 后 panel 已置空，但面板展开动画(ViewPropertyAnimator 经
+        // Choreographer 驱动，removeCallbacksAndMessages 取消不了)的 withEndAction 仍会回调
+        // placePanel——此时 updateViewLayout(null,..) 主线程 NPE 杀进程，必须提前拦下
+        val view = panel ?: return
+        if (!panelVisible) return
         val pp = panelParams ?: return
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
         val size = screenSize()
         val pw = dp(248)
         // 用面板实际高度（首次打开前未测量时用估算值）
-        val ph = if ((panel?.height ?: 0) > 0) panel!!.height else dp(300)
+        val ph = if ((view.height ?: 0) > 0) view.height else dp(300)
         val sw = size.x
         val sh = size.y
         // 用渲染坐标（球实际显示位置）计算面板位置
@@ -903,7 +913,7 @@ class FloatingBubbleService : Service() {
         }
         if (pp.y < dp(40)) pp.y = dp(40)
         if (pp.y + ph > sh) pp.y = sh - ph - dp(20)
-        wm.updateViewLayout(panel, pp)
+        wm.updateViewLayout(view, pp)
     }
 
     private fun hidePanel() {
@@ -1115,16 +1125,20 @@ class FloatingBubbleService : Service() {
 
     /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
     private fun markNotif(key: String, text: String) {
-        val now = System.currentTimeMillis()
-        if (key == lastNotifKey && now - lastNotifAt < 5000) return
-        lastNotifKey = key
-        lastNotifAt = now
-        notifCount++
-        lastNotif = now
-        mainHandler.post { setState(); showTip(text) }
-        // 红点 60 秒后自动消退（用户没看也不残留）
-        mainHandler.removeCallbacks(clearNotifRunnable)
-        mainHandler.postDelayed(clearNotifRunnable, 60000)
+        // v3.0.0：整段收敛到主线程——SSE 线程(:connectSse/handleFrame)与主线程调用点可能并发，
+        // 非原子 ++ / 非 volatile 读写会丢计数、去重误判；post 后串行执行即无竞态
+        mainHandler.post {
+            val now = System.currentTimeMillis()
+            if (key == lastNotifKey && now - lastNotifAt < 5000) return@post
+            lastNotifKey = key
+            lastNotifAt = now
+            notifCount++
+            lastNotif = now
+            setState(); showTip(text)
+            // 红点 60 秒后自动消退（用户没看也不残留）
+            mainHandler.removeCallbacks(clearNotifRunnable)
+            mainHandler.postDelayed(clearNotifRunnable, 60000)
+        }
     }
 
     private val clearNotifRunnable = Runnable {
@@ -1157,7 +1171,10 @@ class FloatingBubbleService : Service() {
         val conn = url.openConnection() as HttpURLConnection
         sseConn = conn // v2.7.2 review(FS2)：onDestroy 时 disconnect 解除 readLine 阻塞
         conn.connectTimeout = 8000
-        conn.readTimeout = 0
+        // v3.0.0：readTimeout 0→50s——插件 SSE 每 25s 必有 ": ping" 心跳，50s 只会在
+        // 静默死链（TCP 已死但无 FIN/RST：切网/路由器丢连接/PC 休眠）时触发 IOException，
+        // 让重连循环兜底；此前 0=无限阻塞，死链后通知断供且永不恢复
+        conn.readTimeout = 50_000
         conn.setRequestProperty("x-mobile-token", token)
         conn.setRequestProperty("Accept", "text/event-stream")
         val code = conn.responseCode

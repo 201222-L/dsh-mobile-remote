@@ -10,6 +10,8 @@ class AppLog {
   final List<String> _buf = [];
   File? _file;
   static const _maxBuf = 800;
+  /// 日志文件体积近似计账（不每行 stat——移动端 flash 上每行 stat+fsync 会让 SSE 流式期间掉帧）
+  int _approxBytes = 0;
   /// 日志保留天数（默认 15 天）：文件最后写入时间超过该期限，启动时清空。
   static const _keepDays = 15;
 
@@ -25,6 +27,7 @@ class AppLog {
           if (age.inDays >= _keepDays) {
             await f.writeAsString('');
           }
+          _approxBytes = (await f.length()).toInt();
         }
       } catch (_) {
         // 清理失败不影响日志功能
@@ -46,11 +49,15 @@ class AppLog {
     final f = _file;
     if (f == null) return;
     try {
-      f.writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+      // v3.0.0：去 flush:true——同步 append 保留（日志有序、不丢行），但 fsync 每行一次
+      // 在 SSE chunk 高频路径上会显著掉帧；尺寸用近似记账，超限时才做一次全量截断。
+      f.writeAsStringSync('$line\n', mode: FileMode.append);
+      _approxBytes += line.length + 1;
       // 控制体积：超过 256KB 截断保留后半
-      if (f.lengthSync() > 256 * 1024) {
+      if (_approxBytes > 256 * 1024) {
         final lines = f.readAsLinesSync();
         f.writeAsStringSync('${lines.sublist(lines.length ~/ 2).join('\n')}\n');
+        _approxBytes = lines.length ~/ 2 * 16; // 截半后的近似值（仅用于下一轮截断判定）
       }
     } catch (_) {
       // 日志失败不影响功能

@@ -1,6 +1,20 @@
 # Changelog
 
-## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）
+## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）（二次 Code Review 落实集成于本版本内）
+
+### 队列"发送出去/删不掉"修复（移动端 ↔ 内核队列一致性）
+- **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致,非 bug);② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示;③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义
+- **服务端**:mux 把 `session/queue` 归一化为 **`mobile/queue` 帧**(`{sessionId, rows:[{id,text,placement}]}`,与 GET /queue 同款形状),认领/删除/编辑即时镜像;LAN 桥 SSE 空闲超时从"完全取消"收窄为 **60s**(>25s 心跳,防误杀且保留僵尸回收)
+- **App**:`store` 新增 `queueBySession` 镜像 + **帧权威**策略(帧永远覆盖,REST 仅无帧可依时兜底,防止旧 REST 快照覆盖新帧);chat dock 以帧为权威源——被认领瞬间行消失;删除/插话/编辑失败按 `queue-item-not-found` / `steer-unavailable` **语义化提示**;`ApiException` 增加 `code` 字段
+- **悬浮球**:SSE `readTimeout 0→50s`(插件 25s 心跳保活,静默死链 50s 内自动重连,通知不再断供);`markNotif` 收敛主线程(消 SSE 线程/主线程并发丢计数);`placePanel` 判空守卫 + onDestroy 取消面板动画/置空 panelParams(修 after-destroy `updateViewLayout(null)` 主线程 NPE 杀进程)
+
+### 二次 Code Review 落实
+- **必改**:`md.dart` 列表/表格后段落乱序(`- a\n- b\nprose` 把 prose 渲染到列表上方);`notifications_screen` await 后补 mounted 守卫(pop 后 setState 崩溃);`sheets` 新建会话/文件夹 **busy 锁**(双击双建)+ 文件夹名 Windows 非法字符前置校验
+- **中低**:`logger` 去每行 fsync(SSE 流式期间掉帧),文件体积改近似记账;`_MsgItem.copyWith` 显式断言(防未来复用静默变用户消息);`agent/status` child 注释缩进
+- **文档**:03-api §3.6b 帧表更新(`mobile/queue` 独立行,`mobile/frame` 收窄为问询/审批)
+
+### 验证
+`flutter analyze` 0 issues;`flutter test` 9/9;`node --check` 通过;版本不变(pubspec `3.0.0+5` / package.json `3.0.0`,与既有版本线一致)。
 
 ### 背景
 DSH Desktop（0.1.1-rc.2 / v2.0.2）强制 webserver 只听 `127.0.0.1`——`dsh-plugin-desktop` 在 profile 组装时把 webserver 行替换为 `DesktopWebServer`（构造器对非回环 host 直接 throw，用户 patch 无法覆盖，唯一旋钮是端口），手机无法直连桌面版。旧版（rc.5 web profile）能 `0.0.0.0:3080` 所以手机可连。

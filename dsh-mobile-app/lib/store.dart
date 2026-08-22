@@ -57,6 +57,20 @@ class AppStore extends ChangeNotifier {
   bool hasRunningJobs(String sessionId) =>
       jobsBySession[sessionId]?.any((j) => j['status'] == 'running' || j['status'] == 'stopping') ?? false;
 
+  // ── v3.0.0：会话排队消息镜像（内核 session/queue 帧权威源 + REST 兜底） ──
+  // 修复此前 dock 陈旧问题：帧被丢弃、全靠 400ms 节流 REST + 20s 轮询，排队消息被 agent 认领后
+  // 行残留、删除必然失败。帧到达即写；REST 结果仅在没有帧可依时兜底（帧永远更新，旧快照不覆盖）。
+  final Map<String, List<Map<String, dynamic>>> queueBySession = {};
+  final Set<String> _queueFramed = {};
+  List<Map<String, dynamic>> queueOf(String sessionId) => queueBySession[sessionId] ?? const [];
+  void applyQueue(String sessionId, List<Map<String, dynamic>> rows, {required bool fromFrame}) {
+    if (!fromFrame && _queueFramed.contains(sessionId)) return; // 帧为权威源：丢弃迟到的 REST 旧快照
+    if (fromFrame) _queueFramed.add(sessionId);
+    queueBySession[sessionId] = rows;
+    notifyListeners();
+    _emitChatEvent(ChatEvent(type: 'mobile/queue', data: {'sessionId': sessionId}));
+  }
+
   // ── 事件监听（聊天页挂载） ──
   // v2.7.2 review(M1)：单回调 → 监听器列表——叠层 ChatScreen（分支/悬浮球打开会话）
   // 不再互相覆盖，旧页 pop 回来仍能收到 SSE 事件（此前新页覆盖、dispose 置 null 导致旧页冻结）
@@ -770,6 +784,14 @@ class AppStore extends ChangeNotifier {
         // 无条件转发：聊天页据此收起审批卡片
         _emitChatEvent(ChatEvent(type: 'approval/resolved', data: {'approvalId': aid}));
         return;
+      }
+      return;
+    }
+    if (type == 'mobile/queue') {
+      // v3.0.0：内核队列快照帧（认领/删除/编辑即时反映）→ 权威镜像，聊天页 dock 即时同步
+      final sid = frame['sessionId'] as String?;
+      if (sid != null && sid.isNotEmpty) {
+        applyQueue(sid, (frame['rows'] as List? ?? []).cast<Map<String, dynamic>>(), fromFrame: true);
       }
       return;
     }

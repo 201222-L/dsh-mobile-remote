@@ -228,6 +228,11 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       i++;
       continue;
     }
+    // v3.0.0：列表/表格后的普通段落必须先落盘前一区块——此前 flushPara 在循环结束时恒在
+    // flushList/flushTable 之前执行，“- a\n- b\nprose” 会把 prose 渲染到列表上方
+    // （表格后跟段落同病）。同时空行/段落行也顺带结束当前列表，符合 Markdown 直觉。
+    if (listEl.isNotEmpty) flushList();
+    if (tableBuf.isNotEmpty) flushTable();
     para.add(raw);
     i++;
   }
