@@ -1307,6 +1307,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       setState(() => _pendingImages.clear());
+      // v3.0.1：发送成功（含排队持存）即清空输入框——此前文字残留，用户误以为没发出而重复发送
+      if (_inputCtrl.text == text) _inputCtrl.clear();
     } catch (e) {
       if (mounted) {
         showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}$e');
@@ -2255,9 +2257,11 @@ class _MsgImageState extends State<_MsgImage> {
   Widget build(BuildContext context) {
     final w = (widget.image['width'] as num?)?.toDouble() ?? 4;
     final h = (widget.image['height'] as num?)?.toDouble() ?? 3;
-    final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.4, 2.5) : 1.5;
+    // v3.0.1：竖图完整显示——比例不再硬收进方形（旧：clamp 0.4~2.5 且高上限 236 = 方形裁剪），
+    // 上限放宽到 480 并配合 BoxFit.contain（cover 会把竖图裁成中间一条，即"显示不全"的根因）
+    final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.3, 3.0) : 1.5;
     final boxW = 236.0;
-    final boxH = (boxW / ratio).clamp(80.0, 236.0);
+    final boxH = (boxW / ratio).clamp(80.0, 480.0);
     final line = DshColors.line(context);
     return GestureDetector(
       onTap: _bytes != null ? _openFull : null,
@@ -2270,7 +2274,7 @@ class _MsgImageState extends State<_MsgImage> {
           child: _loading
               ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
               : _bytes != null
-                  ? Image.memory(_bytes!, fit: BoxFit.cover, gaplessPlayback: true)
+                  ? Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true)
                   : InkWell(
                       onTap: _load,
                       child: Center(
