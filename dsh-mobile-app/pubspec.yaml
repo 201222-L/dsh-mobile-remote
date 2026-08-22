@@ -40,6 +40,8 @@ dependencies:
   url_launcher: ^6.3.2
   path_provider: ^2.1.6
   package_info_plus: ^10.2.1
+  # v3.0.0 图像链路：拍照/相册选择（不压缩——发送原始字节，与 PC 端一致）
+  image_picker: ^1.1.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -13,6 +13,15 @@
 - **App**:`store` 新增 `queueBySession` 镜像 + **帧权威**策略(帧永远覆盖,REST 仅无帧可依时兜底,防止旧 REST 快照覆盖新帧);chat dock 以帧为权威源——被认领瞬间行消失;删除/插话/编辑失败按 `queue-item-not-found` / `steer-unavailable` **语义化提示**;`ApiException` 增加 `code` 字段;`api.send` 返回 `(messageId, note)` 记录
 - **悬浮球**:SSE `readTimeout 0→50s`(插件 25s 心跳保活,静默死链 50s 内自动重连,通知不再断供);`markNotif` 收敛主线程(消 SSE 线程/主线程并发丢计数);`placePanel` 判空守卫 + onDestroy 取消面板动画/置空 panelParams(修 after-destroy `updateViewLayout(null)` 主线程 NPE 杀进程)
 
+### 图像链路（视觉模型移动端跟进——PC 端同 wire、同设计）
+- **发送**:`/send` 支持 `images[{mediaType,data(base64),name?}]`,与 PC 端 `session.prompt` 图片通道**完全同形**(`{type:'image',mediaType,data,name?}`——内核限额/降采样/附件落盘同一通路);纯文本仍走 followup 零回归;请求体上限 64MB
+- **⊕ 菜单**:拍照 / 从相册选择 / 命令(解决 composer 放不下;命令列表保持原逻辑)
+- **不压缩**:`image_picker` 原始字节上传(PC 端浏览器同样只发原文件字节,内核负责超界降采样 8192/64M)
+- **限额/能力**:catalog 下发 `imageLimits`(内核 session.history projections 同源数字:20MB/20张/64M 像素/8192 边)与每个模型的 `imageSupported`(inputModalities);App 发送前校验(限额/媒体类型/模型能力),服务端 `attachment-error` 兜底;模型选择器 📷 标注
+- **持存(方案A)兼容图片**:运行中排队图片也进插件持存(随 held-queue.json 落盘,重启恢复;插队=立即 prompt steer)
+- **渲染**:SSE/history 摘要带 `images[]` 元数据(不放大带宽);新增 `GET /m/api/attachment`(鉴权取图,`x-attachment-meta` 宽高/字节/名字,1h 缓存);App 气泡按宽高比渲染(`attachmentBytes` LRU 64 张),点击全屏(InteractiveViewer),失败点按重试
+- **v1 边界**:GIF 静态展示;tool/result 嵌套图片仍显示「[图片]」占位(版本二做)
+
 ### 二次 Code Review 落实
 - **必改**:`md.dart` 列表/表格后段落乱序(`- a\n- b\nprose` 把 prose 渲染到列表上方);`notifications_screen` await 后补 mounted 守卫(pop 后 setState 崩溃);`sheets` 新建会话/文件夹 **busy 锁**(双击双建)+ 文件夹名 Windows 非法字符前置校验
 - **连接加固(实测定位)**:探测客户端地址/路径归一化与 save() 同源(`Api.forProbe`,防二维码地址带 `/m` 拼成 `/m/m/api/bootstrap` 404);连接失败提示追加网络原因引导(手机蜂窝/智能网络分流绕过局域网时,表现为同地址间歇 200/404/超时)

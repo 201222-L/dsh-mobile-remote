@@ -42,13 +42,16 @@ class CatalogModel {
   final String name;
   final String? description;
   final int? contextWindow;
-  CatalogModel({required this.provider, required this.id, required this.name, this.description, this.contextWindow});
+  // v3.0.0 图像链路：模型是否支持图片输入（inputModalities 标注）
+  final bool imageSupported;
+  CatalogModel({required this.provider, required this.id, required this.name, this.description, this.contextWindow, this.imageSupported = false});
   factory CatalogModel.fromJson(Map<String, dynamic> j) => CatalogModel(
         provider: j['provider'] as String? ?? 'deepseek-official',
         id: j['id'] as String,
         name: j['name'] as String? ?? j['id'] as String,
         description: j['description'] as String?,
         contextWindow: (j['contextWindow'] as num?)?.toInt(),
+        imageSupported: j['imageSupported'] == true,
       );
 }
 
@@ -84,6 +87,8 @@ class Catalog {
   final Map<String, dynamic> defaults;
   final String rechargeUrl;
   final List<ProviderInfo> providers; // v2.6：提供商元信息（分组显示名 / dormant 状态）
+  // v3.0.0 图像链路：图片限额（内核 imageLimits 同源数字，PC 端上限提示同款）
+  final Map<String, dynamic> imageLimits;
   Catalog({
     required this.models,
     required this.reasoningEfforts,
@@ -92,6 +97,7 @@ class Catalog {
     required this.defaults,
     required this.rechargeUrl,
     required this.providers,
+    this.imageLimits = const {},
   });
   factory Catalog.fromJson(Map<String, dynamic> j) => Catalog(
         models: (j['models'] as List? ?? []).map((e) => CatalogModel.fromJson(e as Map<String, dynamic>)).toList(),
@@ -101,6 +107,7 @@ class Catalog {
         defaults: (j['defaults'] as Map<String, dynamic>?) ?? {},
         rechargeUrl: j['rechargeUrl'] as String? ?? 'https://platform.deepseek.com/top_up',
         providers: (j['providers'] as List? ?? []).map((e) => ProviderInfo.fromJson(e as Map<String, dynamic>)).toList(),
+        imageLimits: (j['imageLimits'] as Map<String, dynamic>?) ?? const {},
       );
 }
 

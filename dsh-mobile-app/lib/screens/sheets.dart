@@ -144,7 +144,8 @@ void showModelSheet(BuildContext context, AppStore store) {
       ...groups[pid]!.map((model) => _sheetItem(
             context,
             name: model.name,
-            sub: model.id,
+            // v3.0.0 图像链路：图片能力标注（PC 端目录同源 inputModalities）
+            sub: model.imageSupported ? '${model.id} · 📷 ${L10n.t('支持图片', 'images')}' : model.id,
             active: store.sessionConfig.provider == model.provider && store.sessionConfig.model == model.id,
             onTap: () {
               final msgr = ScaffoldMessenger.of(context);

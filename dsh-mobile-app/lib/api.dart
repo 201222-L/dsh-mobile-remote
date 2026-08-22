@@ -1,6 +1,7 @@
 // DSH Mobile App — API 客户端（对接 dsh-mobile-remote 插件的 /m 接口）
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
@@ -229,11 +230,12 @@ class Api {
     }
   }
 
-  Future<Map<String, dynamic>> postJson(String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> postJson(String path, Map<String, dynamic> body,
+      {Duration timeout = const Duration(seconds: 20)}) async {
     try {
       final res = await _client
           .post(_uri(path), headers: _headers, body: jsonEncode(body))
-          .timeout(const Duration(seconds: 20));
+          .timeout(timeout);
       return _decode(res);
     } catch (e) {
       AppLog.instance.log('POST $path 失败: $e');
@@ -431,6 +433,51 @@ class Api {
       if (mode == 'steer') 'mode': 'steer',
     });
     return (r['messageId'] as String? ?? '', r['note'] as String?);
+  }
+
+  /// v3.0.0 图像链路：发送文本+图片（原始文件字节 base64，与 PC 端 wire 同形；不压缩）。
+  /// 返回 (accepted, note)。note=held-until-idle 表示插件持存（任务结束才释放）。
+  Future<(bool, String?)> sendImages(
+    String sessionId,
+    String text,
+    List<Map<String, dynamic>> images, {
+    String mode = 'followup',
+  }) async {
+    final r = await postJson('/api/send', {
+      'sessionId': sessionId,
+      'text': text,
+      'images': images,
+      if (mode == 'steer') 'mode': 'steer',
+    }, timeout: const Duration(seconds: 90));
+    return (r['accepted'] == true, r['note'] as String?);
+  }
+
+  /// v3.0.0 图像链路：拉取图片字节（渲染用），带 LRU 缓存（64 张）。
+  final Map<String, Uint8List> _imgCache = {};
+  final List<String> _imgOrder = [];
+  static const _imgCacheMax = 64;
+  Future<Uint8List> attachmentBytes(String sessionId, String attachmentId) async {
+    final key = '$sessionId/$attachmentId';
+    final hit = _imgCache[key];
+    if (hit != null) return hit;
+    final res = await _client
+        .get(
+          _uri('/api/attachment?sessionId=${Uri.encodeQueryComponent(sessionId)}'
+              '&attachmentId=${Uri.encodeQueryComponent(attachmentId)}'),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 60));
+    if (res.statusCode != 200) throw ApiException('HTTP ${res.statusCode}', code: 'attachment-fetch-failed');
+    final bytes = res.bodyBytes;
+    if (bytes.isEmpty) throw ApiException('empty attachment');
+    _imgCache[key] = bytes;
+    _imgOrder.remove(key);
+    _imgOrder.add(key);
+    if (_imgOrder.length > _imgCacheMax) {
+      final evict = _imgOrder.removeAt(0);
+      _imgCache.remove(evict);
+    }
+    return bytes;
   }
   /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
   /// 避免一次解析/渲染数百条事件导致手机卡死。

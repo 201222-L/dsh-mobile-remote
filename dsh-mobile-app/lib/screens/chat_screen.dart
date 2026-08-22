@@ -1,8 +1,11 @@
 // 对话页：消息流（Markdown/流式/工具折叠/token 用量）+ 上翻加载 + 快捷动作 + composer
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import '../toast.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import '../toast.dart';
 import '../api.dart';
 import '../logger.dart';
 import '../l10n.dart';
@@ -77,6 +80,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _scrolledLogged = false; // 排障：滚动状态打一次日志
   // v2.8.0 review(P2-2)：反馈提交中集合（按 messageId），防快速连点 toggle 竞态
   final Set<String> _feedbackInFlight = {};
+  // v3.0.0 图像链路：待发送图片（XFile 原始文件，不压缩——与 PC 端一致）
+  final List<XFile> _pendingImages = [];
+  bool _pickingImages = false; // 选图在途锁（相册多选期间防重复触发）
 
   // ── 分段历史浏览（超长会话的安全阀，仅当无限模式不可用时启用） ──
   static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
@@ -1062,9 +1068,9 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
         if (history) {
-          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid));
+          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d)));
         } else {
-          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid));
+          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d)));
         }
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
@@ -1089,7 +1095,8 @@ class _ChatScreenState extends State<ChatScreen> {
         final item = _MsgItem.assistant(prefix + body,
             usage: d?['usage'] as Map<String, dynamic>?,
             seq: ev.seq,
-            messageId: d?['messageId'] as String?);
+            messageId: d?['messageId'] as String?,
+            images: _imagesOf(d));
         if (history) {
           out.add(item);
         } else {
@@ -1150,7 +1157,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = (preset ?? _inputCtrl.text).trim();
     // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
     final id = _mySessionId ?? widget.store.sessionId;
-    if (text.isEmpty || id == null || _sending) return;
+    if ((text.isEmpty && _pendingImages.isEmpty) || id == null || _sending || preset != null && _pendingImages.isNotEmpty) return;
+    // v3.0.0 图像链路：有待发图片 → 走图片通路（原始字节不压缩；成功/失败处理独立）
+    if (_pendingImages.isNotEmpty) {
+      await _sendImages(id, text, mode);
+      return;
+    }
     AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}');
     // v2.7.2 插队：agent 空闲时插队无意义 → 降级普通发送并提示
     if (mode == 'steer' && widget.store.agentStatus != 'running') {
@@ -1220,6 +1232,100 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) setState(() => _sending = false);
     }
   }
+
+  /// v3.0.0 图像链路：发送文本+图片（原始字节不压缩——与 PC 端一致；限额/模型能力前置校验）。
+  Future<void> _sendImages(String id, String text, String mode) async {
+    if (_pendingImages.isEmpty) return;
+    setState(() => _sending = true);
+    FocusScope.of(context).unfocus();
+    try {
+      // 限额（与 PC 端同源数字：内核 imageLimits）
+      final limits = widget.store.catalog?.imageLimits ?? const {};
+      final maxBytes = ((limits['maxImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
+      final maxTotal = ((limits['maxMessageImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
+      final mediaTypes = (limits['mediaTypes'] as List?)?.map((e) => e.toString()).toSet() ??
+          {'image/png', 'image/jpeg', 'image/webp', 'image/gif'};
+      // 模型能力（服务端也会校验，此处前置拦截给用户明确提示）
+      if (!_currentModelSupportsImages()) {
+        showToast(context, L10n.t('当前模型不支持图片输入，请先切换模型', 'The current model does not support images — switch models first'));
+        return;
+      }
+      final images = <Map<String, dynamic>>[];
+      var total = 0;
+      for (final f in _pendingImages) {
+        final b = await f.readAsBytes();
+        if (!mounted) return;
+        if (b.isEmpty) continue;
+        final mediaType = _mediaTypeOf(f.name);
+        if (!mediaTypes.contains(mediaType)) {
+          showToast(context, L10n.t('仅支持 PNG/JPEG/WebP/GIF 图片', 'Only PNG/JPEG/WebP/GIF images are supported'));
+          return;
+        }
+        if (b.length > maxBytes) {
+          showToast(context, L10n.t('单张图片超过 ${_mbOf(maxBytes)}MB 上限', 'One image exceeds the ${_mbOf(maxBytes)}MB limit'));
+          return;
+        }
+        total += b.length;
+        if (total > maxTotal) {
+          showToast(context, L10n.t('图片总大小超过 ${_mbOf(maxTotal)}MB 上限', 'Images exceed the ${_mbOf(maxTotal)}MB total limit'));
+          return;
+        }
+        images.add({
+          'mediaType': mediaType,
+          'data': base64Encode(b),
+          if (f.name.isNotEmpty) 'name': f.name,
+        });
+      }
+      if (images.isEmpty) {
+        showToast(context, L10n.t('没有可发送的图片', 'No image to send'));
+        return;
+      }
+      AppLog.instance.log('Chat: 发送(图) → $id : ${images.length} 张, 共 $total 字节${mode == 'steer' ? '（插队）' : ''}');
+      final (accepted, note) = await api.sendImages(id, text, images, mode: mode);
+      if (!mounted) return;
+      _scheduleQueueRefresh();
+      if (note == 'held-until-idle') {
+        showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+      } else if (note == 'steer-degraded-held') {
+        showToast(context, L10n.t('已排队（插队不可用）：任务结束后自动发送', 'Queued (steer unavailable): will send after the task finishes'));
+      } else if (mode == 'steer') {
+        showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
+      }
+      if (!accepted) {
+        showToast(context, L10n.t('发送未被接受', 'Send was not accepted'));
+        return;
+      }
+      setState(() => _pendingImages.clear());
+    } catch (e) {
+      if (mounted) {
+        showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}$e');
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// v3.0.0：当前模型是否支持图片（catalog.imageSupported；缺失时交服务端裁决）。
+  bool _currentModelSupportsImages() {
+    final cat = widget.store.catalog;
+    final cfg = widget.store.sessionConfig;
+    if (cat == null || cfg.model == null) return true;
+    for (final m in cat.models) {
+      if (m.id == cfg.model) return m.imageSupported;
+    }
+    return true;
+  }
+
+  static String _mediaTypeOf(String name) {
+    final n = name.toLowerCase();
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+    if (n.endsWith('.webp')) return 'image/webp';
+    if (n.endsWith('.gif')) return 'image/gif';
+    return '';
+  }
+
+  static int _mbOf(int bytes) => bytes ~/ (1024 * 1024);
 
   /// 停止（取消）会话当前运行：对齐 PC 端"停止"按钮。
   Future<void> _stop() async {
@@ -1456,6 +1562,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
+          // v3.0.0 图像链路：待发送图片缩略图 rail（composer 上方，PC 端 AttachmentRail 同理念）
+          _buildImageRail(),
           // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
           _buildQueueDock(),
           // composer（v2.8.0 重构为两层，对齐 PC 端 InputBar）：
@@ -1501,9 +1609,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     // 第二层：⊕命令入口 + 模型/权限胶囊（省略显示）+ 排队发送 + 上下文圆环 + 发送
                     Row(
                       children: [
-                        // v2.8.0：命令入口——浅灰圆 +（对齐 PC 端 command，点击弹命令列表）
+                        // v2.8.0：命令入口——浅灰圆 +（对齐 PC 端 command）
+                        // v3.0.0 图像链路：⊕ = 更多（拍照 / 从相册选择 / 命令）
                         InkWell(
-                          onTap: _showCommandMenu,
+                          onTap: _showComposerMenu,
                           borderRadius: BorderRadius.circular(16),
                           child: Container(
                             width: 28,
@@ -1622,6 +1731,152 @@ class _ChatScreenState extends State<ChatScreen> {
   String _shortPerm(String perm) => perm.length > 14 ? '${perm.substring(0, 13)}…' : perm;
 
   /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令，点选填入输入框。
+  /// v3.0.0 图像链路：⊕ = 更多菜单（拍照 / 从相册选择 / 命令）。
+  Future<void> _showComposerMenu() async {
+    if (_pickingImages) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.add_circle_outline, size: 16, color: Color(0xFF426EFE)),
+                  const SizedBox(width: 6),
+                  Text(L10n.t('更多', 'More'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.photo_camera_outlined, size: 20),
+              title: Text(L10n.t('拍照', 'Take a photo'), style: const TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('camera'),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.photo_library_outlined, size: 20),
+              title: Text(L10n.t('从相册选择', 'Choose from gallery'), style: const TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('gallery'),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.code, size: 20),
+              title: Text(L10n.t('命令', 'Commands'), style: const TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('commands'),
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    if (choice == 'camera') {
+      await _pickImages(fromCamera: true);
+      return;
+    }
+    if (choice == 'gallery') {
+      await _pickImages(fromCamera: false);
+      return;
+    }
+    await _showCommandMenu();
+  }
+
+  /// v3.0.0 图像链路：选图（原始解析，不压缩）——上限按内核 imageLimits（PC 端同源数字）。
+  Future<void> _pickImages({required bool fromCamera}) async {
+    if (_pickingImages) return;
+    _pickingImages = true;
+    try {
+      final limits = widget.store.catalog?.imageLimits ?? const {};
+      final maxCount = ((limits['maxImagesPerMessage'] as num?)?.toInt() ?? 20).clamp(1, 20).toInt();
+      final picker = ImagePicker();
+      final picked = fromCamera
+          ? [await picker.pickImage(source: ImageSource.camera)]
+          : await picker.pickMultiImage(limit: maxCount);
+      final files = picked.whereType<XFile>().toList();
+      if (files.isEmpty || !mounted) return;
+      final room = maxCount - _pendingImages.length;
+      if (room <= 0) {
+        showToast(context, L10n.t('已达单条消息的图片数量上限', 'Reached the image count limit per message'));
+        return;
+      }
+      if (files.length > room) {
+        showToast(context, L10n.t('最多还能添加 $room 张图片', 'You can add up to $room more image(s)'));
+      }
+      setState(() => _pendingImages.addAll(files.take(room)));
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        showToast(context, '${L10n.t('无法打开', 'Could not open: ')}$e');
+      }
+    } finally {
+      _pickingImages = false;
+    }
+  }
+
+  /// v3.0.0 图像链路：待发送图片缩略图 rail（composer 上方，可移除；PC 端 AttachmentRail 同理念）。
+  Widget _buildImageRail() {
+    if (_pendingImages.isEmpty) return const SizedBox.shrink();
+    final line = DshColors.line(context);
+    final ink3 = DshColors.ink3(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: SizedBox(
+        height: 76,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (var i = 0; i < _pendingImages.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.file(
+                        File(_pendingImages[i].path),
+                        width: 76,
+                        height: 76,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => Container(
+                          width: 76,
+                          height: 76,
+                          color: line,
+                          child: const Icon(Icons.image_outlined, color: Colors.white54),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: 2,
+                      right: 2,
+                      child: InkWell(
+                        onTap: () => setState(() => _pendingImages.removeAt(i)),
+                        child: Container(
+                          decoration: BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                          padding: const EdgeInsets.all(2),
+                          child: const Icon(Icons.close, size: 13, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            IconButton(
+              onPressed: _pickingImages ? null : () => _pickImages(fromCamera: false),
+              icon: Icon(Icons.add_photo_alternate_outlined, size: 22, color: ink3),
+              tooltip: L10n.t('继续添加', 'Add more'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _showCommandMenu() async {
     // v2.9.0 review(HIGH)：页级动作绑定本页会话
     final id = _mySessionId ?? widget.store.sessionId;
@@ -1702,6 +1957,10 @@ class _ChatScreenState extends State<ChatScreen> {
     return (used / window).clamp(0.0, 1.0);
   }
 
+  /// v3.0.0 图像链路：事件摘要里的图片元数据 [{attachmentId, mediaType, width?, height?}]
+  List<Map<String, dynamic>> _imagesOf(Map<String, dynamic>? d) =>
+      ((d?['images']) as List?)?.map((e) => e as Map<String, dynamic>).toList() ?? const [];
+
   Widget _buildItem(_MsgItem item) {
     switch (item.kind) {
       case _MsgKind.user:
@@ -1715,7 +1974,14 @@ class _ChatScreenState extends State<ChatScreen> {
               color: DshColors.line(context),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Text(item.text, style: const TextStyle(fontSize: 15, height: 1.5)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (item.text.isNotEmpty) Text(item.text, style: const TextStyle(fontSize: 15, height: 1.5)),
+                if (item.images.isNotEmpty) _ImagesGrid(images: item.images, sessionId: _mySessionId ?? ''),
+              ],
+            ),
           ),
         );
       case _MsgKind.assistant:
@@ -1724,7 +1990,7 @@ class _ChatScreenState extends State<ChatScreen> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AssistantBubble(text: item.text, usage: item.usage, streaming: false),
+            _AssistantBubble(text: item.text, usage: item.usage, images: item.images, sessionId: _mySessionId ?? '', streaming: false),
             _MessageActionsBar(
               item: item,
               onAction: (a) => _runMessageAction(item, a),
@@ -1753,18 +2019,21 @@ class _MsgItem {
   final String? messageId;
   // v2.8.0：本地反馈状态（positive / negative / null=未评），驱动操作栏图标高亮与 toggle
   final String? rating;
-  _MsgItem.user(this.text, {this.seq, this.messageId})
+  // v3.0.0 图像链路：消息附图元数据 [{attachmentId, mediaType, width?, height?, name?}]
+  final List<Map<String, dynamic>> images;
+  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const []})
       : kind = _MsgKind.user,
         usage = null,
         rating = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating})
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const []})
       : kind = _MsgKind.assistant;
   _MsgItem.divider(this.text)
       : kind = _MsgKind.divider,
         usage = null,
         seq = null,
         messageId = null,
-        rating = null;
+        rating = null,
+        images = const [];
 
   _MsgItem copyWith({int? seq, String? messageId}) {
     // v3.0.0：本方法仅用于 user 乐观消息补 messageId/seq——若未来复用到
@@ -1780,7 +2049,10 @@ class _AssistantBubble extends StatefulWidget {
   final String text;
   final Map<String, dynamic>? usage;
   final bool streaming;
-  const _AssistantBubble({required this.text, this.usage, this.streaming = false});
+  // v3.0.0 图像链路：附图元数据（渲染按 attachmentId 经 /attachment 拉取）
+  final List<Map<String, dynamic>> images;
+  final String sessionId;
+  const _AssistantBubble({required this.text, this.usage, this.images = const [], this.sessionId = '', this.streaming = false});
 
   @override
   State<_AssistantBubble> createState() => _AssistantBubbleState();
@@ -1825,6 +2097,11 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
             ),
             const SizedBox(height: 3),
             ..._blocks!,
+            // v3.0.0 图像链路：附图（agent 回复里的图片，点击全屏）
+            if (widget.images.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              _ImagesGrid(images: widget.images, sessionId: widget.sessionId),
+            ],
             if (widget.usage != null &&
                 ((widget.usage!['inputTokens'] as num? ?? 0) > 0 || (widget.usage!['outputTokens'] as num? ?? 0) > 0))
               Padding(
@@ -1848,6 +2125,136 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
     final total = input + read + write;
     final hit = total > 0 ? ((read / total) * 100).round() : 0;
     return '↑${fmtTokens(input)} ↓${fmtTokens(out)} · ${L10n.t('缓存 ', 'cache ')}$hit%';
+  }
+}
+
+// ── v3.0.0 图像链路：消息附图渲染（按 attachmentId 经 /attachment 拉取字节，LRU 缓存） ──
+class _ImagesGrid extends StatelessWidget {
+  final List<Map<String, dynamic>> images;
+  final String sessionId;
+  const _ImagesGrid({required this.images, required this.sessionId});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final img in images) ...[
+          if (img != images.first) const SizedBox(height: 6),
+          _MsgImage(image: img, sessionId: sessionId),
+        ],
+      ],
+    );
+  }
+}
+
+class _MsgImage extends StatefulWidget {
+  final Map<String, dynamic> image;
+  final String sessionId;
+  const _MsgImage({required this.image, required this.sessionId});
+
+  @override
+  State<_MsgImage> createState() => _MsgImageState();
+}
+
+class _MsgImageState extends State<_MsgImage> {
+  Uint8List? _bytes;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (!_loading) {
+      setState(() => _loading = true);
+    }
+    final id = widget.image['attachmentId'] as String? ?? '';
+    if (id.isEmpty || widget.sessionId.isEmpty) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    try {
+      final bytes = await api.attachmentBytes(widget.sessionId, id);
+      if (!mounted) return;
+      setState(() {
+        _bytes = bytes;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  void _openFull() {
+    final b = _bytes;
+    if (b == null) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4,
+              child: Image.memory(b, fit: BoxFit.contain, width: double.infinity),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(Icons.close, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = (widget.image['width'] as num?)?.toDouble() ?? 4;
+    final h = (widget.image['height'] as num?)?.toDouble() ?? 3;
+    final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.4, 2.5) : 1.5;
+    final boxW = 236.0;
+    final boxH = (boxW / ratio).clamp(80.0, 236.0);
+    final line = DshColors.line(context);
+    return GestureDetector(
+      onTap: _bytes != null ? _openFull : null,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: boxW,
+          height: boxH,
+          color: line,
+          child: _loading
+              ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+              : _bytes != null
+                  ? Image.memory(_bytes!, fit: BoxFit.cover, gaplessPlayback: true)
+                  : InkWell(
+                      onTap: _load,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.broken_image_outlined, size: 24, color: DshColors.ink3(context)),
+                            const SizedBox(height: 4),
+                            Text(L10n.t('加载失败，点按重试', 'Failed to load — tap to retry'),
+                                style: TextStyle(fontSize: 10.5, color: DshColors.ink3(context))),
+                          ],
+                        ),
+                      ),
+                    ),
+        ),
+      ),
+    );
   }
 }
 
