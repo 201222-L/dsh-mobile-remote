@@ -2,6 +2,11 @@
 
 ## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）（二次 Code Review 落实集成于本版本内）
 
+### 图像发送 64KB 误限修复（2026-08-23 热修）
+- **根因**：`readJson(req, res, limit)` 从不接受第三个参数——`/send` 传入的 `64 * 1024 * 1024` 被静默丢弃，实际按 `readBody` 默认 **64KB** 计；图片 base64 一旦超过 64KB（≈48KB 原图，任何真实照片都超）即触发 `req.destroy()`，响应发不出去——手机端表现为「Connection reset by peer (errno 104)」；经 LAN 桥时桥把上游断连转成 502「upstream webserver unreachable」。
+- **修复**：`readJson` 接受并透传 `limit`（其余 20 处调用不变，仍 64KB）；`/send` 增加 `content-length` 预检——声明超 64MB 直接回 `413 payload-too-large` JSON（桥可透传），不再让客户端只看到 RST/502 拿不到原因；无 content-length 时仍由 `readBody` 流式兜底。
+- **验证**：140KB 图片 payload 实测——修复前桥返回 502「upstream webserver unreachable」；修复后正常解析进 `/send` 语义（agent 不存在 → `404 session-not-found` JSON）。App 端无需改动（服务端热修，无需重装 APK）。
+
 ### 队列"发送出去/删不掉"修复（移动端 ↔ 内核队列一致性）
 - **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致)；② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示；③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义;④ **移动端与 PC 端观感差异**——PC 端 queued 行只进 Queue Dock、不渲染进对话窗口,移动端则插入乐观气泡,看起来"消息被发送出去了"
 - **方案 A（移动端排队语义改造,与 PC 端观感对齐）**：运行中 `followup` **不再进内核 next-turn**（内核会在当前轮结束瞬间自动认领执行 = "被发送出去"的根源）——改为**插件侧持存**（`~/.dsh/mobile-remote/held-queue.json`,重启不丢）:
