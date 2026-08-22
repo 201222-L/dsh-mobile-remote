@@ -676,6 +676,9 @@ class AppStore extends ChangeNotifier {
         _connecting = false;
       }
       if (_sub == null) connect();
+      // v3.0.0：唤醒后强制打开中的聊天页重同步——后台冻结/流静默死亡时，SSE hello 可能没触发、
+      // 新消息不会上屏（表现为"要退出会话重进才有"）。catchup 按 lastSeq 补拉，重复无害。
+      _emitChatEvent(ChatEvent(type: '_catchup', data: {}));
       refreshAll();
     } catch (_) {
       _setConnState('offline');
