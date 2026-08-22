@@ -19,6 +19,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // v3.0.0 review：新建会话弹层打开中标志（双击防抖）
+  bool _openingSheet = false;
+
   @override
   void initState() {
     super.initState();
@@ -147,13 +150,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           // 新建会话
                           FilledButton(
                             style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-                            onPressed: () => showNewSessionSheet(context, store, (id) async {
-                              // Phase 2(A4)：openChat 内统一 setSession+refreshSessionConfig+push，这里只刷列表
-                              store.refreshSessions();
-                              if (!context.mounted) return;
-                              await openChat(context, store, id,
-                                  onTitleChanged: widget.onOpenSession);
-                            }),
+                            // v3.0.0 review：双击防抖——连点会并行弹出两个新建会话弹层
+                            onPressed: () {
+                              if (_openingSheet) return;
+                              _openingSheet = true;
+                              showNewSessionSheet(context, store, (id) async {
+                                // Phase 2(A4)：openChat 内统一 setSession+refreshSessionConfig+push，这里只刷列表
+                                store.refreshSessions();
+                                if (!context.mounted) return;
+                                await openChat(context, store, id,
+                                    onTitleChanged: widget.onOpenSession);
+                              }).whenComplete(() => _openingSheet = false);
+                            },
                             child: Text(L10n.t('＋ 新建会话', '+ New Session')),
                           ),
                         ],

@@ -183,6 +183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _refreshBalance() async {
+    if (_busy) return; // v3.0.0 review：在途锁，防连点并发查询/重复触发悬浮球
     setState(() => _busy = true);
     try {
       final b = await api.balanceInfo();

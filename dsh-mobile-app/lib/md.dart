@@ -18,6 +18,14 @@ Uri? safeLinkUrl(String raw) {
 /// 行内 token：**加粗** *斜体* `代码` [链接](url)
 final _inlineRe = RegExp(r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]*\]\([^)\s]+\))');
 
+// v3.0.0 review：块级判定正则提为顶层常量——渲染长消息时逐行构造会重复编译
+final _mdTableSepRe = RegExp(r'^\s*\|?[\s:|-]+\|?\s*$');
+final _mdHeadingRe = RegExp(r'^(#{1,4})\s+(.*)$');
+final _mdHrRe = RegExp(r'^\s*(---|\*\*\*|___)\s*$');
+final _mdBulletRe = RegExp(r'^\s*[-*+]\s+(.*)$');
+final _mdNumberedRe = RegExp(r'^\s*(\d+)\.\s+(.*)$');
+final _mdQuoteRe = RegExp(r'^\s*>\s?');
+
 /// 渲染完整 Markdown 文本 → 块级 Widget 列表（放置于 Column 中）。
 List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
   final ink = DshColors.ink(context);
@@ -149,7 +157,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
     // 表格：| a | b | 下一行是分隔行 |---|---|
     final tableStart = raw.startsWith('|') &&
         i + 1 < lines.length &&
-        RegExp(r'^\s*\|?[\s:|-]+\|?\s*$').hasMatch(lines[i + 1]) &&
+        _mdTableSepRe.hasMatch(lines[i + 1]) &&
         lines[i + 1].contains('-');
     if (tableStart) {
       flushPara();
@@ -164,7 +172,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       continue;
     }
     // 标题
-    final heading = RegExp(r'^(#{1,4})\s+(.*)$').firstMatch(raw);
+    final heading = _mdHeadingRe.firstMatch(raw);
     if (heading != null) {
       flushPara();
       flushList();
@@ -179,7 +187,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       continue;
     }
     // 分隔线
-    if (RegExp(r'^\s*(---|\*\*\*|___)\s*$').hasMatch(raw)) {
+    if (_mdHrRe.hasMatch(raw)) {
       flushPara();
       flushList();
       flushTable();
@@ -191,8 +199,8 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       continue;
     }
     // 列表
-    final bullet = RegExp(r'^\s*[-*+]\s+(.*)$').firstMatch(raw);
-    final numbered = RegExp(r'^\s*(\d+)\.\s+(.*)$').firstMatch(raw);
+    final bullet = _mdBulletRe.firstMatch(raw);
+    final numbered = _mdNumberedRe.firstMatch(raw);
     if (bullet != null || numbered != null) {
       flushPara();
       flushTable();
@@ -202,7 +210,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       continue;
     }
     // 引用
-    if (RegExp(r'^\s*>\s?').hasMatch(raw)) {
+    if (_mdQuoteRe.hasMatch(raw)) {
       flushPara();
       flushList();
       flushTable();
@@ -219,7 +227,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
             children: [
               Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
               Expanded(
-                child: _InlineText(raw.replaceFirst(RegExp(r'^\s*>\s?'), ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2)),
+                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2)),
               ),
             ],
           ),

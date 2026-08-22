@@ -50,6 +50,8 @@
 | `session.fork` | 消息分支 | 内核接口变化 → fork 失败提示 |
 | `agent.followup` / `session.cancel` | 发消息/停止 | 同上 |
 
+> ⚠ **子代理通知判定需要 `session.header.origin`（DSH ≥ 0.1.1-rc.2）**：通知聚合对子代理会话（`origin === "subagent"`）抑制完成/失败通知（与内核自身通知一致）。旧内核 header 无 `origin` 字段时，子代理完成/失败通知会被放行（不影响功能正确性，仅通知噪音）；fork 出的独立会话（无 origin）照常通知。
+
 ### 2.3 高度自定义化的 Harness
 
 - **自定义权限预设/模型/Agent 预设**：App 全部从内核动态读取（catalog、session-config），不内置白名单；未知预设名显示为「…」（后续版本可拉取预设清单美化）。

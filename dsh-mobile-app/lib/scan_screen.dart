@@ -41,7 +41,34 @@ class _ScanScreenState extends State<ScanScreen> {
       appBar: AppBar(title: Text(L10n.t('扫码连接', 'Scan to Connect'))),
       body: Stack(
         children: [
-          MobileScanner(controller: _controller, onDetect: _onDetect),
+          MobileScanner(
+            controller: _controller,
+            onDetect: _onDetect,
+            // v3.0.0 review：相机权限被拒/硬件异常时给出引导（黑屏兜底，不再无声失败）
+            errorBuilder: (context, error) => Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.no_photography_outlined, size: 42, color: Colors.white70),
+                    const SizedBox(height: 12),
+                    Text(
+                      L10n.t('无法启动相机（权限被拒或设备不支持）\n请在系统设置中允许相机权限后重试',
+                          'Camera unavailable (permission denied or unsupported).\nAllow camera permission in system settings and try again'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: Text(L10n.t('返回', 'Back')),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
           // 取景框提示
           Center(
             child: Container(

@@ -21,12 +21,15 @@ final Api api = Api();
 class Api {
   String baseUrl = '';
   String token = '';
+  /// v3.0.0 review：插件挂载路径（默认 /m；由扫描地址/二维码解析，bootstrap 权威校正）。
+  String path = '/m';
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
   List<String> baseUrls = [];
   static const _kBase = 'dsh_mr_base';
+  static const _kPath = 'dsh_mr_path';
   static const _kToken = 'dsh_mr_token';
   static const _kUrls = 'dsh_mr_urls';
   static const _kPluginVer = 'dsh_mr_plugin_ver';
@@ -36,9 +39,37 @@ class Api {
   /// socket/定时器导致内存耗尽闪退。
   final http.Client _client = http.Client();
 
+  /// 地址归一：只保留 scheme://host[:port]（路径剥掉）——挂载路径由 [_pathOf] 单独解析。
+  static String _normBase(String s) {
+    var t = s.trim();
+    if (t.isEmpty) return '';
+    final u = Uri.tryParse(t);
+    if (u != null && u.host.isNotEmpty) {
+      return '${u.scheme}://${u.host}${u.hasPort ? ':${u.port}' : ''}';
+    }
+    // 兜底：非 URL 形态（无 scheme 等），退化为去尾斜杠 + 旧 /m 后缀
+    while (t.endsWith('/')) {
+      t = t.substring(0, t.length - 1);
+    }
+    if (t.endsWith('/m')) t = t.substring(0, t.length - 2);
+    return t;
+  }
+
+  /// 从地址解析挂载路径（默认 /m；根路径 '/' 归一为默认）。
+  static String _pathOf(String s) {
+    final u = Uri.tryParse(s.trim());
+    var p = (u != null ? u.path : '').trim();
+    if (p.isEmpty || p == '/') return '/m';
+    while (p.length > 1 && p.endsWith('/')) {
+      p = p.substring(0, p.length - 1);
+    }
+    return p;
+  }
+
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    baseUrl = prefs.getString(_kBase) ?? '';
+    baseUrl = _normBase(prefs.getString(_kBase) ?? '');
+    path = prefs.getString(_kPath) ?? '/m';
     token = prefs.getString(_kToken) ?? '';
     pluginVersion = prefs.getString(_kPluginVer) ?? ''; // 上次连接时记录，断线也可见
     final urls = prefs.getStringList(_kUrls) ?? [];
@@ -52,9 +83,11 @@ class Api {
 
   Future<void> save({required String base, required String token}) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kBase, base);
+    baseUrl = _normBase(base);
+    path = _pathOf(base);
+    await prefs.setString(_kBase, baseUrl);
+    await prefs.setString(_kPath, path);
     await prefs.setString(_kToken, token);
-    baseUrl = base;
     // 修复：旧版把候选地址表重置为单条。若新地址恰好不可达（如扫到蒲公英 IP
     // 而手机组网没开），连回退的机会都没有。现改为：新地址置首，保留旧候选作兜底。
     final merged = <String>[_normBase(base)];
@@ -65,17 +98,6 @@ class Api {
     baseUrls = merged;
     await prefs.setStringList(_kUrls, baseUrls);
     this.token = token;
-  }
-
-  /// 规范化地址：去尾部斜杠与 /m 后缀。
-  static String _normBase(String s) {
-    var base = s.trim();
-    if (base.isEmpty) return '';
-    while (base.endsWith('/')) {
-      base = base.substring(0, base.length - 1);
-    }
-    if (base.endsWith('/m')) base = base.substring(0, base.length - 2);
-    return base;
   }
 
   /// 合并新收集到的地址（去重、去回环置后、上限裁剪），当前可用地址保持第一位。
@@ -107,7 +129,8 @@ class Api {
   Future<String?> probeBase(String base) async {
     try {
       final probe = Api()
-        ..baseUrl = base
+        ..baseUrl = _normBase(base)
+        ..path = _pathOf(base)
         ..token = token;
       await probe.getJson('/api/bootstrap');
       return null;
@@ -116,10 +139,22 @@ class Api {
     }
   }
 
-  /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）。
+  /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）
+  /// + 校正挂载路径（v3.0.0 review：服务端为权威来源）。
   void absorbBootstrap(Map<String, dynamic> d) {
     final urls = (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ?? const <String>[];
     mergeUrls(urls);
+    final sp = d['server'];
+    if (sp is Map && sp['path'] is String && (sp['path'] as String).isNotEmpty) {
+      final p = (sp['path'] as String).trim();
+      path = p == '/' ? '/m' : p;
+      unawaited(() async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_kPath, path);
+        } catch (_) {}
+      }());
+    }
     final p = d['plugin'];
     if (p is Map && p['version'] is String) {
       pluginVersion = p['version'] as String;
@@ -162,13 +197,17 @@ class Api {
     return true;
   }
 
-  /// 插件路由挂在 basePath（默认 /m）下，所有 API 需带 /m 前缀。
-  /// 用户填的地址可能带或不带 /m 结尾，统一规范化。
+  /// 插件路由挂在 [path]（默认 /m）下，所有 API 需带该前缀。
+  /// 地址与路径分离存储（v3.0.0 review）：路径来自二维码/手动填写解析 + bootstrap 权威校正。
   Uri _uri(String path) {
     var base = baseUrl.trim();
-    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
-    if (base.endsWith('/m')) base = base.substring(0, base.length - 2);
-    return Uri.parse('$base/m$path');
+    while (base.endsWith('/')) {
+      base = base.substring(0, base.length - 1);
+    }
+    var mount = this.path.trim();
+    if (mount.isEmpty) mount = '/m';
+    if (mount.endsWith('/')) mount = mount.substring(0, mount.length - 1);
+    return Uri.parse('$base$mount$path');
   }
 
   Map<String, String> get _headers => {

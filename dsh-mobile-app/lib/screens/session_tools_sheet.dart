@@ -84,6 +84,8 @@ class _JobsTab extends StatefulWidget {
 class _JobsTabState extends State<_JobsTab> {
   List<Map<String, dynamic>>? _jobs;
   String? _error;
+  // v3.0.0 review：取消任务在途锁（防连点重复请求/闪烁）
+  bool _killBusy = false;
 
   @override
   void initState() {
@@ -106,12 +108,16 @@ class _JobsTabState extends State<_JobsTab> {
   }
 
   Future<void> _kill(Map<String, dynamic> job) async {
+    if (_killBusy) return;
+    _killBusy = true;
     try {
       await api.jobKill(widget.sessionId, job['id'] as String? ?? '');
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
       if (mounted) _load();
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
+    } finally {
+      _killBusy = false;
     }
   }
 
@@ -206,6 +212,8 @@ class _SubagentsTab extends StatefulWidget {
 class _SubagentsTabState extends State<_SubagentsTab> {
   List<Map<String, dynamic>>? _subs;
   String? _error;
+  // v3.0.0 review：中断在途锁（防连点重复请求/闪烁）
+  bool _interruptBusy = false;
 
   @override
   void initState() {
@@ -226,11 +234,15 @@ class _SubagentsTabState extends State<_SubagentsTab> {
   }
 
   Future<void> _interrupt(String childId) async {
+    if (_interruptBusy) return;
+    _interruptBusy = true;
     try {
       await api.subagentInterrupt(widget.sessionId, childId);
       if (mounted) showToast(context, L10n.t('已请求中断子代理', 'Interrupt requested'));
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('中断失败：', 'Interrupt failed: ')}$e');
+    } finally {
+      _interruptBusy = false;
     }
   }
 

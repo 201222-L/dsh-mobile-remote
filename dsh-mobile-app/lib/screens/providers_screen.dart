@@ -376,11 +376,34 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     super.dispose();
   }
 
+  /// v3.0.0 review：baseURL 格式校验（http/https + 主机名），非法值不再提交到服务端
+  String? _validBase(String base) {
+    if (base.isEmpty) return L10n.t('请先填写 baseURL', 'Please enter a baseURL first');
+    final u = Uri.tryParse(base);
+    if (u == null || (u.scheme != 'http' && u.scheme != 'https') || u.host.isEmpty) {
+      return L10n.t('baseURL 非法：需以 http:// 或 https:// 开头并含主机名（如 https://api.example.com/v1）',
+          'Invalid baseURL: must start with http:// or https:// and include a host (e.g. https://api.example.com/v1)');
+    }
+    return null;
+  }
+
+  /// v3.0.0 review：模型 ID 合法性（非空、无空白与路径分隔符、长度上限）
+  String? _validModelId(String id) {
+    final t = id.trim();
+    if (t.isEmpty) return L10n.t('模型 ID 不能为空', 'Model ID cannot be empty');
+    if (t.length > 200 || RegExp(r'[\s/\\]').hasMatch(t)) {
+      return L10n.t('模型 ID 非法：不能含空白或 / \\ 且不超过 200 字符',
+          'Invalid model ID: no whitespace or / \\ and at most 200 characters');
+    }
+    return null;
+  }
+
   Future<void> _probe() async {
     final ns = widget.provider['settingsNs'] as String? ?? '';
     final base = _baseCtrl.text.trim();
-    if (base.isEmpty) {
-      setState(() => _status = L10n.t('请先填写 baseURL', 'Please enter a baseURL first'));
+    final err = _validBase(base);
+    if (err != null) {
+      setState(() => _status = err);
       return;
     }
     setState(() {
@@ -424,7 +447,11 @@ class _ProviderEditorState extends State<_ProviderEditor> {
 
   void _addModel() {
     final id = _modelIdCtrl.text.trim();
-    if (id.isEmpty) return;
+    final err = _validModelId(id);
+    if (err != null) {
+      setState(() => _status = err);
+      return;
+    }
     if (_models.any((m) => m['id'] == id)) {
       setState(() => _status = '${L10n.t('模型已存在：', 'Model already exists: ')}$id');
       return;
@@ -443,8 +470,9 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   Future<void> _save() async {
     final ns = widget.provider['settingsNs'] as String? ?? '';
     final base = _baseCtrl.text.trim();
-    if (base.isEmpty) {
-      setState(() => _status = L10n.t('baseURL 不能为空', 'baseURL cannot be empty'));
+    final err = _validBase(base);
+    if (err != null) {
+      setState(() => _status = err);
       return;
     }
     if (_isPiAiStyle && _models.isEmpty) {

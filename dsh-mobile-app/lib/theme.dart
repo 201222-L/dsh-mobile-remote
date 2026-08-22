@@ -28,6 +28,7 @@ class DshTheme {
   static const brandDark = Color(0xFF6C8CFF);
   static const brandSoftDark = Color(0x246C8CFF); // rgba(108,140,255,.14)
   static const okDark = Color(0xFF4CB86F);
+  static const warnDark = Color(0xFFD9A94A); // 深色下略降亮度（v3.0.0 review）
   static const dangerDark = Color(0xFFE0655F);
 
   // 圆角（v2.7 统一：卡片 14 / 输入框 10 / 胶囊全圆）
@@ -149,7 +150,8 @@ class _IosLightTransitionsBuilder extends PageTransitionsBuilder {
 class DshColors {
   const DshColors._();
   static Color ok(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.okDark : DshTheme.ok;
-  static Color warn(BuildContext c) => DshTheme.warn;
+  // v3.0.0 review：warn 无暗色变体（深色下偏亮）——补 DshTheme.warnDark 分支
+  static Color warn(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.warnDark : DshTheme.warn;
   static Color danger(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.dangerDark : DshTheme.danger;
   static Color brand(BuildContext c) => Theme.of(c).colorScheme.primary;
   static Color brandSoft(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? DshTheme.brandSoftDark : DshTheme.brandSoft;
