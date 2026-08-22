@@ -1243,7 +1243,9 @@ class _ChatScreenState extends State<ChatScreen> {
       // 限额（与 PC 端同源数字：内核 imageLimits）
       final limits = widget.store.catalog?.imageLimits ?? const {};
       final maxBytes = ((limits['maxImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
-      final maxTotal = ((limits['maxMessageImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
+      // v3.0.1：兜底对齐内核默认（DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB；此前误写 20MB，
+      // catalog 缺失时总大小被错误限制在单张额度）
+      final maxTotal = ((limits['maxMessageImageBytes'] as num?)?.toInt() ?? 200 * 1024 * 1024);
       final mediaTypes = (limits['mediaTypes'] as List?)?.map((e) => e.toString()).toSet() ??
           {'image/png', 'image/jpeg', 'image/webp', 'image/gif'};
       // 模型能力（服务端也会校验，此处前置拦截给用户明确提示）

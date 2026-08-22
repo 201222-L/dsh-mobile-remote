@@ -13,6 +13,7 @@
   - 服务端 `/send`：对每张图片按字节魔数（PNG/JPEG/GIF/WebP/HEIC）嗅探真实类型，声明不符**自动纠正**（warn 记录），未识别原样交内核裁决；
   - App `_sendImages`：发送前按字节嗅探（扩展名只作兜底），嗅到白名单外类型（如 HEIC）给出明确「不支持的图片格式」提示（随下个 APK 版本生效）。
 - **验证**：嗅探器单元验证——PNG/JPEG/WebP 前缀识别正确、jpg 名 WebP 字节纠正为 webp、随机字节返回 null；服务端热修随 DSH 重启生效，App 侧修复随下个 APK 生效。
+- **限额兜底偏差**：插件 `imageLimitsDefaults.maxMessageImageBytes` 误写 20MB（内核默认 `DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB`），内核 projection 取不到时 App 端总大小会被错误限制在单张额度；已修正为 200MB，App `_sendImages` 兜底同步（下个 APK 生效）。
 
 ### 队列"发送出去/删不掉"修复（移动端 ↔ 内核队列一致性）
 - **根因三层**：① 内核语义——`followup` 只入 `next-turn`,当前 turn 结束的瞬间 agent 循环即开新 turn 认领(与 PC 端一致)；② App 丢弃内核权威 `session/queue` 帧(`store.dart` 只处理 question/approval),dock 全靠 400ms 节流 REST + 20s 轮询,存在陈旧窗口——消息已被认领行仍显示；③ 删除 TOCTOU——被认领后内核返回 `queue-item-not-found`,而 `ApiException` 不带错误码,无法区分语义;④ **移动端与 PC 端观感差异**——PC 端 queued 行只进 Queue Dock、不渲染进对话窗口,移动端则插入乐观气泡,看起来"消息被发送出去了"
