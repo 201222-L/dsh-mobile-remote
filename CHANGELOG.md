@@ -15,7 +15,7 @@
 - **验证**：嗅探器单元验证——PNG/JPEG/WebP 前缀识别正确、jpg 名 WebP 字节纠正为 webp、随机字节返回 null；服务端热修随 DSH 重启生效，App 侧修复随下个 APK 生效。
 - **限额兜底偏差**：插件 `imageLimitsDefaults.maxMessageImageBytes` 误写 20MB（内核默认 `DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB`），内核 projection 取不到时 App 端总大小会被错误限制在单张额度；已修正为 200MB，App `_sendImages` 兜底同步（下个 APK 生效）。
 
-### App 图像发送 UI 两处修复（2026-08-23 热修 03，App 3.0.1+6）
+### App 图像发送 UI 两处修复（2026-08-23 热修 03，App 3.0.0+6）
 - **气泡图片"显示不全"**：气泡高度按 `(236/ratio).clamp(80, 236)` 计算——竖图（比例≈0.46）被压成 236×236 方形，再配合 `BoxFit.cover` → 只显示图片中间一条（点开全屏才全）。修复：比例上限放宽到 0.3~3.0、高度上限 480，渲染改 `BoxFit.contain`——竖图完整显示，不再裁切。
 - **图+文发送后输入框文字残留**：文本路径有 `_inputCtrl.clear()`，图片路径 `_sendImages` 发送成功（含排队持存）后未清空输入框——用户误以为没发出去会重复点发送。修复：accepted 后清空（仅当输入框文字未改动时）。
 
