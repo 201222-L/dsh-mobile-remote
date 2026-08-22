@@ -31,7 +31,7 @@ class Floating {
         'threshold': threshold.toStringAsFixed(2),
       });
 
-  /// 冷启动暂存的面板动作（一次性消费）：返回 "charge" | "notifs" | "session:<id>" | null。
+  /// 冷启动暂存的面板动作（一次性消费）：返回 `charge` | `notifs` | `session:<id>` | null。
   /// v2.7.2 review：原生侧投递后仍保留 pending 直到被消费，Dart 首帧后主动拉取，
   /// 解决"Dart handler 注册晚于投递"导致动作丢失。
   static Future<String?> consumeOpenPanel() async =>

@@ -1,6 +1,6 @@
 # 04 安全设计文档 — dsh-mobile-remote
 
-> 版本：v2.7.0 · 状态：已实现 · 配套：02-architecture.md、03-api.md、09-compatibility.md
+> 版本：v3.0.0 · 状态：已实现 · 配套：02-architecture.md、03-api.md、09-compatibility.md
 
 ## 1. 威胁模型
 
@@ -54,6 +54,17 @@
 | 公网裸 HTTP | **禁止** | 运维约束：不映射端口、不做 NAT 穿透到 3080 |
 
 明文路径下口令可能被同网段监听者截获——这是**明确的残余风险**，缓解手段：仅可信 WiFi 使用、口令启用、定期更换。
+
+### 3b. LAN 桥（v3.0.0：桌面版局域网直连的官方通道）
+> 背景：DSH Desktop（0.1.1-rc.2 起）强制 webserver 只听 `127.0.0.1`（`dsh-plugin-desktop` 的 DesktopWebServer 构造器对非回环 host 直接 throw，用户 patch 无法覆盖），手机无法直连桌面版。插件在 DSH 进程内自建第二个 HTTP 监听（`lanBridge`，默认 `0.0.0.0:3080`），把 `/m/api*` 流式转发到回环 webserver（SSE 透传）。
+
+**这是新增攻击面，边界在代码中强制（`lib/index.js`「LAN 桥」段）：**
+1. **只转发移动 API 面**：`pathname.startsWith(/m/api)` 之外一律 404——桌面 `/api` RPC 网关、`/m/api/qr-config`（含口令）、`/m/qr.png`（仅本机语义）、一切其他 `/m/*` 面均不转发；Host 头重写为 `127.0.0.1:<webServer.port>` 使下游 hostAllowed 自然放行（真实鉴权仍由口令把关）。
+2. **口令强制**：未配置 `authToken`、或口令短于 16 字符 → **拒绝启动桥**（仅警告不断言；schema 不设 min 以免破坏既有用户）并记日志。
+3. **资源防护**：`maxConnections=128`、headersTimeout 15s、requestTimeout 60s、upstream 15s 超时、在网连接随插件卸载销毁。
+4. **暴露条件**：桥默认关闭；开启即等于「0.0.0.0 移动 API 可达」——前置条件：可信 WiFi + ≥16 字符强口令（同 §2.1）。`/m/api/diagnostics` 的 `runtime.lanBridge.listening` 可确认监听状态（绑定失败时 QR/地址自动回退，不会指向死端口）。
+5. **与 §3 表格关系**：桥上的流量走「局域网（可信 WiFi）明文」档位，残余风险与缓解同 §3 末。
+
 ## 4. 前端注入防护（XSS）
 - App 为 Flutter 原生渲染（无 HTML 注入面）；消息内链接仅 http/https 可点击（v2.6 起 scheme 白名单，`file:`/`intent:`/`tel:` 等一律渲染为纯文本）。
 - 插件 API 返回的文本为纯 JSON（不含 HTML）；桌面客户端模块（设置页二维码）仅渲染服务端返回的地址/口令文本。
@@ -75,6 +86,7 @@
 3. Host 校验：伪造 Host 头 → 403。
 4. `/m/api/qr-config`：非 loopback 来源 → 403；loopback → 200。
 5. 系统监听 0.0.0.0 后，从另一台设备验证：同网段可访问（设计内行为）；确认公网端口未开放。
+6. LAN 桥：未配置口令/短于 16 字符 → `diagnostics.runtime.lanBridge.listening=false` 且日志有拒绝提示；配置正确 → listening=true，经桥访问 bootstrap 200、无口令 401、`/m/api/qr-config` 与 `/api/*` 一律 404（模拟环境若无法真机，用另一台同网设备 curl 验证）。
 ## 8. 运维约束（与 06-install-run.md 联动）
 - 启用 0.0.0.0 前确认网络为可信 WiFi；离开可信网络前确认服务未在公网可达。
 - 建议（非强制）在 profile 配置中启用口令；口令变更 = 改配置 + 重启 dsh。

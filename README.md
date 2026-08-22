@@ -56,7 +56,7 @@
 
 ## 安装（部署者 3 步）
 
-> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.7.0"`。
+> 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v3.0.0"`。
 
 ### 方式一：命令行 dsh web
 
@@ -185,7 +185,7 @@ pushUrls:
 
 ## 兼容性
 
-- **dsh 版本**：锁定 `0.1.0-rc.6` 服务包 + 2026-08 桌面发行版验证；服务依赖、降级行为、已知问题详见 **[docs/09-compatibility.md](docs/09-compatibility.md)**
+- **dsh 版本**：适配 **`0.1.1-rc.2`** 服务包 = **DSH Desktop v2.0.2**（v3.0.0 起；v2.8.2 起已完成 0.1.1-rc.2 适配：`commands.execute` 四参签名、错误对象元组化、桌面版强制回环 → LAN 桥）；服务依赖、降级行为、已知问题详见 **[docs/09-compatibility.md](docs/09-compatibility.md)**
 - **平台（App）**：Android 7.0+ 全品牌（渲染 Impeller 自动回退；实测小米 17 Pro Max）；**iOS 未开发**（开发者无苹果设备，Dart 代码已平台无关，欢迎社区贡献，见 docs/09 §4）
 - **平台（桌面）**：Windows/macOS；命令行 dsh web 与桌面端均支持（纯 headless 形态插件静默无操作）
 - **个性化**：模型/权限/Agent 预设动态读取 PC 端真实目录，用户自定义自动出现；自定义动作经 `mobileActions` 注册自动上架
@@ -193,7 +193,7 @@ pushUrls:
 
 ## 版本与兼容
 
-- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v2.7.0` = App 2.7.0 + 插件 2.7.0）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
+- **版本号统一**：App 版本 = 插件版本 = git tag（如 `v3.0.0` = App 3.0.0+5 + 插件 3.0.0）。GitHub Releases 每个版本同时提供两个附件：`DSH-Remote-vX.Y.Z.apk`（手机装）与 `dsh-mobile-remote-vX.Y.Z.tgz`（电脑插件包，`pnpm add <路径>` 或 `npm install -g` 安装）。
 - **版本差矩阵**（一句话：谁旧谁吃亏，但都不崩）：
 
 | 组合 | 结果 |
@@ -203,7 +203,7 @@ pushUrls:
 | App 新 + 插件旧 | ✅ 老功能正常，新功能提示升级 |
 | 破坏性变更 | ❌ 禁止——已发布接口只加字段（docs/08 约定） |
 
-- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v2.7.0"`（不带 `#` 取最新）。
+- 插件源码按 git tag 锁定版本：`"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v3.0.0"`（不带 `#` 取最新）。
 - 实际配对可在 App **设置 → 关于 → 版本**（`App vX · 插件 vY`）或环境诊断页对照。
 
 ## 文档

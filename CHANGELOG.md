@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）
+## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）
 
 ### 背景
 DSH Desktop（0.1.1-rc.2 / v2.0.2）强制 webserver 只听 `127.0.0.1`——`dsh-plugin-desktop` 在 profile 组装时把 webserver 行替换为 `DesktopWebServer`（构造器对非回环 host 直接 throw，用户 patch 无法覆盖，唯一旋钮是端口），手机无法直连桌面版。旧版（rc.5 web profile）能 `0.0.0.0:3080` 所以手机可连。
@@ -23,8 +23,13 @@ lanBridge:
   host: 0.0.0.0     # 默认全接口；仅本机测也可用 127.0.0.1
 ```
 
+### 三路全量 Code Review 修正（2026-08-22）
+- **服务端（23 项，0 CRITICAL/0 HIGH）**：桥加固——只转发 `/m/api*`（收窄原 `/m/*`）、`maxConnections=128`、headersTimeout 15s/requestTimeout 60s、upstream 15s 超时、剥离 `x-forwarded-*`/`via`、在网 socket 随卸载销毁；QR/bootstrap 地址按**实际监听成功**判定（绑定失败回退回环，不指向死端口）；`/llm-providers` POST 直调 `settings.mutate/credentials.set` 显式 try/catch（不再裸抛落 500）；`/notifications/read|delete` 与 `/sessions/touch` 写盘**去抖**（500ms/10s，卸载前冲刷）；`/notifications/delete` ids 限 500；`/history before=0` 语义修正；`/goal maxGoalRounds` 校验 1-10000；`/send` followup/steer try/catch；**authToken 弱口令全局告警 + 桥强制 ≥16 拒启**；lanBridge schema 校验 port/host
+- **App（17 项，1 HIGH）**：**HIGH 修复——页级动作统一 `_mySessionId`**（发送/停止/杀任务/消息操作/用量/命令菜单/工具页，叠层聊天不再发错会话）；余额成功清错误态；通知页错误态+store 联动实时刷新；SSE 连接窗口内晚到响应取消（半开 socket 修复）；深色模式链接品牌色；气泡解析缓存含亮度；`_decode` 非 JSON 兜底；`commands()` 区分 unavailable；analyze 唯一 info 消除
+- **Kotlin/文档（21 项，0 CRITICAL）**：Android 13+ 运行时请求 POST_NOTIFICATIONS；httpGet 补 readTimeout；Android 14+ 三参 startForeground 显式 SPECIAL_USE；addView 悬浮窗权限兜底；明文 HTTP 残余风险注释；**文档同步**——04-security 新增 §3b LAN 桥安全边界、09-compatibility 更新 0.1.1-rc.2 基线矩阵与配置项、README/06-install-run 版本、03-api 补 LAN 桥地址说明、AGENT-RULES 维护公告更新；版本三处统一（pubspec 3.0.0+5）
+
 ### 未推送说明
-功能开发完成并通过 PC 侧全链路验证（正向/SSE 透传/安全边界）；**App 真机局域网实测通过后再推送**。
+功能开发、全量评审修正已完成,并通过 PC 侧与真机（App 局域网实测）验证；**待本机全部复验通过后由用户决定推送**。
 
 ## v2.8.2（2026-08-22）— 适配 DSH 0.1.1-rc.2（DSH Desktop v2.0.2）
 

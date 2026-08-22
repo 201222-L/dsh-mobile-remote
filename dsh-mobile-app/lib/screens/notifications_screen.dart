@@ -25,11 +25,46 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _deleting = false;
   bool _selecting = false; // 批量删除选择模式
   final Set<String> _selected = {};
+  // v2.9.0 review(M5)：错误态（API 失败不误报"暂无通知"） + store 联动静默同步
+  bool _error = false;
+  int? _syncedUnread;
 
   @override
   void initState() {
     super.initState();
+    widget.store.addListener(_onStoreChanged);
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    widget.store.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    // v2.9.0 review(M5)：未读数变化（SSE 通知事件/角标刷新）→ 静默同步本页列表，不打断浏览
+    if (!mounted || _deleting) return;
+    final u = widget.store.unread;
+    if (_syncedUnread == u) return;
+    _syncedUnread = u;
+    _silentRefresh();
+  }
+
+  Future<void> _silentRefresh() async {
+    try {
+      final items = await api.notifications();
+      if (!mounted) return;
+      setState(() {
+        _items = items;
+        _error = false;
+        final alive = items.map((n) => n.id).toSet();
+        _selected.removeWhere((id) => !alive.contains(id));
+        if (_items.isEmpty) _selecting = false;
+      });
+    } catch (_) {
+      // 静默失败：保留现有列表
+    }
   }
 
   Future<void> _refresh() async {
@@ -39,6 +74,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       setState(() {
         _items = items;
         _loaded = true;
+        _error = false;
         // 已删除/新到的条目与选择集求交，防止残留选中
         final alive = items.map((n) => n.id).toSet();
         _selected.removeWhere((id) => !alive.contains(id));
@@ -46,7 +82,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       });
       widget.store.refreshNotifs();
     } catch (_) {
-      if (mounted) setState(() => _loaded = true);
+      // v2.9.0 review(M5)：失败记错误态（build 区分展示），不再静默吞掉
+      if (mounted) {
+        setState(() {
+          _loaded = true;
+          _error = true;
+        });
+      }
     }
   }
 
@@ -277,7 +319,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           children: [
             Expanded(
               child: _loaded && _items.isEmpty
-                  ? Center(child: Text(L10n.t('暂无通知', 'No notifications'), style: TextStyle(fontSize: 13, color: ink3)))
+                  ? Center(
+                      // v2.9.0 review(M5)：错误态与空态区分；点按重试
+                      child: InkWell(
+                        onTap: _refresh,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            _error
+                                ? L10n.t('通知加载失败，点按重试', 'Failed to load notifications — tap to retry')
+                                : L10n.t('暂无通知', 'No notifications'),
+                            style: TextStyle(fontSize: 13, color: _error ? DshColors.danger(context) : ink3),
+                          ),
+                        ),
+                      ),
+                    )
                   : RefreshIndicator(
                       onRefresh: _refresh,
                       child: ListView.separated(

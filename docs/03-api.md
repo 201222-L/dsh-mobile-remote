@@ -77,7 +77,7 @@
 }
 ```
 
-- `urls`：按优先级排列——首个非 internal IPv4（含 Tailscale 100.x 段）在前，loopback 最后；`port` 来自 `ctx.webServer.port`。
+- `urls`：按优先级排列——首个非 internal IPv4（含 Tailscale 100.x 段）在前，loopback 最后；`port` 来自 `ctx.webServer.port`。v3.0.0：`lanBridge` 监听成功时首选地址为桥地址（`http://<IP>:<lanBridge.port>`，端口默认 3080），回环 webserver 地址仅作本机自连兜底。
 - `agents[].status`：`"running" | "idle"`（映射自 agent 状态与最近事件推断）。
 - 未认证：`401`（见通用约定）。
 ### 3.2 POST /m/api/send
@@ -408,6 +408,8 @@
 **仅电脑本机可访问**（TCP 层 socket 来源，仅 loopback 可访问；否则 403 `loopback-only`）—— 桌面 dsh 设置页客户端模块用它生成「连接移动端设备」二维码。
 > v2.6.0：`/m/qr.png`（二维码图片渲染，供设置页 `<img>` 使用）同样收口——Host 校验 + loopback 来源，非本机 403。
 **响应**：`{ "ok": true, "urls": ["http://192.168.1.100:3080/m", ...], "token": "<authToken>", "path": "/m" }`
+
+> v3.0.0：`lanBridge.enabled` 且监听成功时，`urls` 首选为桥地址（`http://<电脑局域网IP>:<lanBridge.port>/m`，端口默认 3080）；绑定失败自动回退 webserver 地址（不指向死端口）。
 
 二维码内容格式：`DSHREMOTE|<地址>|<口令>`（地址取 `urls` 中首个非回环项，不含 /m 尾巴）。App 扫码解析后自动配置连接。
 ### 6.11 POST /m/api/defaults（修改默认配置，v2.1）

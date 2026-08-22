@@ -275,12 +275,14 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
 
 /// 段落文本（可选中复制），内部解析行内样式。
 class _InlineText extends StatelessWidget {
-  final List<InlineSpan> spans;
+  final String text;
   final TextStyle style;
-  _InlineText(String text, {required this.style}) : spans = _inlineSpans(text);
+  const _InlineText(this.text, {required this.style});
 
   @override
   Widget build(BuildContext context) {
+    // v2.9.0 review(M3)：行内解析带 context——深色模式下链接用品牌深色（原静态浅色对比度差）
+    final spans = _inlineSpans(text, context);
     // 用普通 Text 渲染（SelectableText 在部分 Android 设备上长文本换行/重叠渲染异常）
     return Text.rich(
       TextSpan(children: spans, style: style),
@@ -290,7 +292,7 @@ class _InlineText extends StatelessWidget {
 }
 
 /// 行内解析：**加粗** / *斜体* / `代码` / [文字](链接)
-List<InlineSpan> _inlineSpans(String text) {
+List<InlineSpan> _inlineSpans(String text, BuildContext context) {
   final spans = <InlineSpan>[];
   var last = 0;
   for (final m in _inlineRe.allMatches(text)) {
@@ -322,7 +324,7 @@ List<InlineSpan> _inlineSpans(String text) {
               onTap: () => launchUrl(target, mode: LaunchMode.externalApplication),
               child: Text(
                 mm.group(1)!,
-                style: TextStyle(color: DshTheme.brand, decoration: TextDecoration.underline, decorationColor: DshTheme.brand),
+                style: TextStyle(color: DshColors.brand(context), decoration: TextDecoration.underline, decorationColor: DshColors.brand(context)),
               ),
             ),
           ));

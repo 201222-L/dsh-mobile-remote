@@ -197,10 +197,18 @@ class Api {
   }
 
   Map<String, dynamic> _decode(http.Response res) {
-    final body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-    if (res.statusCode != 200) {
-      throw ApiException((body['detail'] as String?) ?? (body['error'] as String?) ?? 'HTTP ${res.statusCode}');
+    // v2.9.0 review(LOW#7)：非 JSON 错误体（反代 HTML 页等）不再抛 FormatException，回退 HTTP <status>
+    Map<String, dynamic>? body;
+    try {
+      body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      body = null;
     }
+    if (res.statusCode != 200) {
+      throw ApiException(
+          (body?['detail'] as String?) ?? (body?['error'] as String?) ?? 'HTTP ${res.statusCode}');
+    }
+    if (body == null) throw ApiException('HTTP ${res.statusCode}');
     return body;
   }
 
@@ -339,9 +347,14 @@ class Api {
   }
 
   /// v2.8.0：斜杠命令目录（对齐 PC 端 ctx.commands）。
-  Future<List<Map<String, dynamic>>> commands(String sessionId) async {
+  /// v2.9.0 review(LOW#13)：返回 (命令列表, unavailable)——服务端 commands 服务缺失时
+  /// unavailable=true，UI 应提示"命令服务不可用"而非"无可用命令"。
+  Future<(List<Map<String, dynamic>>, bool)> commands(String sessionId) async {
     final data = await getJson('/api/commands?sessionId=${Uri.encodeQueryComponent(sessionId)}');
-    return (data['commands'] as List? ?? []).cast<Map<String, dynamic>>();
+    return (
+      (data['commands'] as List? ?? []).cast<Map<String, dynamic>>(),
+      data['unavailable'] == true,
+    );
   }
 
   /// v2.8.0：执行斜杠命令（line 形如 "/plan 目标"）。
@@ -501,6 +514,10 @@ class Api {
     // v2.7.2 review(FS3)：onCancel 必须取消底层响应流订阅，否则订阅取消后
     // await-for 消费循环仍读 socket → 每条 SSE 长连接在 App 存活期间永不释放
     StreamSubscription<dynamic>? bodySub;
+    // v2.9.0 review(M6)：连接窗口期（超时看门狗已触发/订阅已取消）内晚到的响应
+    // 也必须立即取消——旧实现 .then 挂在 timeout 包装链上，超时后 response 无人消费，
+    // 跨重连会累积半开 socket
+    var timedOut = false;
     final controller = StreamController<Map<String, dynamic>>(
       onCancel: () {
         bodySub?.cancel();
@@ -511,10 +528,17 @@ class Api {
     // 连接超时：地址不可达但"黑洞"（不拒绝也不响应，如组网 IP 在手机端隧道关闭时）会让
     // send() 永久挂起，旧版因此卡死在 connecting 状态、看门狗与地址轮换全部失效。
     // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
-    _client.send(req).timeout(const Duration(seconds: 8)).then((res) {
-      // v2.7.2 review：取消发生在 send 完成前的竞态——订阅已关闭，补挂的响应流立即取消
-      if (controller.isClosed) {
-        bodySub?.cancel();
+    final timeoutWatchdog = Timer(const Duration(seconds: 8), () {
+      timedOut = true;
+      if (!controller.isClosed) {
+        controller.addError(ApiException('SSE 连接超时'));
+        controller.close();
+      }
+    });
+    _client.send(req).then((res) {
+      if (timedOut || controller.isClosed) {
+        // 晚到的响应/已取消：立即消费并释放，不留半开 socket
+        res.stream.listen((_) {}).cancel();
         return;
       }
       if (res.statusCode != 200) {
@@ -556,6 +580,8 @@ class Api {
         controller.addError(e);
         controller.close();
       }
+    }).whenComplete(() {
+      timeoutWatchdog.cancel();
     });
     return controller.stream;
   }

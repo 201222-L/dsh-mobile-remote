@@ -138,7 +138,14 @@ class FloatingBubbleService : Service() {
         super.onCreate()
         running = true
         createChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        // v2.9.0 review(A1)：Android 14+ 显式传 FGS 类型（SPECIAL_USE，manifest 已声明子类型；
+        // 2 参形式已废弃且依赖 manifest 推断）。低版本不识别 SPECIAL_USE 位 → 保持 2 参。
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIF_ID, buildNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIF_ID, buildNotification())
+        }
         addBubble()
         addTipView()
         addScrim()   // z 序：球 < scrim < 面板
@@ -339,6 +346,13 @@ class FloatingBubbleService : Service() {
     private fun addBubble() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
+        // v2.9.0 review(A9)：悬浮窗权限兜底——运行时被收回/绕过检查时优雅退出，
+        // 不再抛 BadTokenException 崩掉前台服务
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            android.util.Log.w("DSHRemote", "bubble: overlay permission missing/revoked; stopping")
+            stopSelf()
+            return
+        }
         val size = dp(bubbleDp)
         val root = FrameLayout(this)
         root.layoutParams = FrameLayout.LayoutParams(size, size)
@@ -1360,6 +1374,9 @@ class FloatingBubbleService : Service() {
         return try {
             val conn = URL("$base/m/api/$path").openConnection() as HttpURLConnection
             conn.connectTimeout = timeoutMs
+            // v2.9.0 review(A3)：读超时补齐（默认 0=无限——服务端接受连接但慢回 body 时
+            // 后台线程永久阻塞、inflight 累积；SSE 的 connectSse readTimeout=0 是刻意保留长连）
+            conn.readTimeout = timeoutMs
             conn.setRequestProperty("x-mobile-token", token)
             try {
                 if (conn.responseCode != 200) return null

@@ -1,6 +1,6 @@
 # 09 兼容性说明（Compatibility）
 
-> 版本：v2.7.0 · 面向：开源使用者 / 二次开发 / 多设备部署
+> 版本：v3.0.0 · 面向：开源使用者 / 二次开发 / 多设备部署
 
 本文回答两个问题：**App 在哪些手机上能跑**，以及**插件在什么样的 Harness 上能跑**。
 
@@ -10,9 +10,9 @@
 
 | 组件 | 要求 |
 |---|---|
-| 桌面端 DSH（Harness） | 与开发基线同系列（本文档基于 **v0.1.0-rc.6 服务包 + 2026-08 桌面发行版** 编写）；更低版本可能缺少 `apiProxy`/`workspaceRegistry` 等服务，功能会按 §2 降级 |
-| dsh-mobile-remote 插件 | **v2.7.0（与 App/git tag 版本号统一）**；`/m/api/diagnostics` 可自检 |
-| 手机 App（Android） | v2.7.0（与插件同版本 = 完美配对；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」）；Android 7.0+、64 位机型 |
+| 桌面端 DSH（Harness） | 与开发基线同系列（本文档基于 **v0.1.1-rc.2 服务包 = DSH Desktop v2.0.2** 编写；v2.8.2 起为 0.1.1-rc.2 适配，更低版本可能缺少 `apiProxy`/`workspaceRegistry`/`commands` 等服务，功能会按 §2 降级） |
+| dsh-mobile-remote 插件 | **v3.0.0（与 App/git tag 版本号统一）**；`/m/api/diagnostics` 可自检 |
+| 手机 App（Android） | v3.0.0（与插件同版本 = 完美配对；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」）；Android 7.0+、64 位机型 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
 **快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；`checks.respondBridge` / `checks.frameBridge` 为 ✅ 表示问询/审批弹窗桥已就绪；`checks.pendingFrames` 是**计数**（当前挂起的待答弹窗数，0 = 正常无待答，>0 = 有问询/审批等待处理）。
@@ -105,7 +105,7 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 |---|---|---|
 | 设计令牌（有意） | 品牌色 `#426EFE` / 深色 `#0E1116` 等（App `theme.dart`）、`com.dsh.remote`、QR 协议 `DSHREMOTE\|地址\|口令`、`EnableImpeller=true` | 产品设计/通信契约，勿随意改 |
 | 内核耦合词（有意） | 系统消息过滤词 `Current runtime context` / `This snapshot supersedes` / `background job `（App `chat_screen.dart`）、apiProxy 协议字段名 | 与内核/PC 端保持一致的隐藏规则 |
-| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` | schema 默认值，改配置即可 |
+| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` / `doneGraceMs`（v2.8.0）/ `lanBridge`（v3.0.0：`{enabled, port, host}`，默认关） | schema 默认值，改配置即可 |
 | 插件内置常量 | 通知上限 100、catalog 缓存 15s、SSE 心跳 25s、SSE 超时 15s、登录限流默认 10 次/60s（`rateLimit` 可配）、状态文件 `~/.dsh/mobile-remote/` | 合理默认，无需配置 |
 | App 内置常量 | HTTP 超时 15/20s（余额 25s）、连接/探测超时 8s、地址表上限 8、重试退避 1s→15s、看门狗 15s 检查 / 心跳 75s（3 周期）、日志保留 15 天/256KB、聊天初始窗口 50 条、历史分段 30 条、上下文圆环阈值 70%/90% | 合理默认；修改点集中在各文件顶部常量 |
 | 已消除的写死 | 充值链接（原 App 硬编码 `platform.deepseek.com/top_up`） | v2.4.2 起走 `catalog.rechargeUrl`（插件配置为准） |

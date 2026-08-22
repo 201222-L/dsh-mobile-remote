@@ -187,7 +187,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final b = await api.balanceInfo();
       if (!mounted) return;
-      setState(() => _balance = b);
+      // v2.9.0 review(M2)：成功后清除既往查询失败的错误态（否则副标题永远显示"查询失败"）
+      setState(() {
+        _balance = b;
+        _balanceError = null;
+      });
       // 余额联动悬浮球（低余额时悬浮球亮起 + 气泡）
       if (b != null) {
         final total = (b['total'] as num?)?.toDouble() ?? 0;

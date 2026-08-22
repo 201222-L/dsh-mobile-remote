@@ -1,6 +1,6 @@
 # 06 部署与启用文档 — dsh-mobile-remote
 
-> 版本：v2.7.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
+> 版本：v3.0.0 · 状态：已在本机完成安装与验证 · 配套：04-security.md、07-user-manual.md、09-compatibility.md
 
 ## 1. 部署拓扑
 
@@ -94,9 +94,9 @@ npx @deepseek-ai/dsh web
 
 口令生成建议：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
 
-## 4b. 局域网直连（同一 WiFi，v2.9.0 新增：桌面版终于可以连了）
+## 4b. 局域网直连（同一 WiFi，v3.0.0 新增：桌面版终于可以连了）
 
-> **背景**：DSH Desktop（0.1.1-rc.2 起）强制 web 服务只听 `127.0.0.1`（内核硬限制，改不了），手机无法直连；web 版 DSH 无此限制。v2.9.0 起插件内置 **LAN 桥**：在 DSH 进程内自建监听，把 `/m` 请求转发给回环服务——手机走局域网 IP 即可连，**无需穿透、无需额外工具、不改 DSH**。
+> **背景**：DSH Desktop（0.1.1-rc.2 起）强制 web 服务只听 `127.0.0.1`（内核硬限制，改不了），手机无法直连；web 版 DSH 无此限制。v3.0.0 起插件内置 **LAN 桥**：在 DSH 进程内自建监听，把 `/m` 请求转发给回环服务——手机走局域网 IP 即可连，**无需穿透、无需额外工具、不改 DSH**。
 
 1. **开桥**：`cordis.patch.yml` 的 `mobile-remote` 行 `config` 加：
 ```yaml

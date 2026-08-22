@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- v2.9.0 review(A4)：LAN/组网地址是动态 IP，无法域限定 network_security_config；
+         明文放行为已知权衡（token 走局域网，安全文档已列为残余风险；公网场景须经反代 HTTPS） -->
     <application
         android:label="DSH Remote"
         android:name="${applicationName}"

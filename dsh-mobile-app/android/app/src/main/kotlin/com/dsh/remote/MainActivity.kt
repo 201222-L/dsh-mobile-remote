@@ -15,6 +15,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
+        // v2.9.0 review(A2)：Android 13+ 运行时请求通知权限（manifest 已声明 POST_NOTIFICATIONS）——
+        // 不请求则悬浮球"运行中/点击回到 App"前台服务通知被系统抑制，用户看不到常驻提示
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+            }
+        }
         handleIntentExtras(intent)
     }
 

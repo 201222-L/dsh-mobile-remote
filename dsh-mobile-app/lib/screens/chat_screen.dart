@@ -551,7 +551,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _refreshUsage() async {
-    final id = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
     try {
       final u = await api.usage(id);
@@ -1120,7 +1121,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _send([String? preset, String mode = 'followup']) async {
     final text = (preset ?? _inputCtrl.text).trim();
-    final id = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
+    final id = _mySessionId ?? widget.store.sessionId;
     if (text.isEmpty || id == null || _sending) return;
     AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}');
     // v2.7.2 插队：agent 空闲时插队无意义 → 降级普通发送并提示
@@ -1170,7 +1172,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 停止（取消）会话当前运行：对齐 PC 端"停止"按钮。
   Future<void> _stop() async {
-    final id = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _sending) return;
     AppLog.instance.log('Chat: 请求停止会话 $id');
     try {
@@ -1187,7 +1190,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── v2.7：任务（jobs） ──
   Future<void> _killJob(String jobId) async {
-    final sid = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话
+    final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
     try {
       await api.jobKill(sid, jobId);
@@ -1198,7 +1202,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _openTools() {
-    final sid = widget.store.sessionId;
+    // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
+    final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
     showSessionToolsSheet(context, widget.store, sid);
   }
@@ -1206,7 +1211,8 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 执行消息操作（v2.8.0：常驻操作栏入口）：copy / positive / negative / fork。
   /// 反馈支持 toggle：再点已选的评级 = 取消（rating=none，与 PC 端一致），本地图标同步高亮。
   Future<void> _runMessageAction(_MsgItem item, String action) async {
-    final id = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
     switch (action) {
       case 'copy':
@@ -1566,17 +1572,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令，点选填入输入框。
   Future<void> _showCommandMenu() async {
-    final id = widget.store.sessionId;
+    // v2.9.0 review(HIGH)：页级动作绑定本页会话
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
     List<Map<String, dynamic>> cmds;
+    var unavailable = false;
     try {
-      cmds = await api.commands(id);
+      (cmds, unavailable) = await api.commands(id);
     } catch (e) {
       if (!mounted) return;
       showToast(context, '${L10n.t('命令列表加载失败：', 'Failed to load commands: ')}$e');
       return;
     }
     if (!mounted) return;
+    // v2.9.0 review(LOW#13)：区分"命令服务不可用"与"会话无命令"
+    if (unavailable) {
+      showToast(context, L10n.t('当前 DSH 未提供命令服务', 'Command service is unavailable in this DSH'));
+      return;
+    }
     if (cmds.isEmpty) {
       showToast(context, L10n.t('当前会话没有可用命令', 'No commands available for this session'));
       return;
@@ -1724,8 +1737,11 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.text != _parsedFor) {
-      _parsedFor = widget.text;
+    // v2.9.0 review(M4)：缓存键含亮度——切深/浅色后已渲染气泡颜色需重建
+    // （原仅按文本缓存 key,渲染颜色已烘焙进 Widget,切换主题不刷新）
+    final cacheKey = '${widget.text}\u0000${Theme.of(context).brightness}';
+    if (cacheKey != _parsedFor) {
+      _parsedFor = cacheKey;
       _blocks = renderMarkdownBlocks(widget.text.isEmpty ? '…' : widget.text, context);
       if (_parseLogs < 3) {
         _parseLogs++;
