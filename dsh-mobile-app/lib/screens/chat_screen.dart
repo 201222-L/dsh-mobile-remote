@@ -70,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
+  bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
   QuestionRequest? _question; // 内核问询弹窗（当前会话，思考中途需要拍板）
   ApprovalRequest? _approval; // 内核权限审批弹窗（当前会话）
   bool _sending = false;
@@ -157,9 +158,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted || _inHistory) return;
     final pos = _scrollCtrl.position;
     if (!pos.hasContentDimensions) return;
-    final visible = pos.maxScrollExtent - pos.pixels > 160;
-    if (visible != _showJumpToLatest) {
-      setState(() => _showJumpToLatest = visible);
+    // 距底部 160px 内视为「停留最新」：同步钉住状态 + 回到底部按钮显隐
+    final nearBottom = pos.maxScrollExtent - pos.pixels <= 160;
+    if (nearBottom != _pinnedToBottom) {
+      _pinnedToBottom = nearBottom;
+    }
+    if (!nearBottom != _showJumpToLatest) {
+      setState(() => _showJumpToLatest = !nearBottom);
     }
   }
 
@@ -216,7 +221,11 @@ class _ChatScreenState extends State<ChatScreen> {
         _scrolledLogged = true;
         AppLog.instance.log('Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}');
       }
-      if (force || pos.pixels > pos.maxScrollExtent - 220) {
+      // force（加载完成/发送/回到底部）；或用户停留在底部（钉住）——流式输出期间
+      // 持续跟随到最新。按「钉住」状态判断而非与新 maxScrollExtent 比距离，
+      // 避免大段 chunk 单帧推高内容后 220px 判定失效、输出掉出屏幕。
+      if (force || _pinnedToBottom) {
+        _pinnedToBottom = true;
         _scrollCtrl.jumpTo(target);
       }
     });
@@ -1091,13 +1100,19 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           return;
         }
-        final reasoning = (d?['reasoningChars'] as num?)?.toInt() ?? 0;
-        final prefix = reasoning > 0 ? L10n.t('（思考 $reasoning 字）\n', '(Thought: $reasoning chars)\n') : '';
+        final reasoningChars = (d?['reasoningChars'] as num?)?.toInt() ?? 0;
+        final reasoningText = (d?['reasoning'] as String?) ?? '';
+        // 有思维链正文时：正文里不再重复「（思考 N 字）」占位（思维链作为可折叠块单独呈现）；
+        // 无正文（旧数据）时回退旧占位。
+        final prefix = reasoningText.isNotEmpty
+            ? ''
+            : (reasoningChars > 0 ? L10n.t('（思考 $reasoningChars 字）\n', '(Thought: $reasoningChars chars)\n') : '');
         final item = _MsgItem.assistant(prefix + body,
             usage: d?['usage'] as Map<String, dynamic>?,
             seq: ev.seq,
             messageId: d?['messageId'] as String?,
-            images: _imagesOf(d));
+            images: _imagesOf(d),
+            reasoning: reasoningText.isEmpty ? null : reasoningText);
         if (history) {
           out.add(item);
         } else {
@@ -1436,7 +1451,8 @@ class _ChatScreenState extends State<ChatScreen> {
             if (i == -1) return;
             final old = list[i];
             list[i] = _MsgItem.assistant(old.text,
-                usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating);
+                usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating,
+                images: old.images, reasoning: old.reasoning);
           }
 
           setState(() {
@@ -2026,7 +2042,15 @@ class _ChatScreenState extends State<ChatScreen> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AssistantBubble(text: item.text, usage: item.usage, images: item.images, sessionId: _mySessionId ?? '', streaming: false),
+            _AssistantBubble(
+              text: item.text,
+              usage: item.usage,
+              images: item.images,
+              sessionId: _mySessionId ?? '',
+              streaming: false,
+              reasoning: item.reasoning,
+              defaultExpanded: widget.store.reasoningDefaultExpanded,
+            ),
             _MessageActionsBar(
               item: item,
               onAction: (a) => _runMessageAction(item, a),
@@ -2057,11 +2081,14 @@ class _MsgItem {
   final String? rating;
   // v3.0.0 图像链路：消息附图元数据 [{attachmentId, mediaType, width?, height?, name?}]
   final List<Map<String, dynamic>> images;
+  // 思维链正文（可折叠；assistant 消息专用，null/空 = 无思维链）
+  final String? reasoning;
   _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const []})
       : kind = _MsgKind.user,
         usage = null,
-        rating = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const []})
+        rating = null,
+        reasoning = null;
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.reasoning})
       : kind = _MsgKind.assistant;
   _MsgItem.divider(this.text)
       : kind = _MsgKind.divider,
@@ -2069,7 +2096,8 @@ class _MsgItem {
         seq = null,
         messageId = null,
         rating = null,
-        images = const [];
+        images = const [],
+        reasoning = null;
 
   _MsgItem copyWith({int? seq, String? messageId}) {
     // v3.0.0：本方法仅用于 user 乐观消息补 messageId/seq——若未来复用到
@@ -2081,6 +2109,7 @@ class _MsgItem {
 
 // ── 气泡组件 ──
 /// Agent 气泡：Markdown 解析结果按文本缓存（流式时每次重建不重新解析，只解析增量）。
+/// 携带思维链正文时，在正文上方渲染可折叠「思维链」块（默认展开状态由设置决定，单条可点按切换）。
 class _AssistantBubble extends StatefulWidget {
   final String text;
   final Map<String, dynamic>? usage;
@@ -2088,7 +2117,19 @@ class _AssistantBubble extends StatefulWidget {
   // v3.0.0 图像链路：附图元数据（渲染按 attachmentId 经 /attachment 拉取）
   final List<Map<String, dynamic>> images;
   final String sessionId;
-  const _AssistantBubble({required this.text, this.usage, this.images = const [], this.sessionId = '', this.streaming = false});
+  // 思维链正文（null/空 = 不渲染折叠块）
+  final String? reasoning;
+  // 设置项：思维链默认折叠还是展开
+  final bool defaultExpanded;
+  const _AssistantBubble({
+    required this.text,
+    this.usage,
+    this.images = const [],
+    this.sessionId = '',
+    this.streaming = false,
+    this.reasoning,
+    this.defaultExpanded = false,
+  });
 
   @override
   State<_AssistantBubble> createState() => _AssistantBubbleState();
@@ -2098,6 +2139,20 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   String? _parsedFor;
   List<Widget>? _blocks;
   int _parseLogs = 0; // 排障：每个气泡实例最多记 3 次解析日志
+  bool? _reasoningExpanded; // null = 尚未初始化，首次 build 用 widget.defaultExpanded 兜底
+
+  @override
+  void initState() {
+    super.initState();
+    _reasoningExpanded = widget.defaultExpanded;
+  }
+
+  @override
+  void didUpdateWidget(covariant _AssistantBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 设置切换「默认展开」时不强制覆盖用户已手动展开/收起的状态
+    _reasoningExpanded ??= widget.defaultExpanded;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2113,6 +2168,7 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
       }
     }
     final ink3 = DshColors.ink3(context);
+    final hasReasoning = (widget.reasoning ?? '').isNotEmpty;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
@@ -2132,6 +2188,7 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
               ],
             ),
             const SizedBox(height: 3),
+            if (hasReasoning) _buildReasoningChain(context),
             ..._blocks!,
             // v3.0.0 图像链路：附图（agent 回复里的图片，点击全屏）
             if (widget.images.isNotEmpty) ...[
@@ -2149,6 +2206,64 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 可折叠「思维链」块：标题行（图标 + 字数 + 箭头）点按切换展开/收起，内容为斜体浅灰小字。
+  Widget _buildReasoningChain(BuildContext context) {
+    final expanded = _reasoningExpanded ?? widget.defaultExpanded;
+    final reasoning = widget.reasoning ?? '';
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final line = DshColors.line(context);
+    final brand = DshColors.brand(context);
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: DshColors.brandSoft(context),
+        border: Border.all(color: line),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _reasoningExpanded = !(_reasoningExpanded ?? widget.defaultExpanded)),
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  Icon(Icons.psychology_outlined, size: 15, color: brand),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      L10n.t('思维链 ${reasoning.length} 字', 'Thinking chain · ${reasoning.length} chars'),
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: ink2),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Icon(
+                    expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    size: 16,
+                    color: ink3,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: SelectableText(
+                reasoning,
+                style: TextStyle(fontSize: 12, height: 1.6, color: ink3, fontStyle: FontStyle.italic),
+              ),
+            ),
+        ],
       ),
     );
   }

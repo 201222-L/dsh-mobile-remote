@@ -189,7 +189,7 @@
 | event.type | event.data 内容 |
 |---|---|
 | `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符）；v3.0.0 起附图 `images: [{ attachmentId, mediaType, width?, height?, name? }]` |
-| `assistant/message` | `{ text: string, reasoningChars: number }`；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义） |
+| `assistant/message` | `{ text: string, reasoningChars: number, reasoning?: string }`（`reasoning` 为思维链正文，仅当非空时下发，供移动端折叠块；≤20000 字符）；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义） |
 | `assistant/chunk` | `{ text: string }`（仅文本 delta） |
 | `tool/result` | `{ name: string, isError: boolean, text: string }`（≤2000 字符）；v3.0.0 版本二起：文本跨全部 content 块合并、附图 `images: [...]`（嵌套收集，≤20 张） |
 | `turn/start` | `{ turn: number }` |

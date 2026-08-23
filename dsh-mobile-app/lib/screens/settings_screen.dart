@@ -604,6 +604,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           _row(
+            leading: const Icon(Icons.account_tree_outlined),
+            title: L10n.t('思维链默认展开', 'Thinking chain default expanded'),
+            sub: L10n.t('回复里的「思维链」块默认折叠还是展开（单条消息仍可点按切换）',
+                'Whether the thinking-chain block in replies is expanded by default (each message stays toggleable)'),
+            trailing: DshSwitch(
+              value: store.reasoningDefaultExpanded,
+              onChanged: (v) => store.setReasoningDefaultExpanded(v),
+            ),
+          ),
+          _row(
             leading: const Icon(Icons.dark_mode_outlined),
             title: L10n.t('深色模式', 'Dark mode'),
             sub: switch (store.darkMode) {

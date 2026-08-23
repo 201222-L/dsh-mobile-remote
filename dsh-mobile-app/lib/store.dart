@@ -24,6 +24,7 @@ class AppStore extends ChangeNotifier {
   final Map<String, String> agentStatusMap = {};
   String darkMode = 'system'; // system | dark | light
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
+  bool reasoningDefaultExpanded = false; // 思维链默认展开还是折叠（默认折叠：防英文思考刷屏；单条消息仍可点按切换）
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
   bool balanceAlert = false; // 余额预警开关（v2.7：低于阈值提醒充值）
   double balanceThreshold = 10; // 预警阈值（元）
@@ -101,6 +102,7 @@ class AppStore extends ChangeNotifier {
   static const _kSession = 'dsh_mr_session';
   static const _kDark = 'dsh_mr_darkmode';
   static const _kReasoning = 'dsh_mr_show_reasoning';
+  static const _kReasoningDefaultExpanded = 'dsh_mr_reasoning_default_expanded';
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
   static const _kLang = 'dsh_mr_language';
@@ -113,6 +115,7 @@ class AppStore extends ChangeNotifier {
     sessionId = prefs.getString(_kSession);
     darkMode = prefs.getString(_kDark) ?? 'system';
     showReasoning = prefs.getBool(_kReasoning) ?? false;
+    reasoningDefaultExpanded = prefs.getBool(_kReasoningDefaultExpanded) ?? false;
     language = prefs.getString(_kLang) ?? 'zh';
     L10n.lang = language;
     balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
@@ -393,6 +396,12 @@ class AppStore extends ChangeNotifier {
     showReasoning = v;
     notifyListeners();
     await _persistPrefs(_kReasoning, v);
+  }
+
+  Future<void> setReasoningDefaultExpanded(bool v) async {
+    reasoningDefaultExpanded = v;
+    notifyListeners();
+    await _persistPrefs(_kReasoningDefaultExpanded, v);
   }
 
   // ── 启动加载（对齐网页端 bootstrap） ──

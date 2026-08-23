@@ -944,7 +944,7 @@ class FloatingBubbleService : Service() {
             // v2.8.0 review：三段独立 runCatching——任一段畸形响应只跳过该段，
             // 不牵连后续请求与 renderPanel（旧单 try 会在解析异常时整轮跳过面板刷新）
             // 运行中会话（bootstrap agents）
-            val running = mutableListOf<Pair<String, String>>()
+            val running = mutableListOf<Triple<String, String, String>>() // (id, status, title)
             runCatching {
                 httpGet("bootstrap")?.let { txt ->
                     val agents = JSONObject(txt).optJSONArray("agents") ?: JSONArray()
@@ -953,8 +953,10 @@ class FloatingBubbleService : Service() {
                         val st = a.optString("status")
                         if (isActive(st)) {
                             // v2.7.2 review(M4)：agent.id 即 session.id（内核校验 id === session.id），
-                            // 无需剥前缀；直接传原始 id 给 App（显示短码在 renderPanel 派生）
-                            running.add(a.optString("id") to st)
+                            // 无需剥前缀；直接传原始 id 给 App。
+                            // v2.9：优先展示标题（bootstrap 已附 title），空则回退 id 短码（renderPanel 派生）。
+                            val title = a.optString("title").ifEmpty { a.optString("id") }
+                            running.add(Triple(a.optString("id"), st, title))
                         }
                     }
                 }
@@ -1003,7 +1005,7 @@ class FloatingBubbleService : Service() {
         }, "dsh-bubble-panel").apply { isDaemon = true; start() }
     }
 
-    private fun renderPanel(running: List<Pair<String, String>>, notifs: List<Map<String, Any>>, unreadCount: Int) {
+    private fun renderPanel(running: List<Triple<String, String, String>>, notifs: List<Map<String, Any>>, unreadCount: Int) {
         val box = panelSessions ?: return
         box.removeAllViews()
         val secS = panelSessionsSec
@@ -1020,14 +1022,15 @@ class FloatingBubbleService : Service() {
         } else {
             secS?.visibility = View.VISIBLE
             box.visibility = View.VISIBLE
-            for ((id, st) in running.take(3)) {
+            for ((id, st, title) in running.take(3)) {
                 val row = TextView(this)
                 val dot = if (st == "waiting") "◉" else "●"
-                // 显示短码；openSession 必须传原始 id（App 按 sessionId 与 SSE 帧比对）
-                val short = id.takeLast(8).ifEmpty { id }
-                row.text = "$dot $short"
+                // v2.9：展示会话标题（超宽省略号截断）；openSession 必须传原始 id（App 按 sessionId 与 SSE 帧比对）
+                row.text = "$dot $title"
                 row.setTextColor(Color.WHITE)
                 row.textSize = 12.5f
+                row.maxLines = 1
+                row.ellipsize = android.text.TextUtils.TruncateAt.END
                 row.setPadding(0, dp(3), 0, dp(3))
                 row.setOnClickListener { hidePanel(); openSession(id) }
                 box.addView(row)
