@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- M1 自动更新：APK 下载目录为 getApplicationDocumentsDirectory()/updates，
-         即 dataDir/app_flutter/updates（不在 getFilesDir() 下）——用 root-path 覆盖 dataDir 根。
-         provider 为 exported=false、仅本应用通道触发，范围可控。 -->
-    <root-path name="appdata" path="." />
+    <!-- M1 review(P1-5)：APK 下载目录 = cacheDir/updates，仅暴露该子目录，
+         不以设备根/应用根作为可授予范围。 -->
+    <cache-path name="updates" path="updates/" />
 </paths>

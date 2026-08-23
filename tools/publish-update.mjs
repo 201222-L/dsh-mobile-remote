@@ -20,6 +20,9 @@ const STATE_DIR = join(homedir(), ".dsh", "mobile-remote");
 const KEYS_DIR = join(STATE_DIR, "release-keys");
 const STATE_FILE = join(STATE_DIR, "release-state.json");
 const APP_PUBKEY_FILE = join(REPO_ROOT, "dsh-mobile-app", "lib", "update", "trusted_keys.dart");
+const GITHUB_OWNER = "201222-L";
+const GITHUB_REPO = "dsh-mobile-remote";
+const MANIFEST_ASSET = "update.json";
 
 // ── JCS（RFC 8785） ──────────────────────────────────────────────
 function jcsString(s) {
@@ -128,6 +131,44 @@ function loadKeys() {
 }
 function loadState() { return readJson(STATE_FILE) ?? { lastVersionCode: null, lastSequence: 0 }; }
 function saveState(state) { writeJson(STATE_FILE, state); }
+
+/** M1 review(P1-3)：从 GitHub 已发布且**验签通过**的 manifest 读取最高 sequence/versionCode。
+ *  本地状态只能作缓存——换电脑/清理 STATE_DIR 后不丢发布账本。离线/未发布返回全 null。 */
+export async function fetchPublishedState(owner = GITHUB_OWNER, repo = GITHUB_REPO) {
+  const keys = loadKeys();
+  const trusted = new Map(keys.filter((k) => k.active !== false).map((k) => [k.keyId, k.publicKey]));
+  if (!trusted.size) return { sequence: null, versionCode: null };
+  let best = { sequence: null, versionCode: null };
+  try {
+    const listRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases?per_page=10`, {
+      headers: { accept: "application/vnd.github+json" },
+    });
+    if (!listRes.ok) return best;
+    const releases = await listRes.json();
+    for (const release of releases ?? []) {
+      const asset = (release.assets ?? []).find((a) => a?.name === MANIFEST_ASSET);
+      if (!asset?.browser_download_url) continue;
+      try {
+        const text = await (await fetch(asset.browser_download_url)).text();
+        const doc = JSON.parse(text);
+        const without = { ...doc };
+        delete without.signatures;
+        if (!verifyManifestSignatures(without, doc.signatures, trusted)) continue;
+        const seq = Number(doc.sequence);
+        const code = Number(doc.artifacts?.app?.versionCode);
+        if (Number.isInteger(seq) && Number.isInteger(code) &&
+            (best.sequence === null || seq > best.sequence)) {
+          best = { sequence: seq, versionCode: code };
+        }
+      } catch {
+        // 单个 release 校验失败：忽略继续
+      }
+    }
+  } catch {
+    // 离线：返回全 null，调用方回退本地缓存
+  }
+  return best;
+}
 
 // ── manifest 构建与签名 ───────────────────────────────────────────
 export function buildManifest({ versionName, versionCode, minPluginVersion, minAppVersionCode, minKeyringVersionCode, channel, apk, tgz, sequence, publishedAt }) {
@@ -257,29 +298,38 @@ function cmdPublish(args, opts) {
     }
   }
   const state = loadState();
-  validateVersionIncrease(state.lastVersionCode, versionCode);
-  const sequence = state.lastSequence + 1;
-  const minPluginVersion = opts["min-plugin-version"] ?? versionName;
-  const minAppVersionCode = Number(opts["min-app-version-code"] ?? versionCode);
-  const minKeyringVersionCode = opts["min-keyring-version-code"] != null ? Number(opts["min-keyring-version-code"]) : null;
-  const keys = loadKeys().filter((k) => k.active !== false);
-  if (!keys.length) throw new Error("无 active 签名密钥：先 init-key");
-  const apk = fileInfo(args[0]);
-  const tgz = fileInfo(args[1]);
-  const bare = buildManifest({ versionName, versionCode, minPluginVersion, minAppVersionCode, minKeyringVersionCode, channel: opts["channel"], apk, tgz, sequence });
-  const { manifest, payload } = signManifest(bare, keys);
-  const out = opts["out"] ?? "update.json";
-  writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-  saveState({ lastVersionCode: versionCode, lastSequence: sequence, lastTag: `v${versionName}` });
-  console.log(`已生成 ${out}`);
-  console.log(`  app:    ${versionName}+${versionCode} (${apk.sha256.slice(0, 16)}…)`);
-  console.log(`  plugin: ${versionName} (${tgz.sha256.slice(0, 16)}…)`);
-  console.log(`  sequence=${sequence} 签名=${keys.length} 份（${keys.map((k) => k.keyId).join(", ")}）`);
-  console.log(`  canonical payload 长度=${payload.length}`);
+  // M1 review(P1-3)：以 GitHub 已发布且验签通过的 manifest 为准，本地状态仅缓存
+  const doPublish = (remoteBest) => {
+    const effectiveSeq = Math.max(state.lastSequence ?? 0, remoteBest?.sequence ?? 0);
+    const effectiveCode = Math.max(state.lastVersionCode ?? null, remoteBest?.versionCode ?? null);
+    if (remoteBest?.sequence == null) {
+      console.warn("⚠️ 未能从 GitHub 校验已发布 manifest（离线或尚未发布）——仅以本地状态缓存为准");
+    }
+    validateVersionIncrease(effectiveCode, versionCode);
+    const sequence = effectiveSeq + 1;
+    const minPluginVersion = opts["min-plugin-version"] ?? versionName;
+    const minAppVersionCode = Number(opts["min-app-version-code"] ?? versionCode);
+    const minKeyringVersionCode = opts["min-keyring-version-code"] != null ? Number(opts["min-keyring-version-code"]) : null;
+    const keys = loadKeys().filter((k) => k.active !== false);
+    if (!keys.length) throw new Error("无 active 签名密钥：先 init-key");
+    const apk = fileInfo(args[0]);
+    const tgz = fileInfo(args[1]);
+    const bare = buildManifest({ versionName, versionCode, minPluginVersion, minAppVersionCode, minKeyringVersionCode, channel: opts["channel"], apk, tgz, sequence });
+    const { manifest, payload } = signManifest(bare, keys);
+    const out = opts["out"] ?? "update.json";
+    writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    saveState({ lastVersionCode: versionCode, lastSequence: sequence, lastTag: `v${versionName}` });
+    console.log(`已生成 ${out}`);
+    console.log(`  app:    ${versionName}+${versionCode} (${apk.sha256.slice(0, 16)}…)`);
+    console.log(`  plugin: ${versionName} (${tgz.sha256.slice(0, 16)}…)`);
+    console.log(`  sequence=${sequence}（远端最高 ${remoteBest?.sequence ?? "无"}） 签名=${keys.length} 份（${keys.map((k) => k.keyId).join(", ")}）`);
+    console.log(`  canonical payload 长度=${payload.length}`);
+  };
+  return fetchPublishedState().then(doPublish);
 }
 
 // ── CLI ──────────────────────────────────────────────────────────
-function runCli() {
+async function runCli() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const opts = {};
@@ -298,7 +348,7 @@ function runCli() {
     process.exit(1);
   }
   try {
-    handlers[cmd](args, opts);
+    await handlers[cmd](args, opts);
   } catch (e) {
     console.error(`[发布工具错误] ${e.message}`);
     process.exit(1);

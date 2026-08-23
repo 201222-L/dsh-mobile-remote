@@ -156,7 +156,7 @@
 
 - **信任链**：内置公钥验签 manifest（RFC 8785）→ manifest 内 sha256 校验产物 → Android 系统签名（APK）；sequence+payloadDigest 防重放（§5.1.3）。
 - **凭据**：公网仅 HTTPS；电脑源 updateToken 隔离（高熵、抗重放、权限最小化、可轮换）。
-- **无静默安装**：系统安装器 + 用户确认；M1 前置：`REQUEST_INSTALL_PACKAGES`、未知来源检查、FileProvider/content URI、安装结果回调。
+- **无静默安装**：系统安装器 + 用户确认；M1 前置：`REQUEST_INSTALL_PACKAGES`、未知来源检查、FileProvider/content URI。**安装结果边界（M1 review 裁定）**：M1 以"已交给系统安装器"为准（ACTION_VIEW 无法可靠回传取消/失败/签名不一致结果），UI 文案同步为此语义，不得宣称"已更新"；如需真实安装结果，改用 PackageInstaller session + result receiver 接收器，列入 M2 候选。
 - **不做推送通道**；不后台轮询。
 - **防回滚**：App 升级判断 = target.versionCode > installed；插件 semver 比较。
 - **签名约定**：官方 APK 同 key 覆盖安装；换 key 发版注明"卸载重装"。

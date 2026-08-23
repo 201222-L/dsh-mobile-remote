@@ -69,7 +69,56 @@ Uint8List b64urlDecode(String s) {
   return base64.decode(t);
 }
 
+/// 解码 JSON 键文本中的转义序列（\\ / \uXXXX / \n\t\r\b\f / 代理对），
+/// 用于重复键检测——`{"a":1,"\u0061":2}` 的键是等价的。
+String _decodeJsonKey(String s) {
+  final out = StringBuffer();
+  var i = 0;
+  while (i < s.length) {
+    final ch = s[i];
+    if (ch == '\\' && i + 1 < s.length) {
+      final n = s[i + 1];
+      switch (n) {
+        case 'n': out.write('\n'); i += 2; continue;
+        case 't': out.write('\t'); i += 2; continue;
+        case 'r': out.write('\r'); i += 2; continue;
+        case 'b': out.write('\b'); i += 2; continue;
+        case 'f': out.write('\f'); i += 2; continue;
+        case '/': out.write('/'); i += 2; continue;
+        case '"': out.write('"'); i += 2; continue;
+        case '\\': out.write('\\'); i += 2; continue;
+        case 'u':
+          if (i + 5 < s.length) {
+            final cp = int.tryParse(s.substring(i + 2, i + 6), radix: 16);
+            if (cp != null) {
+              // 代理对（高代理后跟 \uXXXX 低代理）→ 组合码点
+              if (cp >= 0xD800 && cp <= 0xDBFF &&
+                  i + 11 < s.length && s[i + 6] == '\\' && s[i + 7] == 'u') {
+                final lo = int.tryParse(s.substring(i + 8, i + 12), radix: 16);
+                if (lo != null && lo >= 0xDC00 && lo <= 0xDFFF) {
+                  out.writeCharCode(0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00));
+                  i += 12;
+                  continue;
+                }
+              }
+              out.writeCharCode(cp);
+              i += 6;
+              continue;
+            }
+          }
+          out.write(ch); i++; continue;
+        default:
+          out.write(ch); i++; continue;
+      }
+    }
+    out.write(ch);
+    i++;
+  }
+  return out.toString();
+}
+
 /// 检测 JSON 原始字节中的重复键（jsonDecode 会静默折叠重复键；验签要求拒绝）。
+/// 键在词法层解码转义后比较（`a` 与 `\u0061` 视为同一键）。
 bool hasDuplicateKeys(String text) {
   final stack = <Set<String>>[];
   var inStr = false;
@@ -91,7 +140,7 @@ bool hasDuplicateKeys(String text) {
           j++;
         }
         if (j < text.length && text[j] == ':' && stack.isNotEmpty) {
-          final key = text.substring(keyStart + 1, i);
+          final key = _decodeJsonKey(text.substring(keyStart + 1, i));
           if (!stack.last.add(key)) return true;
         }
       }

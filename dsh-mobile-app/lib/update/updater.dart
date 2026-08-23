@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,15 +23,23 @@ class UpdateCheckResult {
   final String? verifiedKeyId;
   final bool appUpdate; // artifacts.app.versionCode > 当前
   final bool pluginUpdate; // artifacts.plugin.versionName > 当前插件版本
+  final bool blocked; // 兼容闸门：目标 App 要求的最低插件版本 > 当前插件版本
+  final String? blockReason; // blocked 的说明
   final String? error; // 失败原因（网络/manifest 不可信/sequence 拒绝）
   UpdateCheckResult({
     this.manifest,
     this.verifiedKeyId,
     this.appUpdate = false,
     this.pluginUpdate = false,
+    this.blocked = false,
+    this.blockReason,
     this.error,
   });
 }
+
+/// 全局单例；lastCheck 供各页面读取/监听（启动静默检查结果落在这里，不弹阻断窗）。
+final Updater updater = Updater();
+final ValueNotifier<UpdateCheckResult?> lastUpdateCheck = ValueNotifier(null);
 
 /// 简单 semver 比较（x.y.z，忽略 pre-release：manifest 插件版本不含 pre）
 bool semverGt(String a, String b) {
@@ -143,6 +152,10 @@ class Updater {
         verifiedKeyId: keyId,
         appUpdate: manifest.app.versionCode! > currentVersionCode,
         pluginUpdate: semverGt(manifest.plugin.versionName, currentPluginVersion),
+        // 兼容闸门（PRD §4.1-G）：目标 App 所需最低插件版本 > 当前插件版本 → blocked
+        blocked: semverGt(manifest.minPluginVersion, currentPluginVersion),
+        blockReason: '电脑插件版本过低（目标 App 要求 ≥ ${manifest.minPluginVersion}，'
+            '当前 ${currentPluginVersion.isEmpty ? '未知' : currentPluginVersion}）',
       );
     } catch (e) {
       return UpdateCheckResult(
@@ -214,7 +227,9 @@ class Updater {
     Future<bool> Function()? isCancelled,
   }) async {
     final url = await artifactUrl(art.fileName);
-    final base = await getApplicationDocumentsDirectory();
+    // M1 review(P1-5)：下载目录用 cacheDir——FileProvider 只暴露 cache-path，
+    // 不以设备根作为可授予范围；校验通过前仅存 tmp。
+    final base = await getApplicationCacheDirectory();
     final dir = Directory('${base.path}/updates');
     await dir.create(recursive: true);
     final tmp = File('${dir.path}/${art.fileName}.tmp');

@@ -2,12 +2,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'floating.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
+import 'update/updater.dart';
 
 class AppStore extends ChangeNotifier {
   // ── 数据 ──
@@ -426,7 +428,30 @@ class AppStore extends ChangeNotifier {
     }
     // 整体限时 8 秒：网络不通时避免 5 个请求各自超时堆积
     await Future.any([_refreshAllInner(), Future<void>.delayed(const Duration(seconds: 8))]);
+    // v3.1.0 自动更新 M1（review P1-2）：连接成功后静默检查一次（进程内单次，不弹阻断窗，
+    // 结果落 lastUpdateCheck，设置页与首页读取）
+    if (ok) _maybeSilentUpdateCheck();
     return ok;
+  }
+
+  bool _silentUpdateChecked = false;
+  void _maybeSilentUpdateCheck() {
+    if (_silentUpdateChecked) return;
+    _silentUpdateChecked = true;
+    unawaited(() async {
+      try {
+        final info = await PackageInfo.fromPlatform();
+        final parts = '${info.version}+${info.buildNumber}'.split('+');
+        final code = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+        final r = await updater.check(
+          currentVersionCode: code,
+          currentPluginVersion: api.pluginVersion,
+        );
+        lastUpdateCheck.value = r.error == null ? r : null;
+      } catch (_) {
+        // 静默检查失败不打搅用户
+      }
+    }());
   }
 
   /// 从 bootstrap 响应同步各 agent 状态（连接/重连/下拉刷新时按钮立即反映 PC 真实状态）。

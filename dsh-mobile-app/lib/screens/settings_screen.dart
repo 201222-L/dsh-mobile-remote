@@ -49,6 +49,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _initBubbleState();
     // 连接状态等 store 变化实时刷新（修复：旧版离开页面重进才能看到状态更新）
     widget.store.addListener(_onStoreChanged);
+    // v3.1.0 自动更新：监听启动静默检查结果（不弹窗，仅刷新行内提示）
+    lastUpdateCheck.addListener(_onLastUpdateCheck);
+    _onLastUpdateCheck();
+  }
+
+  void _onLastUpdateCheck() {
+    if (!mounted) return;
+    final r = lastUpdateCheck.value;
+    if (r == null) return;
+    if (r.error != null) return; // 静默失败不提示
+    if (r.blocked) {
+      setState(() => _updateNote = '${L10n.t('发现新版本 · 需先升级电脑插件', 'Update found · upgrade PC plugin first')} · ${_nowHm()}');
+    } else if (r.appUpdate || r.pluginUpdate) {
+      setState(() => _updateNote = '${L10n.t('发现新版本', 'Update available')} · ${_nowHm()}');
+    } else {
+      setState(() => _updateNote = '${L10n.t('已是最新', 'Up to date')} · ${_nowHm()}');
+    }
   }
 
   Future<void> _initBubbleState() async {
@@ -113,6 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    lastUpdateCheck.removeListener(_onLastUpdateCheck);
     widget.store.removeListener(_onStoreChanged);
     super.dispose();
   }
@@ -823,7 +841,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 6),
             Text(pluginLine, style: const TextStyle(fontSize: 14)),
             const SizedBox(height: 10),
-            if (result.pluginUpdate)
+            if (result.blocked)
+              Text(
+                L10n.t(
+                  '⚠ ${result.blockReason ?? '电脑插件版本过低'}：请先在电脑上按 docs/06 升级插件（或让 DSH 帮你升级），完成后重启 DSH 再更新 App。',
+                  '⚠ Plugin too old: upgrade it on your PC per docs/06 (or ask DSH), restart DSH, then update the app.',
+                ),
+                style: const TextStyle(fontSize: 12, color: Colors.red),
+              )
+            else if (result.pluginUpdate)
               Text(
                 L10n.t('电脑插件更新：请在电脑上按 docs/06 执行（或让 DSH 帮你升级）。',
                     'Plugin: update it on your PC per docs/06 (or ask DSH).'),
@@ -836,7 +862,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () => Navigator.of(ctx).pop(),
             child: Text(L10n.t('稍后', 'Later')),
           ),
-          if (result.appUpdate)
+          if (result.appUpdate && !result.blocked)
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
@@ -929,7 +955,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showToastAt(msgr, L10n.t('已取消更新', 'Update cancelled'));
     } catch (e) {
       popDialog();
-      showToastAt(msgr, '${L10n.t('更新失败：', 'Update failed: ')}$e');
+      showToastAt(msgr, '${L10n.t('更新失败：', 'Update failed: ')}$e'
+          '（${L10n.t('请重新检查后重新下载', 're-check and re-download')}）');
     } finally {
       prog.dispose();
     }
@@ -978,6 +1005,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     hintStyle: const TextStyle(fontSize: 12),
                   ),
                 ),
+              const SizedBox(height: 6),
+              Text(
+                L10n.t(
+                  '自定义源仅用于测试/自建分发：产物仍经签名链校验（不受源信任影响）；建议使用 HTTPS。',
+                  'Custom source is for testing/self-hosted only; artifacts are still verified by the signature chain (source is not a trust anchor); HTTPS recommended.'),
+                style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+              ),
             ],
           ),
           actions: [

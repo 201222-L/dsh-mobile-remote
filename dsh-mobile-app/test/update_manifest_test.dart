@@ -47,6 +47,15 @@ void main() {
       expect(hasDuplicateKeys(fixtureRaw()), isFalse);
       expect(hasDuplicateKeys('{"a":1,"b":[{"c":2},{"c":3}]}'), isFalse);
     });
+    test('转义等价键（\\u0061 == a，review P2）', () {
+      expect(hasDuplicateKeys('{"a":1,"\\u0061":2}'), isTrue);
+      expect(hasDuplicateKeys('{"\\u0061":1,"a":2}'), isTrue);
+      expect(hasDuplicateKeys('{"ab":1,"a\\u0062":2}'), isTrue);
+    });
+    test('转义非重复键不误判', () {
+      expect(hasDuplicateKeys('{"a":1,"\\u0062":2}'), isFalse);
+      expect(hasDuplicateKeys('{"\\t":1,"n":2}'), isFalse);
+    });
   });
 
   group('parseAndVerifyManifest', () {
