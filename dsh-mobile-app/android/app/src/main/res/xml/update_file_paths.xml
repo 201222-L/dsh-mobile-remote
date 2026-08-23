@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- M1 自动更新：APK 下载目录为 getApplicationDocumentsDirectory()/updates，
+         即 dataDir/app_flutter/updates（不在 getFilesDir() 下）——用 root-path 覆盖 dataDir 根。
+         provider 为 exported=false、仅本应用通道触发，范围可控。 -->
+    <root-path name="appdata" path="." />
+</paths>

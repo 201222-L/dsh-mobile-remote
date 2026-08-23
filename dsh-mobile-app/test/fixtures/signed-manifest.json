@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "sequence": 3,
+  "channel": "stable",
+  "publishedAt": "2026-08-23T18:31:25.066Z",
+  "minPluginVersion": "3.0.0",
+  "minAppVersionCode": 14,
+  "minKeyringVersionCode": 15,
+  "artifacts": {
+    "app": {
+      "artifactId": "dsh-remote-apk",
+      "fileName": "DSH-Remote-v3.1.0.apk",
+      "versionName": "3.1.0",
+      "versionCode": 15,
+      "sizeBytes": 123456,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "plugin": {
+      "artifactId": "dsh-remote-plugin",
+      "fileName": "dsh-mobile-remote-v3.1.0.tgz",
+      "versionName": "3.1.0",
+      "sizeBytes": 654321,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "signatures": [
+    {
+      "keyId": "test-key-a",
+      "signature": "hSbldqDiFd6IvKRM3wKqcZMGBWsLdIYUaUqkwcCfsy2gg5GVH-OXTCBj4KO3_rhJsCoR5Tblv0p4cBnhpggxBg"
+    },
+    {
+      "keyId": "test-key-b",
+      "signature": "UhP26Gx_RDZB3iJpOS6KPv562XV2i2wK-ytciXyKE5iu1TswX2OMECm9dj5jqlpblh2b0p-6d898Uck5VUIFCg"
+    }
+  ]
+}

@@ -12,6 +12,9 @@ import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
 import '../fmt.dart';
+import '../update/installer.dart';
+import '../update/update_manifest.dart';
+import '../update/updater.dart';
 import 'sheets.dart';
 import 'providers_screen.dart';
 
@@ -34,6 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _diagTime = '';
   String _appVersion = ''; // App 自身版本（package_info_plus，构建时打包）
   bool _bubbleOn = false; // 悬浮球开关状态（与服务实际运行状态同步）
+  // M1 自动更新
+  bool _checking = false;
+  String _updateNote = '';
 
   @override
   void initState() {
@@ -394,11 +400,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _row({required Widget leading, required String title, String? sub, Widget? trailing, VoidCallback? onTap}) {
+  Widget _row({required Widget leading, required String title, String? sub, Widget? trailing, VoidCallback? onTap, VoidCallback? onLongPress}) {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(border: Border(bottom: BorderSide(color: line, width: 1))),
@@ -666,6 +673,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ' · ${L10n.t('插件', 'plugin')} v${api.pluginVersion.isEmpty ? '…' : api.pluginVersion}',
           ),
           _row(
+            leading: const Icon(Icons.system_update_alt_outlined),
+            title: L10n.t('检查更新', 'Check for updates'),
+            sub: _updateNote.isEmpty
+                ? L10n.t('检查 App 与电脑插件的新版本', 'Check for new App & plugin versions')
+                : _updateNote,
+            trailing: TextButton(
+              onPressed: _checking ? null : _checkUpdate,
+              child: Text(
+                _checking ? L10n.t('检查中…', 'Checking…') : L10n.t('检查 ▸', 'Check ▸'),
+                style: TextStyle(fontSize: 12, color: brand),
+              ),
+            ),
+            onLongPress: _showUpdateSourceDialog, // 长按：切换更新源（测试/自建源）
+          ),
+          _row(
             leading: const Icon(Icons.monitor_heart_outlined),
             title: L10n.t('环境诊断', 'Diagnostics'),
             sub: _diagLoaded ? '${L10n.t('检测完成 · ', 'Done · ')}$_diagTime' : L10n.t('检测当前环境各项能力', 'Check environment capabilities'),
@@ -742,9 +764,246 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// 悬浮球操作说明弹窗（状态含义 + 手势操作）。
-  void _showBubbleGuide() {
+  // ── M1 自动更新 ────────────────────────────────────────────────
+  final Updater _updater = Updater();
+
+  int get _currentVersionCode {
+    final parts = _appVersion.split('+');
+    return int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+  }
+
+  Future<void> _checkUpdate() async {
+    setState(() => _checking = true);
+    final msgr = ScaffoldMessenger.of(context);
+    try {
+      final result = await _updater.check(
+        currentVersionCode: _currentVersionCode,
+        currentPluginVersion: api.pluginVersion,
+      );
+      if (!mounted) return;
+      if (result.error != null) {
+        setState(() => _updateNote = '${L10n.t('失败', 'Failed')} · ${result.error}');
+        showToastAt(msgr, '${L10n.t('检查更新失败：', 'Update check failed: ')}${result.error}');
+        return;
+      }
+      final m = result.manifest!;
+      if (!result.appUpdate && !result.pluginUpdate) {
+        setState(() => _updateNote = '${L10n.t('已是最新', 'Up to date')} · ${_nowHm()}');
+        showToastAt(msgr, L10n.t('已是最新版本', 'You are up to date'));
+        return;
+      }
+      setState(() => _updateNote = '${L10n.t('发现新版本', 'Update available')} · ${_nowHm()}');
+      await _showUpdateDialog(m, result);
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  String _nowHm() {
+    final t = DateTime.now();
+    return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _showUpdateDialog(UpdateManifest m, UpdateCheckResult result) {
+    final appLine = result.appUpdate
+        ? L10n.t('App：${m.app.versionName}（当前 $_appVersion）', 'App: ${m.app.versionName} (current $_appVersion)')
+        : L10n.t('App：已是最新', 'App: up to date');
+    final pluginLine = result.pluginUpdate
+        ? L10n.t('电脑插件：${m.plugin.versionName}（当前 ${api.pluginVersion}）', 'Plugin: ${m.plugin.versionName} (current ${api.pluginVersion})')
+        : L10n.t('电脑插件：已是最新', 'Plugin: up to date');
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('发现新版本', 'Update available'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(appLine, style: const TextStyle(fontSize: 14)),
+            const SizedBox(height: 6),
+            Text(pluginLine, style: const TextStyle(fontSize: 14)),
+            const SizedBox(height: 10),
+            if (result.pluginUpdate)
+              Text(
+                L10n.t('电脑插件更新：请在电脑上按 docs/06 执行（或让 DSH 帮你升级）。',
+                    'Plugin: update it on your PC per docs/06 (or ask DSH).'),
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(L10n.t('稍后', 'Later')),
+          ),
+          if (result.appUpdate)
+            FilledButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _doUpdate(m);
+              },
+              child: Text(L10n.t('更新 App', 'Update app')),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _doUpdate(UpdateManifest m) async {
+    var cancelled = false;
+    var dialogOpen = true;
+    final prog = ValueNotifier<double>(-1); // -1 = 连接中
+    final msgr = ScaffoldMessenger.of(context);
+    void popDialog() {
+      // 只 pop 一次：成功路径已关弹窗后，install 抛错会再走 catch——再 pop 一次会把
+      // 设置页弹掉导致黑屏（实测）。用标志位保证幂等。
+      if (dialogOpen && mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      dialogOpen = false;
+    }
     showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('更新 App', 'Update app'),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        contentPadding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+        content: SizedBox(
+          width: 300,
+          child: ValueListenableBuilder<double>(
+            valueListenable: prog,
+            builder: (_, v, _) {
+              if (v < 0) {
+                return const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('下载更新中…', style: TextStyle(fontSize: 14)),
+                    SizedBox(height: 14),
+                    LinearProgressIndicator(minHeight: 6),
+                  ],
+                );
+              }
+              final pct = (v / m.app.sizeBytes * 100).clamp(0.0, 100.0);
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${pct.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 14)),
+                  const SizedBox(height: 14),
+                  LinearProgressIndicator(
+                      value: pct / 100, minHeight: 6, borderRadius: BorderRadius.circular(3)),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: cancelled
+                ? null
+                : () {
+                    cancelled = true;
+                  },
+            child: Text(L10n.t('取消', 'Cancel')),
+          ),
+        ],
+      ),
+    );
+    try {
+      final file = await _updater.downloadArtifact(
+        m.app,
+        onProgress: (r, t) => prog.value = r.toDouble(),
+        isCancelled: () async => cancelled,
+      );
+      prog.value = m.app.sizeBytes.toDouble();
+      if (!mounted) return;
+      popDialog();
+      final ok = await ApkInstaller.install(file);
+      if (!ok) {
+        showToastAt(msgr, L10n.t('请在系统设置允许「安装未知来源应用」后重试', 'Allow "install unknown apps" in system settings, then retry'));
+      }
+    } on UpdateCancelled {
+      popDialog();
+      showToastAt(msgr, L10n.t('已取消更新', 'Update cancelled'));
+    } catch (e) {
+      popDialog();
+      showToastAt(msgr, '${L10n.t('更新失败：', 'Update failed: ')}$e');
+    } finally {
+      prog.dispose();
+    }
+  }
+
+  /// 长按「检查更新」：切换更新源（GitHub / 自定义 URL——测试与自建源用）。
+  Future<void> _showUpdateSourceDialog() async {
+    // 初始值在弹窗前加载一次；弹窗内只用局部状态（FutureBuilder 会在每次重建时
+    // 重新拉初始值、冲掉用户选择——勿改回）。
+    final initialKind = await _updater.sourceKind();
+    final initialUrl = await _updater.customUrl() ?? '';
+    if (!mounted) return;
+    final ctrl = TextEditingController(text: initialUrl);
+    var kind = initialKind;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: Text(L10n.t('更新源', 'Update source'),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RadioGroup<String>(
+                groupValue: kind,
+                onChanged: (v) => setLocal(() => kind = v!),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    RadioListTile<String>(
+                      value: 'github',
+                      title: Text(L10n.t('GitHub 官方源（默认）', 'GitHub (default)')),
+                    ),
+                    RadioListTile<String>(
+                      value: 'custom',
+                      title: Text(L10n.t('自定义更新源 URL', 'Custom update URL')),
+                    ),
+                  ],
+                ),
+              ),
+              if (kind == 'custom')
+                TextField(
+                  controller: ctrl,
+                  decoration: InputDecoration(
+                    hintText: 'http://192.168.x.x:8080/manifest.json',
+                    hintStyle: const TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(L10n.t('取消', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () async {
+                await _updater.setSource(kind);
+                await _updater.setCustomUrl(kind == 'custom' ? ctrl.text : null);
+                if (!ctx.mounted) return;
+                Navigator.of(ctx).pop();
+                showToastAt(ScaffoldMessenger.of(ctx),
+                    L10n.t('已保存更新源设置', 'Update source saved'));
+              },
+              child: Text(L10n.t('保存', 'Save')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 悬浮球操作说明弹窗（状态含义 + 手势操作）。
+  void _showBubbleGuide() {    showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(L10n.t('悬浮球操作说明', 'Floating bubble guide'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),

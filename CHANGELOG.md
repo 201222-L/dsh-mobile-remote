@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.1.0（2026-08-24）— 自动更新 M1：签名 manifest + App 更新链路（PRD：docs/10-autoupdate-prd.md v0.5，Codex 最终放行）
+
+- **发布工具（`tools/publish-update.mjs`）**：RFC 8785（JCS）规范化 + Ed25519 签名（双签名轮换支持）；读取 pubspec `+build`（versionCode）并校验严格递增、三处版本一致、sequence 单调递增、兼容字段（minPluginVersion/minAppVersionCode/minKeyringVersionCode）交叉校验；密钥存 `~/.dsh/mobile-remote/release-keys/`（不进 git），`export-pubkey` 复写 App 受信公钥常量。配套 `tools/verify-publish-tool.mjs`（JCS 金样本与参考实现逐字节一致、验签/篡改/双签名/递增/交叉校验，10/10）。
+- **App 信任链（`lib/update/`）**：Dart JCS 与发布工具逐字节一致（金样本，含 `1e30→1e+30`、`-0→0`、整值 double→int 等 ES6 语义）；`parseAndVerifyManifest`（重复键/未知字段/必填/类型校验 → 剔除 signatures 做 JCS → 至少一个 keyId 命中受信公钥且 Ed25519 验签通过）；`payloadDigest`（与签名载荷同源）与 `decideSequence` 四规则（更小拒/同序同 digest 允/同序异 digest 拒/更大接受），持久化 `{sequence,payloadDigest}` 防重放且支持重试/恢复/源切换。单测 37/37（含 RFC 金样本、跨序列化 digest 一致、双签名、四规则）。
+- **检查与下载（`lib/update/updater.dart`）**：GitHub 官方源（默认，releases/latest + update.json 资产）与自定义源（测试/自建，长按「检查更新」切换）；流式下载单次遍历（写文件 + 边下边算 sha256）→ 校验 size/sha256 → 原子改名；进度回调与取消（每块检查 `UpdateCancelled`，清理临时文件）。
+- **安装链路**：`ApkInstaller`（MethodChannel `dsh/update`）→ FileProvider（root-path 覆盖下载目录 dataDir/app_flutter/updates）+ `REQUEST_INSTALL_PACKAGES` + 未知来源引导；双屏设备按主屏显示路由启动安装器（副屏焦点黑屏诱因修复）。
+- **UI**：设置页「检查更新」（双端版本同时提示：App 按 versionCode、插件按 semver + docs/06 升级指引）+ 下载进度弹窗（加宽 300、百分比进度条、可取消）。
+- **真机验证（自定义源，真实签名）**：检查→验签→sequence→弹窗→下载（进度）→校验→系统安装器→覆盖安装成功（3.1.0+20 → 3.1.0+21）；修复过程中闭环了：fileName 与服务器命名不一致、流式广播丢文件、**安装失败二次 pop 黑屏**（幂等 pop、只弹一次）、FileProvider 路径根、双屏显示路由。
+- **遗留（M2/M3，见 PRD §8）**：插件暂存（独立验签 + 受限 source）、电脑源（updateToken 隔离通道）、GitHub 源真实 Release 发布演练、镜像/下载代理。
+
 ## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）（二次 Code Review 落实集成于本版本内）
 
 ### 图像发送 64KB 误限修复（2026-08-23 热修）

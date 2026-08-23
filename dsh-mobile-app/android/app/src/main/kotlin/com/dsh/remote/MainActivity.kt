@@ -30,6 +30,56 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         floatingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/floating")
+        // M1 自动更新：APK 安装通道（FileProvider content URI + 未知来源引导）
+        val updateChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/update")
+        updateChannel.setMethodCallHandler { call, result ->
+            if (call.method == "installApk") {
+                val path = call.argument<String>("path")
+                if (path == null) {
+                    result.error("bad-arg", "path 缺失", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    val f = java.io.File(path)
+                    if (!f.exists()) {
+                        result.error("not-found", "APK 文件不存在", null)
+                        return@setMethodCallHandler
+                    }
+                    // Android 8+：未知来源安装权限——未授权时引导系统设置，返回 false 供 App 提示
+                    if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+                        val si = Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            android.net.Uri.parse("package:$packageName")
+                        )
+                        si.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(si)
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        this, "$packageName.updatefileprovider", f
+                    )
+                    val i = Intent(Intent.ACTION_VIEW)
+                    i.setDataAndType(uri, "application/vnd.android.package-archive")
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    // 双屏设备（副屏）把全屏安装器路由到副屏导致主屏黑屏：
+                    // 明确在**本 Activity 所在显示**上启动安装器
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        val displayId = display?.displayId ?: 0
+                        val opts = android.app.ActivityOptions.makeBasic()
+                        opts.setLaunchDisplayId(displayId)
+                        startActivity(i, opts.toBundle())
+                    } else {
+                        startActivity(i)
+                    }
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("install-failed", e.message ?: "未知错误", null)
+                }
+            } else {
+                result.notImplemented()
+            }
+        }
         // 引擎就绪：投递冷启动暂存的面板动作
         deliverPendingAction()
         // v2.7.2 review：Dart 侧 handler 注册可能晚于本回调——延迟再投一次 + consume 兜底
