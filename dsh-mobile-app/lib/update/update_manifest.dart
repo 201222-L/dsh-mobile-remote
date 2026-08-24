@@ -44,6 +44,8 @@ class UpdateManifest {
   final int? minKeyringVersionCode;
   final UpdateArtifact app;
   final UpdateArtifact plugin;
+  /// 完整原始文档（含 signatures）——插件联动更新需把「已签原文」转交电脑端独立验签
+  final Map<String, dynamic> rawSigned;
   UpdateManifest({
     required this.schemaVersion,
     required this.sequence,
@@ -54,6 +56,7 @@ class UpdateManifest {
     this.minKeyringVersionCode,
     required this.app,
     required this.plugin,
+    required this.rawSigned,
   });
 }
 
@@ -201,7 +204,7 @@ Future<(UpdateManifest, String)> parseAndVerifyManifest(
   }
   final without = Map<dynamic, dynamic>.of(doc)..remove('signatures');
 
-  final m = _fromMap(without);
+  final m = _fromMap(doc); // 传完整 doc（rawSigned 含 signatures）
   final payload = utf8.encode(jcs(without));
 
   for (final entry in sigs) {
@@ -276,6 +279,7 @@ UpdateManifest _fromMap(Map doc) {
         : null,
     app: art('app', requireVersionCode: true),
     plugin: art('plugin'),
+    rawSigned: Map<String, dynamic>.from(doc), // 含 signatures 的已签原文
   );
 }
 

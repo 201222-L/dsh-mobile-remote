@@ -38,12 +38,19 @@ class Api {
   String path = '/m';
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
+  /// v3.1.0 M2：插件能力字段（bootstrap capabilities；老插件为空）
+  List<String> pluginCapabilities = const [];
+  /// v3.1.0 M2：电脑源更新通道凭据（随 bootstrap 配对通道下发；轮换后 App 提示重新扫码）
+  String updateToken = '';
+  bool get hasPluginUpdateCapability => pluginCapabilities.contains('plugin-update-endpoint');
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
   List<String> baseUrls = [];
   static const _kBase = 'dsh_mr_base';
   static const _kPath = 'dsh_mr_path';
   static const _kToken = 'dsh_mr_token';
+  static const _kUpdateToken = 'dsh_mr_update_token';
+  static const _kCapabilities = 'dsh_mr_capabilities';
   static const _kUrls = 'dsh_mr_urls';
   static const _kPluginVer = 'dsh_mr_plugin_ver';
   static const _maxUrls = 8;
@@ -85,6 +92,8 @@ class Api {
     path = prefs.getString(_kPath) ?? '/m';
     token = prefs.getString(_kToken) ?? '';
     pluginVersion = prefs.getString(_kPluginVer) ?? ''; // 上次连接时记录，断线也可见
+    updateToken = prefs.getString(_kUpdateToken) ?? '';
+    pluginCapabilities = prefs.getStringList(_kCapabilities) ?? const [];
     final urls = prefs.getStringList(_kUrls) ?? [];
     if (urls.isNotEmpty) {
       baseUrls = urls.map(_normBase).where((u) => u.isNotEmpty).toList();
@@ -179,6 +188,25 @@ class Api {
         try {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_kPluginVer, pluginVersion);
+        } catch (_) {}
+      }());
+    }
+    // v3.1.0 M2：能力字段 + 更新通道凭据（bootstrap 为配对通道：仅持有 authToken 的手机可读）
+    final caps = (d['capabilities'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+    pluginCapabilities = caps;
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(_kCapabilities, caps);
+      } catch (_) {}
+    }());
+    final ut = d['updateToken'];
+    if (ut is String && ut.isNotEmpty) {
+      updateToken = ut;
+      unawaited(() async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_kUpdateToken, updateToken);
         } catch (_) {}
       }());
     }

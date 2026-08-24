@@ -862,20 +862,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () => Navigator.of(ctx).pop(),
             child: Text(L10n.t('稍后', 'Later')),
           ),
-          if (result.appUpdate && !result.blocked)
+          if (result.appUpdate && result.pluginUpdate && !result.blocked && api.hasPluginUpdateCapability)
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
-                _doUpdate(m);
+                _doUpdateAll(m, result.source);
+              },
+              child: Text(L10n.t('更新全部', 'Update all')),
+            )
+          else if (result.appUpdate && !result.blocked)
+            FilledButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _doUpdate(m, result.source);
               },
               child: Text(L10n.t('更新 App', 'Update app')),
+            )
+          else if (result.pluginUpdate && api.hasPluginUpdateCapability)
+            FilledButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _stagePluginOnly(m);
+              },
+              child: Text(L10n.t('准备插件更新', 'Stage plugin update')),
             ),
         ],
       ),
     );
   }
 
-  Future<void> _doUpdate(UpdateManifest m) async {
+  /// 插件先行：暂存成功后提示下一步（helper/重启均需用户在电脑执行）。
+  Future<void> _stagePluginOnly(UpdateManifest m) async {
+    final msgr = ScaffoldMessenger.of(context);
+    await _withBusyDialog(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
+      await updater.pluginUpdate(m, declaredAppVersionCode: _currentVersionCode);
+      if (!mounted) return;
+      showToastAt(msgr,
+          L10n.t('插件包已下载并校验（staged）。请在电脑上执行 dsh-remote-apply-update 后重启 DSH。',
+              'Plugin staged. Run dsh-remote-apply-update on the PC, then restart DSH.'));
+    });
+  }
+
+  /// 更新全部：先插件（确认 staged）→ 再 App 下载安装（PRD 顺序，插件先行）。
+  Future<void> _doUpdateAll(UpdateManifest m, String source) async {
+    final msgr = ScaffoldMessenger.of(context);
+    final staged = await _withBusyDialog<String?>(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
+      final r = await updater.pluginUpdate(m, declaredAppVersionCode: _currentVersionCode);
+      return (r['staged'] == true) ? 'ok' : null;
+    });
+    if (staged == null) {
+      showToastAt(msgr, L10n.t('插件暂存未确认，已中止 App 更新', 'Plugin staging not confirmed; App update aborted'));
+      return;
+    }
+    showToastAt(msgr, L10n.t('插件已暂存，继续更新 App…', 'Plugin staged; updating App…'));
+    await _doUpdate(m, source);
+  }
+
+  Future<T?> _withBusyDialog<T>(String text, Future<T> Function() work) async {
+    // 轻量忙碌弹窗（无进度条场景）
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        content: SizedBox(
+          width: 300,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const LinearProgressIndicator(),
+              const SizedBox(height: 12),
+              Text(text, style: const TextStyle(fontSize: 14)),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      return await work();
+    } finally {
+      if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+  }
+
+  Future<void> _doUpdate(UpdateManifest m, String source) async {
     var cancelled = false;
     var dialogOpen = true;
     final prog = ValueNotifier<double>(-1); // -1 = 连接中
@@ -939,7 +1010,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     try {
       final file = await _updater.downloadArtifact(
+        m,
         m.app,
+        source: source,
         onProgress: (r, t) => prog.value = r.toDouble(),
         isCancelled: () async => cancelled,
       );
@@ -977,42 +1050,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (ctx, setLocal) => AlertDialog(
           title: Text(L10n.t('更新源', 'Update source'),
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              RadioGroup<String>(
-                groupValue: kind,
-                onChanged: (v) => setLocal(() => kind = v!),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    RadioListTile<String>(
-                      value: 'github',
-                      title: Text(L10n.t('GitHub 官方源（默认）', 'GitHub (default)')),
-                    ),
-                    RadioListTile<String>(
-                      value: 'custom',
-                      title: Text(L10n.t('自定义更新源 URL', 'Custom update URL')),
-                    ),
-                  ],
-                ),
-              ),
-              if (kind == 'custom')
-                TextField(
-                  controller: ctrl,
-                  decoration: InputDecoration(
-                    hintText: 'http://192.168.x.x:8080/manifest.json',
-                    hintStyle: const TextStyle(fontSize: 12),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RadioGroup<String>(
+                  groupValue: kind,
+                  onChanged: (v) => setLocal(() => kind = v!),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      RadioListTile<String>(
+                        value: 'auto',
+                        title: Text(L10n.t('自动（电脑优先，GitHub 兜底）', 'Auto (PC first, GitHub fallback)')),
+                      ),
+                      RadioListTile<String>(
+                        value: 'pc',
+                        title: Text(L10n.t('仅电脑源', 'PC only')),
+                      ),
+                      RadioListTile<String>(
+                        value: 'github',
+                        title: Text(L10n.t('仅 GitHub', 'GitHub only')),
+                      ),
+                      RadioListTile<String>(
+                        value: 'custom',
+                        title: Text(L10n.t('自定义更新源 URL', 'Custom update URL')),
+                      ),
+                    ],
                   ),
                 ),
-              const SizedBox(height: 6),
-              Text(
-                L10n.t(
-                  '自定义源仅用于测试/自建分发：产物仍经签名链校验（不受源信任影响）；建议使用 HTTPS。',
-                  'Custom source is for testing/self-hosted only; artifacts are still verified by the signature chain (source is not a trust anchor); HTTPS recommended.'),
-                style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
-              ),
-            ],
+                if (kind == 'custom')
+                  TextField(
+                    controller: ctrl,
+                    decoration: InputDecoration(
+                      hintText: 'http://192.168.x.x:8080/manifest.json',
+                      hintStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                Text(
+                  L10n.t(
+                    '自动模式：电脑与 GitHub 双源对照（同 sequence 异内容 = 账本冲突，拒绝更新）；'
+                    '「仅电脑源」可能不是最新，且依赖已连接电脑；自定义源仅测试/自建（产物仍经签名链校验，建议 HTTPS）。',
+                    'Auto compares PC & GitHub (same sequence with different content = ledger conflict, refused); '
+                    '"PC only" may be stale and needs the PC connected; custom source is for testing/self-hosted (artifacts still verified by the signature chain; HTTPS recommended).'),
+                  style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
