@@ -166,6 +166,14 @@ String resolveDualSourceSelection(
 List<String> downloadSourcePlan(String source, {required bool hasFallback}) =>
     (hasFallback && source == 'pc') ? ['pc', 'github'] : [source];
 
+/// review P2：回退源失败文案（保留"电脑缓存不完整"上下文——真实路径组合错误）。
+String fallbackFailureMessage({required String kind, required String detail}) =>
+    '电脑缓存不完整（缺$kind）；GitHub 回退下载失败：$detail';
+
+/// review P2：插件暂存回退失败文案。
+String pluginFallbackFailureMessage(String detail) =>
+    '电脑缓存不完整（缺插件包）；GitHub 回退暂存失败：$detail';
+
 /// review P2：下载失败文案（纯函数，供单测）——PC 缺包统一明确报"电脑缓存不完整"。
 String downloadFailureMessage({
   required String source,
@@ -525,6 +533,10 @@ class Updater {
         return await _consumeToFile(art, req, onProgress: onProgress, isCancelled: isCancelled);
       }
       if (s == 'pc' && req.statusCode == 404 && i + 1 < sources.length) continue; // 电脑缺产物 → GitHub 回退
+      if (i > 0) {
+        // 回退源失败：保留"电脑缓存不完整"上下文（review P2）
+        throw Exception(fallbackFailureMessage(kind: '产物', detail: 'HTTP ${req.statusCode}'));
+      }
       throw Exception(downloadFailureMessage(
           source: s, status: req.statusCode, hasFallback: fallbackManifest != null));
     }

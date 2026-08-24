@@ -176,5 +176,13 @@ void main() {
       expect(pluginSourcePlan('pc', hasFallback: false), ['local-cache']);
       expect(pluginSourcePlan('github', hasFallback: true), ['github']);
     });
+    test('真实路径组合错误：PC 404 + GitHub 回退失败 → 保留「电脑缓存不完整」上下文', () {
+      expect(
+          fallbackFailureMessage(kind: '产物', detail: 'HTTP 502'),
+          '电脑缓存不完整（缺产物）；GitHub 回退下载失败：HTTP 502');
+      expect(
+          pluginFallbackFailureMessage('HTTP 403'),
+          '电脑缓存不完整（缺插件包）；GitHub 回退暂存失败：HTTP 403');
+    });
   });
 }

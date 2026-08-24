@@ -111,7 +111,7 @@
 
 - `minPluginVersion`：目标 App 运行时所需最低插件版本；
 - `minAppVersionCode`：目标插件所需最低 App versionCode；
-- `minKeyringVersionCode`（可选，仅换钥发布出现）：自该 App versionCode 起必须使用新签名公钥——**与 `minAppVersionCode` 语义独立**，不得复用；
+- `minKeyringVersionCode`（可选，仅换钥发布出现）：**纯提示字段**——发布期向客户端说明"新钥自该 App versionCode 起启用"（App 弹窗展示过渡期提示）；**不承担强制语义**（强制 = 内置公钥集验签结果本身，见 §5.1）；与 `minAppVersionCode` 语义独立，不得复用；
 - 发布脚本校验：新 App 的 `minPluginVersion` ≤ 新插件版本，且新插件的 `minAppVersionCode` ≤ 新 App versionCode；不满足拒绝发布。
 
 ### 5.1.3 sequence + payloadDigest 规则（防重放，支持重试/恢复/源切换）

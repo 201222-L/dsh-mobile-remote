@@ -927,6 +927,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // local-cache 失败且还有 github 候选 → 继续；否则上抛
       }
     }
+    // review P2：回退路径失败保留"电脑缓存不完整"上下文
+    if (plan.length > 1) {
+      throw Exception(pluginFallbackFailureMessage('$lastErr'));
+    }
     throw lastErr ?? Exception('插件暂存失败');
   }
 
