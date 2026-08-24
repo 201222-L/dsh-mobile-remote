@@ -1,6 +1,7 @@
 // DSH Mobile App — API 客户端（对接 dsh-mobile-remote 插件的 /m 接口）
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,6 +15,17 @@ class ApiException implements Exception {
   ApiException(this.message, {this.code});
   @override
   String toString() => message;
+}
+
+/// v3.0.0(热修 05)：客户端 requestId（UUID v4，Random.secure，不引第三方依赖）。
+/// 与服务端回执一起构成幂等发送：同一 requestId 重复投递最多执行一次。
+String genRequestId() {
+  final r = Random.secure();
+  final b = List<int>.generate(16, (_) => r.nextInt(256));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  String h(int i) => b[i].toRadixString(16).padLeft(2, '0');
+  return '${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}';
 }
 
 /// 全局 API 单例
@@ -414,8 +426,8 @@ class Api {
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async => await postJson('/api/sessions', body);
 
   /// v2.7.2：排队中消息列表（对齐 PC 端 Queue Dock）。
-  Future<List<Map<String, dynamic>>> queue(String sessionId) async {
-    final data = await getJson('/api/queue?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+  Future<List<Map<String, dynamic>>> queue(String sessionId, {Duration timeout = const Duration(seconds: 15)}) async {
+    final data = await getJson('/api/queue?sessionId=${Uri.encodeQueryComponent(sessionId)}', timeout: timeout);
     return (data['queue'] as List? ?? []).cast<Map<String, dynamic>>();
   }
 
@@ -425,12 +437,13 @@ class Api {
   }
   /// v3.0.0：返回 (messageId, note)。note=held-until-idle 表示消息被插件持存
   /// （运行中排队，任务结束才释放）——排队消息不进对话窗口，只进 dock（与 PC 端一致）。
-  Future<(String, String?)> send(String sessionId, String text, {String mode = 'followup'}) async {
+  Future<(String, String?)> send(String sessionId, String text, {String mode = 'followup', String? requestId}) async {
     // v2.7.2：mode=steer 插队发送（插到 agent 下一步执行）；默认 followup 排队
     final r = await postJson('/api/send', {
       'sessionId': sessionId,
       'text': text,
       if (mode == 'steer') 'mode': 'steer',
+      'requestId': ?requestId,
     });
     return (r['messageId'] as String? ?? '', r['note'] as String?);
   }
@@ -442,14 +455,23 @@ class Api {
     String text,
     List<Map<String, dynamic>> images, {
     String mode = 'followup',
+    String? requestId,
   }) async {
     final r = await postJson('/api/send', {
       'sessionId': sessionId,
       'text': text,
       'images': images,
       if (mode == 'steer') 'mode': 'steer',
+      'requestId': ?requestId,
     }, timeout: const Duration(seconds: 90));
     return (r['accepted'] == true, r['note'] as String?);
+  }
+
+  /// v3.0.0(热修 05)：发送回执查询——网络层错误（reset/超时）后据此判断是否已送达。
+  /// 未命中返回 404 receipt-not-found（ApiException.code 同值）；命中返回 { status, result }。
+  Future<Map<String, dynamic>> sendReceipt(String sessionId, String requestId, {Duration timeout = const Duration(seconds: 8)}) async {
+    final data = await getJson('/api/send-receipt?sessionId=${Uri.encodeQueryComponent(sessionId)}&requestId=${Uri.encodeQueryComponent(requestId)}', timeout: timeout);
+    return (data['receipt'] as Map<String, dynamic>?) ?? const {};
   }
 
   /// v3.0.0 图像链路：拉取图片字节（渲染用），带 LRU 缓存（64 张）。
@@ -481,10 +503,10 @@ class Api {
   }
   /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
   /// 避免一次解析/渲染数百条事件导致手机卡死。
-  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100}) async {
+  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
     final params = 'sessionId=${Uri.encodeQueryComponent(sessionId)}'
         '${after != null ? '&after=$after' : ''}${before != null ? '&before=$before' : ''}&limit=$limit';
-    final data = await getJson('/api/history?$params');
+    final data = await getJson('/api/history?$params', timeout: timeout);
     return (data['events'] as List? ?? []).map((e) => ChatEvent.fromJson(e as Map<String, dynamic>)).toList();
   }
   Future<List<AppNotification>> notifications() async {
@@ -681,3 +703,5 @@ class Api {
     return controller.stream;
   }
 }
+
+

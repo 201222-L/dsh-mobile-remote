@@ -30,6 +30,53 @@
 - **气泡图片"显示不全"**：气泡高度按 `(236/ratio).clamp(80, 236)` 计算——竖图（比例≈0.46）被压成 236×236 方形，再配合 `BoxFit.cover` → 只显示图片中间一条（点开全屏才全）。修复：比例上限放宽到 0.3~3.0、高度上限 480，渲染改 `BoxFit.contain`——竖图完整显示，不再裁切。
 - **图+文发送后输入框文字残留**：文本路径有 `_inputCtrl.clear()`，图片路径 `_sendImages` 发送成功（含排队持存）后未清空输入框——用户误以为没发出去会重复点发送。修复：accepted 后清空（仅当输入框文字未改动时）。
 
+### 发送失败误报与连接复用竞态修复（2026-08-23 热修 04，App 3.0.0+8）
+- **现象**：手机发「图片+文字」，会话里消息已出现、agent 已开始应答，但 App 弹「发送失败：Connection reset by peer」，且输入框文字与图片残留——用户会误以为没发出而重复发送。
+- **根因两层**：
+  1. **App 把「传输层报错」等同于「未送达」**：`/send` 是「服务器收到后才回包」的模型，reset 若发生在响应回程，消息实际已入会话；`_sendImages`/`_send` 的 catch 一律报失败并保留/丢弃草稿，无法区分（已实测复现：服务端 `/send hit` 正常、消息入会话、agent 应答，客户端仍报失败）。
+  2. **keep-alive 复用竞态（reset 的主要来源）**：手机 dart:io 连接池 idle 15s 与 Node 服务端 keep-alive 5s 存在半关复用窗口，复用已关 socket 即表现为 reset；LAN 桥还透传上游 keep-alive 响应头并复用上游连接，把竞态窗口又放大了两层。
+- **修复**：
+  - App：发送失败后**对账**（history 近 20 条 user/message 文本+图片数匹配，或队列同文本行）——已送达则清空草稿并提示「已送达：刚才网络波动，请勿重复发送」；真未送达才保留草稿（文本路径恢复输入框、撤回乐观气泡）供重试；`history`/`queue` 支持自定义超时（对账 8s，避免断网时久等）。
+  - 服务端：所有 JSON 响应与 `/attachment` 强制 `connection: close`（SSE 除外）——关闭复用竞态窗口；LAN 桥禁用上游连接池（`agent: false`）、响应头强制 close（SSE 保持 keep-alive）；桥 upstream 错误路径补 warn 日志（此前 reset/销毁全静默，排障无迹可查）。
+- **验证**：本机经桥同构重放（2 图 1.26MB + 文本）200/0.48s——服务端链路健康，问题在响应回程与客户端判定；`node --check` 与 `flutter analyze` 通过；服务端修复随 DSH 重启生效，App 修复随下个 APK（3.0.0+8）生效。
+
+### Codex 复审 P2 修复（2026-08-24 热修 08，App 3.0.0+14）
+- **P2-1 认证/限流等确定性错误不再走"结果未知"回执流程**：`isDefinitiveSendRejection` 白名单补充投递前明确拒绝的 5 个错误码——`auth-required`（401）、`rate-limited`（429）、`host-not-allowed`（403）、`loopback-only`（403）、`method-not-allowed`（405）。命中即判失败并保留草稿；`bridge-unavailable`/`receipt-pending`/网络 reset/超时仍走回执对账（已有测试锁定）。
+- **P2-2 回执 TTL 全量清理**：新增顶层纯函数 `pruneReceiptMap`（TTL+上限全量清理、返回是否有删除；恰好 TTL 边界不算过期）；`/send` 查重前与 `/send-receipt` 查询前调用 `pruneReceipts()`，有变化才 `persistReceipts()`——未访问的旧回执同样被清理，不再滞留内存与 JSON 文件。
+- **测试**：`test/hotfix07_logic_test.dart` 新增认证/限流/Host 拒绝 5 例（18/18 通过）；`tools/hotfix07-unit-check.mjs` 新增 pruneReceiptMap 4 例（清过期/保边界/返回标志/上限裁剪，14/14 通过）；`flutter analyze` 零问题、`node --check` 通过。
+- **验证**：DSH 重启加载新插件后 `DSH_MOBILE_REMOTE_DROP_RESPONSE=1` 钩子场景真机验证（文本/纯图片 → 回程断开 → 回执 `done`、同 requestId 不重复投递）；关闭钩子后正常发送验证。requestId 主流程、40MB 上限、图文渲染均未改动。
+
+### Codex review 修复（2026-08-24 热修 07，App 3.0.0+12）
+- **P1 发送异常不覆盖新输入**：`_send` 三处异常恢复改为 `_restoreDraftIfUntouched`——仅当输入框仍为空（本次发送清空后的预期状态）才回填旧草稿；发送期间用户已输入新内容一律保留。顶层纯函数 `draftAfterFailure` 供单测。
+- **P2 回执 TTL 读取时生效**：`receiptExpired` 顶层纯函数（默认 15 分钟）；`/send` 查重前与 `/send-receipt` 查询前清理过期回执并持久化——服务闲置 15 分钟后旧回执不再被命中，与文档一致。
+- **P2 签名纳入发送语义**：`composerSignature(sessionId, mode, text, imagePaths)` 替代旧签名（会话+最终生效模式+文本+图片路径）；`steer` 空闲降级提前到图文分流之前——排队结果未知后改用插队会获得**新 requestId**，插队真正执行而非回放旧排队结果。
+- **P2 不误删用户手打 `[图片]`**：占位移除改在**服务端**——`blocksToText` 增加 `imagePlaceholder` 开关，`user/message` 摘要以 `imagePlaceholder:false` 生成文本（图由 `images[]` 图卡渲染）；客户端剥离逻辑整体移除，用户原文原样保留。旧会话历史即时按新规则（`/history` 实时重摘要）。
+- **测试**：`tools/hotfix07-unit-check.mjs` 10/10（占位开关/手打保留/images 元数据/TTL 边界）；`test/hotfix07_logic_test.dart`（草稿恢复决策 + 签名差异 + 明确拒绝白名单 2 例）；`flutter analyze` 零问题、`flutter test` 17/17、`node --check` 通过。
+- **修正（+13）——桥 502 不误判定失败**：DROP_RESPONSE 真机验收发现——服务端处理完才切断回程，桥会把该切断翻译成 `502 bridge-unavailable` 返回；原代码把**所有** `ApiException`（除 receipt-pending）当"明确拒绝"，导致这种"服务端已接收但回程断开"被误报失败、不回执对账。新增 `isDefinitiveSendRejection` 错误码白名单（empty-text/payload-too-large/session-not-found/send-failed/attachment-error/invalid-requestId/bad-request/not-found/no-live-agent/agents-unavailable），仅命中才判失败；其余（bridge-unavailable/receipt-pending/传输层）一律走回执对账 → 弹「已送达，请勿重复发送」。
+- **生效边界**：服务端改动随 DSH 重启生效；`64110b3`（requestId 校验顺序）与本次一起在重启后上线；App 修复随 APK 3.0.0+13。
+
+### 用户消息图文顺序对齐 PC 端（2026-08-23 热修 06，App 3.0.0+10；修正 +11）
+- **现象**：移动端用户气泡先文本、后图片，且文本里带服务端为 image 块生成的「[图片]」占位行（`blocksToText`）；PC 端是**图片卡片在前、文本在后，且无占位**——移动端与 PC 观感不一致、占位与图卡重复。
+- **修复**（纯展示层，协议零改动）：用户气泡重排为 `_ImagesGrid` 在前、`Text` 在后；带图时剥掉独立成行的「[图片]」占位（真实图由图卡渲染），无图消息文本原样（不误删用户手打的 [图片]），纯图消息只剩图卡。服务端不动（占位在队列预览等上下文仍有价值）。
+- **修正（+11）**：对照 PC 实际样式进一步对齐——图卡与文本改为**两个独立气泡**（图卡一个卡片、文本一个卡片，垂直相邻），不再共用一个容器，与 PC 端"图片卡 + 文本气泡"分离式渲染一致。
+- **验证**：`flutter analyze` 零问题；真机确认图文消息与 PC 同构；历史消息自动按新规则渲染。
+
+### 发送回执幂等化与限额统一（2026-08-23 热修 05，App 3.0.0+9）
+
+- **背景（P0 修正）**：热修 04 的客户端"对账"（按历史文本+图片数/队列文本猜测是否送达）存在**静默丢草稿**风险——空文本图片发送（只发截图）会跳过文本比对、命中任意同图数旧消息即判"已送达"并清空待发图片；同文本旧消息同理。送达确认的正确层级是**协议层回执**，不是客户端启发式判断。
+- **服务端（requestId 幂等回执）**：
+  - `/send` 支持 `requestId`（UUID 形态校验，非法 400）；投递**之前**占位 in-progress，处理完成后记录结果快照；同一 `sessionId+requestId` 重复请求**直接返回第一次结果、不再二次投递**（处理中重复请求回 409 `receipt-pending`）；
+  - 新增 `GET /m/api/send-receipt`（只查不投）；回执 TTL 15 分钟、上限 2000 条，持久化 `~/.dsh/mobile-remote/send-receipts.json`（重启恢复，处理中状态不跨重启保留）；边界文档化：单进程内 + TTL 幂等，超期同 id 重试可能重复投递一次；
+  - 测试钩子：`DSH_MOBILE_REMOTE_DROP_RESPONSE=1` —— /send 处理后销毁连接不回包，用于模拟"服务端已接收但回程断开"。
+- **App**：
+  - requestId 与**草稿内容绑定**（文本+图片路径签名）：失败重试复用同一 id（服务端幂等，不重复投递）；草稿被编辑才换新 id；
+  - 传输层错误（reset/超时）或 409 → 有界轮询回执（4×1.2s）：`done` → 清草稿+「已送达，请勿重复发送」；`error` → 明确失败；查不到 → 保留草稿+「发送结果未知：请稍后点重试，重试不会重复发送」；服务端明确拒绝（400/413/404/500）→ 直接失败并重置 requestId；
+  - 图片发送同一套机制；**移除热修 04 的 `_reconcileSent` 启发式对账**；
+  - **限额统一**：客户端图片总量上限 40MB（64MB HTTP body 扣 base64 膨胀与 JSON 开销后的安全值）——超限客户端明确提示，不再落到服务端 413；内核侧 200MB 能力不变（PC 端同源）。
+- **保留热修 04**：`connection: close` / 桥 `agent: false` / 桥错误日志——缓解半关连接复用，但不作为送达保证。
+- **测试**：`tools/hotfix05-check.mjs`（无投递用例：非法 requestId 400、未命中回执 404、缺参 400、>64MB 声明 413；`DSH_MOBILE_LIVE=1` 追加：文本/空文本图片发送+回执 done+同 id 重试结果一致）；`flutter analyze` 零问题、`node --check` 通过。
+- **验证方法**（如何证明"不重复发送、不静默丢草稿"）：① 同 requestId 重试返回相同 messageId（不二次投递）；② `DSH_MOBILE_REMOTE_DROP_RESPONSE=1` 重启后真机发送 → App 显示「已送达」且草稿清空（回程断开不影响判定）；③ 断网发送 → App 保留草稿提示「结果未知」，恢复网络后点重试仅投递一次。
+
 ### 图像链路 v2（2026-08-23，App 3.0.0+7）——tool/result 嵌套图片 + GIF 动图
 - **tool/result 嵌套图片（对齐 PC 端 contentParts 语义）**：实测内核 `read_image` 等工具结果的图片块**嵌套在 `tool-result.content` 内**（非消息顶层，此前 `imagesOf` 顶层收集漏掉 → 移动端助手消息只有占位/空白）。修复：
   - 插件新增 `imagesOfNested()`（递归展开 tool-result.content），`assistant/message` 与 `tool/result` 摘要改用——SSE/history 事件摘要均带出嵌套图片引用（`{attachmentId, mediaType, width?, height?, name?}`，≤20 张）；
@@ -426,3 +473,4 @@ lanBridge:
 - `/m` 移动页：登录、发消息、SSE 流式、会话历史
 - 访问口令认证（cookie/header）、Host 校验、二维码
 - 推送桥：Server酱 / ntfy / Bark / generic
+
