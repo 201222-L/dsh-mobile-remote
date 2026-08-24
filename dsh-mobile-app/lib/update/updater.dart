@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api.dart';
+import '../logger.dart';
 import 'trusted_keys.dart';
 import 'update_manifest.dart';
 
@@ -269,9 +270,14 @@ class Updater {
         return _Candidate.err('pc', '更新通道凭据失效（请重新扫码配对）');
       }
       if (res.statusCode != 200) return _Candidate.err('pc', '电脑源 HTTP ${res.statusCode}');
-      final raw = utf8.decode(res.bodyBytes);
-      return await _parseCandidate('pc', raw, trustedKeys);
+      final doc = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      // 端点返回 { ok, manifest } 包装——解包后再按严格 schema 解析验签
+      final manifestDoc = doc['manifest'];
+      if (manifestDoc is! Map) return _Candidate.err('pc', '电脑源响应缺 manifest');
+      return await _parseCandidate('pc', jsonEncode(manifestDoc), trustedKeys);
     } catch (e) {
+      // 诊断：auto 模式下 pc 失败会被 github 错误遮盖，需可见（定位用，发布后可保留）
+      AppLog.instance.log('M2 pc-source failed: $e | tokenLen=${api.updateToken.length} base=${api.baseUrl} path=${api.path}');
       return _Candidate.err('pc', '$e');
     }
   }
@@ -322,7 +328,9 @@ class Updater {
   Future<http.Response> _pcRequest(String method, String apiPath, String? body) async {
     final bodyBytes = utf8.encode(body ?? '');
     final bodyShaHex = sha256.convert(bodyBytes).toString();
-    final headers = await _pcHeaders(method, apiPath, bodyShaHex);
+    // canonical 的 path = 请求完整 pathname（含挂载前缀）——与插件端对同一字符串签名
+    final fullPath = _pcUri(apiPath).path;
+    final headers = await _pcHeaders(method, fullPath, bodyShaHex);
     headers['content-type'] = 'application/json';
     final req = http.Request(method, _pcUri(apiPath));
     req.headers.addAll(headers);
@@ -363,7 +371,7 @@ class Updater {
     if (source == 'pc') {
       if (api.updateToken.isEmpty) throw Exception('未配置更新通道凭据（请重新扫码配对）');
       final path = '/api/update-file/${art.artifactId}';
-      final headers = await _pcHeaders('GET', path, _emptyBodySha);
+      final headers = await _pcHeaders('GET', _pcUri(path).path, _emptyBodySha);
       return (url: _pcUri(path).toString(), headers: headers);
     }
     if (source == 'custom') {
