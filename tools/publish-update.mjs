@@ -134,32 +134,31 @@ function loadKeys() {
 function loadState() { return readJson(STATE_FILE) ?? { lastVersionCode: null, lastSequence: 0 }; }
 function saveState(state) { writeJson(STATE_FILE, state); }
 
-/** M1 review2(P1-1)：从 GitHub **全部**已发布且**验签通过**的 manifest 读取最高 sequence/versionCode。
- *  分页扫描（每页 100，上限 40 页防死循环）；本地状态只能作缓存。
- *  返回 { sequence, versionCode, foundAny }——foundAny=false 表示远端账本不可验证（离线/限流/无发布）。 */
-export async function fetchPublishedState(owner = GITHUB_OWNER, repo = GITHUB_REPO) {
-  const keys = loadKeys();
-  const trusted = new Map(keys.filter((k) => k.active !== false).map((k) => [k.keyId, k.publicKey]));
-  if (!trusted.size) return { sequence: null, versionCode: null, foundAny: false };
+/** 分页扫描发布账本（可注入 fetchPage 供单测；verifyDoc 校验 manifest 验签）。
+ *  complete=false 表示扫描未走完（40 页仍满页/分页异常）→ 调用方必须 fail-closed。 */
+export async function scanPublishedLedger({ fetchPage, verifyDoc }) {
   let best = { sequence: null, versionCode: null };
+  let complete = false;
   try {
     for (let page = 1; page <= 40; page++) {
-      const listRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100&page=${page}`,
-        { headers: { accept: "application/vnd.github+json" } },
-      );
-      if (!listRes.ok) break; // 限流/404 → 视同「远端不可验证」，调用方 fail-closed
-      const releases = await listRes.json();
-      if (!Array.isArray(releases) || releases.length === 0) break;
+      let releases;
+      try {
+        releases = await fetchPage(page);
+      } catch {
+        return { ...best, foundAny: false, complete: false };
+      }
+      if (!Array.isArray(releases)) return { ...best, foundAny: false, complete: false };
+      if (releases.length === 0) {
+        complete = true;
+        break;
+      }
       for (const release of releases) {
         const asset = (release.assets ?? []).find((a) => a?.name === MANIFEST_ASSET);
         if (!asset?.browser_download_url) continue;
         try {
           const text = await (await fetch(asset.browser_download_url)).text();
           const doc = JSON.parse(text);
-          const without = { ...doc };
-          delete without.signatures;
-          if (!verifyManifestSignatures(without, doc.signatures, trusted)) continue;
+          if (!verifyDoc(doc)) continue;
           const seq = Number(doc.sequence);
           const code = Number(doc.artifacts?.app?.versionCode);
           if (Number.isInteger(seq) && Number.isInteger(code) &&
@@ -170,12 +169,73 @@ export async function fetchPublishedState(owner = GITHUB_OWNER, repo = GITHUB_RE
           // 单个 release 校验失败：忽略继续
         }
       }
-      if (releases.length < 100) break;
+      if (releases.length < 100) {
+        complete = true;
+        break;
+      }
     }
   } catch {
-    // 网络异常：foundAny=false，调用方 fail-closed
+    return { ...best, foundAny: false, complete: false };
   }
-  return { ...best, foundAny: best.sequence !== null };
+  // 40 页仍然每页满 → 视为不可验证（不把不完整扫描当完整账本）
+  if (!complete) return { ...best, foundAny: false, complete: false };
+  return { ...best, foundAny: best.sequence !== null, complete: true };
+}
+
+/** review3(P1)：从 GitHub **全部**已发布且**验签通过**的 manifest 读取最高 sequence/versionCode。
+ *  本地状态只能作缓存。返回 { sequence, versionCode, foundAny, complete }。 */
+export async function fetchPublishedState(owner = GITHUB_OWNER, repo = GITHUB_REPO) {
+  const keys = loadKeys();
+  const trusted = new Map(keys.filter((k) => k.active !== false).map((k) => [k.keyId, k.publicKey]));
+  if (!trusted.size) return { sequence: null, versionCode: null, foundAny: false, complete: false };
+  const fetchPage = async (page) => {
+    const listRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100&page=${page}`,
+      { headers: { accept: "application/vnd.github+json" } },
+    );
+    if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
+    return listRes.json();
+  };
+  const verifyDoc = (doc) => {
+    const without = { ...doc };
+    delete without.signatures;
+    return verifyManifestSignatures(without, doc.signatures, trusted) !== null;
+  };
+  return scanPublishedLedger({ fetchPage, verifyDoc });
+}
+
+/** 发布账本决策（纯函数，供单测）：返回 { effectiveSeq, effectiveCode }；不满足条件抛错（fail-closed）。
+ *  --bootstrap 仅允许在远端确认**无任何验签 manifest** 时使用；远端已有账本直接报错。 */
+export function resolvePublishLedger({
+  remote, lastSequence = null, lastVersionCode = null,
+  bootstrap = false, allowOffline = false, confirmOffline = false,
+}) {
+  if (bootstrap) {
+    if (remote?.foundAny) {
+      throw new Error(`远端已存在验签发布账本（最高 sequence=${remote.sequence}）：` +
+        "--bootstrap 仅允许在远端确认无任何验签 manifest 时使用（防止绕回 sequence=1，老客户端永久拒绝后续更新）");
+    }
+    if (remote && remote.complete === false) {
+      throw new Error("远端账本无法完整验证（分页扫描未走完）：不能确认'无任何验签 manifest'，--bootstrap 拒绝使用");
+    }
+    return { effectiveSeq: 0, effectiveCode: null };
+  }
+  if (remote?.foundAny) {
+    return {
+      effectiveSeq: Math.max(remote.sequence, lastSequence ?? 0),
+      effectiveCode: Math.max(remote.versionCode, lastVersionCode ?? null),
+    };
+  }
+  const localValid = (lastSequence ?? 0) > 0;
+  if (localValid && allowOffline) {
+    if (!confirmOffline) {
+      throw new Error("--allow-offline 为高风险离线发布（远端账本不可验证，序列号可能回退）：确认请加 --confirm-offline");
+    }
+    return { effectiveSeq: lastSequence, effectiveCode: lastVersionCode };
+  }
+  throw new Error(localValid
+    ? "远端发布账本不可验证且未显式 --allow-offline：请联网后重试，或确需离线发布请加 --allow-offline（高风险）"
+    : "无远端账本且无本地已验证快照：首次发布请显式 --bootstrap，离线请显式 --allow-offline（高风险）");
 }
 
 // ── manifest 构建与签名 ───────────────────────────────────────────
@@ -306,31 +366,17 @@ function cmdPublish(args, opts) {
     }
   }
   const state = loadState();
-  // M1 review2(P1-1)：发布账本 fail-closed——远端不可验证时不得静默降级
+  // M1 review3(P1)：发布账本 fail-closed——决策在 resolvePublishLedger（纯函数，单测覆盖）
   const doPublish = (remoteBest) => {
-    let effectiveSeq, effectiveCode;
-    const localValid = (state.lastSequence ?? 0) > 0;
-    if (opts["bootstrap"]) {
-      // 首个 Release 显式自证：从 sequence=1 开始
-      effectiveSeq = 0;
-      effectiveCode = null;
-      console.warn("⚠️ --bootstrap：首个发布，sequence 从 1 开始");
-    } else if (remoteBest?.foundAny) {
-      effectiveSeq = Math.max(remoteBest.sequence, state.lastSequence ?? 0);
-      effectiveCode = Math.max(remoteBest.versionCode, state.lastVersionCode ?? null);
-    } else if (localValid && opts["allow-offline"]) {
-      // 仅本地已验签快照 + 显式 --allow-offline（高风险，需第二标志 --confirm-offline 确认）
-      if (!opts["confirm-offline"]) {
-        throw new Error("--allow-offline 为高风险离线发布（远端账本不可验证，序列号可能回退）：确认请加 --confirm-offline");
-      }
-      effectiveSeq = state.lastSequence;
-      effectiveCode = state.lastVersionCode;
-      console.warn("⚠️ --allow-offline：远端账本不可验证，以本地已验签快照为准（高风险发布）");
-    } else {
-      throw new Error(localValid
-        ? "远端发布账本不可验证且未显式 --allow-offline：请联网后重试，或确需离线发布请加 --allow-offline（高风险）"
-        : "无远端账本且无本地已验证快照：首次发布请显式 --bootstrap，离线请显式 --allow-offline（高风险）");
-    }
+    const { effectiveSeq, effectiveCode } = resolvePublishLedger({
+      remote: remoteBest,
+      lastSequence: state.lastSequence ?? null,
+      lastVersionCode: state.lastVersionCode ?? null,
+      bootstrap: Boolean(opts["bootstrap"]),
+      allowOffline: Boolean(opts["allow-offline"]),
+      confirmOffline: Boolean(opts["confirm-offline"]),
+    });
+    if (opts["bootstrap"]) console.warn("⚠️ --bootstrap：远端确认无验签 manifest，sequence 从 1 开始");
     validateVersionIncrease(effectiveCode, versionCode);
     const sequence = effectiveSeq + 1;
     const minPluginVersion = opts["min-plugin-version"] ?? versionName;

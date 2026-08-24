@@ -1,6 +1,6 @@
 // M1 发布工具验证：RFC 8785 金样本 / 密钥往返 / 签名往返（含双签名）/ 交叉校验与递增校验失败路径
 import assert from "node:assert";
-import { jcs, edSign, edVerify, compareSemver, validateVersionIncrease, buildManifest, signManifest, verifyManifestSignatures, parseVersion } from "./publish-update.mjs";
+import { jcs, edSign, edVerify, compareSemver, validateVersionIncrease, buildManifest, signManifest, verifyManifestSignatures, parseVersion, resolvePublishLedger, scanPublishedLedger } from "./publish-update.mjs";
 import { generateKeyPairSync } from "node:crypto";
 
 let pass = 0, fail = 0;
@@ -107,6 +107,79 @@ check("交叉校验失败拒绝（minAppVersionCode > versionCode）", () => {
     tgz: { path: "x.tgz", size: 1, sha256: "d".repeat(64) },
     sequence: 3,
   }), /minAppVersionCode/);
+});
+
+// 6. review3：resolvePublishLedger（发布账本 fail-closed 决策）
+check("--bootstrap 遇已有远端账本 → 拒绝（不得绕回 sequence=1）", () => {
+  assert.throws(
+    () => resolvePublishLedger({ remote: { sequence: 7, versionCode: 23, foundAny: true, complete: true }, bootstrap: true }),
+    /验签发布账本/,
+  );
+});
+check("--bootstrap 远端不可完整验证 → 拒绝", () => {
+  assert.throws(
+    () => resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: false }, bootstrap: true }),
+    /无法完整验证/,
+  );
+});
+check("--bootstrap（远端确认无账本）→ 从 sequence=1 开始", () => {
+  assert.deepStrictEqual(
+    resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: true }, bootstrap: true }),
+    { effectiveSeq: 0, effectiveCode: null },
+  );
+});
+check("远端有账本 → 取远端与本地快照的较大值", () => {
+  assert.deepStrictEqual(
+    resolvePublishLedger({ remote: { sequence: 7, versionCode: 23, foundAny: true, complete: true }, lastSequence: 5, lastVersionCode: 21 }),
+    { effectiveSeq: 7, effectiveCode: 23 },
+  );
+  assert.deepStrictEqual(
+    resolvePublishLedger({ remote: { sequence: 7, versionCode: 23, foundAny: true, complete: true }, lastSequence: 9, lastVersionCode: 25 }),
+    { effectiveSeq: 9, effectiveCode: 25 },
+  );
+});
+check("离线发布：未显式 allow-offline → 拒绝；缺 confirm-offline → 拒绝", () => {
+  assert.throws(
+    () => resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: false }, lastSequence: 5, lastVersionCode: 21 }),
+    /allow-offline/,
+  );
+  assert.throws(
+    () => resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: false }, lastSequence: 5, allowOffline: true }),
+    /confirm-offline/,
+  );
+});
+check("离线发布：双标志齐全且无远端账本 → 用本地快照", () => {
+  assert.deepStrictEqual(
+    resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: false }, lastSequence: 5, lastVersionCode: 21, allowOffline: true, confirmOffline: true }),
+    { effectiveSeq: 5, effectiveCode: 21 },
+  );
+});
+check("无远端无本地且未 bootstrap → 拒绝", () => {
+  assert.throws(
+    () => resolvePublishLedger({ remote: { sequence: null, versionCode: null, foundAny: false, complete: true }, lastSequence: null }),
+    /首次发布请显式 --bootstrap/,
+  );
+});
+
+// 7. review3：scanPublishedLedger（分页扫描完整性，fail-closed）
+check("分页扫描：页码正常走完（有不满页）→ complete=true", async () => {
+  const fetchPage = async (page) => (page === 1 ? Array(100).fill(null) : [null]);
+  const r = await scanPublishedLedger({ fetchPage, verifyDoc: () => true });
+  assert.strictEqual(r.complete, true);
+});
+check("分页扫描：40 页仍每页满 100 → 不完整扫描 fail-closed", async () => {
+  const full = Array(100).fill(null);
+  const r = await scanPublishedLedger({ fetchPage: async () => full, verifyDoc: () => true });
+  assert.strictEqual(r.complete, false);
+  assert.strictEqual(r.foundAny, false);
+});
+check("分页扫描：分页请求异常（限流/网络）→ fail-closed", async () => {
+  const r = await scanPublishedLedger({
+    fetchPage: async () => { throw new Error("rate limited"); },
+    verifyDoc: () => true,
+  });
+  assert.strictEqual(r.complete, false);
+  assert.strictEqual(r.foundAny, false);
 });
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
