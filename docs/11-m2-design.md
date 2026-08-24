@@ -26,7 +26,7 @@
 ### 2.1 凭据：updateToken（与全局 authToken 完全隔离）
 
 - 生成：插件首次启动生成 24 随机字节 base64url，写入 `~/.dsh/mobile-remote/update-token.json`（0600）；
-- 下发：**仅经扫码/配对通道**（qr-config 增加 `updateToken` 字段）；**轮换后不自动重取**——轮换命令执行后，App 提示「请重新扫码配对」获取新 token（qr-config 为 loopback-only，不为"自动重取"开任何新通道）；
+- 下发：**经配对通道**——bootstrap（持有 authToken 的手机可读）与 qr-config（供桌面 GUI）；**轮换契约（review 裁定）**：持有 authToken 的客户端在下次 bootstrap **自动恢复**更新权限（authToken 即配对凭据——已接受语义，文档/UI 提示与此一致）；如需强制重新授权（回收更新权限），改密 authToken 或重扫码绑定；
 - 权限：仅更新端点；其余 `/m/api` 一律 401。
 
 ### 2.2 请求签名（抗重放）

@@ -32,6 +32,11 @@ class UpdateCheckResult {
   final String? blockReason; // blocked 的说明
   final String? error; // 失败原因（网络/manifest 不可信/sequence 拒绝）
   final String source; // 胜出源：'auto'|'pc'|'github'|'custom'
+  /// 跨源产物回退（review P1-1）：胜出源为 pc 时，若 GitHub 返回**同 sequence 同 payloadDigest**
+  /// 的 manifest，则为回退候选（缺产物时仅允许回退到它——禁止混用不同 manifest 的产物）。
+  final UpdateManifest? fallbackManifest;
+  /// 密钥轮换窗口（PRD §5.1）：manifest.minKeyringVersionCode（过渡期信息；真正强制=旧钥移除后验签失败）
+  final int? keyringMin;
   UpdateCheckResult({
     this.manifest,
     this.verifiedKeyId,
@@ -41,7 +46,22 @@ class UpdateCheckResult {
     this.blockReason,
     this.error,
     this.source = 'auto',
+    this.fallbackManifest,
+    this.keyringMin,
   });
+}
+
+/// 跨源产物回退资格（纯函数，供单测）：仅 win 源为 pc 且 GitHub 候选与胜出
+/// **同 sequence 同 payloadDigest** 时才允许回退（docs/11 §2.6——禁止混用不同 manifest 的产物）。
+bool canFallbackToGitHub({
+  required String source,
+  required int winnerSequence,
+  required String winnerDigest,
+  int? fallbackSequence,
+  String? fallbackDigest,
+}) {
+  if (source != 'pc' || fallbackDigest == null) return false;
+  return fallbackSequence == winnerSequence && fallbackDigest == winnerDigest;
 }
 
 /// 单源候选（已验签合法）
@@ -105,13 +125,25 @@ bool isAppUpdateBlocked({
   return semverGt(minPluginVersion, currentPluginVersion);
 }
 
-/// M2 双源判定纯函数（供单测）：本地记录核对（M1 四规则）→ 账本冲突 → 胜出选择。
-/// 返回：'conflict'（同序异 content）/ 'none'（无可用：重放、同序异冲突或全量不可接受）/ 胜出源 source。
+/// M2 双源判定纯函数（供单测）：**先 fail-closed 冲突检测（本地记录+全部候选），再本地过滤，再选胜者**。
+/// 返回：'conflict'（同 sequence 出现不同 payloadDigest——含本地 vs 源、源 vs 源，任何更高 sequence 都不得掩盖）/
+/// 'none'（无可用：重放或全部不可接受）/ 胜出源 source。
 String resolveDualSourceSelection(
   List<({String source, int sequence, String digest})> candidates, {
   int? storedSequence,
   String? storedDigest,
 }) {
+  // 1. 冲突检测（review P1-2）：先于任何过滤——本地 10/A、PC 10/B、GitHub 11/C 也必须判 conflict
+  final seqDigest = <int, String>{};
+  if (storedSequence != null && storedDigest != null) {
+    seqDigest[storedSequence] = storedDigest;
+  }
+  for (final c in candidates) {
+    final prev = seqDigest[c.sequence];
+    if (prev != null && prev != c.digest) return 'conflict';
+    seqDigest[c.sequence] = c.digest;
+  }
+  // 2. 本地记录核对（M1 四规则；同序异内容已在上一步 fail-closed）
   final ok = candidates.where((c) {
     final d = decideSequence(
       storedSequence: storedSequence,
@@ -122,11 +154,7 @@ String resolveDualSourceSelection(
     return d == SequenceDecision.sameAllowed || d == SequenceDecision.acceptNew;
   }).toList();
   if (ok.isEmpty) return 'none';
-  for (var i = 0; i < ok.length; i++) {
-    for (var j = i + 1; j < ok.length; j++) {
-      if (ok[i].sequence == ok[j].sequence && ok[i].digest != ok[j].digest) return 'conflict';
-    }
-  }
+  // 3. 胜出：异序取高、平局（同序同 digest）pc 优先
   ok.sort((a, b) {
     final s = b.sequence.compareTo(a.sequence);
     return s != 0 ? s : (a.source == 'pc' ? -1 : 1);
@@ -212,13 +240,20 @@ class Updater {
         if (selection == 'conflict') {
           return UpdateCheckResult(error: '发布账本冲突：两个源返回同 sequence 的不同内容，已拒绝', source: kind);
         }
+        // 错误聚合（review 非阻塞）：单源成功时另一源故障仅作诊断；全部失败时聚合展示
         final errs = candidates.where((c) => c.error != null).map((c) => c.error).whereType<String>().toList();
-        return UpdateCheckResult(
-          error: errs.isNotEmpty
-              ? '检查更新失败：${errs.first}'
-              : '更新源均未返回可接受的版本（sequence 重放或同序异内容）',
-          source: kind,
-        );
+        if (errs.isEmpty) {
+          return UpdateCheckResult(
+            error: '更新源均未返回可接受的版本（sequence 重放或同序异内容）',
+            source: kind,
+          );
+        }
+        final byName = <String, String>{};
+        for (final c in candidates) {
+          if (c.error != null) byName[c.source] = c.error!;
+        }
+        final parts = byName.entries.map((e) => '${e.key == 'pc' ? '电脑源' : (e.key == 'github' ? 'GitHub' : e.key)}：${e.value}');
+        return UpdateCheckResult(error: '检查更新失败（源汇总）：${parts.join(' | ')}', source: kind);
       }
       // 5. 按胜出源定位完整候选（最高 sequence 中优先胜出源；同 seq 同 digest 两源等价）
       final bySeq = candidates.where((c) => c.error == null).toList()
@@ -231,10 +266,22 @@ class Updater {
       if (winner.manifest!.sequence > (stored.sequence ?? 0)) {
         await saveSequenceRecord(winner.manifest!.sequence, winner.digest!);
       }
+      // 6. 跨源产物回退候选（review P1-1）：胜出 pc 且 GitHub 同 sequence 同 digest
+      final fallback = candidates
+          .where((c) =>
+              c.source == 'github' &&
+              c.error == null &&
+              c.manifest!.sequence == winner.manifest!.sequence &&
+              c.digest == winner.digest)
+          .map((c) => c.manifest)
+          .whereType<UpdateManifest>()
+          .firstOrNull;
       return UpdateCheckResult(
         manifest: winner.manifest,
         verifiedKeyId: winner.verifiedKeyId,
         source: winner.source,
+        fallbackManifest: fallback,
+        keyringMin: winner.manifest!.minKeyringVersionCode,
         appUpdate: winner.manifest!.app.versionCode! > currentVersionCode,
         pluginUpdate: semverGt(winner.manifest!.plugin.versionName, currentPluginVersion),
         // 兼容闸门（PRD §4.1-G / review2 P1-2）：插件版本未知/非法也视为不满足，不可绕过
@@ -267,7 +314,7 @@ class Updater {
       final res = await _pcRequest('GET', '/api/update-check', null);
       if (res.statusCode == 404) return _Candidate.err('pc', '电脑更新缓存无已验签 manifest');
       if (res.statusCode == 401) {
-        return _Candidate.err('pc', '更新通道凭据失效（请重新扫码配对）');
+        return _Candidate.err('pc', '更新通道凭据已更新（下次连接自动同步；如需强制重新授权请重新扫码）');
       }
       if (res.statusCode != 200) return _Candidate.err('pc', '电脑源 HTTP ${res.statusCode}');
       final doc = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
@@ -357,7 +404,7 @@ class Updater {
     if (res.statusCode == 409) {
       throw Exception('插件端校验：当前 App 版本过低（${res.body}）');
     }
-    if (res.statusCode == 401) throw Exception('更新通道凭据失效（请重新扫码配对）');
+    if (res.statusCode == 401) throw Exception('更新通道凭据已更新（下次连接自动同步；如需强制重新授权请重新扫码）');
     if (res.statusCode != 200) throw Exception('插件暂存失败 HTTP ${res.statusCode}: ${res.body}');
     return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
   }
@@ -435,21 +482,45 @@ class Updater {
     UpdateManifest m,
     UpdateArtifact art, {
     required String source,
+    UpdateManifest? fallbackManifest,
     void Function(int received, int total)? onProgress,
     Future<bool> Function()? isCancelled,
   }) async {
-    final rq = await artifactRequest(m, art, source: source);
-    // M1 review(P1-5)：下载目录用 cacheDir——FileProvider 只暴露 cache-path，
-    // 不以设备根作为可授予范围；校验通过前仅存 tmp。
+    // 跨源回退（review P1-1）：PC 源缺产物（404）且存在同 sequence 同 digest 的 GitHub manifest
+    // （check() 已核实 digest 相等）→ 允许按 GitHub 取；否则明确报「电脑缓存不完整」。
+    final sources = <String>[source];
+    if (source == 'pc' && fallbackManifest != null) sources.add('github');
+    var lastStatus = -1;
+    for (final s in sources) {
+      final rq = await artifactRequest(m, art, source: s);
+      final httpReq = http.Request('GET', Uri.parse(rq.url));
+      httpReq.headers.addAll(rq.headers);
+      final req = await _http.send(httpReq);
+      if (req.statusCode == 200) {
+        return await _consumeToFile(art, req, onProgress: onProgress, isCancelled: isCancelled);
+      }
+      lastStatus = req.statusCode;
+      if (s == 'pc' && req.statusCode == 404 && sources.length > 1) continue; // 电脑缺产物 → GitHub 回退
+      throw Exception('下载失败 HTTP ${req.statusCode}');
+    }
+    if (lastStatus == 404 && sources.length > 1) {
+      throw Exception('电脑缓存不完整（缺 ${art.fileName}），且 GitHub 无同 manifest 可回退');
+    }
+    throw Exception('下载失败 HTTP $lastStatus');
+  }
+
+  /// 下载消费循环（流式写 tmp + 边下边算 sha256）→ 校验 → 原子改名。
+  Future<File> _consumeToFile(
+    UpdateArtifact art,
+    http.StreamedResponse req, {
+    void Function(int received, int total)? onProgress,
+    Future<bool> Function()? isCancelled,
+  }) async {
     final base = await getApplicationCacheDirectory();
     final dir = Directory('${base.path}/updates');
     await dir.create(recursive: true);
     final tmp = File('${dir.path}/${art.fileName}.tmp');
     final finalFile = File('${dir.path}/${art.fileName}');
-    final httpReq = http.Request('GET', Uri.parse(rq.url));
-    httpReq.headers.addAll(rq.headers);
-    final req = await _http.send(httpReq);
-    if (req.statusCode != 200) throw Exception('下载失败 HTTP ${req.statusCode}');
     final sink = tmp.openWrite();
     final acc = _DigestCapture();
     final hashSink = sha256.startChunkedConversion(acc);
@@ -467,7 +538,6 @@ class Updater {
       await sink.flush();
       await sink.close();
     } catch (e) {
-      // 失败/取消：清理临时文件后上抛
       try { await sink.close(); } catch (_) {}
       try { if (tmp.existsSync()) await tmp.delete(); } catch (_) {}
       rethrow;

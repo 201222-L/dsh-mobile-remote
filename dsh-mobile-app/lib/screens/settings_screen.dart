@@ -855,6 +855,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Plugin: update it on your PC per docs/06 (or ask DSH).'),
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
+            if (result.keyringMin != null && result.keyringMin! > _currentVersionCode)
+              Text(
+                L10n.t('密钥轮换：新签名公钥自 versionCode ${result.keyringMin} 起启用；'
+                    '当前版本（$_currentVersionCode）可继续（双签名期），旧钥移除后将无法验签，请按升级链升级。',
+                    'Key rotation: the new signing key applies from versionCode ${result.keyringMin}; '
+                    'your current version still verifies (dual-sign period), update per the upgrade chain before the old key is retired.'),
+                style: const TextStyle(fontSize: 12, color: Colors.orange),
+              ),
           ],
         ),
         actions: [
@@ -866,7 +874,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
-                _doUpdateAll(m, result.source);
+                _doUpdateAll(m, result.source, result.fallbackManifest);
               },
               child: Text(L10n.t('更新全部', 'Update all')),
             )
@@ -874,7 +882,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
-                _doUpdate(m, result.source);
+                _doUpdate(m, result.source, result.fallbackManifest);
               },
               child: Text(L10n.t('更新 App', 'Update app')),
             )
@@ -882,7 +890,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
-                _stagePluginOnly(m, result.source);
+                _stagePluginOnly(m, result.source, result.fallbackManifest);
               },
               child: Text(L10n.t('准备插件更新', 'Stage plugin update')),
             ),
@@ -892,12 +900,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// 插件先行：暂存成功后提示下一步（helper/重启均需用户在电脑执行）。
-  Future<void> _stagePluginOnly(UpdateManifest m, String source) async {
+  Future<void> _stagePluginOnly(UpdateManifest m, String source, UpdateManifest? fallback) async {
     final msgr = ScaffoldMessenger.of(context);
     await _withBusyDialog(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
-      await updater.pluginUpdate(m,
-          source: source == 'pc' ? 'local-cache' : 'github',
-          declaredAppVersionCode: _currentVersionCode);
+      await _stagePluginViaBestSource(m, source, fallback);
       if (!mounted) return;
       showToastAt(msgr,
           L10n.t('插件包已下载并校验（staged）。请在电脑上执行 dsh-remote-apply-update 后重启 DSH。',
@@ -905,21 +911,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  /// review P1-1：插件暂存按源取——pc 先 local-cache，失败且存在同 sequence 同 digest 的
+  /// GitHub manifest（check() 已核实）时回退 github；不得混用不同 manifest 的产物。
+  Future<bool> _stagePluginViaBestSource(
+      UpdateManifest m, String source, UpdateManifest? fallback) async {
+    final pluginSource = source == 'pc' ? 'local-cache' : 'github';
+    try {
+      final r =
+          await updater.pluginUpdate(m, source: pluginSource, declaredAppVersionCode: _currentVersionCode);
+      return r['staged'] == true;
+    } catch (e) {
+      if (pluginSource == 'local-cache' && fallback != null) {
+        final r2 =
+            await updater.pluginUpdate(m, source: 'github', declaredAppVersionCode: _currentVersionCode);
+        return r2['staged'] == true;
+      }
+      rethrow;
+    }
+  }
+
   /// 更新全部：先插件（确认 staged）→ 再 App 下载安装（PRD 顺序，插件先行）。
-  Future<void> _doUpdateAll(UpdateManifest m, String source) async {
+  Future<void> _doUpdateAll(UpdateManifest m, String source, UpdateManifest? fallback) async {
     final msgr = ScaffoldMessenger.of(context);
     final staged = await _withBusyDialog<String?>(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
-      final r = await updater.pluginUpdate(m,
-          source: source == 'pc' ? 'local-cache' : 'github',
-          declaredAppVersionCode: _currentVersionCode);
-      return (r['staged'] == true) ? 'ok' : null;
+      final ok = await _stagePluginViaBestSource(m, source, fallback);
+      return ok ? 'ok' : null;
     });
     if (staged == null) {
       showToastAt(msgr, L10n.t('插件暂存未确认，已中止 App 更新', 'Plugin staging not confirmed; App update aborted'));
       return;
     }
     showToastAt(msgr, L10n.t('插件已暂存，继续更新 App…', 'Plugin staged; updating App…'));
-    await _doUpdate(m, source);
+    await _doUpdate(m, source, fallback);
   }
 
   Future<T?> _withBusyDialog<T>(String text, Future<T> Function() work) async {
@@ -950,7 +973,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _doUpdate(UpdateManifest m, String source) async {
+  Future<void> _doUpdate(UpdateManifest m, String source, UpdateManifest? fallback) async {
     var cancelled = false;
     var dialogOpen = true;
     final prog = ValueNotifier<double>(-1); // -1 = 连接中
@@ -1017,6 +1040,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         m,
         m.app,
         source: source,
+        fallbackManifest: fallback,
         onProgress: (r, t) => prog.value = r.toDouble(),
         isCancelled: () async => cancelled,
       );

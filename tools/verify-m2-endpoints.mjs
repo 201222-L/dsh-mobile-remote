@@ -99,6 +99,39 @@ check("verifyUpdateAuth：签名正确通过；错误签名/过期时间/短 non
   });
   assert.strictEqual(short.reason, "short-nonce");
 });
+check("P0 回归：缓存填充攻击——错误签名填满缓存后，合法请求重放仍被拒绝", () => {
+  const token = "T".repeat(32);
+  const ts = String(Math.floor(Date.now() / 1000));
+  const path = "/m/api/update-check";
+  const bodySha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const cache = new NonceCache();
+  const mkAuth = (nonce) => {
+    const canonical = canonicalRequest({ method: "GET", path, query: {}, hexBodySha256: bodySha, ts, nonce });
+    return Buffer.from(hmacValue(token, canonical)).toString("base64url");
+  };
+  const legitNonce = "l".repeat(32);
+  const first = verifyUpdateAuth({
+    headers: { "x-update-ts": ts, "x-update-nonce": legitNonce, "x-update-auth": mkAuth(legitNonce) },
+    method: "GET", path, query: {}, bodyShaHex: bodySha, token, nonceCache: cache,
+  });
+  assert.strictEqual(first.ok, true);
+  // 用 4096 个不同 nonce + 错误签名灌缓存（旧实现会先登记这些 nonce → 挤掉 legitNonce 再重放）
+  for (let i = 0; i < 4096; i++) {
+    const n = `f${i.toString(16).padStart(31, "0")}`;
+    const r = verifyUpdateAuth({
+      headers: { "x-update-ts": ts, "x-update-nonce": n, "x-update-auth": "AAAA" },
+      method: "GET", path, query: {}, bodyShaHex: bodySha, token, nonceCache: cache,
+    });
+    assert.strictEqual(r.reason, "bad-signature"); // 全部因签名错误被拒，且不得写入缓存
+  }
+  // 同一条合法请求在 60 秒内重放 → 必须仍被拒绝（legitNonce 未被挤出缓存）
+  const replay = verifyUpdateAuth({
+    headers: { "x-update-ts": ts, "x-update-nonce": legitNonce, "x-update-auth": mkAuth(legitNonce) },
+    method: "GET", path, query: {}, bodyShaHex: bodySha, token, nonceCache: cache,
+  });
+  assert.strictEqual(replay.ok, false);
+  assert.strictEqual(replay.reason, "nonce-replay");
+});
 
 // 3. manifest 扫描验签
 {
