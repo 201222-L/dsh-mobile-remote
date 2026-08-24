@@ -69,6 +69,17 @@ class _DigestCapture implements Sink<Digest> {
   void close() {}
 }
 
+/// 兼容闸门判定（review2 P1-2）：目标 App 声明了 minPluginVersion 时，
+/// 当前插件版本**未知/格式非法**一律视为不满足硬闸门（blocked）——不得绕过。
+bool isAppUpdateBlocked({
+  required String minPluginVersion,
+  required String currentPluginVersion,
+}) {
+  if (!RegExp(r'^\d+\.\d+\.\d+').hasMatch(minPluginVersion.trim())) return false; // 未有效声明 → 无闸门
+  if (!RegExp(r'^\d+\.\d+\.\d+').hasMatch(currentPluginVersion.trim())) return true; // 未知/异常 → 不满足
+  return semverGt(minPluginVersion, currentPluginVersion);
+}
+
 class Updater {
   static const _kSeq = 'update_seq';
   static const _kDigest = 'update_digest';
@@ -152,8 +163,11 @@ class Updater {
         verifiedKeyId: keyId,
         appUpdate: manifest.app.versionCode! > currentVersionCode,
         pluginUpdate: semverGt(manifest.plugin.versionName, currentPluginVersion),
-        // 兼容闸门（PRD §4.1-G）：目标 App 所需最低插件版本 > 当前插件版本 → blocked
-        blocked: semverGt(manifest.minPluginVersion, currentPluginVersion),
+        // 兼容闸门（PRD §4.1-G / review2 P1-2）：插件版本未知/非法也视为不满足，不可绕过
+        blocked: isAppUpdateBlocked(
+          minPluginVersion: manifest.minPluginVersion,
+          currentPluginVersion: currentPluginVersion,
+        ),
         blockReason: '电脑插件版本过低（目标 App 要求 ≥ ${manifest.minPluginVersion}，'
             '当前 ${currentPluginVersion.isEmpty ? '未知' : currentPluginVersion}）',
       );

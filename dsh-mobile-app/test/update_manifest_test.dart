@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dsh_mobile_app/update/jcs.dart';
 import 'package:dsh_mobile_app/update/update_manifest.dart';
+import 'package:dsh_mobile_app/update/updater.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // 测试夹具密钥（由 _diag/gen-fixture.mjs 一次性生成，仅测试用，非发布密钥）
@@ -166,6 +167,24 @@ void main() {
               storedSequence: null, storedDigest: null,
               sequence: 1, payloadDigest: 'x'),
           SequenceDecision.acceptNew);
+    });
+  });
+
+  group('isAppUpdateBlocked（兼容闸门，review2 P1-2）', () {
+    test('minPluginVersion 高于当前 → blocked', () {
+      expect(isAppUpdateBlocked(minPluginVersion: '3.1.0', currentPluginVersion: '3.0.0'), isTrue);
+    });
+    test('版本相等/高于 → 不阻塞', () {
+      expect(isAppUpdateBlocked(minPluginVersion: '3.0.0', currentPluginVersion: '3.0.0'), isFalse);
+      expect(isAppUpdateBlocked(minPluginVersion: '3.0.0', currentPluginVersion: '3.2.0'), isFalse);
+    });
+    test('当前插件版本未知/非法 → blocked（不可绕过）', () {
+      expect(isAppUpdateBlocked(minPluginVersion: '3.0.0', currentPluginVersion: ''), isTrue);
+      expect(isAppUpdateBlocked(minPluginVersion: '3.0.0', currentPluginVersion: 'abc'), isTrue);
+    });
+    test('manifest 未有效声明 minPluginVersion → 无闸门', () {
+      expect(isAppUpdateBlocked(minPluginVersion: '', currentPluginVersion: ''), isFalse);
+      expect(isAppUpdateBlocked(minPluginVersion: 'abc', currentPluginVersion: ''), isFalse);
     });
   });
 }

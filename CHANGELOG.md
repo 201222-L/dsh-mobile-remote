@@ -10,6 +10,7 @@
 - **真机验证（自定义源，真实签名）**：检查→验签→sequence→弹窗→下载（进度）→校验→系统安装器→覆盖安装成功（3.1.0+20 → 3.1.0+21）；修复过程中闭环了：fileName 与服务器命名不一致、流式广播丢文件、**安装失败二次 pop 黑屏**（幂等 pop、只弹一次）、FileProvider 路径根、双屏显示路由。
 - **遗留（M2/M3，见 PRD §8）**：插件暂存（独立验签 + 受限 source）、电脑源（updateToken 隔离通道）、GitHub 源真实 Release 发布演练、镜像/下载代理。
 - **M1 review（Codex 5 项 P1）修复**：① 兼容闸门接入运行逻辑——目标 App 要求的最低插件版本高于当前时检查结果进入 **blocked**，弹窗禁用「更新 App」并给出电脑端 docs/06 升级指引；② **启动静默检查**——连接成功后在进程内自动检查一次（不弹阻断窗，结果落全局 notifier，设置页行内提示）；③ 发布 sequence/versionCode 以 **GitHub 已发布且验签通过的 manifest 为准**（fetchPublishedState 逐份验签取最高值），本地状态仅作缓存（换电脑/清理不丢发布账本；离线回退本地并告警）；④ 安装结果边界裁定——M1 以「已交给系统安装器」为准（ACTION_VIEW 无可靠回调），PRD §6 同步修改，真实安装结果（PackageInstaller session）列 M2 候选；⑤ **FileProvider 收紧**——下载目录改 cacheDir/updates，仅暴露 cache-path 子目录（不再用 root-path 覆盖应用目录）。非阻塞项：重复键检测在词法层解码转义（`a` 与 `\u0061` 视为同键，单测覆盖）；UI 文案「重新检查后重新下载」「自定义源仅测试/自建、建议 HTTPS」。
+- **M1 review2（Codex 2 项 P1 + 真机重放放行）**：① 发布账本 **fail-closed**——远端 GitHub 验签 manifest 不可验证时不再静默降级为本地/0：首次发布须显式 `--bootstrap`，离线发布须 `--allow-offline + --confirm-offline`（高风险双标志），并**分页扫描全部 Release**（不再只取最新 10 条）；② 兼容闸门对**插件版本未知/非法**同样判 blocked（不可绕过，`isAppUpdateBlocked` 单测覆盖）；③ 真机重放全部通过（验收项 1-4）——冷启动静默检查无弹窗仅行内状态、`minPluginVersion > 当前插件` 时弹窗禁用「更新 App」、限速下载中取消（服务器日志确认流中断+清理）后重下成功、缓存目录下载→校验→系统安装器→**同签名覆盖安装 3.1.0+22 → +23 成功**（sequence 单调，payloadDigest 一致）。
 
 ## v3.0.0（2026-08-22）— LAN 桥：桌面版局域网直连（无需穿透）（二次 Code Review 落实集成于本版本内）
 
