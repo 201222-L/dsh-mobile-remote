@@ -1,21 +1,19 @@
-// M1 发布工具：生成签名 update manifest（RFC 8785 JCS + Ed25519，支持双签名轮换）
-// 用法：
-//   node tools/publish-update.mjs init-key [keyId]        # 生成新签名密钥（旧钥默认保持 active，双签名轮换期）
-//   node tools/publish-update.mjs retire-key <keyId>     # 轮换结束：停用旧钥
-//   node tools/publish-update.mjs list-keys              # 列出密钥（keyId/active/公钥指纹）
-//   node tools/publish-update.mjs export-pubkey          # 复写 App 受信公钥常量（lib/update/trusted_keys.dart）
-//   node tools/publish-update.mjs publish <apk> <tgz> [--min-plugin-version v] [--min-app-version-code n]
-//       [--min-keyring-version-code n] [--channel stable] [--out update.json] [--require-tag]
-//       [--bootstrap]        # 首次发布：显式自证，sequence 从 1 开始
-//       [--allow-offline]    # 远端账本不可验证时的离线发布（高风险，须同时 --confirm-offline）
-// 密钥与发布状态存于 ~/.dsh/mobile-remote/（不进 git）；publicKey 经 export-pubkey 写入 App 源码。
-import { generateKeyPairSync, sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
+// M2：加密/验签逻辑移入共享模块 lib/update-crypto.js（随 npm 包发布；lib 不依赖 tools），
+// 发布工具与插件端共同消费；本文件仅保留 CLI/发布编排层。
+import { generateKeyPairSync } from "node:crypto";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execSync } from "node:child_process";
+import {
+  jcs, edSign, edVerify, verifyManifestSignatures, manifestPayloadDigest,
+  b64u, fromB64u, rawKeysFromKeyPair, trustedReleaseKeys,
+} from "../lib/update-crypto.js";
+
+// 保持测试/外部消费方导入面不变
+export { jcs, edSign, edVerify, verifyManifestSignatures, manifestPayloadDigest, b64u, fromB64u, trustedReleaseKeys };
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_DIR = join(homedir(), ".dsh", "mobile-remote");
@@ -25,70 +23,6 @@ const APP_PUBKEY_FILE = join(REPO_ROOT, "dsh-mobile-app", "lib", "update", "trus
 const GITHUB_OWNER = "201222-L";
 const GITHUB_REPO = "dsh-mobile-remote";
 const MANIFEST_ASSET = "update.json";
-
-// ── JCS（RFC 8785） ──────────────────────────────────────────────
-function jcsString(s) {
-  let out = '"';
-  for (const ch of s) {
-    const cp = ch.codePointAt(0);
-    if (ch === '"') out += '\\"';
-    else if (ch === "\\") out += "\\\\";
-    // RFC 8785 采用 ES6 JSON.stringify 语义：常见控制符用短转义，其余 < 0x20 用 \u00xx（小写）
-    else if (ch === "\b") out += "\\b";
-    else if (ch === "\t") out += "\\t";
-    else if (ch === "\n") out += "\\n";
-    else if (ch === "\f") out += "\\f";
-    else if (ch === "\r") out += "\\r";
-    else if (cp < 0x20) out += "\\u" + cp.toString(16).padStart(4, "0");
-    else out += ch;
-  }
-  return out + '"';
-}
-export function jcs(value) {
-  if (value === null) return "null";
-  const t = typeof value;
-  if (t === "boolean") return value ? "true" : "false";
-  if (t === "number") {
-    if (!Number.isFinite(value)) throw new Error("JCS: non-finite number");
-    if (Object.is(value, -0)) return "0";
-    return value.toString(); // ECMAScript Number::toString —— 与 IEEE 双精度解析值一致
-  }
-  if (t === "string") return jcsString(value);
-  if (Array.isArray(value)) return "[" + value.map((v) => jcs(v)).join(",") + "]";
-  if (t === "object") {
-    const keys = Object.keys(value).sort();
-    return "{" + keys.map((k) => jcsString(k) + ":" + jcs(value[k])).join(",") + "}";
-  }
-  throw new Error(`JCS: unsupported type ${t}`);
-}
-
-// ── Ed25519 工具（Node crypto） ──────────────────────────────────
-const b64u = (buf) => Buffer.from(buf).toString("base64url");
-const fromB64u = (s) => Buffer.from(s, "base64url");
-function derTail(buf, n) { return buf.subarray(buf.length - n); }
-function rawPubFromSpki(spkiDer) { return derTail(spkiDer, 32); }
-function rawSeedFromPkcs8(pkcs8Der) { return derTail(pkcs8Der, 32); }
-function privateKeyObject(seedB64u) {
-  // RFC 8410 PKCS8 包装 32 字节种子
-  const seed = fromB64u(seedB64u);
-  const pkcs8 = Buffer.concat([
-    Buffer.from("302e020100300506032b657004220420", "hex"), seed,
-  ]);
-  return createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
-}
-function publicKeyObject(rawB64u) {
-  const raw = fromB64u(rawB64u);
-  const spki = Buffer.concat([
-    Buffer.from("302a300506032b6570032100", "hex"), raw,
-  ]);
-  return createPublicKey({ key: spki, format: "der", type: "spki" });
-}
-export function edSign(payload, seedB64u) {
-  return sign(null, Buffer.from(payload, "utf8"), privateKeyObject(seedB64u));
-}
-export function edVerify(payload, signature, rawPubB64u) {
-  return verify(null, Buffer.from(payload, "utf8"), publicKeyObject(rawPubB64u), signature);
-}
 
 // ── 版本/校验工具 ────────────────────────────────────────────────
 export function parseVersion(s) {
@@ -285,18 +219,6 @@ export function signManifest(manifest, keys) {
     .map((k) => ({ keyId: k.keyId, signature: b64u(edSign(payload, k.privateKey)) }));
   return { manifest: { ...manifest, signatures }, payload, signatures };
 }
-export function verifyManifestSignatures(manifestWithoutSigs, signatures, trustedKeys) {
-  // trustedKeys: Map<keyId, rawPubB64u>。要求至少一个签名项 keyId 命中且验签通过。
-  const payload = jcs(manifestWithoutSigs);
-  for (const s of signatures ?? []) {
-    const pub = trustedKeys?.get(s?.keyId);
-    if (!pub) continue;
-    try {
-      if (edVerify(payload, fromB64u(s.signature), pub)) return s.keyId;
-    } catch { /* 该签名项非法，继续尝试其它 */ }
-  }
-  return null;
-}
 
 // ── 文件信息 ─────────────────────────────────────────────────────
 function fileInfo(p) {
@@ -307,13 +229,12 @@ function fileInfo(p) {
 // ── 命令实现 ─────────────────────────────────────────────────────
 function cmdInitKey(args) {
   const keyId = args[0] ?? `dsh-release-${new Date().getFullYear()}`;
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const pubRaw = rawPubFromSpki(publicKey.export({ type: "spki", format: "der" }));
-  const seedRaw = rawSeedFromPkcs8(privateKey.export({ type: "pkcs8", format: "der" }));
+  const pair = generateKeyPairSync("ed25519");
+  const { publicKey, privateKey } = rawKeysFromKeyPair(pair);
   const rec = {
     keyId,
-    publicKey: b64u(pubRaw),
-    privateKey: b64u(seedRaw),
+    publicKey,
+    privateKey,
     active: true,
     createdAt: new Date().toISOString(),
   };
