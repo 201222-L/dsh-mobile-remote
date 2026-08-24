@@ -9,8 +9,13 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "dsh-remote-apply-update": "bin/dsh-remote-apply-update.mjs",
+    "dsh-remote-tokens": "bin/dsh-remote-tokens.mjs"
+  },
   "files": [
     "lib",
+    "bin",
     "docs",
     "README.md",
     "FAQ.md",
