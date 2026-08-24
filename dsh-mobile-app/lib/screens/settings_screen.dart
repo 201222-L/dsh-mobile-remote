@@ -882,7 +882,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             FilledButton(
               onPressed: () {
                 Navigator.of(ctx).pop();
-                _stagePluginOnly(m);
+                _stagePluginOnly(m, result.source);
               },
               child: Text(L10n.t('准备插件更新', 'Stage plugin update')),
             ),
@@ -892,10 +892,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// 插件先行：暂存成功后提示下一步（helper/重启均需用户在电脑执行）。
-  Future<void> _stagePluginOnly(UpdateManifest m) async {
+  Future<void> _stagePluginOnly(UpdateManifest m, String source) async {
     final msgr = ScaffoldMessenger.of(context);
     await _withBusyDialog(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
-      await updater.pluginUpdate(m, declaredAppVersionCode: _currentVersionCode);
+      await updater.pluginUpdate(m,
+          source: source == 'pc' ? 'local-cache' : 'github',
+          declaredAppVersionCode: _currentVersionCode);
       if (!mounted) return;
       showToastAt(msgr,
           L10n.t('插件包已下载并校验（staged）。请在电脑上执行 dsh-remote-apply-update 后重启 DSH。',
@@ -907,7 +909,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _doUpdateAll(UpdateManifest m, String source) async {
     final msgr = ScaffoldMessenger.of(context);
     final staged = await _withBusyDialog<String?>(L10n.t('正在将插件更新交给电脑…', 'Sending plugin update to PC…'), () async {
-      final r = await updater.pluginUpdate(m, declaredAppVersionCode: _currentVersionCode);
+      final r = await updater.pluginUpdate(m,
+          source: source == 'pc' ? 'local-cache' : 'github',
+          declaredAppVersionCode: _currentVersionCode);
       return (r['staged'] == true) ? 'ok' : null;
     });
     if (staged == null) {

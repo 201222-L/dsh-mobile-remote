@@ -267,7 +267,17 @@ function cmdExportPubkey() {
   const dart = `// 自动生成：受信发布公钥集（勿手改）。由 tools/publish-update.mjs export-pubkey 维护。\n// 换钥时新钥随发布附双签名，客户端按 keyId 匹配验签；旧钥移除后删除对应条目。\nconst Map<String, String> trustedReleaseKeys = <String, String>{\n${entries}\n};\n`;
   mkdirSync(dirname(APP_PUBKEY_FILE), { recursive: true });
   writeFileSync(APP_PUBKEY_FILE, dart, "utf8");
+  // M2：同步复写插件共享加密模块的公钥表（lib 随包发布；插件端与工具同一验签链）
+  const cryptoFile = join(REPO_ROOT, "lib", "update-crypto.js");
+  let js = readFileSync(cryptoFile, "utf8");
+  const start = js.indexOf("// ── 受信发布公钥表");
+  const end = js.indexOf("};", start);
+  if (start < 0 || end < 0) throw new Error("lib/update-crypto.js 公钥表锚点缺失");
+  const block = `// ── 受信发布公钥表（export-pubkey 自动复写；勿手改） ──────────────\n// keyId → raw 32B 公钥（base64url）\nexport const trustedReleaseKeys = {\n${entries}\n};`;
+  js = js.slice(0, start) + block + js.slice(end + 2);
+  writeFileSync(cryptoFile, js, "utf8");
   console.log(`已写入 ${APP_PUBKEY_FILE}`);
+  console.log(`已写入 ${cryptoFile}`);
 }
 function cmdPublish(args, opts) {
   if (args.length < 2) throw new Error("publish 需要 <apk路径> <tgz路径>");
