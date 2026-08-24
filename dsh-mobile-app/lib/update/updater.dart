@@ -162,6 +162,32 @@ String resolveDualSourceSelection(
   return ok.first.source;
 }
 
+/// review P2：下载源计划（纯函数，供单测）——PC 源且存在跨源回退候选时才追加 GitHub。
+List<String> downloadSourcePlan(String source, {required bool hasFallback}) =>
+    (hasFallback && source == 'pc') ? ['pc', 'github'] : [source];
+
+/// review P2：下载失败文案（纯函数，供单测）——PC 缺包统一明确报"电脑缓存不完整"。
+String downloadFailureMessage({
+  required String source,
+  required int status,
+  required bool hasFallback,
+}) {
+  if (source == 'pc') {
+    if (status == 404) {
+      return hasFallback
+          ? '电脑缓存不完整（缺产物），GitHub 回退下载失败 HTTP $status'
+          : '电脑缓存不完整（缺产物，且 GitHub 无同 manifest 可回退）';
+    }
+    return '电脑源下载失败 HTTP $status';
+  }
+  if (source == 'github') return 'GitHub 下载失败 HTTP $status';
+  return '下载失败 HTTP $status';
+}
+
+/// review P2：插件暂存源计划（PC 源且存在回退候选 → local-cache 失败后可试 github）。
+List<String> pluginSourcePlan(String source, {required bool hasFallback}) =>
+    (hasFallback && source == 'pc') ? ['local-cache', 'github'] : [source == 'pc' ? 'local-cache' : 'github'];
+
 class Updater {
   static const _kSeq = 'update_seq';
   static const _kDigest = 'update_digest';
@@ -486,12 +512,11 @@ class Updater {
     void Function(int received, int total)? onProgress,
     Future<bool> Function()? isCancelled,
   }) async {
-    // 跨源回退（review P1-1）：PC 源缺产物（404）且存在同 sequence 同 digest 的 GitHub manifest
-    // （check() 已核实 digest 相等）→ 允许按 GitHub 取；否则明确报「电脑缓存不完整」。
-    final sources = <String>[source];
-    if (source == 'pc' && fallbackManifest != null) sources.add('github');
-    var lastStatus = -1;
-    for (final s in sources) {
+    // 跨源回退（review P1-1/P2）：源计划与失败文案均为纯函数（单测覆盖）；
+    // PC 缺包统一明确报「电脑缓存不完整」，有回退候选时先试 GitHub。
+    final sources = downloadSourcePlan(source, hasFallback: fallbackManifest != null);
+    for (var i = 0; i < sources.length; i++) {
+      final s = sources[i];
       final rq = await artifactRequest(m, art, source: s);
       final httpReq = http.Request('GET', Uri.parse(rq.url));
       httpReq.headers.addAll(rq.headers);
@@ -499,14 +524,11 @@ class Updater {
       if (req.statusCode == 200) {
         return await _consumeToFile(art, req, onProgress: onProgress, isCancelled: isCancelled);
       }
-      lastStatus = req.statusCode;
-      if (s == 'pc' && req.statusCode == 404 && sources.length > 1) continue; // 电脑缺产物 → GitHub 回退
-      throw Exception('下载失败 HTTP ${req.statusCode}');
+      if (s == 'pc' && req.statusCode == 404 && i + 1 < sources.length) continue; // 电脑缺产物 → GitHub 回退
+      throw Exception(downloadFailureMessage(
+          source: s, status: req.statusCode, hasFallback: fallbackManifest != null));
     }
-    if (lastStatus == 404 && sources.length > 1) {
-      throw Exception('电脑缓存不完整（缺 ${art.fileName}），且 GitHub 无同 manifest 可回退');
-    }
-    throw Exception('下载失败 HTTP $lastStatus');
+    throw StateError('unreachable: 下载源序列应至少一个');
   }
 
   /// 下载消费循环（流式写 tmp + 边下边算 sha256）→ 校验 → 原子改名。

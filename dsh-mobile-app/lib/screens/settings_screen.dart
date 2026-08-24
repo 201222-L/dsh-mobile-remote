@@ -911,23 +911,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  /// review P1-1：插件暂存按源取——pc 先 local-cache，失败且存在同 sequence 同 digest 的
+  /// review P1-1/P2：插件暂存按源计划取——pc 先 local-cache，失败且存在同 sequence 同 digest 的
   /// GitHub manifest（check() 已核实）时回退 github；不得混用不同 manifest 的产物。
   Future<bool> _stagePluginViaBestSource(
       UpdateManifest m, String source, UpdateManifest? fallback) async {
-    final pluginSource = source == 'pc' ? 'local-cache' : 'github';
-    try {
-      final r =
-          await updater.pluginUpdate(m, source: pluginSource, declaredAppVersionCode: _currentVersionCode);
-      return r['staged'] == true;
-    } catch (e) {
-      if (pluginSource == 'local-cache' && fallback != null) {
-        final r2 =
-            await updater.pluginUpdate(m, source: 'github', declaredAppVersionCode: _currentVersionCode);
-        return r2['staged'] == true;
+    final plan = pluginSourcePlan(source, hasFallback: fallback != null);
+    Object? lastErr;
+    for (final s in plan) {
+      try {
+        final r =
+            await updater.pluginUpdate(m, source: s, declaredAppVersionCode: _currentVersionCode);
+        return r['staged'] == true;
+      } catch (e) {
+        lastErr = e;
+        // local-cache 失败且还有 github 候选 → 继续；否则上抛
       }
-      rethrow;
     }
+    throw lastErr ?? Exception('插件暂存失败');
   }
 
   /// 更新全部：先插件（确认 staged）→ 再 App 下载安装（PRD 顺序，插件先行）。

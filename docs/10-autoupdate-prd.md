@@ -104,7 +104,7 @@
 - **版本字段在 artifact 内、参与签名**（`signatures` 字段除外全部字段）：升级判断**只**用 `artifacts.app.versionCode`（整数，严格递增）与 `artifacts.plugin.versionName`（semver），不从 fileName 推导。
 - **签名规则**：canonical 字节 = 除 `signatures` 外的字段按 **RFC 8785（JCS）→ UTF-8**；每个签名项为 Ed25519 对同一 canonical 字节的签名（base64url、无 padding）；验签方要求**至少一个**签名项：keyId 命中本地受信公钥集且验签通过。
 - **字段规则**：必填白名单；未知字段拒绝、重复键拒绝；`schemaVersion` 参与签名且恒为 1。
-- **密钥轮换（双签名 + 显式支持窗口）**：换钥期间发布方用旧、新私钥**对同一 manifest 各签一份**（signatures 数组含两个 keyId）；旧客户端（只含旧公钥）验旧签，新客户端（含新旧公钥）验新/旧签。**不做"旧客户端覆盖率"推断（无账号/遥测，无法可靠测量）**——旧钥移除采用以下任一策略并由 Release 说明：① **显式支持窗口（机器可判定）**：manifest 新增独立字段 **`minKeyringVersionCode`**（可选，仅换钥发布出现），表示"自该 App versionCode 起必须使用新公钥"；客户端低于该值 → 按升级链先升到过渡版再继续；② **长期双签**：旧签名保留至产品停止发布。旧钥移除后，无法自动更新的旧客户端提供**人工恢复路径**：Release 说明附旧版 APK/插件包下载，按 docs/06 手动安装。
+- **密钥轮换（双签名 + 验签即强制）**：换钥期间发布方用旧、新私钥**对同一 manifest 各签一份**（signatures 数组含两个 keyId）；旧客户端（只含旧公钥）验旧签，新客户端（含新旧公钥）验新/旧签。**强制机制 = 内置公钥集的验签结果本身**：旧钥移除后，持有旧公钥的客户端对新 manifest 验签直接失败（无法更新——窗口因此关闭）。`minKeyringVersionCode` 为**纯提示字段**（发布期说明"新钥自该 App versionCode 起启用"，App 弹窗展示过渡期提示），**不承担强制语义**（review 复审裁定降级）；发布说明需注明升级链（先升过渡版再继续）；旧钥移除后旧客户端的人工恢复路径：Release 附旧版包 + docs/06 手动安装。
 - **产物寻址与源解耦**：manifest 不含绝对 URL；按源解析：GitHub 按 `fileName` 匹配资产，电脑源走 `/update-file/{artifactId}`。
 
 ### 5.1.2 兼容字段方向（发布脚本交叉校验，M1）
@@ -188,4 +188,5 @@
 3. 防重放 = sequence + payloadDigest 四规则（digest 绑定 JCS 签名载荷，跨源/重序列化一致）；防回滚 = versionCode 严格递增；
 4. 插件更新 = 插件独立验签 + 受限 source + 暂存 + 外部安装；
 5. 电脑源 = updateToken 高熵隔离通道（HMAC 抗重放），不复用全局 authToken；
-6. 更新源默认 GitHub；认证电脑源作回退。
+6. 更新源默认 GitHub；认证电脑源作回退；
+7. `minKeyringVersionCode` = **纯提示字段**（过渡期信息；强制 = 内置公钥集验签结果本身——旧钥移除后验签失败即窗口关闭）；`updateToken` 轮换语义 = **authToken 持有者可自动恢复**（bootstrap 配对通道）。

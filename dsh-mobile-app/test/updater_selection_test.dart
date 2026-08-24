@@ -121,8 +121,7 @@ void main() {
     });
   });
 
-  group('canFallbackToGitHub（review P1-1 跨源产物回退资格）', () {
-    test('pc 胜出 + GitHub 同 sequence 同 digest → 允许回退', () {
+  group('canFallbackToGitHub（review P1-1 跨源产物回退资格）', () {    test('pc 胜出 + GitHub 同 sequence 同 digest → 允许回退', () {
       expect(
           canFallbackToGitHub(
             source: 'pc',
@@ -151,6 +150,31 @@ void main() {
       expect(
           canFallbackToGitHub(source: 'pc', winnerSequence: 10, winnerDigest: 'd'),
           isFalse);
+    });
+  });
+
+  group('downloadSourcePlan / downloadFailureMessage / pluginSourcePlan（review P2）', () {
+    test('PC 源有回退候选 → 先 pc 后 github；无候选/非 pc → 单源', () {
+      expect(downloadSourcePlan('pc', hasFallback: true), ['pc', 'github']);
+      expect(downloadSourcePlan('pc', hasFallback: false), ['pc']);
+      expect(downloadSourcePlan('github', hasFallback: true), ['github']);
+    });
+    test('PC 404 无回退 → 明确「电脑缓存不完整」（APK 与插件同语义）', () {
+      expect(
+          downloadFailureMessage(source: 'pc', status: 404, hasFallback: false),
+          contains('电脑缓存不完整'));
+      expect(
+          downloadFailureMessage(source: 'pc', status: 404, hasFallback: true),
+          contains('GitHub 回退下载失败'));
+    });
+    test('非 404 错误保留源信息', () {
+      expect(downloadFailureMessage(source: 'pc', status: 500, hasFallback: false), '电脑源下载失败 HTTP 500');
+      expect(downloadFailureMessage(source: 'github', status: 502, hasFallback: true), 'GitHub 下载失败 HTTP 502');
+    });
+    test('插件暂存源计划：pc+回退 → [local-cache, github]；否则单源', () {
+      expect(pluginSourcePlan('pc', hasFallback: true), ['local-cache', 'github']);
+      expect(pluginSourcePlan('pc', hasFallback: false), ['local-cache']);
+      expect(pluginSourcePlan('github', hasFallback: true), ['github']);
     });
   });
 }

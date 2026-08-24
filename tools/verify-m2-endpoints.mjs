@@ -3,12 +3,13 @@
 import assert from "node:assert";
 import { generateKeyPairSync } from "node:crypto";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { Readable } from "node:stream";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const repo = pathToFileURL(join(HERE, "..", "lib")).href;
@@ -207,6 +208,53 @@ check("P0 回归：缓存填充攻击——错误签名填满缓存后，合法�
     );
     rmSync(dir2, { recursive: true, force: true });
   });
+  check("stagePluginUpdate：GitHub 源流式下载（pipeline 背压语义）→ 暂存且哈希一致", async () => {
+    const s3 = new UpdateState();
+    s3.updatesDir = join(tmpdir(), `m2-gh-${Date.now()}`);
+    mkdirSync(s3.updatesDir, { recursive: true });
+    const m3 = mkManifest({ tgzData: "github-streamed-package" });
+    const bytes = Buffer.from("github-streamed-package");
+    const fakeFetch = async (url) => {
+      if (url.includes("releases/latest")) {
+        return { ok: true, json: async () => ({ assets: [{ name: m3.manifest.artifacts.plugin.fileName, browser_download_url: "https://dl.example/pkg" }] }) };
+      }
+      return { ok: true, body: Readable.from([bytes.subarray(0, 8), bytes.subarray(8)]) };
+    };
+    const r = await stagePluginUpdate({ manifest: m3.manifest, source: "github", declaredAppVersionCode: 20, state: s3, trustedKeys: trusted, fetchImpl: fakeFetch });
+    assert.strictEqual(r.staged, true);
+    const stagedFile = join(s3.updatesDir, "staged", "9", m3.manifest.artifacts.plugin.fileName);
+    assert.strictEqual(createHash("sha256").update(readFileSync(stagedFile)).digest("hex"), m3.tgz.sha256);
+    rmSync(s3.updatesDir, { recursive: true, force: true });
+  });
+  check("stagePluginUpdate：GitHub 源中途断流 → 清理半成品并抛错", async () => {
+    const s4 = new UpdateState();
+    s4.updatesDir = join(tmpdir(), `m2-gh-err-${Date.now()}`);
+    mkdirSync(s4.updatesDir, { recursive: true });
+    const m4 = mkManifest({ tgzData: "will-be-interrupted" });
+    const fakeFetch = async (url) => {
+      if (url.includes("releases/latest")) {
+        return { ok: true, json: async () => ({ assets: [{ name: m4.manifest.artifacts.plugin.fileName, browser_download_url: "https://dl.example/pkg" }] }) };
+      }
+      return {
+        ok: true,
+        body: Readable.from((async function* () {
+          yield Buffer.from("partial-");
+          throw new Error("connection reset");
+        })()),
+      };
+    };
+    await assert.rejects(
+      () => stagePluginUpdate({ manifest: m4.manifest, source: "github", declaredAppVersionCode: 20, state: s4, trustedKeys: trusted, fetchImpl: fakeFetch }),
+      /connection reset/,
+    );
+    // 半成品应被清理（staged.json 不存在/文件不存在）
+    const stagedDir = join(s4.updatesDir, "staged", "9");
+    assert.ok(!existsSync(stagedDir) || readdirSafe(join(stagedDir)).length === 0 || !existsSync(join(stagedDir, m4.manifest.artifacts.plugin.fileName)));
+    rmSync(s4.updatesDir, { recursive: true, force: true });
+  });
+}
+function readdirSafe(d) {
+  try { return readdirSync(d); } catch { return []; }
 }
 
 try {
