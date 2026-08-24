@@ -4,10 +4,9 @@ import { jcs, edSign, edVerify, compareSemver, validateVersionIncrease, buildMan
 import { generateKeyPairSync } from "node:crypto";
 
 let pass = 0, fail = 0;
-const check = (name, fn) => {
-  try { fn(); pass++; console.log(`PASS  ${name}`); }
-  catch (e) { fail++; console.log(`FAIL  ${name} → ${e.message}`); }
-};
+// review4：执行器改为收集后逐个 await——async 测试的断言失败必须计入 fail（此前异步用例未等待=假绿）
+const checks = [];
+const check = (name, fn) => checks.push({ name, fn });
 
 // 1. RFC 8785 附录 A 金样本（参考实现 README 的已知向量）
 check("JCS RFC8785 金样本", () => {
@@ -163,12 +162,13 @@ check("无远端无本地且未 bootstrap → 拒绝", () => {
 
 // 7. review3：scanPublishedLedger（分页扫描完整性，fail-closed）
 check("分页扫描：页码正常走完（有不满页）→ complete=true", async () => {
-  const fetchPage = async (page) => (page === 1 ? Array(100).fill(null) : [null]);
+  // release 对象必须合法（{ assets: [...] }）；不含 update.json 资产的 release 会被跳过
+  const fetchPage = async (page) => (page === 1 ? Array(100).fill({ assets: [] }) : [{ assets: [] }]);
   const r = await scanPublishedLedger({ fetchPage, verifyDoc: () => true });
   assert.strictEqual(r.complete, true);
 });
 check("分页扫描：40 页仍每页满 100 → 不完整扫描 fail-closed", async () => {
-  const full = Array(100).fill(null);
+  const full = Array(100).fill({ assets: [] });
   const r = await scanPublishedLedger({ fetchPage: async () => full, verifyDoc: () => true });
   assert.strictEqual(r.complete, false);
   assert.strictEqual(r.foundAny, false);
@@ -181,6 +181,17 @@ check("分页扫描：分页请求异常（限流/网络）→ fail-closed", asy
   assert.strictEqual(r.complete, false);
   assert.strictEqual(r.foundAny, false);
 });
+
+for (const c of checks) {
+  try {
+    await c.fn();
+    pass++;
+    console.log(`PASS  ${c.name}`);
+  } catch (e) {
+    fail++;
+    console.log(`FAIL  ${c.name} → ${e.message}`);
+  }
+}
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
