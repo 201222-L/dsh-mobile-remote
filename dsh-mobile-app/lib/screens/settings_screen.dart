@@ -353,27 +353,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (d == null) return L10n.t('检测失败', 'Check failed');
     final buf = StringBuffer();
     final runtime = d['runtime'] as Map<String, dynamic>? ?? {};
-    buf.writeln('${L10n.t('运行形态: ', 'Mode: ')}${runtime['form']}${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}');
+    final form = runtime['form'];
+    final formText = form == 'desktop'
+        ? 'desktop · ${L10n.t('桌面版', 'DSH Desktop')}'
+        : form == 'cli'
+            ? 'cli · ${L10n.t('命令行/网页', 'CLI / Web')}'
+            : '${form ?? '?'}';
+    buf.writeln('${L10n.t('运行形态: ', 'Mode: ')}$formText${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}');
     buf.writeln('${L10n.t('监听: ', 'Listen: ')}${runtime['host']}:${runtime['port']}');
     buf.writeln('${L10n.t('进程目录: ', 'CWD: ')}${runtime['cwd']}');
     buf.writeln();
     final services = d['services'] as Map<String, dynamic>? ?? {};
     buf.writeln(L10n.t('服务:', 'Services:'));
-    services.forEach((k, v) => buf.writeln('  ${v == true ? '✅' : '❌'} $k'));
+    services.forEach((k, v) {
+      final n = _diagName('services', k);
+      buf.writeln('  ${v == true ? '✅' : '❌'} ${k == n ? n : '$n ($k)'}');
+    });
     buf.writeln();
     final checks = d['checks'] as Map<String, dynamic>? ?? {};
     buf.writeln(L10n.t('端点实测:', 'Endpoint checks:'));
     checks.forEach((k, v) {
-      if (v == true) {
-        buf.writeln('  ✅ $k');
+      final n = _diagName('checks', k);
+      final shown = k == n ? n : '$n ($k)';
+      if (k == 'approvalMode') {
+        // v3.1.3：审批策略取值说明（both 双端同卡 / mobile 手机独占 / desktop 仅桌面）
+        final m = v == 'both'
+            ? L10n.t('both · 双端同卡，先答生效', 'both · both ends, first answer wins')
+            : v == 'mobile'
+                ? L10n.t('mobile · 手机在线独占', 'mobile · phone-exclusive while online')
+                : v == 'desktop'
+                    ? L10n.t('desktop · 仅桌面 GUI', 'desktop · desktop GUI only')
+                    : '${v ?? '?'}';
+        buf.writeln('  ℹ $shown：$m');
+      } else if (v == true) {
+        buf.writeln('  ✅ $shown');
       } else if (v == false) {
-        buf.writeln('  ❌ $k');
+        buf.writeln('  ❌ $shown');
       } else if (v is num) {
         // 计数字段（如 pendingFrames 挂起待答数）：0 正常，>0 表示有问询/审批待处理
-        buf.writeln('  ${v == 0 ? '✅' : '⚠'} $k = $v');
+        buf.writeln('  ${v == 0 ? '✅' : '⚠'} $shown = $v${v == 0 ? '' : L10n.t('（有审批/问询待处理）', ' (approval/question pending)')}');
       } else {
         // v3.1.3（issue #9）：策略/状态字符串字段（如 approvalMode = both）友好直读
-        buf.writeln('  ℹ $k = $v');
+        buf.writeln('  ℹ $shown = $v');
       }
     });
     final notes = d['notes'] as List? ?? [];
@@ -388,6 +409,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln();
     buf.writeln('${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}');
     return buf.toString();
+  }
+
+  /// 服务/实测项中文名（环境诊断可读化，v3.1.3+）。未知 key 原样返回。
+  /// 渲染时保留英文 key 便于复制粘贴排障（issue/日志对照）。
+  String _diagName(String section, String key) {
+    switch (section) {
+      case 'services':
+        switch (key) {
+          case 'webServer':
+            return L10n.t('网页服务', 'Web server');
+          case 'agents':
+            return L10n.t('Agent 服务', 'Agents');
+          case 'sessions':
+            return L10n.t('会话服务', 'Sessions');
+          case 'llm':
+            return L10n.t('模型服务', 'LLM');
+          case 'permissionPresets':
+            return L10n.t('权限预设', 'Permission presets');
+          case 'agentPresets':
+            return L10n.t('Agent 预设', 'Agent presets');
+          case 'workspaceRegistry':
+            return L10n.t('工作区服务', 'Workspaces');
+          case 'approval':
+            return L10n.t('审批服务', 'Approval');
+          case 'credentials':
+            return L10n.t('凭据服务', 'Credentials');
+          case 'messageFeedback':
+            return L10n.t('消息反馈', 'Message feedback');
+          case 'userQuestions':
+            return L10n.t('问询服务', 'Questions');
+          case 'apiProxy':
+            return L10n.t('旧帧桥 apiProxy（0.1.1 内核）', 'Legacy apiProxy (0.1.1 kernel)');
+          default:
+            return key;
+        }
+      default:
+        switch (key) {
+          case 'modelsRpc':
+            return L10n.t('模型目录 RPC', 'Model catalog RPC');
+          case 'sessionsList':
+            return L10n.t('会话列表', 'Session list');
+          case 'directories':
+            return L10n.t('目录浏览', 'Directory browse');
+          case 'workspaces':
+            return L10n.t('工作区列表', 'Workspace list');
+          case 'notifications':
+            return L10n.t('通知中心', 'Notifications');
+          case 'actions':
+            return L10n.t('动作区', 'Actions');
+          case 'approvalMode':
+            return L10n.t('审批策略', 'Approval mode');
+          case 'remoteEvents':
+            return L10n.t('双端审批通道', 'Dual-end channel');
+          case 'respondBridge':
+            return L10n.t('旧帧桥应答（0.1.1 内核）', 'Legacy respond (0.1.1 kernel)');
+          case 'frameBridge':
+            return L10n.t('旧帧桥循环（0.1.1 内核）', 'Legacy frame loop (0.1.1 kernel)');
+          case 'pendingFrames':
+            return L10n.t('挂起待答', 'Pending frames');
+          default:
+            return key;
+        }
+    }
   }
 
   Widget _card(String title, List<Widget> children) {

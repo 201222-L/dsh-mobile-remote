@@ -21,6 +21,7 @@
 - **修复（桌面端插件树加载崩溃）**：`approvalMode` schema 改用 schemastery `union`/`const` 表达——`z.enum` 不是 `@deepseek-ai/schemastery` 的 API（宿主桌面 v2.0.5 提供的 3.18.2 无此方法），此前桌面端加载插件树即抛 `TypeError: z.enum is not a function` 导致整树失败；改为 `z.union([z.const("both"), z.const("mobile"), z.const("desktop")]).default("both")`，语义（三值集合 + `both` 默认 + 非法值拒绝）与原意图一致。
 - **修复（真机验证发现，诊断显示）**：`runtime.form` 判定——桌面启动器未给插件进程置 `DSH_DESKTOP=1`，桌面版恒显示 `cli` 误导诊断；改以 `desktopBrowserAccess` 服务探测兜底（仅桌面版 v2.0.5+ 提供，与 LAN 桥同源判定），桌面版正确显示 `desktop`（新增顶层助手 `runtimeForm(ctx)`）。
 - **诊断精简（用户反馈）**：`services.apiProxy` / `checks.respondBridge` / `checks.frameBridge` / `checks.pendingFrames` 是 0.1.1-rc.2 及更早内核（apiProxy 帧桥 era）的探测项——0.1.2-rc.1+ 内核无 apiProxy，此前恒 ❌ 徒增噪音；v3.1.3 起**仅在帧桥实际激活时输出**，现代宿主不再显示（审批/问询状态看 `checks.approvalMode` / `checks.remoteEvents`），FAQ/docs/09 措辞同步。
+- **诊断可读化（用户反馈，App 3.1.3+19）**：设置 → 环境诊断的服务/端点实测项改为「中文名（英文 key）」显示——`approvalMode` 带取值说明（both · 双端同卡，先答生效 / mobile · 手机在线独占 / desktop · 仅桌面 GUI）、`remoteEvents` 等新字段有中文名、挂起待办非 0 时附语义提示；英文 key 保留便于复制粘贴排障。旧版 App（≤3.1.2）无此展示（字符串行按布尔误显示 ❌ 属显示限制，以插件日志/诊断 JSON 为准）。
 - 审批/问询 answerer 常量收敛（`PENDING_TIMEOUT_MS` = 120s）；超时定时器 `unref`（卸载不再残留句柄）。
 - 文档同步：README（功能/配置说明/dsh 版本基线）、FAQ（问询/审批弹窗类新增 issue #9 问答与 approvalMode 配置示例）、docs/09（§1 基线、§2.1 服务/机制表 + approvalMode 语义说明、§5 已知问题 12/13、§6 配置项）。
 
