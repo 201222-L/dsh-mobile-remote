@@ -1,6 +1,6 @@
 # 09 兼容性说明（Compatibility）
 
-> 版本：v3.1.1（2026-08-26 发布；含 WSL/类 Unix 路径修复与 reasoning/title 字段的降级说明） · 面向：开源使用者 / 二次开发 / 多设备部署
+> 版本：v3.1.3（2026-09-08 开发中：issue #9 审批双端呈现 / 可配置策略 approvalMode，机制基线 0.1.2-rc.1） · 面向：开源使用者 / 二次开发 / 多设备部署
 
 本文回答两个问题：**App 在哪些手机上能跑**，以及**插件在什么样的 Harness 上能跑**。
 
@@ -10,14 +10,14 @@
 
 | 组件 | 要求 |
 |---|---|
-| 桌面端 DSH（Harness） | 与开发基线同系列（本文档基于 **v0.1.1-rc.2 服务包 = DSH Desktop v2.0.2** 编写；v2.8.2 起为 0.1.1-rc.2 适配，更低版本可能缺少 `apiProxy`/`workspaceRegistry`/`commands` 等服务，功能会按 §2 降级） |
+| 桌面端 DSH（Harness） | **v3.1.2/v3.1.3 机制基线：`0.1.2-rc.1` 服务包 = DSH Desktop v2.0.5**（approval/request 瀑布 answerer + `$events` 远程事件双端审批 + RPC 网关，见 §2）；旧基线 `0.1.1-rc.2` = v2.0.2 起适配（本文件 §2 同时保留两代机制说明，`apiProxy` 帧桥为旧内核路径） |
 | dsh-mobile-remote 插件 | **v3.0.0（与 App/git tag 版本号统一）**；`/m/api/diagnostics` 可自检 |
 | 手机 App（Android） | v3.0.0（与插件同版本 = 完美配对；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」）；Android 7.0+、64 位机型 |
 | 字段级兼容（v3.1.0 候选） | `reasoning`/`title` 为纯增量字段：新插件+旧 App 无影响（忽略新字段）；新 App+旧插件自动回退（不渲染折叠块 / 悬浮球标题兜底短码）——任意组合均可使用 |
 | 字段级兼容（v3.1.1） | `/m/api/directories` 根视图新增 `sep`（服务端路径分隔符）；新插件+旧 App 忽略该字段即可（旧 App 在 WSL 上仍按 `\` 拼接，由服务端`normalizeServerPath` 归一化兜底，浏览/建夹/建会话均可用）；新 App+旧插件缺少 `sep` 时按根视图推断分隔符——任意组合均可使用 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
-**快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；`checks.respondBridge` / `checks.frameBridge` 为 ✅ 表示问询/审批弹窗桥已就绪；`checks.pendingFrames` 是**计数**（当前挂起的待答弹窗数，0 = 正常无待答，>0 = 有问询/审批等待处理）。
+**快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；`checks.respondBridge` / `checks.frameBridge` 为 ✅ 表示**旧内核（0.1.1-rc.2 及更早）**的问询/审批帧桥已就绪；**v3.1.3+ 看 `checks.approvalMode`**（生效策略）与 **`checks.remoteEvents`**（`true` = `$events` 双端呈现通道就绪，`false` = both 降级 mobile 或配置即 mobile/desktop）；`checks.pendingFrames` 是**计数**（当前挂起的待答弹窗数，0 = 正常无待答，>0 = 有问询/审批等待处理）；`notes` 首行说明当前审批策略实际语义。
 
 ---
 
@@ -36,10 +36,14 @@
 | `messageFeedback` | 消息 👍/👎（与 PC 端同一份） | 软依赖 | 反馈菜单隐藏/报错 |
 | `approval` | 权限策略读取（`setPolicy` 仅当存在时调用） | 可选 | 跳过策略写入 |
 | `credentials` | DeepSeek 余额查询 | 可选 | 回退环境变量 `DEEPSEEK_API_KEY`；都没有则余额不可用 |
-| `apiProxy` | 问询/审批弹窗桥 + 应答回写 | 可选（v2.3+ 新功能） | `checks.respondBridge=false`，手机不弹问询/审批卡（PC 端不受影响）；`/m/api/respond` 返回 503 |
+| `apiProxy`（0.1.1-rc.2 及更早） | 问询/审批帧桥 + 应答回写（旧内核通道） | 可选（v2.3+ 新功能） | `checks.respondBridge=false`，旧内核下手机不弹问询/审批卡（PC 端不受影响）；`/m/api/respond` 返回 503 |
 | `userQuestions` | （间接）问询链路 | 可选 | 无弹窗（同上） |
+| `approval/request`·`user-questions/request` 瀑布（0.1.2-rc.1+） | Agent 作用域 Cordis 瀑布，插件 answerer 应答（0.1.2 移除了 apiProxy 后的新机制） | 软依赖 | 无瀑布宿主（旧内核）由 apiProxy 帧桥接管；手机弹窗功能不受影响 |
+| `typertGateway` `$events` 远程事件（0.1.2-rc.1+，`both` 模式） | 插件进程内 $events 客户端：瀑布经内核转发到网关后与桌面 GUI 同收事件副本、先答生效（issue #9 双端呈现） | 可选（v3.1.3） | `approvalMode: both` 自动降级为 mobile（手机在线独占），日志与诊断 notes 说明 |
 
-> ⚠ **apiProxy 属私有协议**：`events.mux` 与 `respond` 的消息格式是 PC 端 GUI 的内部通道，**无版本稳定承诺**。插件以 `ctx.inject(["apiProxy"])` 获取并做函数存在性探测；若未来 Harness 重构该接口，桥会干净降级（不影响其他功能），随插件版本更新恢复。这是本插件对内核唯一的"越界"耦合，集中在 `lib/index.js` 的「问询/审批帧桥」一段。
+> ⚠ **approvalMode（v3.1.3，issue #9）语义**：`both`（默认）= 桌面 GUI 与手机同时弹卡、任一端先答即生效、另一端自动收卡（对齐 v3.1.1 帧桥体验；仅 0.1.2-rc.1+ 网关可用，旧宿主自动降级 mobile）；`mobile` = 手机在线独占应答（v3.1.2 行为），离线交桌面 GUI；`desktop` = 一律交桌面 GUI（手机不弹卡）。手机在场时待办 120s 无应答 fail-close（`unavailable` / 问询跳过），与 v3.1.2 一致。配置于 `cordis.patch.yml` → mobile-remote 行 `config.approvalMode`，重启生效。
+>
+> ⚠ **apiProxy 属私有协议**（旧内核通道）：`events.mux` 与 `respond` 的消息格式是 PC 端 GUI 的内部通道，**无版本稳定承诺**。插件以 `ctx.inject(["apiProxy"])` 获取并做函数存在性探测；若未来 Harness 重构该接口，桥会干净降级（不影响其他功能），随插件版本更新恢复。这是本插件对内核唯一的"越界"耦合，集中在 `lib/index.js` 的「问询/审批帧桥」一段（0.1.2-rc.1+ 内核无 apiProxy，该段静默不生效，改走瀑布 answerer + $events 双端呈现）。
 
 ### 2.2 事件与 RPC
 
@@ -106,6 +110,8 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 | 9 | 思维链块仅标题行（图标+字数+箭头）可点击切换，正文为可选中文本（点正文不切换，属设计） | 轻微认知成本 | 已文档化；折叠状态 v3.1.0 起按消息持久化（滚动/重进/重启保持） |
 | 10 | 旧版 App（≤v3.0.0）在 WSL/类 Unix 服务端浏览目录会拼出 `/\home` 形态的路径 | 旧 App 在 WSL 端目录浏览受限 | **v3.1.1 已修复**（服务端 `normalizeServerPath` 归一化）；新版 App 按服务端 `sep` 拼接，任意组合可用 |
 | 11 | 与 dsh-web 移动端远程（`@linxin666/dsh-remote-web-ui`）同装冲突 | 两者抢 `/m` 路由前缀（对方写死不可配），可能异常/崩溃 | 本插件 `path` 改 `/mr` 等非 `/m` 单段即可共存（App 自动适配，无需重装）；详见 FAQ |
+| 12 | 手机在线时桌面端不弹审批/问询框（v3.1.2，issue #9） | 桌面用户无法在 PC 审批/应答（只能手机答或 120s fail-close） | **v3.1.3 修复**：默认 `approvalMode: both` 双端同卡、先答生效（0.1.2-rc.1+）；旧宿主/历史版本可用 `approvalMode: mobile \| desktop` 明确策略 |
+| 13 | `approvalMode: both` 依赖内核 `$events` 通道 | 旧宿主（0.1.1-rc.2 及更早）无法双端同卡 | 自动降级 mobile 并写日志；诊断 `notes` 可查 |
 
 ## 6. 内置常量与"写死"数据速查
 
@@ -115,7 +121,7 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 |---|---|---|
 | 设计令牌（有意） | 品牌色 `#426EFE` / 深色 `#0E1116` 等（App `theme.dart`）、`com.dsh.remote`、QR 协议 `DSHREMOTE\|地址\|口令`、`EnableImpeller=true` | 产品设计/通信契约，勿随意改 |
 | 内核耦合词（有意） | 系统消息过滤词 `Current runtime context` / `This snapshot supersedes` / `background job `（App `chat_screen.dart`）、apiProxy 协议字段名 | 与内核/PC 端保持一致的隐藏规则 |
-| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` / `doneGraceMs`（v2.8.0）/ `lanBridge`（v3.0.0：`{enabled, port, host}`，默认关） | schema 默认值，改配置即可 |
+| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` / `doneGraceMs`（v2.8.0）/ `lanBridge`（v3.0.0：`{enabled, port, host}`，默认关）/ `approvalMode`（v3.1.3：`both` 默认 \| `mobile` \| `desktop`） | schema 默认值，改配置即可 |
 | 插件内置常量 | 通知上限 100、catalog 缓存 15s、SSE 心跳 25s、SSE 超时 15s、登录限流默认 10 次/60s（`rateLimit` 可配）、状态文件 `~/.dsh/mobile-remote/` | 合理默认，无需配置 |
 | App 内置常量 | HTTP 超时 15/20s（余额 25s）、连接/探测超时 8s、地址表上限 8、重试退避 1s→15s、看门狗 15s 检查 / 心跳 75s（3 周期）、日志保留 15 天/256KB、聊天初始窗口 50 条、历史分段 30 条、上下文圆环阈值 70%/90%、思维链折叠手动状态键 `dsh_mr_reasoning_overrides`（按会话持久化，每会话软上限 100 条） | 合理默认；修改点集中在各文件顶部常量 |
 | 已消除的写死 | 充值链接（原 App 硬编码 `platform.deepseek.com/top_up`） | v2.4.2 起走 `catalog.rechargeUrl`（插件配置为准） |

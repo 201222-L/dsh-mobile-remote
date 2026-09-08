@@ -364,13 +364,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final checks = d['checks'] as Map<String, dynamic>? ?? {};
     buf.writeln(L10n.t('端点实测:', 'Endpoint checks:'));
     checks.forEach((k, v) {
-      if (v is num) {
+      if (v == true) {
+        buf.writeln('  ✅ $k');
+      } else if (v == false) {
+        buf.writeln('  ❌ $k');
+      } else if (v is num) {
         // 计数字段（如 pendingFrames 挂起待答数）：0 正常，>0 表示有问询/审批待处理
         buf.writeln('  ${v == 0 ? '✅' : '⚠'} $k = $v');
       } else {
-        buf.writeln('  ${v == true ? '✅' : '❌'} $k');
+        // v3.1.3（issue #9）：策略/状态字符串字段（如 approvalMode = both）友好直读
+        buf.writeln('  ℹ $k = $v');
       }
     });
+    final notes = d['notes'] as List? ?? [];
+    if (notes.isNotEmpty) {
+      buf.writeln();
+      buf.writeln(L10n.t('备注:', 'Notes:'));
+      for (final n in notes) {
+        buf.writeln('  • $n');
+      }
+    }
     final plugin = d['plugin'] as Map<String, dynamic>? ?? {};
     buf.writeln();
     buf.writeln('${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}');

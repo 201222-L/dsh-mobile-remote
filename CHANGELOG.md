@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.1.3（2026-09-08，issue #9）— 审批/问询双端呈现（`approvalMode: both` 默认）+ 可配置策略
+
+### issue #9：手机 App 在线时桌面端不再弹出审批/问询框（approval/request 被 prepend 接管短路）
+
+- **现象**：v3.1.2 起（内核 0.1.2-rc.1 审批决策改为单条 Cordis 瀑布），answerer 以 `ctx.on("approval/request", …, { prepend: true, global: true })` 注册——手机在线（SSE `connections.size > 0`）即接管并挂起 promise（120s）且不调用 `next()` → 排在其后的内核"转发桌面 GUI"监听（`dsh-api-remotes` → `$events` 远程事件）不执行 → PC 端不弹卡。手机独占与桌面呈现互斥，桌面用户无法在 PC 审批，只能等手机答或 120s 后 fail-close `unavailable`（issue 报告含源码级技术分析）。
+- **修复思路（插件侧，无内核改动）**：0.1.2 的桌面弹卡并不在瀑布监听内联完成——`dsh-api-remotes` 把两个 Agent 作用域瀑布（`approval/request`、`user-questions/request`）继续转成 typertGateway 的 **$events 远程事件广播**：每个 $events 客户端（桌面 GUI 是其一）收到同一事件副本，**任一客户端先回 `$events/result` 即结算**（`settleRemoteEvent`），其余客户端收 **cancel 帧自动收卡**（`finishRemoteEvent`）。因此瀑布监听者只要**不抢先消费（next() 放行）**，审批/问询就会广播到桌面 GUI 与本插件各自的 $events 客户端——插件在 `both` 模式下再挂一个**进程内 $events 客户端**（`ctx.typertGateway.openWireStream("$events")`），即可恢复 v3.1.1 帧桥"两端同显、任一端先答即生效"。
+- **新增配置 `approvalMode`（`lib/index.js` schema，cordis.patch.yml 配置，重启生效）**：
+  - `both`（**默认**）——桌面 GUI 与手机同时收到审批/问询待办，先答生效、另一端自动收卡。需 DSH 0.1.2-rc.1+ / 桌面 v2.0.5+（$events 通道）；旧宿主自动降级 `mobile`（启动日志 + 诊断 notes 说明）；
+  - `mobile`——v3.1.2 行为：手机在线即由手机独占应答，离线 `next()` 交桌面 GUI（外出远程用）；
+  - `desktop`——一律 `next()` 交桌面 GUI，手机不弹审批/问询卡（常驻电脑前用）。
+- **双端结算语义**：手机在场时待办 120s 无应答 fail-close（审批 → `unavailable`、问询 → 跳过 null，与 v3.1.2 一致）；任一端口答/超时/取消都会广播 resolved 帧——**其它手机端卡片同步收起**（v3.1.2 只结算不广播，超时/多手机时卡片残留）。
+- **`/m/api/respond` 增强（顺手修复 v3.1.2 遗留缺陷）**：① question/approval 条目支持按 `rpcId` 兜底匹配——修复 **v3.1.2 的 question 应答必失败**（App 端只回传 rpcId 不回传 questionId，原查找 miss → 走 apiProxy 降级 → 现代内核 503，问询只能在桌面答）；② `kind=cancel` 在现代宿主下结算本地条目（审批 → `cancelled`、问询 → 跳过；v3.1.2 取消悬空、只能等 120s 超时）；③ 结算统一广播 resolved 帧（见上）。
+- **诊断**：`checks.approvalMode`（生效策略）+ `checks.remoteEvents`（$events 双端通道就绪与否）+ `notes` 首行策略说明；both 降级 / desktop 配置均有明确提示。
+- **兼容性**：App 零改动（帧协议只增字段：requested 帧新增 `rpcId`，resolved 帧新增 `rpcId`/`questionId` 冗余字段，旧 App 按 key 取用、忽略未知字段）；旧内核（0.1.1-rc.2 及更早）走 apiProxy 帧桥路径不受影响（era 互斥：0.1.2+ 无 apiProxy、旧内核无瀑布/$events，运行时分别探测）。
+
+### 其余
+
+- 审批/问询 answerer 常量收敛（`PENDING_TIMEOUT_MS` = 120s）；超时定时器 `unref`（卸载不再残留句柄）。
+- 文档同步：README（功能/配置说明/dsh 版本基线）、FAQ（问询/审批弹窗类新增 issue #9 问答与 approvalMode 配置示例）、docs/09（§1 基线、§2.1 服务/机制表 + approvalMode 语义说明、§5 已知问题 12/13、§6 配置项）。
+
 ## v3.1.2（2026-09-05）— 新建会话权限死锁修复（issue #6）+ 宿主包 peer 化（issue #7）
 
 ### issue #6：默认权限预设为「完全访问」时，手机端新建会话必失败（risk-confirmation-required）

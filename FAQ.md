@@ -47,12 +47,24 @@
 
 **Q：agent 问我问题/要权限时，手机为什么不弹卡片？**
 1. 弹窗在**该会话的对话页**里；人在别的页面时只有通知中心的「需要你回答」条目，点进去即见弹窗
-2. 电脑端 dsh 需重启过（弹窗桥随插件加载）；App 设置 → 环境诊断确认 `respondBridge`/`frameBridge` 为 ✅
+2. 电脑端 dsh 需重启过（answerer 随插件加载）；App 设置 → 环境诊断：v3.1.3+ 看 `checks.approvalMode` / `checks.remoteEvents`（旧版 App 无这两行，看 `respondBridge`/`frameBridge` 是否 ✅；旧版 App + 新插件时字符串行按布尔渲染显示 ❌ 属显示限制，以插件日志/诊断 JSON 为准）
 3. 若 PC 端也没弹：会话审批策略为「从不询问」，或 Harness 配了自动答题/自动审批（不弹是正常行为）
+4. 配置了 `approvalMode: desktop`（审批/问询只走桌面 GUI）时手机不弹卡——符合配置语义，不是故障
 详见 docs/09-compatibility.md。
 
+**Q：手机在线时，桌面端不弹审批/问询框？（issue #9）**
+v3.1.2 起审批/问询改走内核 0.1.2 的单条 Cordis 瀑布 + 手机接管机制：手机在线即由手机独占应答，桌面 GUI 不再弹卡。**v3.1.3 起默认 `approvalMode: both`**——桌面 GUI 与手机同时收到待办，任一端先答即生效、另一端自动收卡（恢复 v3.1.1 帧桥体验）。仍可切换其它策略（`cordis.patch.yml` → mobile-remote 行 `config`，重启生效）：
+
+```yaml
+approvalMode: both      # 默认。两端同卡、先答生效（需 DSH 0.1.2-rc.1+ / 桌面 v2.0.5+）
+# approvalMode: mobile  # 手机在线独占（v3.1.2 行为），外出远程用
+# approvalMode: desktop # 审批/问询只走桌面 GUI，常驻电脑前用
+```
+
+旧宿主（0.1.1-rc.2 及更早，无 $events 通道）`both` 自动按 `mobile` 处理；诊断页 notes 会说明实际生效语义。
+
 **Q：手机点了 ✕ / 回答了，电脑端会怎样？**
-两端同一待办：手机 ✕ = 取消（agent 按取消继续），手机回答 = 答案直接传给 agent；任何一端处理后另一端弹窗同步消失。先到先得，后答的一方提示"可能电脑端已先处理"。
+两端同一待办：手机 ✕ = 取消（审批 → cancelled、问询 → 跳过），手机回答 = 答案直接传给 agent；任何一端处理后另一端弹窗同步消失。先到先得，后答的一方提示"可能电脑端已先处理"。
 
 ## 设备/兼容类
 
