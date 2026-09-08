@@ -1986,6 +1986,19 @@ class _ChatScreenState extends State<ChatScreen> {
               title: Text(L10n.t('从相册选择', 'Choose from gallery'), style: const TextStyle(fontSize: 14)),
               onTap: () => Navigator.of(ctx).pop('gallery'),
             ),
+            // v3.1.2（csborbbnc 反馈）：文件传输入口（系统选择器/下载保存）
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.upload_file_outlined, size: 20),
+              title: Text(L10n.t('上传文件', 'Upload file'), style: const TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('upload-file'),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.download_outlined, size: 20),
+              title: Text(L10n.t('下载文件', 'Download file'), style: const TextStyle(fontSize: 14)),
+              onTap: () => Navigator.of(ctx).pop('download-file'),
+            ),
             ListTile(
               dense: true,
               leading: const Icon(Icons.code, size: 20),
@@ -2006,7 +2019,61 @@ class _ChatScreenState extends State<ChatScreen> {
       await _pickImages(fromCamera: false);
       return;
     }
+    if (choice == 'upload-file') {
+      await _uploadFile();
+      return;
+    }
+    if (choice == 'download-file') {
+      await _downloadFile();
+      return;
+    }
     await _showCommandMenu();
+  }
+
+  /// v3.1.2（csborbbnc 反馈）：上传文件——系统选择器 → 写入电脑端会话工作目录。
+  static const MethodChannel _filesChannel = MethodChannel('dsh/files');
+
+  Future<void> _uploadFile() async {
+    final sid = _mySessionId ?? widget.store.sessionId;
+    if (sid == null) {
+      showToast(context, L10n.t('无当前会话', 'No active session'));
+      return;
+    }
+    try {
+      final picked = await _filesChannel.invokeMapMethod<String, dynamic>('pickFile');
+      if (picked == null) return; // 取消
+      final name = picked['name'] as String? ?? 'file';
+      final bytes = picked['bytes'] as Uint8List?;
+      if (bytes == null || bytes.isEmpty) {
+        if (mounted) showToast(context, L10n.t('读取文件失败', 'Failed to read the file'));
+        return;
+      }
+      final r = await api.uploadFile(sid, name, bytes);
+      if (mounted) {
+        showToast(context,
+            '${L10n.t('已上传到电脑工作目录：', 'Uploaded to PC workspace: ')}${r['path'] ?? name}');
+      }
+    } catch (e) {
+      if (mounted) showToast(context, '${L10n.t('上传失败：', 'Upload failed: ')}$e');
+    }
+  }
+
+  /// v3.1.2（csborbbnc 反馈）：下载文件——可视化文件选择器（盘符/目录树/点文件）
+  /// → 保存到手机「下载」目录。
+  Future<void> _downloadFile() async {
+    final path = await showFilePicker(context);
+    if (path == null || path.isEmpty || !mounted) return;
+    try {
+      final bytes = await api.downloadFile(path);
+      final name = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ?? 'file';
+      final saved = await _filesChannel
+          .invokeMethod<String>('saveToDownloads', {'name': name, 'bytes': bytes});
+      if (mounted) {
+        showToast(context, '${L10n.t('已保存到手机：', 'Saved on phone: ')}${saved ?? name}');
+      }
+    } catch (e) {
+      if (mounted) showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
+    }
   }
 
   /// v3.0.0 图像链路：选图（原始解析，不压缩）——上限按内核 imageLimits（PC 端同源数字）。

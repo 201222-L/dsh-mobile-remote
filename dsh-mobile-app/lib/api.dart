@@ -33,7 +33,7 @@ final Api api = Api();
 
 /// 目录浏览结果：[dirs] 子目录名列表；[sep] 服务端路径分隔符
 /// （null = 旧版插件未返回，由调用方按根视图推断，见 sheets.dart dirSepOf）。
-typedef DirListing = ({List<String> dirs, String? sep});
+typedef DirListing = ({List<String> dirs, List<String> files, String? sep});
 
 class Api {
   String baseUrl = '';
@@ -259,8 +259,42 @@ class Api {
     }
   }
 
-  Map<String, dynamic> _decode(http.Response res) {
-    // v2.9.0 review(LOW#7)：非 JSON 错误体（反代 HTML 页等）不再抛 FormatException，回退 HTTP <status>
+  // ── v3.1.2（csborbbnc 反馈）：文件传输 ──
+  /// 下载电脑文件（返回原始字节；失败抛 ApiException）。
+  Future<Uint8List> downloadFile(String path, {Duration timeout = const Duration(seconds: 120)}) async {
+    try {
+      final res = await _client
+          .get(_uri('/api/files?path=${Uri.encodeQueryComponent(path)}'), headers: _headers)
+          .timeout(timeout);
+      if (res.statusCode != 200) {
+        Map<String, dynamic>? body;
+        try {
+          body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        } catch (_) {
+          body = null;
+        }
+        throw ApiException(
+            (body?['detail'] as String?) ?? 'HTTP ${res.statusCode}',
+            code: body?['error'] is String ? (body?['error'] as String) : null);
+      }
+      return res.bodyBytes;
+    } catch (e) {
+      AppLog.instance.log('GET /api/files 失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 上传文件到会话工作目录（base64，服务端写盘；返回 {path, bytes}）。
+  Future<Map<String, dynamic>> uploadFile(String sessionId, String name, Uint8List bytes,
+      {Duration timeout = const Duration(minutes: 3)}) async {
+    return await postJson('/api/files/upload', {
+      'sessionId': sessionId,
+      'name': name,
+      'data': base64Encode(bytes),
+    }, timeout: timeout);
+  }
+
+  Map<String, dynamic> _decode(http.Response res) {    // v2.9.0 review(LOW#7)：非 JSON 错误体（反代 HTML 页等）不再抛 FormatException，回退 HTTP <status>
     Map<String, dynamic>? body;
     try {
       body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
@@ -604,11 +638,13 @@ class Api {
     return (data['workspaces'] as List? ?? []).map((e) => e as Map<String, dynamic>).toList();
   }
 
-  /// 目录浏览：path 为空返回盘符/根；否则返回子目录名列表（附服务端分隔符，v3.1.1）。
+  /// 目录浏览：path 为空返回盘符/根；否则返回子目录名列表（附服务端分隔符，v3.1.1；
+  /// v3.1.2 增返回 files 文件列表，供文件选择器使用）。
   Future<DirListing> directories(String path) async {
     final data = await getJson('/api/directories?path=${Uri.encodeQueryComponent(path)}');
     return (
       dirs: (data['dirs'] as List? ?? []).map((e) => e.toString()).toList(),
+      files: (data['files'] as List? ?? []).map((e) => e.toString()).toList(),
       sep: data['sep'] is String ? data['sep'] as String : null,
     );
   }

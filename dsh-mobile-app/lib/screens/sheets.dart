@@ -1,6 +1,7 @@
 // 底部弹层组：模型与推理 / 权限预设（含风险确认）/ 新建会话 / 目录选择 / 新建文件夹 / 执行动作
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../fmt.dart';
 import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';
@@ -254,44 +255,106 @@ void showPermSheet(BuildContext context, AppStore store) {
   ]);
 }
 
-void _showDangerConfirm(BuildContext context, AppStore store) {
-  showSheet(context, L10n.t('⚠ 风险确认', '⚠ Risk Confirmation'), [
-    Padding(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
-      child: Text(
-        L10n.t('完全访问将允许 agent 在电脑上执行任何操作，包括修改或删除工作区以外的文件。', 'Full Access lets the agent perform any operation on this computer, including modifying or deleting files outside the workspace.'),
-        textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 14, height: 1.6, color: DshColors.ink2(context)),
+/// issue #6：风险确认弹层（可复用，返回结果承载确认意图）——确认 true / 取消 false。
+Future<bool?> _askDangerConfirm(BuildContext context) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: DshColors.surface(context),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(DshTheme.radiusLg)),
+    ),
+    builder: (ctx) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(color: DshColors.line(ctx), borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(L10n.t('⚠ 风险确认', '⚠ Risk Confirmation'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
+              child: Text(
+                L10n.t('完全访问将允许 agent 在电脑上执行任何操作，包括修改或删除工作区以外的文件。', 'Full Access lets the agent perform any operation on this computer, including modifying or deleting files outside the workspace.'),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, height: 1.6, color: DshColors.ink2(ctx)),
+              ),
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: Text(L10n.t('取消', 'Cancel')),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: DshColors.danger(ctx)),
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: Text(L10n.t('我理解风险，启用', 'Enable — I understand the risk')),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ),
-    Row(
-      children: [
-        Expanded(
-          child: OutlinedButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              showPermSheet(context, store);
-            },
-            child: Text(L10n.t('取消', 'Cancel')),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: DshColors.danger(context)),
-            onPressed: () {
-              final msgr = ScaffoldMessenger.of(context);
-              Navigator.of(context).pop();
-              store
-                  .applySessionConfig({'permissionPreset': 'danger-full-access', 'confirmDanger': true})
-                  .then((_) => showToastAt(msgr, L10n.t('已启用完全访问', 'Full Access enabled')))
-                  .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
-            },
-            child: Text(L10n.t('我理解风险，启用', 'Enable — I understand the risk')),
-          ),
-        ),
-      ],
-    ),
+  );
+}
+
+void _showDangerConfirm(BuildContext context, AppStore store) {
+  final msgr = ScaffoldMessenger.of(context);
+  _askDangerConfirm(context).then((ok) {
+    if (ok != true) {
+      // 取消 / 关闭：回到权限预设列表（与旧行为一致）
+      if (context.mounted) showPermSheet(context, store);
+      return;
+    }
+    store
+        .applySessionConfig({'permissionPreset': 'danger-full-access', 'confirmDanger': true})
+        .then((_) => showToastAt(msgr, L10n.t('已启用完全访问', 'Full Access enabled')))
+        .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
+  });
+}
+
+/// issue #6：新建会话弹层的权限预设选择——danger 先过风险确认（与设置页一致），
+/// 确认后回调 (id, true)；普通预设直接回调 (id, false)。
+void _pickPermForSession(
+  BuildContext context,
+  Catalog catalog,
+  void Function(String id, bool confirmed) onPick, {
+  String? current,
+}) {
+  showSheet(context, L10n.t('权限预设', 'Permission Presets'), [
+    ...catalog.permissionPresets.map((p) => _sheetItem(
+          context,
+          name: p.name,
+          sub: p.description,
+          active: current == p.id,
+          onTap: () {
+            Navigator.of(context).pop();
+            if (p.id == 'danger-full-access') {
+              _askDangerConfirm(context).then((ok) {
+                if (ok == true) onPick('danger-full-access', true);
+              });
+              return;
+            }
+            onPick(p.id, false);
+          },
+        )),
+    Text(L10n.t('选择完全访问需确认风险', 'Selecting Full Access requires a risk confirmation'), textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
   ]);
 }
 
@@ -303,6 +366,11 @@ Future<void> showNewSessionSheet(
 ) async {
   String? pendingMode;
   String? pendingDir;
+  // issue #6：本次会话的权限预设（默认跟随设置页的默认预设）。
+  // danger-full-access 必须先过风险确认（permConfirmed），doCreate 才带 confirmDanger: true；
+  // 旧版整条链路缺失 → 默认预设设成完全访问后，新建会话必 400 risk-confirmation-required（死锁）。
+  String? pendingPerm;
+  var permConfirmed = false;
   // 默认工作目录 = 当前选中的工作区（未选时回退第一个已注册工作区）。
   // v3.1.1(issue #5)：条目保留服务端原始路径（规范化只用于匹配比较）——
   // 旧实现把 path 归一成 `\` 形态存入，WSL/Linux 上 `\home\user` 会直接被当作 cwd 发回服务端。
@@ -341,12 +409,22 @@ Future<void> showNewSessionSheet(
       _ => preset,
     };
     try {
+      // issue #6：目标预设为完全访问且未经本弹层确认时，先弹风险确认；
+      // 确认后显式带 confirmDanger: true（服务端契约，lib/index.js:1753）。
+      // 默认预设即完全访问（设置页已确认）也不再默认放行——本会话仍须显式确认。
+      final perm = pendingPerm ?? 'workspace-write';
+      if (perm == 'danger-full-access' && !permConfirmed) {
+        final ok = await _askDangerConfirm(context);
+        if (ok != true) return; // finally 会复位 creating
+        permConfirmed = true;
+      }
       final created = await api.createSession({
         'preset': preset,
         'cwd': ?pendingDir,
         'model': store.sessionConfig.model ?? 'deepseek-v4-flash',
         'reasoningEffort': store.sessionConfig.reasoningEffort ?? 'max',
-        'permissionPreset': store.catalog?.defaults['permissionPreset'] ?? 'workspace-write',
+        'permissionPreset': perm,
+        if (perm == 'danger-full-access') 'confirmDanger': true,
       });
       if (!context.mounted) return;
       final msgr = ScaffoldMessenger.of(context);
@@ -372,6 +450,7 @@ Future<void> showNewSessionSheet(
     return;
   }
   final catalog = cat; // 非空最终引用，供弹层闭包使用
+  pendingPerm ??= catalog.defaults['permissionPreset'] as String?;
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -479,6 +558,44 @@ Future<void> showNewSessionSheet(
                             ),
                           ),
                         ),
+                        // issue #6：新建会话可单独选择权限预设（danger 走风险确认）；
+                        // 未选择时跟随设置页默认预设，doCreate 兜底校验
+                        InkWell(
+                          onTap: () => _pickPermForSession(
+                            context,
+                            catalog,
+                            (id, confirmed) {
+                              pendingPerm = id;
+                              permConfirmed = confirmed;
+                              refresh();
+                            },
+                            current: pendingPerm,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
+                            child: Row(
+                              children: [
+                                Icon(Icons.shield_outlined, size: 15, color: DshColors.ink3(context)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(L10n.t('权限预设', 'Permission Preset'), style: const TextStyle(fontSize: 14)),
+                                      Text(
+                                        '${permNameOf(pendingPerm) ?? L10n.t('默认（工作区写入）', 'Default (Workspace Write)')}'
+                                        '${pendingPerm == 'danger-full-access' && !permConfirmed ? L10n.t(' · 需风险确认', ' · confirm required') : ''}',
+                                        style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text(L10n.t('选择 ▸', 'Choose ▸'), style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
+                              ],
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -549,6 +666,19 @@ class _DirPickerSheet extends StatefulWidget {
 
   @override
   State<_DirPickerSheet> createState() => _DirPickerSheetState();
+}
+
+/// v3.1.2：文件选择器（与目录选择器独立的专用组件：盘符/目录树导航 + 文件列表点选）。
+Future<String?> showFilePicker(BuildContext context) async {
+  return await showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: DshColors.surface(context),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(DshTheme.radiusLg)),
+    ),
+    builder: (_) => const _FilePickerSheet(),
+  );
 }
 
 class _DirPickerSheetState extends State<_DirPickerSheet> {
@@ -762,6 +892,197 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
                       Navigator.of(context).pop();
                     },
                     child: Text(L10n.t('选这里', 'Select Here')),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// v3.1.2：文件选择器（独立组件）。盘符/目录树导航同目录选择器，
+/// 但：不展示「已注册工作区」快捷区、无「新建文件夹/选这里」，点文件即返回全路径。
+class _FilePickerSheet extends StatefulWidget {
+  const _FilePickerSheet();
+
+  @override
+  State<_FilePickerSheet> createState() => _FilePickerSheetState();
+}
+
+class _FilePickerSheetState extends State<_FilePickerSheet> {
+  final dirStack = <String>[];
+  String current = '';
+  List<String> dirs = [];
+  List<String> files = [];
+  String sep = '\\';
+  bool loading = true;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load('');
+  }
+
+  Future<void> load(String path) async {
+    setState(() {
+      current = path;
+      loading = true;
+      error = null;
+      dirs = [];
+      files = [];
+    });
+    try {
+      final listing = path.isEmpty ? await api.directories('') : await api.directories(path);
+      dirs = listing.dirs;
+      files = listing.files;
+      sep = dirSepOf(dirs, listing.sep);
+    } catch (e) {
+      error = '${L10n.t('读取失败：', 'Failed to read: ')}$e';
+    }
+    if (mounted) setState(() => loading = false);
+  }
+
+  void _goUp() {
+    if (dirStack.isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    load(dirStack.removeLast());
+  }
+
+  void _openDir(String name) {
+    if (current.isEmpty) {
+      dirStack.add('');
+      load(name);
+    } else {
+      dirStack.add(current);
+      load(joinDirPath(current, name, sep));
+    }
+  }
+
+  void _pickFile(String name) {
+    final full = current.isEmpty ? name : joinDirPath(current, name, sep);
+    Navigator.of(context).pop(full);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final danger = DshColors.danger(context);
+    final ink3 = DshColors.ink3(context);
+    final ink2 = DshColors.ink2(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(color: DshColors.line(context), borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(L10n.t('选择文件', 'Choose File'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    current.isEmpty
+                        ? (sep == '/' ? L10n.t('根目录', 'Root') : L10n.t('根目录（选择盘符）', 'Root (choose a drive)'))
+                        : current,
+                    style: TextStyle(fontSize: 12.5, color: ink2),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  onPressed: _goUp,
+                  child: Text(L10n.t('上级 ▸', 'Up ▸'), style: TextStyle(fontSize: 12, color: brand)),
+                ),
+              ],
+            ),
+            SizedBox(
+              height: 320,
+              child: loading
+                  ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                  : error != null
+                      ? Center(child: Text(error!, style: TextStyle(fontSize: 13, color: danger)))
+                      : ListView(
+                          children: [
+                            if (current.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Text(L10n.t('所有盘符', 'All Drives'), style: TextStyle(fontSize: 11, color: ink3)),
+                              ),
+                            for (final name in dirs)
+                              InkWell(
+                                onTap: () => _openDir(name),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 2),
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.folder_outlined, size: 15, color: ink3),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(name,
+                                            style: const TextStyle(fontSize: 13.5),
+                                            overflow: TextOverflow.ellipsis),
+                                      ),
+                                      Icon(Icons.chevron_right, size: 16, color: ink3),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            if (files.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Text(L10n.t('文件', 'Files'), style: TextStyle(fontSize: 11, color: ink3)),
+                              ),
+                              for (final name in files)
+                                InkWell(
+                                  onTap: () => _pickFile(name),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 2),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.insert_drive_file_outlined, size: 15, color: ink3),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(name,
+                                              style: const TextStyle(fontSize: 13.5),
+                                              overflow: TextOverflow.ellipsis),
+                                        ),
+                                        Icon(Icons.arrow_forward_ios, size: 13, color: ink3),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                            ],
+                            if (dirs.isEmpty && files.isEmpty && !loading && error == null)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 20),
+                                child: Center(
+                                  child: Text(L10n.t('该目录为空', 'Empty directory'), style: TextStyle(fontSize: 13, color: ink3)),
+                                ),
+                              ),
+                          ],
+                        ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(L10n.t('取消', 'Cancel')),
                   ),
                 ),
               ],

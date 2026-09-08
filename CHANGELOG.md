@@ -1,5 +1,38 @@
 # Changelog
 
+## v3.1.2（2026-09-05）— 新建会话权限死锁修复（issue #6）+ 宿主包 peer 化（issue #7）
+
+### issue #6：默认权限预设为「完全访问」时，手机端新建会话必失败（risk-confirmation-required）
+
+- **现象**：设置页把默认权限预设设为 danger-full-access（该路径已带风险确认并成功保存）后，首页「新建会话」必失败——服务端 `lib/index.js:1753` 在建会话前校验 `confirmDanger !== true` 即返回 400，而 App 端 `doCreate` 只传 `permissionPreset`（跟随默认预设）、不传 `confirmDanger`，新建会话弹层也没有权限预设选择/风险确认入口 → 死锁：默认预设设成完全访问后，手机端永远无法新建会话。
+- **App（Flutter，3.1.2+17）**（`dsh-mobile-app/lib/screens/sheets.dart`）：
+  - 新建会话弹层新增「权限预设」行：默认跟随设置页默认预设；可逐项选择（danger 先过风险确认弹层，与设置页一致）；
+  - `doCreate` 兜底：目标预设为 danger-full-access 且未经本弹层确认时，先弹风险确认；确认后请求体显式带 `confirmDanger: true`；取消则终止创建（不再出现 400 死锁）；
+  - 风险确认弹层重构为可复用 `_askDangerConfirm`（返回 `Future<bool?>`），设置页路径（`showPermSheet → _showDangerConfirm`）行为不变（取消回权限列表、确认后 `applySessionConfig` 不变）。
+- 服务端无改动：契约本就要求显式 `confirmDanger`（docs/03-api §创建会话），App 侧对齐即可。
+
+### issue #7：精确钉版 @deepseek-ai/* 共享宿主包 → 双实例（dual-package hazard）
+
+- `package.json`：`@deepseek-ai/dsh-llm` / `dsh-credentials` / `dsh-sandbox-policy` 从 `dependencies`（精确 `0.1.0-rc.6`）移至 `peerDependencies`（`>=0.1.0-rc.6 <0.2.0`）；
+- `@deepseek-ai/schemastery` 一并 peer 化（`>=3.18.1`）：宿主 0.1.2-rc.1 已是 3.18.2，原精确 `3.18.1` 已过期（与宿主版本分叉）；
+- 效果：安装后不再在 profile 内产生并存第二份副本，Node 模块解析上溯宿主 bundle（插件 `~/.dsh/profiles/<profile>/node_modules/` → 宿主 `~/.dsh/profiles/node_modules/`），版本与宿主一致，双实例从根上消除；插件市场「可能遮蔽宿主版本」警告随声明方式修正而消失。
+- 验证：`pnpm install` 后插件 node_modules 无 `@deepseek-ai` 副本、无 `0.1.0-rc.6` 残留；`require.resolve` 命中宿主 0.1.2-rc.1；`dsh plugin list` 正常。
+
+### 兼容性
+
+- 适配/验证组合：DSH 0.1.2-rc.1（DSH Desktop v2.0.5）——插件加载、LAN 桥（`0.0.0.0:3080 → 127.0.0.1:43120/m/api`）与口令认证均正常（`flutter analyze` 零问题，App 单测 24/24，`node --check` 通过）。
+- **DSH Desktop 2.0.5 浏览器门禁适配（真机调试发现）**：2.0.5 给桌面 WebServer 每个路由包了一层 desktop-browser-access 门禁——默认只放行带 `x-dsh-desktop-renderer` 能力头的 Electron 渲染器请求，手机经 LAN 桥的请求（即使 `x-mobile-token` 正确）一律 `403 forbidden`（`dsh-plugin-desktop/lib/webserver.js` → `decideDesktopBrowserAccess`）。修复：桥转发上游时，若同上下文存在 `ctx.desktopBrowserAccess`（桌面启动器提供），补传其 `rendererHeader`；桥的 LAN 面仍由插件 authToken（≥16 位）把关，不依赖「允许浏览器打开」设置，web profile/旧版桌面自动跳过。
+- **0.1.2-rc.1 RPC 网关适配（`lib/index.js` apiRpc 重构）**：0.1.2-rc.1 起内核 RPC 契约变化——①端点命名 `namespace.method` → `namespace/method`（`session.models`→`session/modelCatalog`、`session.history`→`session/control`、`goal.create`→`goals/create`、`subagent.*`→`subagents/*`）；②载荷按新参数形态适配（多数端点收单参数 `request`，`subagents/interruptByParent` 三参数平铺，`session/modelCatalog`/`session/control` 零参数，`goals/create` 为 `agent`+`request`，`session/prompt` 需补 `requestId`）；③桌面 2.0.5 后 `/api` HTTP 通道被浏览器门禁+会话 Cookie 鉴权关闭，插件内 fetch 必 403——统一改走进程内 `ctx.typertGateway.invokeRpc`（@Remote 网关，与宿主同域），旧宿主无网关时保留原 HTTP 路径降级。`readSessionConfig`/图像限额改读 `session/control` 投影（`modelSelection.lastUsed` / `imageLimits`），模型目录改读 `session/modelCatalog`（`groups` 结构不变）。
+- 注：DSH Desktop 采用 pnpm `nodeLinker: hoisted`，file: 插件是**物理拷贝**——改源码后必须 `pnpm install --force` 同步到 `~/.dsh/profiles/<profile>/node_modules/` 并重启生效。
+- **0.1.2 Session API 变更适配（真机定位）**：0.1.2 的 `Session` 类不再暴露 `.events` 数组，改用 `snapshotEvents()`/`eventAt()`/`seq`；`PermissionPresetService.current()` 也改为接收 session 对象（不再接受事件数组）。插件所有 `session.events` 访问点（`/history`、`sessionTitleOf`、`foldAgentPreset`、`readSessionConfig`、`/usage`）统一收敛到新增 `eventsOf(session)` 助手（兼容休眠快照 `{events}` 形态与旧版宿主），修复 App 打开会话「该会话暂不可用」与 `Cannot read properties of undefined (reading 'length'/'filter')` 崩溃。
+- **审批/问询移动端 answerer（0.1.2 机制再适配）**：0.1.2 移除了 apiProxy（旧帧桥失效，手机收不到审批卡）；内核改为 Agent 作用域 Cordis 瀑布 `approval/request` / `user-questions/request`，answerer 须以 `global: true` 注册（dispatch 从宿主服务的 fiber 分发并做 agent 作用域过滤，非 global 的根监听不入选）。插件注册 `{ prepend: true, global: true }` 监听：手机在线（SSE）即接管（转发 `mobile/frame` + `/respond` 结算），离线/超时 fail-close（`unavailable`，与内核一致），拒接 `next()` 落回桌面 GUI answerer。与官方 `packages/api/remotes` + `packages/client/ui-approval` 同形态（已对照 deepseek-ai/deepseek-harness dsh-v0.1.2-rc.1 源码逐行验证）。
+- **休眠会话自动恢复**：`/send` 遇到休眠会话（桌面重启后）调用 `agents.resume({ resumeSessionId, agentOptions, setup })` 自动重挂 agent（先前必 404 session-not-found）；`readSessionConfig` 对休眠会话从日志折叠配置（`model/selection`、`agent-preset/selected`、`permission/preset`），修复重启后聊天页「模型/权限」标签为空。
+- **合成审批测试端点**：`POST /m/api/dev/approval-test`（需口令）——复用内核同款 Agent 作用域瀑布（`scopeTarget(agent, agent)`），绕过 turn-enclosed 校验，用于不依赖模型行为的审批链路验证（手机接卡 → 批准/拒绝 → `/respond` 结算 → 瀑布返回 outcome）。新增 peer：`@deepseek-ai/dsh-scope`。
+- **B站反馈落地**：
+  - **文件传输（csborbbnc 反馈）**：服务端新增 `GET /m/api/files?path=`（下载，流式+Content-Disposition，MIME 按扩展名）与 `POST /m/api/files/upload`（{sessionId, name, data base64} → 写入会话工作目录，64MB 上限；与目录选择器同信任模型：口令鉴权+现有限流）；App 端 composer「⊕ 更多」新增「上传文件」（Android 系统文件选择器，原生通道 `dsh/files`）与「下载文件」（输入电脑路径 → 保存到手机「下载」目录，Android 10+ MediaStore、更早版本应用下载目录，零新依赖）。
+  - **自由复制（csborbbnc 反馈）**：消息文本本已支持选中复制/操作栏复制——本次补齐**代码块复制按钮**（复制全文 + 行数提示）。
+  - **干活完提醒可靠性（小小的甜菜 反馈）**：推送超时 10s→15s，并对网络层失败（DNS 抖动/连接重置等）重试一次（HTTP 4xx/5xx 不重试，避免配额错误空转）。
+
 ## v3.1.1（2026-08-26）— WSL/类 Unix 平台路径选择修复（issue #5）
 
 ### 现象

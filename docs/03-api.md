@@ -563,6 +563,20 @@
 - `line` 必须以 `/` 开头（否则 `400 bad-request`）；未知/畸形命令 `404 command-not-found`；服务未注册 `503 commands-unavailable`（带 detail）；服务在而会话不存在 `404 session-not-found`（与 GET 拆分语义一致）
 - `result` 为内核 settle 对象（`commandId` + `result.{kind,text}`），与 PC 端一致
 
+### 6.16 文件传输（v3.1.2，B站 csborbbnc 反馈）
+
+**GET `/m/api/files?path=…`** — 下载电脑文件
+- 响应：`200` 文件流（`content-type` 按扩展名推断、`content-disposition: attachment` 带 UTF-8 文件名）；路径不存在或非文件 → `404 file-not-found`；缺 `path` → `400 bad-request`
+- 与目录选择器（§6.1）同信任模型：口令鉴权 + 现有限流，路径由手机显式指定
+
+**POST `/m/api/files/upload`** — 上传文件到电脑（写会话工作目录）
+```json
+请求: { "sessionId": "…(可选)", "name": "README.md", "data": "<base64>" }
+响应: { "ok": true, "path": "F:\\DSH-Outpost\\README.md", "bytes": 1234 }
+```
+- 目标目录：`sessionId` 对应 agent 的工作目录 → 缺省回退第一个注册工作区根；无法确定 → `503 no-workspace`
+- `name` 不合法（含 `\ / : * ? " < > |`、`.`/`..`/超 255）→ `400 invalid-name`；body 上限 64MB → `413 payload-too-large`
+
 
 
 

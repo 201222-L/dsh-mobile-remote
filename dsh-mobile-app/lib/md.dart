@@ -1,8 +1,10 @@
 // Markdown 渲染 —— 完全对齐网页端 page.html 的 renderMarkdown：
 // 段落/标题1-4/列表/引用/代码块/行内代码/表格/链接/分隔线，样式同 CSS。
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'theme.dart';
+import 'toast.dart';
 
 /// 只放行 http/https 链接（v2.6.0 安全加固）：
 /// 防止消息内容（或中间人篡改的回复）用 file:/intent:/tel: 等 scheme 拉起任意应用/Intent。
@@ -105,16 +107,38 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 长代码块限高（320px 内部滚动），避免单个消息撑出数千像素高度
-          // （过高的列表总高度在部分设备上会触发绘制上限导致空白）。
-          if (lineCount > 15)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                '代码 · $lineCount 行 · 可滚动查看',
-                style: TextStyle(fontSize: 10.5, color: ink2),
+          // v3.1.2（csborbbnc 反馈）：代码块「复制」按钮 + 长块提示（与行数同行）
+          Row(
+            children: [
+              if (lineCount > 15)
+                Expanded(
+                  child: Text(
+                    '代码 · $lineCount 行 · 可滚动查看',
+                    style: TextStyle(fontSize: 10.5, color: ink2),
+                  ),
+                )
+              else
+                const Spacer(),
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: code));
+                  showToast(context, '已复制代码（$lineCount 行）');
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.copy_all, size: 13, color: ink2),
+                      const SizedBox(width: 3),
+                      Text('复制', style: TextStyle(fontSize: 10.5, color: ink2)),
+                    ],
+                  ),
+                ),
               ),
-            ),
+            ],
+          ),
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 320),
             child: SingleChildScrollView(
