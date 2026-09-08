@@ -17,7 +17,7 @@
 | 字段级兼容（v3.1.1） | `/m/api/directories` 根视图新增 `sep`（服务端路径分隔符）；新插件+旧 App 忽略该字段即可（旧 App 在 WSL 上仍按 `\` 拼接，由服务端`normalizeServerPath` 归一化兜底，浏览/建夹/建会话均可用）；新 App+旧插件缺少 `sep` 时按根视图推断分隔符——任意组合均可使用 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
-**快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；`checks.respondBridge` / `checks.frameBridge` 为 ✅ 表示**旧内核（0.1.1-rc.2 及更早）**的问询/审批帧桥已就绪；**v3.1.3+ 看 `checks.approvalMode`**（生效策略）与 **`checks.remoteEvents`**（`true` = `$events` 双端呈现通道就绪，`false` = both 降级 mobile 或配置即 mobile/desktop）；`checks.pendingFrames` 是**计数**（当前挂起的待答弹窗数，0 = 正常无待答，>0 = 有问询/审批等待处理）；`notes` 首行说明当前审批策略实际语义。
+**快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；**v3.1.3+ 看 `checks.approvalMode`**（生效策略）与 **`checks.remoteEvents`**（`true` = `$events` 双端呈现通道就绪，`false` = both 降级 mobile 或配置即 mobile/desktop）；`notes` 首行说明当前审批策略实际语义。旧内核（0.1.1-rc.2 及更早）宿主才会出现 `services.apiProxy` / `checks.respondBridge` / `checks.frameBridge` / `checks.pendingFrames`（帧桥 era 探测项，v3.1.3 起仅帧桥激活时输出）——**0.1.2-rc.1+ 宿主看不到这些键属正常**。
 
 ---
 
@@ -36,7 +36,7 @@
 | `messageFeedback` | 消息 👍/👎（与 PC 端同一份） | 软依赖 | 反馈菜单隐藏/报错 |
 | `approval` | 权限策略读取（`setPolicy` 仅当存在时调用） | 可选 | 跳过策略写入 |
 | `credentials` | DeepSeek 余额查询 | 可选 | 回退环境变量 `DEEPSEEK_API_KEY`；都没有则余额不可用 |
-| `apiProxy`（0.1.1-rc.2 及更早） | 问询/审批帧桥 + 应答回写（旧内核通道） | 可选（v2.3+ 新功能） | `checks.respondBridge=false`，旧内核下手机不弹问询/审批卡（PC 端不受影响）；`/m/api/respond` 返回 503 |
+| `apiProxy`（0.1.1-rc.2 及更早） | 问询/审批帧桥 + 应答回写（旧内核通道） | 可选（v2.3+ 新功能） | 旧内核下手机不弹问询/审批卡（PC 端不受影响）；`/m/api/respond` 返回 503。v3.1.3 起该键与 `respondBridge`/`frameBridge`/`pendingFrames` 仅在帧桥激活时输出——0.1.2-rc.1+ 宿主缺失属正常 |
 | `userQuestions` | （间接）问询链路 | 可选 | 无弹窗（同上） |
 | `approval/request`·`user-questions/request` 瀑布（0.1.2-rc.1+） | Agent 作用域 Cordis 瀑布，插件 answerer 应答（0.1.2 移除了 apiProxy 后的新机制） | 软依赖 | 无瀑布宿主（旧内核）由 apiProxy 帧桥接管；手机弹窗功能不受影响 |
 | `typertGateway` `$events` 远程事件（0.1.2-rc.1+，`both` 模式） | 插件进程内 $events 客户端：瀑布经内核转发到网关后与桌面 GUI 同收事件副本、先答生效（issue #9 双端呈现） | 可选（v3.1.3） | `approvalMode: both` 自动降级为 mobile（手机在线独占），日志与诊断 notes 说明 |

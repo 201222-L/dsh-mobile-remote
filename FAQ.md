@@ -47,7 +47,7 @@
 
 **Q：agent 问我问题/要权限时，手机为什么不弹卡片？**
 1. 弹窗在**该会话的对话页**里；人在别的页面时只有通知中心的「需要你回答」条目，点进去即见弹窗
-2. 电脑端 dsh 需重启过（answerer 随插件加载）；App 设置 → 环境诊断：v3.1.3+ 看 `checks.approvalMode` / `checks.remoteEvents`（旧版 App 无这两行，看 `respondBridge`/`frameBridge` 是否 ✅；旧版 App + 新插件时字符串行按布尔渲染显示 ❌ 属显示限制，以插件日志/诊断 JSON 为准）
+2. 电脑端 dsh 需重启过（answerer 随插件加载）；App 设置 → 环境诊断：v3.1.3+ 看 `checks.approvalMode` / `checks.remoteEvents`（0.1.2-rc.1+ 宿主不再输出旧版 `respondBridge`/`frameBridge`/`apiProxy` 键——那是 0.1.1 及更早内核的帧桥探测项，**缺失即正常**；旧版 App + 新插件时字符串行按布尔渲染显示 ❌ 属显示限制，以插件日志/诊断 JSON 为准）
 3. 若 PC 端也没弹：会话审批策略为「从不询问」，或 Harness 配了自动答题/自动审批（不弹是正常行为）
 4. 配置了 `approvalMode: desktop`（审批/问询只走桌面 GUI）时手机不弹卡——符合配置语义，不是故障
 详见 docs/09-compatibility.md。
