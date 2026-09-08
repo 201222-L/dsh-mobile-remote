@@ -17,6 +17,7 @@
 
 ### 其余
 
+- **修复（桌面端插件树加载崩溃）**：`approvalMode` schema 改用 schemastery `union`/`const` 表达——`z.enum` 不是 `@deepseek-ai/schemastery` 的 API（宿主桌面 v2.0.5 提供的 3.18.2 无此方法，npm 已发布版本均无），此前桌面端加载插件树即抛 `TypeError: z.enum is not a function`（`lib/index.js:111`）导致整树失败；改为 `z.union([z.const("both"), z.const("mobile"), z.const("desktop")]).default("both")`，语义（三值集合 + `both` 默认 + 非法值拒绝）与原意图一致。
 - 审批/问询 answerer 常量收敛（`PENDING_TIMEOUT_MS` = 120s）；超时定时器 `unref`（卸载不再残留句柄）。
 - 文档同步：README（功能/配置说明/dsh 版本基线）、FAQ（问询/审批弹窗类新增 issue #9 问答与 approvalMode 配置示例）、docs/09（§1 基线、§2.1 服务/机制表 + approvalMode 语义说明、§5 已知问题 12/13、§6 配置项）。
 
