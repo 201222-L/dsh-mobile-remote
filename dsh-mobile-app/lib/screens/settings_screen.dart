@@ -362,6 +362,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln('${L10n.t('运行形态: ', 'Mode: ')}$formText${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}');
     buf.writeln('${L10n.t('监听: ', 'Listen: ')}${runtime['host']}:${runtime['port']}');
     buf.writeln('${L10n.t('进程目录: ', 'CWD: ')}${runtime['cwd']}');
+    final metrics = runtime['metrics'] as Map<String, dynamic>?;
+    if (metrics != null && metrics.isNotEmpty) {
+      buf.writeln();
+      buf.writeln(L10n.t('实时指标:', 'Live metrics:'));
+      metrics.forEach((k, v) {
+        final n = _metricsName(k);
+        buf.writeln('  • $n（$k）= $v');
+      });
+    }
     buf.writeln();
     final services = d['services'] as Map<String, dynamic>? ?? {};
     buf.writeln(L10n.t('服务:', 'Services:'));
@@ -409,6 +418,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln();
     buf.writeln('${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}');
     return buf.toString();
+  }
+
+  /// 实时指标中文名（v3.1.3 runtime.metrics）。未知 key 原样返回。
+  String _metricsName(String key) {
+    switch (key) {
+      case 'mobileOnline':
+        return L10n.t('手机在线连接', 'Phone connections');
+      case 'agents':
+        return L10n.t('运行中 Agent', 'Live agents');
+      case 'sessions':
+        return L10n.t('会话数', 'Sessions');
+      case 'workspaces':
+        return L10n.t('工作区数', 'Workspaces');
+      case 'pushChannels':
+        return L10n.t('推送通道', 'Push channels');
+      default:
+        return key;
+    }
   }
 
   /// 服务/实测项中文名（环境诊断可读化，v3.1.3+）。未知 key 原样返回。
