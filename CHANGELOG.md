@@ -13,13 +13,29 @@
 - **双端结算语义**：手机在场时待办 120s 无应答 fail-close（审批 → `unavailable`、问询 → 跳过 null，与 v3.1.2 一致）；任一端口答/超时/取消都会广播 resolved 帧——**其它手机端卡片同步收起**（v3.1.2 只结算不广播，超时/多手机时卡片残留）。
 - **`/m/api/respond` 增强（顺手修复 v3.1.2 遗留缺陷）**：① question/approval 条目支持按 `rpcId` 兜底匹配——修复 **v3.1.2 的 question 应答必失败**（App 端只回传 rpcId 不回传 questionId，原查找 miss → 走 apiProxy 降级 → 现代内核 503，问询只能在桌面答）；② `kind=cancel` 在现代宿主下结算本地条目（审批 → `cancelled`、问询 → 跳过；v3.1.2 取消悬空、只能等 120s 超时）；③ 结算统一广播 resolved 帧（见上）。
 - **诊断**：`checks.approvalMode`（生效策略）+ `checks.remoteEvents`（$events 双端通道就绪与否）+ `notes` 首行策略说明；both 降级 / desktop 配置均有明确提示。
-- **兼容性**：App 零改动（帧协议只增字段：requested 帧新增 `rpcId`，resolved 帧新增 `rpcId`/`questionId` 冗余字段，旧 App 按 key 取用、忽略未知字段）；旧内核（0.1.1-rc.2 及更早）走 apiProxy 帧桥路径不受影响（era 互斥：0.1.2+ 无 apiProxy、旧内核无瀑布/$events，运行时分别探测）。
+- **兼容性**：App 协议零破坏（帧只增字段：requested 帧新增 `rpcId`，resolved 帧新增 `rpcId`/`questionId` 冗余字段，旧 App 按 key 取用、忽略未知字段）；旧内核（0.1.1-rc.2 及更早）走 apiProxy 帧桥路径不受影响（era 互斥：0.1.2+ 无 apiProxy、旧内核无瀑布/$events，运行时分别探测）。App 侧小改（3.1.3+18）：设置 → 环境诊断支持字符串字段与 notes 渲染（v3.1.3 前字符串行会按布尔误显示 ❌）。
 
 ### 其余
 
-- **修复（桌面端插件树加载崩溃）**：`approvalMode` schema 改用 schemastery `union`/`const` 表达——`z.enum` 不是 `@deepseek-ai/schemastery` 的 API（宿主桌面 v2.0.5 提供的 3.18.2 无此方法，npm 已发布版本均无），此前桌面端加载插件树即抛 `TypeError: z.enum is not a function`（`lib/index.js:111`）导致整树失败；改为 `z.union([z.const("both"), z.const("mobile"), z.const("desktop")]).default("both")`，语义（三值集合 + `both` 默认 + 非法值拒绝）与原意图一致。
+- **修复（真机验证发现，v3.1.2 遗留）**：问询 `questions` 取值路径错误——内核瀑布值为**顶层 `questions`**（`userQuestions.ask` 传 `{questions, agent, signal}`，桌面 GUI `$on` 亦读 `request.questions`），插件接管与双端广播误取 `req.request.questions` → 手机端 `question/requested` 携带空问题列表，**手机问询在 v3.1.2 不可用**（与 `/respond` 缺 questionId 并列的第二根因）。修复：`holdQuestion` 与 `onEventsWaterfall` 两处改读 `questions`（`lib/index.js`）。
+- **修复（桌面端插件树加载崩溃）**：`approvalMode` schema 改用 schemastery `union`/`const` 表达——`z.enum` 不是 `@deepseek-ai/schemastery` 的 API（宿主桌面 v2.0.5 提供的 3.18.2 无此方法），此前桌面端加载插件树即抛 `TypeError: z.enum is not a function` 导致整树失败；改为 `z.union([z.const("both"), z.const("mobile"), z.const("desktop")]).default("both")`，语义（三值集合 + `both` 默认 + 非法值拒绝）与原意图一致。
 - 审批/问询 answerer 常量收敛（`PENDING_TIMEOUT_MS` = 120s）；超时定时器 `unref`（卸载不再残留句柄）。
 - 文档同步：README（功能/配置说明/dsh 版本基线）、FAQ（问询/审批弹窗类新增 issue #9 问答与 approvalMode 配置示例）、docs/09（§1 基线、§2.1 服务/机制表 + approvalMode 语义说明、§5 已知问题 12/13、§6 配置项）。
+
+### 真机验证（2026-09-08 深夜，DSH Desktop 2.0.5 / 手机 Xiaomi 2509FPN0BC，App 3.1.2+17，LAN 桥）
+
+| 场景 | 操作 | 结果 |
+|---|---|---|
+| 审批双端·手机先答 | 合成审批 → 两端同弹 → 手机「允许一次」 | `allowed-once`；桌面卡自动消失 ✅ |
+| 审批双端·桌面先答 | 同上 → 桌面「允许一次」 | `allowed-once`；手机卡自动消失 ✅ |
+| 问询双端·手机先答 | ask_user_question → 两端同弹 → 手机回答 | 答案经 `$events/result` 返回；桌面面板自动收起 ✅ |
+| 问询双端·桌面先答 | 同上 → 桌面回答 | 手机问询框自动收起 ✅ |
+| `mobile` 模式 | 审批/问询仅手机弹（桌面不弹）+ 手机应答 | ✅（approvalMode 切换 + 重启生效） |
+| `mobile` 超时 | 手机在线不答 → 恰好 120s | `unavailable` fail-close ✅（手机卡自动收起） |
+| `desktop` 模式 | 审批/问询仅桌面弹（手机不弹）+ 桌面应答 | ✅ |
+| 取消路径 | 双端同弹 → 手机点 ✕ | `cancelled`；桌面卡自动收起 ✅ |
+
+测试中发现并记录的边界：桌面 GUI 单「composer 待办槽」——审批卡悬置时若另一 pending 交互（问询）到达，会顶掉审批卡（客户端 UI 行为，非插件缺陷；真实使用中 agent 串行问询不并发）。
 
 ## v3.1.2（2026-09-05）— 新建会话权限死锁修复（issue #6）+ 宿主包 peer 化（issue #7）
 
