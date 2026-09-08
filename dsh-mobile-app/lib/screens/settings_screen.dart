@@ -219,6 +219,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 阈值显示格式：整数不带小数（¥10），非整数两位（¥12.50）。
   String _fmtThreshold(double v) => v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(2);
 
+  /// v3.1.2：发送测试通知——逐个通道验证（服务端绕过节流）。
+  Future<void> _sendTestPush() async {
+    try {
+      final r = await api.pushTest();
+      final results = (r['results'] as List? ?? []).whereType<Map>().toList();
+      final okCount = results.where((e) => e['ok'] == true).length;
+      if (mounted) {
+        showToast(context,
+            L10n.t('测试通知已发送（$okCount/${results.length} 个通道成功）', 'Test sent ($okCount/${results.length} channels OK)'));
+      }
+    } catch (e) {
+      if (mounted) showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}$e');
+    }
+  }
+
   /// 余额预警阈值选择：¥5 / ¥10 / ¥20 / ¥50 / 自定义输入。
   Future<void> _pickThreshold() async {
     final presets = [5.0, 10.0, 20.0, 50.0];
@@ -498,6 +513,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub: L10n.t('更换电脑地址或访问口令', 'Change PC address or token'),
             trailing: Text(L10n.t('配置 ▸', 'Configure ▸'), style: TextStyle(fontSize: 12, color: brand)),
             onTap: () => widget.onReconfigure(),
+          ),
+        ]),
+        // v3.1.2：推送通道自检（配置在电脑端 cordis.patch.yml 的 pushUrls）
+        _card(L10n.t('通知', 'Notifications'), [
+          _row(
+            leading: const Icon(Icons.notifications_active_outlined),
+            title: L10n.t('发送测试通知', 'Send test notification'),
+            sub: L10n.t('验证推送通道（电脑端 cordis.patch.yml 配置）', 'Verify push channels (configured on the PC)'),
+            trailing: Text(L10n.t('发送 ▸', 'Send ▸'), style: TextStyle(fontSize: 12, color: brand)),
+            onTap: _sendTestPush,
           ),
         ]),
         _card(L10n.t('默认配置', 'Defaults'), [

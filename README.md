@@ -42,6 +42,15 @@
 |---|---|
 | **原生 App（安卓，推荐）** | `dsh-mobile-app/` 构建 APK 安装；扫码连接、原生体验、系统通知 |
 
+## 微信入口（可选）：dsh-im
+
+想「在微信里直接给 agent 说话派活」？**本插件不内置 IM 机器人**（那是另一层协议），官方推荐安装 **[@xmanrui/dsh-im](https://github.com/xmanrui/dsh-im)**——一个独立的 DeepSeek Harness 插件，支持微信（个人号扫码）/ 飞书 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp 等 9 种 IM 通道。与本插件互补：
+
+- **dsh-im**：微信/IM 对话入口（在微信里直接聊天派活、收到回复）
+- **本插件**：手机控制台（进度 / 审批 / 会话管理）+ **干活完成提醒**（推送桥，不依赖 App 常驻后台）
+
+装法（电脑端）：`dsh plugin add @xmanrui/dsh-im` → 微信扫码登录 → 完成。干活完成提醒走本插件推送桥（docs/06 §6：企业微信机器人 / Server酱 / Bark 任选）。
+
 ## 架构
 
 ```

@@ -32,6 +32,7 @@
   - **文件传输（csborbbnc 反馈）**：服务端新增 `GET /m/api/files?path=`（下载，流式+Content-Disposition，MIME 按扩展名）与 `POST /m/api/files/upload`（{sessionId, name, data base64} → 写入会话工作目录，64MB 上限；与目录选择器同信任模型：口令鉴权+现有限流）；App 端 composer「⊕ 更多」新增「上传文件」（Android 系统文件选择器，原生通道 `dsh/files`）与「下载文件」（输入电脑路径 → 保存到手机「下载」目录，Android 10+ MediaStore、更早版本应用下载目录，零新依赖）。
   - **自由复制（csborbbnc 反馈）**：消息文本本已支持选中复制/操作栏复制——本次补齐**代码块复制按钮**（复制全文 + 行数提示）。
   - **干活完提醒可靠性（小小的甜菜 反馈）**：推送超时 10s→15s，并对网络层失败（DNS 抖动/连接重置等）重试一次（HTTP 4xx/5xx 不重试，避免配额错误空转）。
+  - **微信/IM 提醒通道（v3.1.2 第二波）**：新增**企业微信群机器人 Webhook**推送格式（`format: wecom`，国内稳定、免登录态、约 20 条/分钟限额）；新增「**发送测试通知**」（App 设置 → 通知 + `POST /m/api/push-test`——逐通道验证、绕过节流，配置后一键确认通不通）；docs/06 §6 通道推荐重构（企业微信机器人 / Server酱 / Bark；ntfy.sh 境内不可直连警示）；docs/07 FAQ Q4 补充验证步骤；README 新增「微信入口（可选）：dsh-im」推荐章节（IM 对话入口与本插件互补：dsh-im 管对话、本插件管控制台+提醒）。
 
 ## v3.1.1（2026-08-26）— WSL/类 Unix 平台路径选择修复（issue #5）
 

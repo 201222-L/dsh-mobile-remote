@@ -164,7 +164,16 @@ corepack pnpm install
 > 电脑只需能正常上网（HTTPS 出站），无需公网端口。
 在 `cordis.patch.yml` 的 `mobile-remote` 行 `config` 下加 `pushUrls`（可配多个通道，事件同时推送到全部）：
 
-### Server酱（微信推送，安卓/全平台通用）
+### 企业微信群机器人（微信推送，推荐：国内稳定、免登录态、几乎无配额限制）
+> 建一个企业微信群（同事/家人/自己一人群均可）→ 群设置 → 添加群机器人 → 复制 **Webhook URL**（形如 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…`）。约 20 条/分钟限额，足够日常提醒。
+```yaml
+        pushUrls:
+          - name: 企业微信
+            url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<你的key>
+            format: wecom
+```
+
+### Server酱（微信服务号推送，安卓/全平台通用）
 ```yaml
 - insert:
     - id: mobile-remote
@@ -189,7 +198,7 @@ Server酱³ SendKey 获取：手机微信扫码打开 `https://sc3.ft07.com/send
             format: ntfy
 ```
 
-手机装 ntfy App 订阅同一 topic。注意公共服务器 topic 可被猜测，建议用长随机串。
+手机装 ntfy App 订阅同一 topic。注意公共服务器 topic 可被猜测，建议用长随机串。⚠️ **`ntfy.sh` 公共服务器在境内通常无法直连**（实测连接超时）——局域网自托管 ntfy 才推荐用这条，否则建议用上面的企业微信机器人或 Server酱。
 ### Bark（iPhone）
 ```yaml
         pushUrls:
@@ -207,8 +216,11 @@ Server酱³ SendKey 获取：手机微信扫码打开 `https://sc3.ft07.com/send
             format: generic
 ```
 
-**验证**：配置后重启桌面端，手机端让 agent 跑一个任务（或失败/提问），对应微信/App 收到通知。同会话同类型 60 秒内合并（`pushCooldownMs` 可调）。
-> **隐私（v2.6）**：推送默认只含「事件类型 + 会话短码」（`pushContent: minimal`），会话标题/错误详情等核心内容不经过第三方通道；确需完整内容（信任通道时）在 config 加 `pushContent: standard`。
+**验证两种方式**：
+1. **推荐：App 设置 → 通知 → 「发送测试通知」**— 配置后重启桌面端，手机点一下即可逐通道验证（绕过节流，结果数即"几个通道成功"）；
+2. 或让 agent 跑一个任务（完成/失败/提问任一发）看是否收到。
+同会话同类型 60 秒内合并（`pushCooldownMs` 可调）。
+> **隐私**：推送默认只含「事件类型 + 会话短码」（`pushContent: minimal`），会话标题/错误详情等核心内容不经过第三方通道；确需完整内容（信任通道时）在 config 加 `pushContent: standard`。
 
 ## 6b. HTTPS 反代（可选）
 

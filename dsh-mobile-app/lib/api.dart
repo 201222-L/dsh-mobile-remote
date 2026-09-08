@@ -294,7 +294,11 @@ class Api {
     }, timeout: timeout);
   }
 
-  Map<String, dynamic> _decode(http.Response res) {    // v2.9.0 review(LOW#7)：非 JSON 错误体（反代 HTML 页等）不再抛 FormatException，回退 HTTP <status>
+  /// v3.1.2：发送测试通知（逐个通道验证，绕过节流；返回 {channels, results[]}）。
+  Future<Map<String, dynamic>> pushTest() async => await postJson('/api/push-test', {});
+
+  Map<String, dynamic> _decode(http.Response res) {
+    // v2.9.0 review(LOW#7)：非 JSON 错误体（反代 HTML 页等）不再抛 FormatException，回退 HTTP <status>
     Map<String, dynamic>? body;
     try {
       body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
