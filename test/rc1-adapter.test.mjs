@@ -1,0 +1,51 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { modelSelectionFromRc1SessionList, pathWithinWorkspace, rc1RemoteSpec, validateQuestionAnswers } from "../lib/rc1-adapter.js";
+
+test("maps RC1 plural Remote namespaces and named arguments", () => {
+	assert.deepEqual(rc1RemoteSpec("goal.create", { sessionId: "s", objective: "ship", maxGoalRounds: 3 }), {
+		namespace: "goals", method: "create", args: {
+			agentId: "s", request: { objective: "ship", maxGoalRounds: 3 },
+		},
+	});
+	for (const action of ["pause", "resume", "complete", "clear"]) {
+		assert.deepEqual(rc1RemoteSpec(`goal.${action}`, { sessionId: "s", ref: { id: "g", revision: 2 } }), {
+			namespace: "goals", method: action, args: { agentId: "s", ref: { id: "g", revision: 2 } },
+		});
+	}
+	assert.deepEqual(rc1RemoteSpec("session.control"), { namespace: "session", method: "control", args: {} });
+	assert.equal(rc1RemoteSpec("subagent.list", { parentSessionId: "p" }).namespace, "subagents");
+	assert.equal(rc1RemoteSpec("subagent.list", { parentSessionId: "p" }).method, "list");
+	assert.equal(rc1RemoteSpec("subagent.interrupt", { childSessionId: "c", parentSessionId: "p", mode: "continuable" }).method, "interruptByParent");
+});
+
+test("rejects paths outside or beside a workspace root", () => {
+	assert.equal(pathWithinWorkspace("/work/project", "/work/project/file.txt"), true);
+	assert.equal(pathWithinWorkspace("/work/project", "/work/project/../secret.txt"), false);
+	assert.equal(pathWithinWorkspace("/work/project", "/work/project-other/file.txt"), false);
+});
+
+test("prefers RC1 pending model selection", () => {
+	assert.deepEqual(modelSelectionFromRc1SessionList({ items: [{ sessionId: "s", projections: { values: { modelSelection: { next: { provider: "p", model: "m" }, lastUsed: { provider: "old", model: "old" } } } } }] }, "s"), { provider: "p", model: "m" });
+});
+
+test("validates question answers against the original request", () => {
+	const questions = [
+		{ id: "q1", multiSelect: false, options: [{ label: "yes" }, { label: "no" }] },
+		{ id: "q2", multiSelect: true, options: [{ label: "a" }, { label: "b" }] },
+	];
+	assert.deepEqual(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: ["yes"] },
+		{ id: "q2", selected: ["a", "b"] },
+	]), { ok: true });
+	assert.equal(validateQuestionAnswers(questions, [{ id: "q1", selected: ["yes"] }]).ok, false);
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: ["maybe"] }, { id: "q2", custom: "answer" },
+	]).ok, false);
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: ["yes", "no"] }, { id: "q2", selected: ["a"] },
+	]).ok, false);
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: [], custom: "" }, { id: "q2", selected: ["a"] },
+	]).ok, false);
+});
