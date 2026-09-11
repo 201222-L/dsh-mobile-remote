@@ -1753,8 +1753,9 @@ class _ChatScreenState extends State<ChatScreen> {
               onCancel: () {
                 // 立即收起卡片（内核 resolved 帧可能因本地状态已清而不再转发）
                 final rpc = _question!.rpcId;
+                final owner = _question!.sessionId;
                 setState(() => _question = null);
-                widget.store.cancelRespond(rpc);
+                widget.store.cancelRespond(rpc, sessionId: owner);
               },
               onSubmitted: _submitQuestion,
             ),
@@ -1764,8 +1765,9 @@ class _ChatScreenState extends State<ChatScreen> {
               onDecide: _decideApproval,
               onCancel: () {
                 final rpc = _approval!.rpcId;
+                final owner = _approval!.sessionId;
                 setState(() => _approval = null);
-                widget.store.cancelRespond(rpc);
+                widget.store.cancelRespond(rpc, sessionId: owner);
               },
             ),
           // 快捷动作

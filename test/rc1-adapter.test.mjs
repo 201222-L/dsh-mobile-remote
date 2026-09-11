@@ -48,4 +48,14 @@ test("validates question answers against the original request", () => {
 	assert.equal(validateQuestionAnswers(questions, [
 		{ id: "q1", selected: [], custom: "" }, { id: "q2", selected: ["a"] },
 	]).ok, false);
+	// RC1 requires selected even when custom text is present; null must not be coerced.
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", custom: "other" }, { id: "q2", selected: ["a"] },
+	]).ok, false);
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: null, custom: "other" }, { id: "q2", selected: ["a"] },
+	]).ok, false);
+	assert.equal(validateQuestionAnswers(questions, [
+		{ id: "q1", selected: ["yes"], custom: null }, { id: "q2", selected: ["a"] },
+	]).ok, false);
 });

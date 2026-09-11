@@ -327,10 +327,20 @@ class AppStore extends ChangeNotifier {
   }
 
   /// 取消（跳过）问询/审批：内核收到 cancelled，agent 按 ASK_CANCELLED 继续。
-  Future<void> cancelRespond(String rpcId) async {
-    try {
-      await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: '');
-    } catch (_) {}
+  ///
+  /// [sessionId] 由卡片自己携带（多会话并发时 store 的单例 pending 可能已被
+  /// 新请求覆盖，此时按 rpcId 反查会拿不到归属会话而静默跳过服务端取消）。
+  Future<void> cancelRespond(String rpcId, {String? sessionId}) async {
+    final question = pendingQuestion?.rpcId == rpcId ? pendingQuestion : null;
+    final approval = pendingApproval?.rpcId == rpcId ? pendingApproval : null;
+    final owner = sessionId ?? question?.sessionId ?? approval?.sessionId ?? '';
+    // The server requires the session that owns the interaction. If the card
+    // was already resolved by another client, only clear local UI state.
+    if (owner.isNotEmpty) {
+      try {
+        await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: owner);
+      } catch (_) {}
+    }
     if (pendingQuestion?.rpcId == rpcId) pendingQuestion = null;
     if (pendingApproval?.rpcId == rpcId) pendingApproval = null;
     notifyListeners();

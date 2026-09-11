@@ -404,7 +404,7 @@
 
 - `outcome`：`allowed-once` | `rejected`。
 
-**取消**（`kind: "cancel"`）：内核收到 cancelled，agent 按 `ASK_CANCELLED` 继续。
+**取消**（`kind: "cancel"`）：必须携带对应 `sessionId`；问询以 `UserQuestionError`/`ASK_CANCELLED` rejection 结算，审批以 `cancelled` 结算。
 
 响应：`200 { "ok": true, "accepted": true }`；`accepted: false` + `reason`（如 `not-pending`，PC 端已先回答）。
 
@@ -567,14 +567,16 @@
 
 **GET `/m/api/files?path=…`** — 下载电脑文件
 - 响应：`200` 文件流（`content-type` 按扩展名推断、`content-disposition: attachment` 带 UTF-8 文件名）；路径不存在或非文件 → `404 file-not-found`；缺 `path` → `400 bad-request`
-- 与目录选择器（§6.1）同信任模型：口令鉴权 + 现有限流，路径由手机显式指定
+- 与目录选择器（§6.1）同信任模型：口令鉴权 + 现有限流，路径由手机显式指定；服务端先打开句柄、`fstat` 复核为普通文件，再按 descriptor 真实路径做工作区包含校验，符号链接/越界路径一律 `404`
+- 平台范围：descriptor-relative 保护需 procfs/devfs，**仅 Linux/macOS 提供**；Windows 返回 `503 files-unavailable`（安全 fail-closed，见 docs/04 §6）
 
 **POST `/m/api/files/upload`** — 上传文件到电脑（写会话工作目录）
 ```json
 请求: { "sessionId": "…(可选)", "name": "README.md", "data": "<base64>" }
 响应: { "ok": true, "path": "F:\\DSH-Outpost\\README.md", "bytes": 1234 }
 ```
-- 目标目录：`sessionId` 对应 agent 的工作目录 → 缺省回退第一个注册工作区根；无法确定 → `503 no-workspace`
+- 目标目录：`sessionId` 对应 agent 的工作目录 → 缺省回退第一个注册工作区根；无法确定 → `404 workspace-not-found`
+- 服务端先打开并校验目录句柄，再通过 descriptor-relative + `O_EXCL|O_NOFOLLOW` 创建目标，目录替换/符号链接竞态不会越界；当前平台不具备 descriptor fs 时 fail-closed → `503 files-unavailable`
 - `name` 不合法（含 `\ / : * ? " < > |`、`.`/`..`/超 255）→ `400 invalid-name`；body 上限 64MB → `413 payload-too-large`
 
 
