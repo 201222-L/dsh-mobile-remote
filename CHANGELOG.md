@@ -10,10 +10,22 @@
   - `both`（**默认**）——桌面 GUI 与手机同时收到审批/问询待办，先答生效、另一端自动收卡。需 DSH 0.1.2-rc.1+ / 桌面 v2.0.5+（$events 通道）；旧宿主自动降级 `mobile`（启动日志 + 诊断 notes 说明）；
   - `mobile`——v3.1.2 行为：手机在线即由手机独占应答，离线 `next()` 交桌面 GUI（外出远程用）；
   - `desktop`——一律 `next()` 交桌面 GUI，手机不弹审批/问询卡（常驻电脑前用）。
-- **双端结算语义**：手机在场时待办 120s 无应答 fail-close（审批 → `unavailable`、问询 → 跳过 null，与 v3.1.2 一致）；任一端口答/超时/取消都会广播 resolved 帧——**其它手机端卡片同步收起**（v3.1.2 只结算不广播，超时/多手机时卡片残留）。
-- **`/m/api/respond` 增强（顺手修复 v3.1.2 遗留缺陷）**：① question/approval 条目支持按 `rpcId` 兜底匹配——修复 **v3.1.2 的 question 应答必失败**（App 端只回传 rpcId 不回传 questionId，原查找 miss → 走 apiProxy 降级 → 现代内核 503，问询只能在桌面答）；② `kind=cancel` 在现代宿主下结算本地条目（审批 → `cancelled`、问询 → 跳过；v3.1.2 取消悬空、只能等 120s 超时）；③ 结算统一广播 resolved 帧（见上）。
+- **双端结算语义**：手机在场时待办 120s 无应答 fail-close（审批 → `unavailable`、问询 → `UserQuestionError`/`ASK_CANCELLED` rejection）；任一端口答/超时/取消都会广播 resolved 帧——**其它手机端卡片同步收起**（v3.1.2 只结算不广播，超时/多手机时卡片残留）。
+- **`/m/api/respond` 增强（顺手修复 v3.1.2 遗留缺陷）**：① question/approval 条目支持按 `rpcId` 兜底匹配——修复 **v3.1.2 的 question 应答必失败**（App 端只回传 rpcId 不回传 questionId，原查找 miss → 走 apiProxy 降级 → 现代内核 503，问询只能在桌面答）；② `kind=cancel` 在现代宿主下结算本地条目（审批 → `cancelled`、问询 → `ASK_CANCELLED` rejection；v3.1.2 取消悬空、只能等 120s 超时）；③ 结算统一广播 resolved 帧（见上）。
 - **诊断**：`checks.approvalMode`（生效策略）+ `checks.remoteEvents`（$events 双端通道就绪与否）+ `notes` 首行策略说明；both 降级 / desktop 配置均有明确提示。
 - **兼容性**：App 协议零破坏（帧只增字段：requested 帧新增 `rpcId`，resolved 帧新增 `rpcId`/`questionId` 冗余字段，旧 App 按 key 取用、忽略未知字段）；旧内核（0.1.1-rc.2 及更早）走 apiProxy 帧桥路径不受影响（era 互斥：0.1.2+ 无 apiProxy、旧内核无瀑布/$events，运行时分别探测）。App 侧小改（3.1.3+18）：设置 → 环境诊断支持字符串字段与 notes 渲染（v3.1.3 前字符串行会按布尔误显示 ❌）。
+
+### RC1 交互与文件通道健壮性（issue #6 验收）
+
+- **问询取消/超时改为 rejection**：手机取消、120s 超时、`req.signal` 中止此前以 `null` 结算瀑布，内核 `ask_user_question` 随即读取 `.answers` → `TypeError: Cannot read properties of null`。现统一以 `UserQuestionError` rejection 结算（取消/超时 `ASK_CANCELLED`、Host 中止 `ASK_ABORTED`），与桌面 GUI answerer 语义一致；`$events/result` 走 `outcome.kind = "rejected"`（`error.{name,message,code}`）。
+- **严格答案校验**：`selected` 必须是自身属性且为 `string[]`，`custom` 若存在必须是字符串，不再用 `?? []`/`?? ""` 静默兜底；`questionId`/`approvalId`/`sessionId` 的类型与归属全部校验，审批 `outcome` 非枚举值直接 `400`（此前被静默降级成 `unavailable`）。
+- **挂起待办可回放**：RC1 手机接管与双端呈现的 `question/requested`、`approval/requested` 帧写入 `pendingFrames`，App 断线重连即补发（此前只有旧帧桥写入，重连后卡片消失、只能等超时）；结算/取消/超时/对端先答/会话销毁都会清理回放帧。
+- **`$events` 不再挂死 Host**：手机离线或事件无法归属会话时，本插件这个进程内唯一 `$events` client 会对事件回 `next()`（此前静默忽略 → Host 瀑布永久挂起）；已结算事件的重复投递同样用 `next()` 确认；`$events/result` 一律使用创建该投递时的 `clientId`，断流后不再拿新 client 的 id 冒领结算。
+- **双端竞态与断流**：桌面先答的 cancel 帧与手机 `/respond` 并发时按已结算幂等返回（不再误报 `503`）；`$events` 流断开时清理本客户端专属的待办条目与手机卡片（Gateway 不会给已断开的 client 补发 cancel，否则卡片会残留到 120s）；结算回执丢失（断流，本插件自己的投递已失效）时收卡并交由仍在线的其它 `$events` client（桌面 GUI）应答——收的只是本端投递，Host 瀑布不因此挂死；定时器重臂修复（结算失败不再留下已触发的一次性 timer）；`/respond` 取消必须携带 `sessionId`。
+- **文件传输 TOCTOU 修复（Linux/macOS）**：下载/上传不再 `statSync → createReadStream` / `writeFileSync` 按路径名操作——改为先 `O_NONBLOCK|O_NOFOLLOW` 打开、`fstat` 复核，再用 `/proc/self/fd`（macOS `/dev/fd`）解析**已打开句柄**的真实路径做工作区包含校验，读写固定在该句柄上；上传用 descriptor-relative 路径 + `O_CREAT|O_EXCL|O_NOFOLLOW` 创建。下载 `ReadStream` 的异步 `error` 已消费（此前可崩 DSH 进程），`res` 提前关闭时释放句柄。**Windows 明确 fail-closed**（`503 files-unavailable`，见 docs/04 §6：Node 无 `openat`/RootDirectory 等价能力，不做不安全的降级）。
+- **测试**：新增 `test/rc1-runtime.test.mjs`（问询取消/超时 rejection、断线回放、无手机 `$events` next、signal 中止、断流收卡、下载流异步错误、符号链接越界与上传边界），与既有 `test/rc1-adapter.test.mjs` 共 10 项全部通过。
+- **App 侧（3.1.3+21）**：`cancelRespond(rpcId, {sessionId})` 接收卡片自带归属会话——多会话并发时 store 的单例 pending 可能已被新请求覆盖，按 rpcId 反查会拿不到 sessionId 而静默跳过服务端取消。
+- **范围说明（维护者确认）**：Windows 文件传输保持 fail-closed，不做纯 Node 的不安全降级；`/m/api/directories` 的任意路径浏览属既有会话创建能力（口令鉴权下的信任模型），不计入工作区包含语义。
 
 ### 其余
 

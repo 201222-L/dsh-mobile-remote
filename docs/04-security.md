@@ -78,7 +78,11 @@
 - 插件**持久化仅限最小移动端状态**（`~/.dsh/mobile-remote/`：通知已读 id、会话最近活跃时间），不含会话内容；口令只存在于 profile 配置。
 - 会话内容沿用 dsh 现有策略存储；插件仅在请求处理期间持有内存副本。
 - **二维码数据端点 `/m/api/qr-config` 仅允许 loopback**（TCP socket 来源校验，无法伪造）—— 桌面设置页读取后展示二维码；二维码含地址+口令，请勿截屏转发。
-- **问询/审批应答（`/m/api/respond`）不绕过内核安全**：插件只是把客户端 payload 转交 `apiProxy.respond`，答案内容（选项合法性、custom/selected 互斥、审批 outcome 枚举）全部由内核 schema 校验；rpcId 必须命中内核 pending 表（先到先得，不可伪造待答）。取消操作同样走内核 `ASK_CANCELLED` 语义。
+- **问询/审批应答（`/m/api/respond`）不绕过内核安全**：RC1 路径先在插件侧按原始问题严格校验答案（每项必须有 `selected: string[]`，`custom` 若存在必须为字符串，选项/数量/重复项均校验），再通过 `$events/result` 交给内核；旧 `apiProxy` 路径仍由内核 schema 校验。rpcId 与 sessionId 必须命中对应 pending 表（先到先得，不可伪造待答）。取消操作同样以 `UserQuestionError`/`ASK_CANCELLED` rejection 走内核语义。
+- **文件传输（`/m/api/files*`）**：仅允许已注册工作区内的文件；下载先以 `O_NONBLOCK|O_NOFOLLOW` 打开文件，`fstat` 复核为普通文件后，再用 `/proc/self/fd`（macOS `/dev/fd`）解析**已打开句柄**的真实路径并做工作区包含校验，流式读取固定在该句柄上；上传先打开并复核目录句柄，再用 descriptor-relative 路径 + `O_CREAT|O_EXCL|O_NOFOLLOW` 创建（`O_EXCL` 同时提供 409 语义），写入前再复核一次句柄归属。检查通过后不再按路径名操作对象，因此经典的 `statSync → createReadStream` 符号链接/目录替换竞态不可利用。
+  - **平台范围**：descriptor-relative 保护依赖 procfs/devfs，**Linux/macOS 支持；Windows 明确 fail-closed**（`503 files-unavailable`）——Node 内置 `fs` 在 Windows 没有 `openat`/RootDirectory 等价能力，`O_NOFOLLOW`/`O_DIRECTORY` 也不受支持，纯 Node 的 `realpath → open` 仍存在竞态，故不提供降级实现。将来要支持 Windows 需引入原生 helper（句柄相对打开 + 拒绝 reparse point），不属当前范围。
+  - **边界外的目录选择器**（`/m/api/directories`）是**有意保留的任意路径浏览**（新建会话需跨盘选工作目录），不适用工作区包含语义：其信任模型与 §2 口令鉴权一致（已认证用户本就持有 agent 控制权）。
+  - **残留风险**：包含校验基于句柄的规范化路径，无法识别 bind mount / overlay / 特权本地攻击者构造的挂载视图；需要该等级隔离时应依赖 OS 层隔离（容器/ACL）而非插件内检查。
 - **第三方推送通道脱敏（v2.6）**：Server酱/ntfy/Bark/generic 等推送默认只收到「事件类型 + 会话短码」（`pushContent: minimal`），会话标题/错误详情等核心内容默认不出本机；仅显式配置 `pushContent: standard` 后外发——第三方服务不可信。
 ## 7. 安全测试要点（并入 05-test-cases.md）
 1. 口令启用后：未认证访问 bootstrap/send/events/history 返回 401；错误口令 401。
