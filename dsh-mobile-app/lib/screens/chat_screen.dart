@@ -51,6 +51,13 @@ String draftAfterFailure(String current, String fallback) =>
 String composerSignature(String sessionId, String mode, String text, List<String> imagePaths) =>
     '$sessionId|$mode|$text|${imagePaths.join(',')}';
 
+/// v3.1.4（issue #13 排查建议 3）：轮次结束时是否需要**兜底补拉**——
+/// 本轮出现过真人提问（lastUserSeq 非空），但没有渲染出更晚的回复条目
+/// （lastAssistantSeq 为空或早于提问）→ 判定内容被静默吞掉，补拉一次历史。
+/// 纯函数便于单测：见 test/issue13_logic_test.dart。
+bool needsTurnEndResync({int? lastUserSeq, int? lastAssistantSeq}) =>
+    lastUserSeq != null && (lastAssistantSeq == null || lastAssistantSeq <= lastUserSeq);
+
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
 Future<void> openChat(BuildContext context, AppStore store, String sessionId,
@@ -89,6 +96,11 @@ class _ChatScreenState extends State<ChatScreen> {
   String _draft = '';
   bool _streaming = false;
   int _lastSeq = 0;
+  // v3.1.4（issue #13）：轮次兜底同步——最近一条已渲染的真人提问 / 回复的 seq，
+  // 用于判断"本轮有提问却没有回复条目"（内容被静默吞掉）时补拉一次历史。
+  int? _lastUserSeq;
+  int? _lastAssistantSeq;
+  DateTime? _lastResyncAt; // 兜底补拉节流（10s）
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
   // v2.7.2：排队消息停靠区（对齐 PC 端 Queue Dock）——可见、自解释，无需操作手册
@@ -290,13 +302,16 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _load() async {
+  /// [reset] = true：按**当前会话表面**重建（`/compact` 改写了表面、或轮次兜底补拉）——
+  /// 丢弃现有条目并从历史重建，`_lastSeq` 以历史末条为准。默认 false：打开会话时带并发保护
+  /// （保留历史请求期间 SSE 已入列的新条目）。
+  Future<void> _load({bool reset = false}) async {
     final id = widget.store.sessionId;
     if (id == null) return;
-    AppLog.instance.log('Chat: 打开会话 $id');
+    AppLog.instance.log(reset ? 'Chat: 重同步会话（按新表面重载）$id' : 'Chat: 打开会话 $id');
     try {
       final events = await api.history(id, limit: _liveMax);
-      AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条');
+      AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
       if (!mounted) return;
       setState(() {
         // 并发保护：历史请求期间 SSE 可能已把更新的事件入列（位于 _items 头部）。
@@ -305,6 +320,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final keep = <_MsgItem>[];
         if (fetchedLast > 0) {
           for (final m in _items) {
+            if (reset) break; // 重同步：不保留任何旧条目（表面已被重写）
             if (m.seq != null && m.seq! > fetchedLast) {
               keep.add(m);
             } else if (m.seq == null && m.kind == _MsgKind.user) {
@@ -343,9 +359,27 @@ class _ChatScreenState extends State<ChatScreen> {
           if (ev.seq != null && ev.seq! > fetchedLast) continue; // 已在 keep 中
           _appendEvent(ev, history: true, tail: true);
         }
+        // v3.1.4（issue #13）：跟踪字段按**时间正序**重算——历史是倒序入列的，
+        // 沿用循环里的赋值会得到"最旧一条"，导致轮次兜底误判。
+        // 条件与渲染保持一致：真人 user 消息（含旧内核无 sourceKind 的）+ 非空文本的回复。
+        for (final ev in events) {
+          if (ev.seq == null) continue;
+          if (ev.type == 'user/message') {
+            final kind = ev.data?['sourceKind'] as String?;
+            if (kind == null || kind == 'user') _lastUserSeq = ev.seq;
+          } else if (ev.type == 'assistant/message' && ((ev.data?['text'] as String?) ?? '').trim().isNotEmpty) {
+            _lastAssistantSeq = ev.seq;
+          }
+        }
         _items.insertAll(0, keep); // SSE 期间的新事件放回头部
         if (events.isNotEmpty) {
           _earliestSeq = events.first.seq ?? 0;
+          // v3.1.4：重同步后按新表面重建条目；_lastSeq 仍取"已处理过的最大 seq"
+          // （只增不减——下调会让后续 catchup 重复补拉已渲染的事件）
+          if (reset) {
+            _lastUserSeq = null;
+            _lastAssistantSeq = null;
+          }
           if (fetchedLast > _lastSeq) _lastSeq = fetchedLast;
         }
         if (keep.isNotEmpty) {
@@ -727,6 +761,12 @@ class _ChatScreenState extends State<ChatScreen> {
       if (ev.seq! <= _lastSeq) return;
       _lastSeq = ev.seq!;
     }
+    // v3.1.4（issue #13）：/compact 走 surfaceOp=replace 重写会话表面——
+    // 收到 compression 结束事件即按新表面重载一次，避免手机继续显示已被 shadow 的旧消息。
+    if (ev.type == 'compaction/end') {
+      _resyncAfterCompaction();
+      return;
+    }
     if (ev.type == 'assistant/chunk') {
       final text = ev.data?['text'] as String? ?? '';
       final reasoning = ev.data?['reasoning'] == true;
@@ -777,7 +817,28 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_inHistory) _pendingNew = true;
     // v2.7.2：事件驱动队列刷新（认领类事件前置立即刷新，其余节流）
     _onQueueAffectingEvent(ev.type);
+    // v3.1.4（issue #13 排查建议 3）：轮次结束但本轮渲染不出任何回复条目 → 兜底补拉一次。
+    // 触发场景：事件被任何一层（过滤/竞态/脏 seq）静默吞掉时，避免"只剩一条轮次结束分隔条"。
+    if (ev.type == 'turn/end') _maybeResyncAfterTurn();
     _scrollToBottom();
+  }
+
+  /// v3.1.4（issue #13）：会话表面被内核重写（`/compact` 的 surfaceOp=replace）后，
+  /// 按**新表面**重载一次——否则手机继续显示已被 shadow 的旧消息，与桌面端视图分叉。
+  void _resyncAfterCompaction() {
+    AppLog.instance.log('Chat: 压缩完成 → 按新表面重载会话（对齐桌面端视图）');
+    _load(reset: true);
+  }
+
+  /// v3.1.4（issue #13 排查建议 3）：本轮出现过真人提问、但没有渲染出更晚的回复条目
+  /// → 说明有内容被静默吞掉，补拉一次历史（10s 节流，避免抖动时反复拉取）。
+  void _maybeResyncAfterTurn() {
+    if (!needsTurnEndResync(lastUserSeq: _lastUserSeq, lastAssistantSeq: _lastAssistantSeq)) return;
+    final now = DateTime.now();
+    if (_lastResyncAt != null && now.difference(_lastResyncAt!) < const Duration(seconds: 10)) return;
+    _lastResyncAt = now;
+    AppLog.instance.log('Chat: 轮次结束但无回复条目（lastUser=$_lastUserSeq lastAssistant=$_lastAssistantSeq）→ 兜底补拉');
+    _load(reset: true);
   }
 
   /// v3.1.4（issue #12 姊妹需求）：任务清单权威补拉（内核 todo 投影）——
@@ -1185,6 +1246,11 @@ class _ChatScreenState extends State<ChatScreen> {
         // v3.1.4（issue #12）：内核来源标记——非 "user" 即系统注入（plugin/agent-instructions/tool…），
         // 渲染成可折叠块；缺字段（旧内核）时为 null，退回关键词启发式。
         final sourceKind = d?['sourceKind'] as String?;
+        // v3.1.4（issue #13）：只有**真人提问**参与"本轮是否缺回复"的兜底判定
+        // （注入消息不是提问，不该因它触发补拉）
+        if (sourceKind == null || sourceKind == 'user') {
+          if (ev.seq != null) _lastUserSeq = ev.seq;
+        }
         // 去重（SSE 回显 vs 本地乐观添加）：
         // 1) 已有同 messageId 的消息 → 直接跳过（回显已完成渲染，同文本连发也不误并）
         if (mid != null && out.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) return;
@@ -1239,6 +1305,8 @@ class _ChatScreenState extends State<ChatScreen> {
             messageId: d?['messageId'] as String?,
             images: _imagesOf(d),
             reasoning: reasoningText.isEmpty ? null : reasoningText);
+        // v3.1.4（issue #13）：记录最近一条渲染出来的回复，供轮次兜底判定
+        if (ev.seq != null) _lastAssistantSeq = ev.seq;
         if (history) {
           out.add(item);
         } else {

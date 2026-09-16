@@ -1,9 +1,9 @@
 # Changelog
 
-## v3.1.4（2026-09-16，issue #14 / #12）— 离线待答不再丢 + 任务面板 + 注入折叠
+## v3.1.4（2026-09-16，issue #14 / #12 / #13）— 离线待答不再丢 + 任务面板 + 注入折叠 + 压缩后重同步
 
-> 范围：插件侧 P0 三项（离线待答、ntfy 标题、诊断补齐）+ App 侧三项（横滑误触发、注入消息折叠、任务面板）。
-> 版本：插件 `3.1.4` / App `3.1.4+21`。回归脚本：`tools/verify-issue14-p0.mjs`（mock 宿主，37 项断言）、`tools/verify-issue14-live.mjs`（真机一键验收）。
+> 范围：插件侧三项（离线待答、ntfy 标题、诊断补齐）+ App 侧四项（横滑误触发、注入消息折叠、任务面板、`/compact` 后重同步与轮次兜底）。
+> 版本：插件 `3.1.4` / App `3.1.4+21`。回归脚本：`tools/verify-issue14-p0.mjs`（mock 宿主，37 项断言）、`tools/verify-issue14-live.mjs`（真机一键验收）、`dsh-mobile-app/test/issue13_logic_test.dart`（兜底判定单测）。
 
 ### issue #14 Bug2（同时是 Bug1 的真因）：手机离线时审批/问询帧被整个丢弃
 
@@ -41,11 +41,23 @@
 - **插件**：① `summarizeEvent` 新增 `todo/write` 分支（条数 ≤50、单条 ≤200 字符、status 白名单校验）；② 加入 `SURFACE_TYPES` → 历史补拉/重连回放也能拿到快照；③ 新增 `GET /m/api/todos?sessionId=`——直接读内核投影（`sessionProjections.stateOf(session, "todos")`），休眠/旧内核返回 `todos: null`。
 - **App**：输入框上方新增折叠面板——收起态一行计数（`1 进行中 · 3 待处理 · 4 已完成`），展开态完整清单（状态图标 + 完成项置灰）；实时靠 SSE `todo/write`/`turn/start` 折叠，打开会话/断线重连后用 `/api/todos` 对齐一次（历史只有 50 条窗口，投影读法保证长时间工具链之后仍然准确）。
 
+### issue #13：`/compact` 之后首条回复"消失"——真机未能复现 + 按报告人建议加两道兜底
+
+- **复现尝试（真机实时 + 历史两条路径，各两个会话）**：均未复现。逐条对账证明两端都正常——
+  - 插件侧：`/compact` 后的 `assistant/message` 确实广播了（`seq=44/64/83`，textLen 63/37/501…），`/api/history` 里也在；
+  - App 侧：事件被正常处理并渲染（`Chat: build itemCount` 16→19→21 递增），截图上压缩后的长回复（含表格、代码块、链接）完整显示。
+  - 另核实：`assistant/chunk` 在 0.1.5 内核里**不是会话事件**（不在 `known-event-types`），所以"流式草稿被 `turn/end` 清空"这条路径在当前内核下不可能发生。
+- **但借这次排查确认了两处真实隐患，并按报告人的排查建议 2/3 落地兜底**：
+  1. **压缩后按新表面重载**：`/compact` 以 `surfaceOp.replace` 重写会话表面，手机此前**不重载** → 继续显示已被 shadow 的旧消息（与桌面端视图分叉）。现在收到 `compaction/end` 立即 `_load(reset: true)` 按当前表面重建。
+  2. **轮次兜底补拉**（报告人建议 3）：`turn/end` 时若"本轮出现过真人提问、却没有渲染出更晚的回复条目"，判定内容被静默吞掉 → 补拉一次历史（10s 节流防抖；判定抽成纯函数 `needsTurnEndResync` 并带单测，见 `test/issue13_logic_test.dart`）。
+- 对方环境里的真因仍未定位（已请其提供 App 日志 `Chat: SSE 事件 <type> seq=` 片段）；本版两道兜底可让同类"静默丢内容"**自愈**。
+
 ### 验证
 
 - `node tools/verify-issue14-p0.mjs`：mock 宿主内跑真实插件代码，**37 项断言全绿**——push-test 自检记账 / 离线记账 / 离线推送 / ntfy 请求形状（本地假 ntfy 断言 URL 与 body）/ 重连回放 / 手机应答清理 / 对端先答清理 / 离线期间不结算 / 问询同契约 / `todo/write` 摘要与 status 白名单 / `sourceKind` 注入标记 / `/api/todos` 端点（缺参 400、未激活 null、投影映射与截断）。
 - 真机端到端（LAN 桥 + Android 17 + App 3.1.3+20，2026-09-16）：杀掉 App（`mobileOnline=0`）→ 在新建会话里触发一次真实沙箱升级审批 → 诊断 `pendingApprovals=1 / pendingFrames=1`（旧版此处恒 0）→ ntfy 收到**带标题**的「⚠ 需要你回答 · a1bf1abb…a95b」→ 重开 App 出现回放审批卡 → 手机点「允许一次」→ 诊断归零、工具真的执行（探针文件写入成功）；审批在手机离线状态下挂起 **>120s 未被 fail-close**（桌面端流程不受手机侧超时干扰）。见证脚本：`tools/verify-issue14-live.mjs`。
 - App 3.1.4+21 真机：任务面板 / 注入折叠 / 横滑不跳 三项截图与 logcat 逐项核对（详见 issue #14 / #12 回复）。
+- issue #13 兜底（App 3.1.4+21 真机）：实时 `/compact` 后 App 日志出现「压缩完成 → 按新表面重载会话」+「重同步会话（按新表面重载）」并按新表面重建条目；正常轮次**不触发**兜底（无「轮次结束但无回复条目」日志），回复照常渲染；`flutter test` **28/28**（含 `needsTurnEndResync` 4 项）。
 
 ### 升级与验证（真机）
 
