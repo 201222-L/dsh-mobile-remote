@@ -389,6 +389,15 @@ class Api {
     return (data['jobs'] as List? ?? []).cast<Map<String, dynamic>>();
   }
 
+  /// 会话任务清单（v3.1.4，issue #12 姊妹需求）：读内核 todo 投影（与 PC 端「任务」面板同源）。
+  /// 返回 null = 该会话未激活/旧内核无该工具 —— 调用方退回历史事件折叠，不视为错误。
+  Future<List<Map<String, dynamic>>?> todos(String sessionId) async {
+    final data = await getJson('/api/todos?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    final list = data['todos'];
+    if (list is! List) return null;
+    return list.cast<Map<String, dynamic>>();
+  }
+
   /// 取消任务。
   Future<void> jobKill(String sessionId, String jobId) async {
     await postJson('/api/jobs/kill', {'sessionId': sessionId, 'jobId': jobId});

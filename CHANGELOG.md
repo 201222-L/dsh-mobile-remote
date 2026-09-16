@@ -1,5 +1,58 @@
 # Changelog
 
+## v3.1.4（2026-09-16，issue #14 / #12）— 离线待答不再丢 + 任务面板 + 注入折叠
+
+> 范围：插件侧 P0 三项（离线待答、ntfy 标题、诊断补齐）+ App 侧三项（横滑误触发、注入消息折叠、任务面板）。
+> 版本：插件 `3.1.4` / App `3.1.4+21`。回归脚本：`tools/verify-issue14-p0.mjs`（mock 宿主，37 项断言）、`tools/verify-issue14-live.mjs`（真机一键验收）。
+
+### issue #14 Bug2（同时是 Bug1 的真因）：手机离线时审批/问询帧被整个丢弃
+
+- **现象**：必须在审批发生前就停在那个会话里，手机上才会出现审批卡；事后打开 App 什么都没有（只能在电脑上处理）；App 关闭/被杀时收不到任何"需要你回答"提醒。
+- **根因**：`onEventsWaterfall` 第一行 `if (connections.size === 0) return;`（v3.1.3 第 3686 行）——手机没连就整段早退，于是 ① 待答**条目**不建、② 回放存储 `pendingFrames` 不写、③ 挂在同一函数里的 `needs-answer` **推送**也一起没了。而回放存储唯一的历史写入点在 `ctx.inject(["apiProxy"], …)` 的 mux 循环里，0.1.2-rc.1+ 内核已移除 apiProxy（实测 0.1.5-rc.2 全量搜 `apiProxy` 0 命中）→ 该通道是死代码，`pendingFrames` 永远是空 Map，`/api/events` 建连时的回放逻辑形同虚设。
+- **修复**：无论手机是否在线都建条目 + 写回放存储（`putAskReplay`，键 `a:<phoneId>` / `q:<phoneId>`，与 `/respond` 结算同源）；**只在手机在线时才 arm fail-close 超时**（离线时是桌面端在处理审批，不能被手机侧 120s 超时误杀），离线条目改走 `armOfflineReap`（30 分钟后**只清理、不结算**）；`holdApproval`/`holdQuestion`（mobile 接管路径）同样写入回放存储，接管期间断线重连也能拿回卡片。
+- **成对清理（报告人提醒的坑）**：`finishApproval`/`finishQuestion` 内统一 `dropAskReplay`，覆盖"手机先答 / 120s 超时 / ✕ 取消 / 桌面端先答（cancel 帧）/ 离线到期"五条路径——只修写入会出现"幽灵审批卡"（早已处理的请求被反复回放给 App）。
+- **关于推送归因**：报告人推测"`notifyNeedsAnswer` 的唯一调用点挂在 apiProxy 帧桥上"，实测不成立——`$events` 瀑布内（审批/问询两个分支）本就有推送调用，真正的拦路者就是上面那行早退；按他的建议"把推送搬到 $events 路径"会搬进同一个函数而依然收不到。
+
+### issue #14 Bug3：ntfy 标题丢失、正文变成一坨 JSON
+
+- **根因**：JSON payload 被 POST 到**主题地址**。ntfy 的 JSON 发布契约是 `POST /`（或自托管 base path 根）且 body 内带 `topic`；发到主题地址时服务端按**纯文本**处理整段 JSON。
+- **实测证据**：`POST https://ntfy.sh/<topic>` + `{"title":…,"message":…}` → 响应体无 `title` 字段、`message` 为 JSON 原文；改 `POST https://ntfy.sh/` + body 带 `topic` → `title` 正常返回。本机真实通道（微信 + ntfy）修复前的历史消息同样可见该症状。
+- **修复**：新增导出helper `ntfyPublish(url, payload)`（`lib/index.js` 模块级，单测友好）——解析配置里的主题地址，改为 POST 服务器根地址并在 body 内补 `topic`，兼容自托管带 base path 的部署（`https://host/ntfy/topic` → `POST https://host/ntfy/`）；schema 注释与实现口径统一（此前文档写 text/plain + X-Title）。配置写法不变。
+
+### issue #14 建议 6：诊断补齐可观测性
+
+- `checks.pendingFrames` 从"仅旧 apiProxy era 输出"改为**无条件输出**，并新增 `checks.pendingApprovals` / `checks.pendingQuestions`——现代内核下也能自查"离线时审批帧有没有被记下来"（正是本次排查现场）；App 诊断页对计数字段已有「✅ 0 / ⚠ >0」渲染，无需 App 改动。
+- 新增每通道最近一次投递结果 `checks.push:<通道名>`（`ok 21:04:33` / `fail 21:03:10 · HTTP 401: …` / `idle（尚未投递）`）——排障时不必再翻服务端日志确认"到底发没发出去"；事件推送与 `/api/push-test` 手动自检**两条入口都记录**（真机验收时正是它暴露了 Server酱通道当天额度已满：`fail · 超过当天的发送次数限制[5]`）。
+
+### issue #14（App 侧）：代码块 / 表格横滑误触发"加载更早"，列表跳回该轮上方
+
+- **根因**：`_onLiveScroll` 不区分滚动来源——代码块/表格内部的横向 `SingleChildScrollView` 会把 `pixels=0` 的通知**冒泡**给外层 `NotificationListener`，被误判成"滚到视觉顶部"→ 每次横滑都触发 `_loadMoreInfinite()`，列表前插旧内容、视觉跳回。
+- **修复**：加 `n.depth != 0`（忽略嵌套滚动）与 `n.metrics.axis != Axis.vertical`（只认纵向）两道过滤——与报告人给出的两行建议一致。
+
+### issue #12：系统注入消息改为**可折叠块**（不再当普通气泡铺屏）
+
+- **结构化判定（报告人建议的 `source` 路线）**：内核 `createUserMessage({ source })` 本就区分来源——真人 `kind: "user"`，注入为 `plugin` / `agent-instructions` / `tool` 等。插件 `summarizeEvent` 的 `user/message` 分支新增透出 `sourceKind`（旧内核无 source 则不下发该字段）。
+- **App 渲染**：`sourceKind` 非 `"user"` 的消息渲染成折叠块——一行摘要（类型标签 + 字数）、默认收起、点按展开；展开状态复用「思维链」同一套每消息覆盖存储（键前缀 `inj:`），列表回收重建不丢。原有 3 个关键词黑名单仍直接过滤（PC 端 GUI 也不显示的那三类）。
+- **效果**：技能目录、`[SCHEDULE REMINDER]`、压缩摘要、其它插件注入等不再以普通气泡占满屏幕。
+
+### 新功能：会话任务清单面板（对齐 PC 端「任务」面板）
+
+- **数据源与 PC 端同一处**：内核 `dsh-tool-todo` 把整份清单以 `todo/write` 快照写入会话事件，并注册会话投影 `todos`（投影语义：最新快照生效、`turn/start` 清空）。
+- **插件**：① `summarizeEvent` 新增 `todo/write` 分支（条数 ≤50、单条 ≤200 字符、status 白名单校验）；② 加入 `SURFACE_TYPES` → 历史补拉/重连回放也能拿到快照；③ 新增 `GET /m/api/todos?sessionId=`——直接读内核投影（`sessionProjections.stateOf(session, "todos")`），休眠/旧内核返回 `todos: null`。
+- **App**：输入框上方新增折叠面板——收起态一行计数（`1 进行中 · 3 待处理 · 4 已完成`），展开态完整清单（状态图标 + 完成项置灰）；实时靠 SSE `todo/write`/`turn/start` 折叠，打开会话/断线重连后用 `/api/todos` 对齐一次（历史只有 50 条窗口，投影读法保证长时间工具链之后仍然准确）。
+
+### 验证
+
+- `node tools/verify-issue14-p0.mjs`：mock 宿主内跑真实插件代码，**37 项断言全绿**——push-test 自检记账 / 离线记账 / 离线推送 / ntfy 请求形状（本地假 ntfy 断言 URL 与 body）/ 重连回放 / 手机应答清理 / 对端先答清理 / 离线期间不结算 / 问询同契约 / `todo/write` 摘要与 status 白名单 / `sourceKind` 注入标记 / `/api/todos` 端点（缺参 400、未激活 null、投影映射与截断）。
+- 真机端到端（LAN 桥 + Android 17 + App 3.1.3+20，2026-09-16）：杀掉 App（`mobileOnline=0`）→ 在新建会话里触发一次真实沙箱升级审批 → 诊断 `pendingApprovals=1 / pendingFrames=1`（旧版此处恒 0）→ ntfy 收到**带标题**的「⚠ 需要你回答 · a1bf1abb…a95b」→ 重开 App 出现回放审批卡 → 手机点「允许一次」→ 诊断归零、工具真的执行（探针文件写入成功）；审批在手机离线状态下挂起 **>120s 未被 fail-close**（桌面端流程不受手机侧超时干扰）。见证脚本：`tools/verify-issue14-live.mjs`。
+- App 3.1.4+21 真机：任务面板 / 注入折叠 / 横滑不跳 三项截图与 logcat 逐项核对（详见 issue #14 / #12 回复）。
+
+### 升级与验证（真机）
+
+1. 电脑端：更新插件包（`dsh-mobile-remote-v3.1.4.tgz`）后**重启 DSH**（LAN 桥持有监听，不建议热重载）。
+2. 手机端：安装 `DSH-Remote-v3.1.4.apk`（覆盖安装，登录态与数据保留）。
+3. 验收：`POST /m/api/push-test`（设置 → 通知 → 发送测试通知）→ ntfy 收到的通知**应有标题**；随后关闭 App → 在电脑端触发一次需要审批的操作 → ntfy 应收到「⚠ 需要你回答」标题的推送，重新打开 App 应看到审批卡并可作答；诊断页 `pendingFrames` / `pendingApprovals` 应随状态归零（不留幽灵卡）；会话里跑一次长任务（agent 会调 `todo_write`）→ 输入框上方出现「任务」计数条，点开可看清单。
+
 ## v3.1.3（2026-09-08，issue #9）— 审批/问询双端呈现（`approvalMode: both` 默认）+ 可配置策略
 
 ### issue #9：手机 App 在线时桌面端不再弹出审批/问询框（approval/request 被 prepend 接管短路）
