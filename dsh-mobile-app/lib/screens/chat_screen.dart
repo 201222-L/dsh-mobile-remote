@@ -58,6 +58,33 @@ String composerSignature(String sessionId, String mode, String text, List<String
 bool needsTurnEndResync({int? lastUserSeq, int? lastAssistantSeq}) =>
     lastUserSeq != null && (lastAssistantSeq == null || lastAssistantSeq <= lastUserSeq);
 
+/// 是否应由本次滚动通知触发“加载更早”。抽出为纯判定，避免 ScrollStart/ScrollEnd
+/// 在列表已位于顶部时重复触发异步分页。
+bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool infiniteMode}) {
+  if (!infiniteMode || !notification.metrics.hasContentDimensions) return false;
+  if (notification.depth != 0) return false;
+  if (notification.metrics.axis != Axis.vertical) return false;
+  // ScrollStart/ScrollEnd/UserScroll 在 pixels=0 时也会冒泡；异步分页若在 start 时
+  // 启动、在 end 前完成，end 会立刻再触发一页。只响应真正向顶部发生的位移更新。
+  if (notification is! ScrollUpdateNotification) return false;
+  final delta = notification.scrollDelta;
+  if (delta == null || delta >= 0) return false;
+  return notification.metrics.pixels < 80;
+}
+
+/// 普通（非 reverse）列表在顶部插入旧消息后，按内容高度增量补偿 offset，保持原可见
+/// 消息仍在同一屏幕位置；否则 pixels=0 会直接显示新插入内容，表现为突然上翻。
+double offsetAfterHistoryPrepend({
+  required double oldPixels,
+  required double oldMaxScrollExtent,
+  required double newMaxScrollExtent,
+}) {
+  final addedExtent = newMaxScrollExtent > oldMaxScrollExtent
+      ? newMaxScrollExtent - oldMaxScrollExtent
+      : 0.0;
+  return (oldPixels + addedExtent).clamp(0.0, newMaxScrollExtent).toDouble();
+}
+
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
 Future<void> openChat(BuildContext context, AppStore store, String sessionId,
@@ -421,6 +448,10 @@ class _ChatScreenState extends State<ChatScreen> {
         showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
         return; // 已到最顶：不再查询，_earliestSeq 保持不动
       }
+      // 普通 ListView 在 index 0 前插内容不会自动维持视觉锚点：保存插入前的
+      // pixels/maxScrollExtent，下一帧按新增高度补偿，避免跳到刚加载的更早消息。
+      final oldPixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : null;
+      final oldMaxScrollExtent = _scrollCtrl.hasClients ? _scrollCtrl.position.maxScrollExtent : null;
       setState(() {
         // 页面最旧→最新；_items 最新在前，故逆序追加到尾部（视觉最顶部）
         for (final ev in events.reversed) {
@@ -428,6 +459,20 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         _earliestSeq = events.first.seq ?? _earliestSeq;
       });
+      if (oldPixels != null && oldMaxScrollExtent != null) {
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted && _scrollCtrl.hasClients) {
+          final pos = _scrollCtrl.position;
+          final target = offsetAfterHistoryPrepend(
+            oldPixels: oldPixels,
+            oldMaxScrollExtent: oldMaxScrollExtent,
+            newMaxScrollExtent: pos.maxScrollExtent,
+          );
+          if ((pos.pixels - target).abs() > 0.5) {
+            _scrollCtrl.jumpTo(target);
+          }
+        }
+      }
       AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length} firstSeq=$_earliestSeq');
     } catch (e) {
       AppLog.instance.log('Chat: 无限上翻失败 $e');
@@ -440,14 +485,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
   /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
   bool _onLiveScroll(ScrollNotification n) {
-    if (!_infiniteMode || !n.metrics.hasContentDimensions) return false;
-    // v3.1.4（issue #14）：忽略**嵌套滚动**与横向滚动——代码块/表格内部的横向
-    // SingleChildScrollView 会向上冒泡出 pixels=0 的通知，此前被误判成"滚到视觉顶部"
-    // → 每次横滑都触发加载更早、列表跳回该轮上方。
-    // ScrollNotification.depth：外层列表自身为 0，嵌套滚动冒泡上来时 > 0。
-    if (n.depth != 0) return false;
-    if (n.metrics.axis != Axis.vertical) return false;
-    if (n.metrics.pixels < 80) {
+    if (shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
     }
     return false;
