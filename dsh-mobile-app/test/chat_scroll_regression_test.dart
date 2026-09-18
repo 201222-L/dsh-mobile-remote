@@ -69,37 +69,66 @@ void main() {
       );
       expect(shouldLoadOlderFromScroll(notification, infiniteMode: true), isFalse);
     });
+
+    testWidgets('顶部负向 overscroll 允许重试分页', (tester) async {
+      final context = await testContext(tester);
+      final notification = OverscrollNotification(
+        metrics: metrics(pixels: 0),
+        context: context,
+        overscroll: -12,
+      );
+      expect(shouldLoadOlderFromScroll(notification, infiniteMode: true), isTrue);
+    });
+
+    testWidgets('顶部正向 overscroll 不触发分页', (tester) async {
+      final context = await testContext(tester);
+      final notification = OverscrollNotification(
+        metrics: metrics(pixels: 0),
+        context: context,
+        overscroll: 12,
+      );
+      expect(shouldLoadOlderFromScroll(notification, infiniteMode: true), isFalse);
+    });
   });
 
-  group('offsetAfterHistoryPrepend', () {
-    test('按新增内容高度补偿 offset，原可见消息不移动', () {
-      expect(
-        offsetAfterHistoryPrepend(
-          oldPixels: 0,
-          oldMaxScrollExtent: 2200,
-          newMaxScrollExtent: 3450,
-        ),
-        1250,
-      );
-    });
-
-    test('没有新增 extent 时保持原 offset，并限制在新范围内', () {
-      expect(
-        offsetAfterHistoryPrepend(
-          oldPixels: 40,
-          oldMaxScrollExtent: 2200,
-          newMaxScrollExtent: 2200,
-        ),
-        40,
-      );
-      expect(
-        offsetAfterHistoryPrepend(
-          oldPixels: 2300,
-          oldMaxScrollExtent: 2400,
-          newMaxScrollExtent: 2200,
-        ),
-        2200,
-      );
-    });
+  testWidgets('centered live slivers preserve offset when older rows are prepended', (tester) async {
+    final controller = ScrollController();
+    final centerKey = const ValueKey<String>('center');
+    var older = <int>[];
+    final current = List<int>.generate(20, (i) => i);
+    late StateSetter update;
+    await tester.pumpWidget(MaterialApp(
+      home: StatefulBuilder(
+        builder: (context, setState) {
+          update = setState;
+          return CustomScrollView(
+            controller: controller,
+            center: centerKey,
+            slivers: [
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (_, index) => SizedBox(height: 100, child: Text('old ${older[index]}')),
+                  childCount: older.length,
+                ),
+              ),
+              SliverToBoxAdapter(key: centerKey, child: const SizedBox.shrink()),
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (_, index) => SizedBox(height: 100, child: Text('current ${current[current.length - 1 - index]}')),
+                  childCount: current.length,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    ));
+    await tester.pump();
+    controller.jumpTo(controller.position.maxScrollExtent - 150);
+    await tester.pump();
+    final before = controller.offset;
+    update(() => older = List<int>.generate(10, (i) => i + 20));
+    await tester.pumpAndSettle();
+    expect(controller.offset, before);
   });
 }
