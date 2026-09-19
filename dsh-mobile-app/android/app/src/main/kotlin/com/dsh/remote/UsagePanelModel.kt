@@ -28,7 +28,7 @@ object UsagePanelModel {
 
     enum class Severity { OK, WARN, DANGER }
 
-    data class Bar(val ratio: Double, val severity: Severity, val limited: Boolean)
+    data class Bar(val ratio: Double, val severity: Severity, val limited: Boolean, val label: String)
 
     data class BalanceLine(val text: String, val low: Boolean)
 
@@ -102,7 +102,7 @@ object UsagePanelModel {
                 for (w in sorted) {
                     val ratio = clampRatio(w.optDouble("remainingPercent", -1.0))
                     if (ratio == null) continue
-                    bars.add(Bar(ratio, severityOf(ratio), w.optBoolean("limited")))
+                    bars.add(Bar(ratio, severityOf(ratio), w.optBoolean("limited"), w.optString("window")))
                     if (bars.size >= MAX_BARS_PER_ROW) break
                 }
                 if (bars.isEmpty()) emptyList()

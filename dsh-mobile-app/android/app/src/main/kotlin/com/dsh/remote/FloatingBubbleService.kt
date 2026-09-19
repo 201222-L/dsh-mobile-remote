@@ -1452,25 +1452,49 @@ class FloatingBubbleService : Service() {
         title.textSize = 11f
         title.maxLines = 1
         title.ellipsize = android.text.TextUtils.TruncateAt.END
-        line.addView(title, LinearLayout.LayoutParams(dp(76), dp(16)))
+        line.addView(title, LinearLayout.LayoutParams(dp(76), dp(19)))
         if (row.isBalance) {
             val amt = TextView(this)
             val t = row.balance?.text ?: ""
             amt.text = if (t.isEmpty()) text("--", "--") else t
             amt.setTextColor(if (row.balance?.low == true) Color.parseColor("#FF6B6B") else Color.WHITE)
             amt.textSize = 12.5f
-            line.addView(amt, LinearLayout.LayoutParams(0, dp(16), 1f))
+            line.addView(amt, LinearLayout.LayoutParams(0, dp(19), 1f))
         } else {
             val bars = LinearLayout(this)
             bars.orientation = LinearLayout.HORIZONTAL
             bars.gravity = Gravity.CENTER_VERTICAL
             for (b in row.bars) {
-                bars.addView(usageBarView(b), LinearLayout.LayoutParams(0, dp(5), 1f).apply { setMargins(dp(1), 0, dp(1), 0) })
+                bars.addView(usageQuotaCell(b), LinearLayout.LayoutParams(0, dp(19), 1f).apply { setMargins(dp(1), 0, dp(1), 0) })
             }
-            line.addView(bars, LinearLayout.LayoutParams(0, dp(16), 1f))
+            line.addView(bars, LinearLayout.LayoutParams(0, dp(19), 1f))
         }
         line.setOnClickListener { hidePanel(); openUsage() }
         return line
+    }
+
+    /** 配额单元格：上为窗口短标签（与进度条居中对齐），下为细条。 */
+    private fun usageQuotaCell(b: UsagePanelModel.Bar): View {
+        val cell = LinearLayout(this)
+        cell.orientation = LinearLayout.VERTICAL
+        cell.gravity = Gravity.CENTER_HORIZONTAL
+        val label = TextView(this)
+        label.text = windowShortLabel(b.label)
+        label.setTextColor(Color.parseColor("#9AA3AF"))
+        label.textSize = 8.5f
+        label.gravity = Gravity.CENTER_HORIZONTAL
+        label.maxLines = 1
+        cell.addView(label, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(10)))
+        cell.addView(usageBarView(b), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(5)))
+        return cell
+    }
+
+    /** 窗口短标签（与详情页同语义、取简短版）：5h / 每周 / 每月；未知保留原始短标签。 */
+    private fun windowShortLabel(raw: String): String = when (raw) {
+        "5h" -> text("5h", "5h")
+        "weekly" -> text("每周", "weekly")
+        "monthly" -> text("每月", "monthly")
+        else -> raw
     }
 
     /** 细条：轨道 + 按剩余比例填充的颜色段（配色沿用 DshTheme 暗色语义色，与详情页一致）。 */

@@ -121,6 +121,7 @@ class UsagePanelModelTest {
         assertEquals(0.64, row.bars[1].ratio, 1e-9)
         assertEquals(UsagePanelModel.Severity.WARN, row.bars[0].severity)
         assertEquals(UsagePanelModel.Severity.OK, row.bars[1].severity)
+        assertEquals(listOf("5h", "weekly"), row.bars.map { it.label }) // 短标签透传
     }
 
     @Test
@@ -130,6 +131,15 @@ class UsagePanelModelTest {
             {"window":"weekly","remainingPercent":83},
             {"window":"5h","remainingPercent":91}]}]"""), payloadFetchedAtMs = now - 1000))
         assertEquals(listOf(0.91, 0.83, 0.76), v.rows[0].bars.map { it.ratio })
+        assertEquals(listOf("5h", "weekly", "monthly"), v.rows[0].bars.map { it.label })
+    }
+
+    @Test
+    fun `未知窗口标签原样保留用于短标签`() {
+        val v = UsagePanelModel.build(state(payload = payload("""[{"id":"codex","title":"Codex","kind":"quota","windows":[
+            {"window":"45m","remainingPercent":80},
+            {"window":"5h","remainingPercent":55}]}]"""), payloadFetchedAtMs = now - 1000))
+        assertEquals(listOf("45m", "5h"), v.rows[0].bars.map { it.label })
     }
 
     @Test
@@ -155,6 +165,7 @@ class UsagePanelModelTest {
         assertEquals(0.0, bar.ratio, 1e-9)
         assertTrue(bar.limited)
         assertEquals(UsagePanelModel.Severity.DANGER, bar.severity)
+        assertEquals("weekly", bar.label)
     }
 
     // ── 严重度分档（Testing Decisions 6）──────────────────────────────
