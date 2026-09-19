@@ -187,6 +187,37 @@
 | 变体 B | 旧版 App（≤v3.0.0）+ 新版插件：浏览路径为 `/\home` 形态，服务端归一化后仍可正常进入/选择（`//home` 在 POSIX 与 `/home` 等价） |
 | 单测 | `flutter test test/dirpicker_logic_test.dart`（joinDirPath/dirSepOf）；`node tools/wsl-path-check.mjs`（normalizeServerPath，8/8） |
 
+### F-24 对话时间线能力与历史/实时一致
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 插件返回 `capabilities.eventTimeline`；准备 user、assistant、tool/call、tool/result、unknown Visible event 与长参数/结果 |
+| 步骤 | App 连接 SSE → 记录实时事件；断线后请求 `/history`；展开工具卡与未知事件详情 |
+| 预期 | 事件顺序和 durable seq 一致；工具按 callId 合并且显示完整生命周期；长详情按需加载；未知事件通用卡可展开；历史分页 `hasMore` 可补齐所有缺口 |
+| 变体 A | 旧插件无 capability / 无详情端点 |
+| 预期 | 保留旧摘要与聊天；详情显示“不可用”，不伪造数据 |
+| 变体 B | 手机离线后展开详情 |
+| 预期 | 已缓存摘要保留；详情显示不可用并可在恢复连接后重试 |
+| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，40/40）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
+
+### F-25 普通/调试模式与富内容
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 普通模式查看工具、注入事件、图片/Markdown/文件结果；切换调试模式逐条展开 |
+| 预期 | 普通模式摘要且隐藏选定 runtime 注入与协议元数据（`session/title`、`model/selection`、`feedback/*` 等）；调试模式显示协议元数据、未知事件、原始工具 IO；图片/Markdown 可预览，文件可下载到应用私有目录（提示显示完整路径）；系统提示词、请求快照与压缩摘要永不显示 |
+| 变体 | 并行同名工具、失败工具、已解决的审批、todo/Job 状态、压缩前事件、流式工具参数（delta → tool/call）|
+| 预期 | 各自按 callId/事件 seq 保持独立；工具参数以 `tool/call` 的完整实参为准（不得出现 delta 与整串拼接）；审批走 durable `approval/asked`/`approval/decided` 可历史回放，问询只有瞬态帧（重进会话不保证回放）；失败默认展开 |
+
+> 边界说明：问询（`question/requested`）在核心里只有瞬态远程帧、没有 durable 事件，因此**不保证**历史回放；审批有 durable 事件，重进会话仍可见。
+
+### F-26 断线多页 catch-up 与滚动锚点
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 生成超过 100 条未读 Visible event，断开 SSE，恢复连接并向上翻历史 |
+| 预期 | catch-up 持续读取 `hasMore` 直到 durable cursor 收敛；重复帧不重复渲染；加载更早事件不改变当前 viewport 锚点 |
+
 ## 3. 安全测试用例
 
 ### S-01 Host 校验

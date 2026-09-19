@@ -42,6 +42,8 @@ class Api {
   String path = '/m';
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
+  /// 对话时间线能力由服务端显式声明，不能只按 package version 猜测。
+  TimelineCapabilities timelineCapabilities = const TimelineCapabilities();
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
   List<String> baseUrls = [];
@@ -186,6 +188,12 @@ class Api {
         } catch (_) {}
       }());
     }
+    final capabilities = d['capabilities'];
+    timelineCapabilities = capabilities is Map
+        ? TimelineCapabilities.fromJson(
+            capabilities['eventTimeline'] is Map ? Map<String, dynamic>.from(capabilities['eventTimeline'] as Map) : null,
+          )
+        : const TimelineCapabilities();
   }
 
   /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
@@ -552,13 +560,30 @@ class Api {
     }
     return bytes;
   }
-  /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
-  /// 避免一次解析/渲染数百条事件导致手机卡死。
-  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
+  /// 拉历史页。服务端返回 hasMore，供断线 catch-up 循环补齐 durable cursor。
+  Future<HistoryPage> historyPage(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
     final params = 'sessionId=${Uri.encodeQueryComponent(sessionId)}'
         '${after != null ? '&after=$after' : ''}${before != null ? '&before=$before' : ''}&limit=$limit';
     final data = await getJson('/api/history?$params', timeout: timeout);
-    return (data['events'] as List? ?? []).map((e) => ChatEvent.fromJson(e as Map<String, dynamic>)).toList();
+    return HistoryPage(
+      events: (data['events'] as List? ?? []).whereType<Map>().map((e) => ChatEvent.fromJson(Map<String, dynamic>.from(e))).toList(),
+      hasMore: data['hasMore'] == true,
+    );
+  }
+
+  /// 兼容旧调用方的历史列表接口。
+  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
+    return (await historyPage(sessionId, after: after, before: before, limit: limit, timeout: timeout)).events;
+  }
+
+  /// 按 seq 读取一条无损事件详情。详情不可用时由调用方显示明确降级状态。
+  Future<Map<String, dynamic>> eventDetail(String sessionId, int seq, {Duration timeout = const Duration(seconds: 20)}) async {
+    final data = await getJson('/api/event-detail?sessionId=${Uri.encodeQueryComponent(sessionId)}&seq=$seq', timeout: timeout);
+    final event = data['event'];
+    if (event is! Map || event['type'] is! String) {
+      throw ApiException('event detail unavailable', code: 'event-detail-unavailable');
+    }
+    return Map<String, dynamic>.from(event);
   }
   Future<List<AppNotification>> notifications() async {
     final data = await getJson('/api/notifications');

@@ -19,12 +19,17 @@ class AppStore extends ChangeNotifier {
   int unread = 0;
   String agentStatus = 'idle'; // idle | running | waiting
 
-  /// v2.7.1：各 agent（会话）最新状态映射（bootstrap + agent/status 帧维护，key = agentId = sessionId）。
-  /// 修复：此前用全局单值 + agents.first 同步，切换工作区/回前台会把状态串成别的会话的。
+  /// v2.7.1：各 agent 最新状态映射（bootstrap + agent/status 帧维护）。
   final Map<String, String> agentStatusMap = {};
+  /// SSE 的 agentId 与 sessionId 不是同一标识时，按 session 维护页面状态。
+  final Map<String, String> sessionAgentStatus = {};
+  String agentStatusForSession(String? id) => id == null
+      ? agentStatus
+      : sessionAgentStatus[id] ?? agentStatusMap[id] ?? (id == sessionId ? agentStatus : 'idle');
   String darkMode = 'system'; // system | dark | light
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
   bool reasoningDefaultExpanded = false; // 思维链默认展开还是折叠（默认折叠：防英文思考刷屏；单条消息仍可点按切换）
+  bool timelineDebug = false; // 普通/调试模式：默认普通，调试显示原始事件详情
   /// 思维链折叠手动状态（会话 -> 消息key -> 手动展开值；滚动/重进/重启持久，null=跟随设置默认）
   Map<String, Map<String, bool>> reasoningOverrides = {};
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
@@ -41,6 +46,45 @@ class AppStore extends ChangeNotifier {
   /// 内核待回答的问询/审批（弹窗数据，与 PC 端同一 pending 通道；断线重连后服务端会补发）。
   QuestionRequest? pendingQuestion;
   ApprovalRequest? pendingApproval;
+  final Map<String, QuestionRequest> _pendingQuestionsBySession = {};
+  final Map<String, ApprovalRequest> _pendingApprovalsBySession = {};
+  QuestionRequest? questionForSession(String? id) => id == null
+      ? pendingQuestion
+      : _pendingQuestionsBySession[id] ?? (pendingQuestion?.sessionId == id ? pendingQuestion : null);
+  ApprovalRequest? approvalForSession(String? id) => id == null
+      ? pendingApproval
+      : _pendingApprovalsBySession[id] ?? (pendingApproval?.sessionId == id ? pendingApproval : null);
+
+  QuestionRequest? _questionForRpc(Object? rpcId) {
+    for (final q in _pendingQuestionsBySession.values) {
+      if (q.rpcId == rpcId) return q;
+    }
+    return pendingQuestion?.rpcId == rpcId ? pendingQuestion : null;
+  }
+
+  ApprovalRequest? _approvalForId(Object? approvalId) {
+    for (final a in _pendingApprovalsBySession.values) {
+      if (a.approvalId == approvalId) return a;
+    }
+    return pendingApproval?.approvalId == approvalId ? pendingApproval : null;
+  }
+
+  ApprovalRequest? _approvalForRpc(Object? rpcId) {
+    for (final a in _pendingApprovalsBySession.values) {
+      if (a.rpcId == rpcId) return a;
+    }
+    return pendingApproval?.rpcId == rpcId ? pendingApproval : null;
+  }
+
+  void _clearPendingQuestion(Object? rpcId, [String? sessionId]) {
+    _pendingQuestionsBySession.removeWhere((sid, q) => q.rpcId == rpcId && (sessionId == null || sid == sessionId));
+    if (pendingQuestion?.rpcId == rpcId && (sessionId == null || pendingQuestion?.sessionId == sessionId)) pendingQuestion = null;
+  }
+
+  void _clearPendingApproval(Object? rpcId, [String? sessionId]) {
+    _pendingApprovalsBySession.removeWhere((sid, a) => a.rpcId == rpcId && (sessionId == null || sid == sessionId));
+    if (pendingApproval?.rpcId == rpcId && (sessionId == null || pendingApproval?.sessionId == sessionId)) pendingApproval = null;
+  }
 
   // ── v2.7：会话级输入草稿（返回/切会话后恢复） ──
   final Map<String, String> _drafts = {};
@@ -71,7 +115,7 @@ class AppStore extends ChangeNotifier {
     if (fromFrame) _queueFramed.add(sessionId);
     queueBySession[sessionId] = rows;
     notifyListeners();
-    _emitChatEvent(ChatEvent(type: 'mobile/queue', data: {'sessionId': sessionId}));
+    _emitChatEvent(ChatEvent(type: 'mobile/queue', sessionId: sessionId, data: {'sessionId': sessionId}));
   }
 
   // ── 事件监听（聊天页挂载） ──
@@ -105,6 +149,7 @@ class AppStore extends ChangeNotifier {
   static const _kDark = 'dsh_mr_darkmode';
   static const _kReasoning = 'dsh_mr_show_reasoning';
   static const _kReasoningDefaultExpanded = 'dsh_mr_reasoning_default_expanded';
+  static const _kTimelineDebug = 'dsh_mr_timeline_debug';
   static const _kReasoningOverrides = 'dsh_mr_reasoning_overrides';
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
@@ -119,6 +164,7 @@ class AppStore extends ChangeNotifier {
     darkMode = prefs.getString(_kDark) ?? 'system';
     showReasoning = prefs.getBool(_kReasoning) ?? false;
     reasoningDefaultExpanded = prefs.getBool(_kReasoningDefaultExpanded) ?? false;
+    timelineDebug = prefs.getBool(_kTimelineDebug) ?? false;
     try {
       final raw = prefs.getString(_kReasoningOverrides);
       if (raw != null && raw.isNotEmpty) {
@@ -287,15 +333,15 @@ class AppStore extends ChangeNotifier {
     try {
       final r = await api.respond(kind: 'question', rpcId: rpcId, sessionId: sessionId, answers: answers);
       if (r['accepted'] == true) {
-        if (pendingQuestion?.rpcId == rpcId) {
-          pendingQuestion = null;
+        if (pendingQuestion?.rpcId == rpcId || _pendingQuestionsBySession.values.any((q) => q.rpcId == rpcId)) {
+          _clearPendingQuestion(rpcId, sessionId);
           notifyListeners();
         }
         return null;
       }
       // not-pending / bad-response：PC 端可能已先答，弹窗应关闭
-      if (pendingQuestion?.rpcId == rpcId) {
-        pendingQuestion = null;
+      if (pendingQuestion?.rpcId == rpcId || _pendingQuestionsBySession.values.any((q) => q.rpcId == rpcId)) {
+        _clearPendingQuestion(rpcId, sessionId);
         notifyListeners();
       }
       return '${r['reason'] ?? '回答未被接受'}（可能电脑端已先回答）';
@@ -310,14 +356,14 @@ class AppStore extends ChangeNotifier {
       final r = await api.respond(
           kind: 'approval', rpcId: rpcId, sessionId: sessionId, approvalId: approvalId, outcome: outcome);
       if (r['accepted'] == true) {
-        if (pendingApproval?.rpcId == rpcId) {
-          pendingApproval = null;
+        if (pendingApproval?.rpcId == rpcId || _pendingApprovalsBySession.values.any((a) => a.rpcId == rpcId)) {
+          _clearPendingApproval(rpcId, sessionId);
           notifyListeners();
         }
         return null;
       }
-      if (pendingApproval?.rpcId == rpcId) {
-        pendingApproval = null;
+      if (pendingApproval?.rpcId == rpcId || _pendingApprovalsBySession.values.any((a) => a.rpcId == rpcId)) {
+        _clearPendingApproval(rpcId, sessionId);
         notifyListeners();
       }
       return '${r['reason'] ?? '审批未被接受'}（可能电脑端已先处理）';
@@ -328,11 +374,14 @@ class AppStore extends ChangeNotifier {
 
   /// 取消（跳过）问询/审批：内核收到 cancelled，agent 按 ASK_CANCELLED 继续。
   Future<void> cancelRespond(String rpcId) async {
+    final question = _questionForRpc(rpcId);
+    final approval = _approvalForRpc(rpcId);
+    final sessionId = question?.sessionId ?? approval?.sessionId ?? '';
     try {
-      await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: '');
+      await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: sessionId);
     } catch (_) {}
-    if (pendingQuestion?.rpcId == rpcId) pendingQuestion = null;
-    if (pendingApproval?.rpcId == rpcId) pendingApproval = null;
+    _clearPendingQuestion(rpcId);
+    _clearPendingApproval(rpcId);
     notifyListeners();
   }
 
@@ -420,6 +469,12 @@ class AppStore extends ChangeNotifier {
     await _persistPrefs(_kReasoningDefaultExpanded, v);
   }
 
+  Future<void> setTimelineDebug(bool v) async {
+    timelineDebug = v;
+    notifyListeners();
+    await _persistPrefs(_kTimelineDebug, v);
+  }
+
   bool? reasoningOverrideOf(String sessionId, String messageKey) =>
       reasoningOverrides[sessionId]?[messageKey];
 
@@ -453,6 +508,7 @@ class AppStore extends ChangeNotifier {
       ok = true;
       // v2.7：下拉刷新也收集地址（蒲公英等新地址及时进候选）+ 同步 agent 状态
       api.absorbBootstrap(d);
+      _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _syncAgentStatus(d);
     } catch (_) {
       // 连接不通：尝试轮换到下一个候选地址（黑洞快速切换）再探测一次
@@ -462,6 +518,7 @@ class AppStore extends ChangeNotifier {
           final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
           ok = true;
           api.absorbBootstrap(d);
+      _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
           _syncAgentStatus(d);
           // 当前 SSE 大概率也指向旧地址：重建连接
           disposeBridge();
@@ -486,7 +543,10 @@ class AppStore extends ChangeNotifier {
         final id = a['id'];
         if (id is String && id.isNotEmpty) {
           final st = a['status'];
-          agentStatusMap[id] = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+          final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+          agentStatusMap[id] = norm;
+          final sid = a['sessionId'];
+          if (sid is String && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
         }
       }
     }
@@ -502,7 +562,7 @@ class AppStore extends ChangeNotifier {
     if (id == null) {
       next = 'idle';
     } else {
-      next = agentStatusMap[id] ?? 'idle';
+      next = sessionAgentStatus[id] ?? agentStatusMap[id] ?? 'idle';
     }
     if (next != agentStatus) {
       agentStatus = next;
@@ -711,6 +771,7 @@ class AppStore extends ChangeNotifier {
       final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       // 合并服务端返回的全部地址（含 Tailscale IP）+ 记录插件版本
       api.absorbBootstrap(d);
+      _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _syncAgentStatus(d);
       _setConnState('connected');
       // 关键修复：探针成功 ≠ 旧 SSE 流还活着。App 后台期间 TCP 可能已静默死亡
@@ -744,6 +805,11 @@ class AppStore extends ChangeNotifier {
     _retry = 0;
     final type = frame['type'];
     if (type == 'hello') {
+      final capabilities = frame['capabilities'];
+      api.timelineCapabilities = capabilities is Map && capabilities['eventTimeline'] is Map
+          ? TimelineCapabilities.fromJson(Map<String, dynamic>.from(capabilities['eventTimeline'] as Map))
+          : const TimelineCapabilities();
+      _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _setConnState('connected');
       _catchup();
       // v2.7.1：重连成功后按已知映射恢复当前会话状态（bootstrap 可能没跑到，帧也可能漏）
@@ -751,17 +817,21 @@ class AppStore extends ChangeNotifier {
       // v2.7.2（审批残留修复）：后台冻帧可能丢失 resolved 帧（PC 端已回答但手机仍显示卡片）——
       // 重连后先清空本地 pending 问询/审批，服务端随后补发的挂起帧才是权威状态；
       // 未补发 = 已解决，卡片正确销毁
-      if (pendingQuestion != null || pendingApproval != null) {
-        final hadQ = pendingQuestion;
-        final hadA = pendingApproval;
+      if (pendingQuestion != null || pendingApproval != null || _pendingQuestionsBySession.isNotEmpty || _pendingApprovalsBySession.isNotEmpty) {
+        final questions = <QuestionRequest>{..._pendingQuestionsBySession.values};
+        final approvals = <ApprovalRequest>{..._pendingApprovalsBySession.values};
+        if (pendingQuestion != null) questions.add(pendingQuestion!);
+        if (pendingApproval != null) approvals.add(pendingApproval!);
         pendingQuestion = null;
         pendingApproval = null;
+        _pendingQuestionsBySession.clear();
+        _pendingApprovalsBySession.clear();
         notifyListeners();
-        if (hadQ != null) {
-          _emitChatEvent(ChatEvent(type: 'question/resolved', data: {'rpcId': hadQ.rpcId}));
+        for (final q in questions) {
+          _emitChatEvent(ChatEvent(type: 'question/resolved', sessionId: q.sessionId, data: {'rpcId': q.rpcId, 'sessionId': q.sessionId}));
         }
-        if (hadA != null) {
-          _emitChatEvent(ChatEvent(type: 'approval/resolved', data: {'approvalId': hadA.approvalId}));
+        for (final a in approvals) {
+          _emitChatEvent(ChatEvent(type: 'approval/resolved', sessionId: a.sessionId, data: {'approvalId': a.approvalId, 'sessionId': a.sessionId}));
         }
       }
       // 连接成功：收集电脑全部地址（LAN + Tailscale），供断线时自动轮换
@@ -790,50 +860,61 @@ class AppStore extends ChangeNotifier {
       if (f is! Map<String, dynamic>) return;
       final ftype = f['type'];
       if (ftype == 'question/requested') {
-        pendingQuestion = QuestionRequest(
+        final request = QuestionRequest(
           rpcId: f['rpcId'] as String? ?? '',
-          sessionId: f['sessionId'] as String? ?? '',
+          sessionId: f['sessionId'] as String? ?? sessionId ?? '',
           questions: (f['questions'] as List? ?? [])
               .map((q) => AskQuestion.fromJson(q as Map<String, dynamic>))
               .toList(),
         );
+        _pendingQuestionsBySession[request.sessionId] = request;
+        pendingQuestion = request; // legacy single-pending compatibility
         notifyListeners();
-        _emitChatEvent(ChatEvent(type: 'question/requested',
-            data: {'rpcId': pendingQuestion!.rpcId, 'sessionId': pendingQuestion!.sessionId}));
+        _emitChatEvent(ChatEvent(type: 'question/requested', sessionId: request.sessionId,
+            data: {'rpcId': request.rpcId, 'sessionId': request.sessionId}));
         return;
       }
       if (ftype == 'question/resolved') {
         final rid = f['questionRpcId'];
-        if (pendingQuestion != null && pendingQuestion!.rpcId == rid) {
-          pendingQuestion = null;
-          notifyListeners();
-        }
+        final explicitSessionId = f['sessionId'] as String?;
+        final matchingQuestion = _questionForRpc(rid);
+        final resolvedSessionId = explicitSessionId ?? matchingQuestion?.sessionId;
+        // 按 rpcId 精确清除：带 sessionId 的 resolved 帧不得误删同会话中的其它挂起问询。
+        final hadPending = pendingQuestion?.rpcId == rid || matchingQuestion != null;
+        _clearPendingQuestion(rid);
+        if (hadPending) notifyListeners();
         // 无条件转发：即使本地已在提交/取消时提前清空，聊天页也要据此收起卡片
-        _emitChatEvent(ChatEvent(type: 'question/resolved', data: {'rpcId': rid}));
+        _emitChatEvent(ChatEvent(type: 'question/resolved', sessionId: resolvedSessionId, data: {'rpcId': rid, 'sessionId': resolvedSessionId}));
         return;
       }
       if (ftype == 'approval/requested') {
-        pendingApproval = ApprovalRequest(
+        final request = ApprovalRequest(
           rpcId: f['rpcId'] as String? ?? '',
-          sessionId: f['sessionId'] as String? ?? '',
+          sessionId: f['sessionId'] as String? ?? sessionId ?? '',
           approvalId: f['approvalId'] as String? ?? '',
           toolName: f['toolName'] as String? ?? '',
           callId: f['callId'] as String?,
           reason: f['reason'] as String?,
         );
+        _pendingApprovalsBySession[request.sessionId] = request;
+        pendingApproval = request; // legacy single-pending compatibility
         notifyListeners();
-        _emitChatEvent(ChatEvent(type: 'approval/requested',
-            data: {'rpcId': pendingApproval!.rpcId, 'sessionId': pendingApproval!.sessionId}));
+        _emitChatEvent(ChatEvent(type: 'approval/requested', sessionId: request.sessionId,
+            data: {'rpcId': request.rpcId, 'sessionId': request.sessionId}));
         return;
       }
       if (ftype == 'approval/resolved') {
         final aid = f['approvalId'];
-        if (pendingApproval != null && pendingApproval!.approvalId == aid) {
-          pendingApproval = null;
-          notifyListeners();
-        }
+        final explicitSessionId = f['sessionId'] as String?;
+        final matchingApproval = _approvalForId(aid);
+        final resolvedSessionId = explicitSessionId ?? matchingApproval?.sessionId;
+        // 按 approvalId 精确清除：不能按 session 盲删（会误删同会话中的其它挂起审批）。
+        final hadPending = pendingApproval?.approvalId == aid || matchingApproval != null;
+        _pendingApprovalsBySession.removeWhere((sid, a) => a.approvalId == aid);
+        if (pendingApproval?.approvalId == aid) pendingApproval = null;
+        if (hadPending) notifyListeners();
         // 无条件转发：聊天页据此收起审批卡片
-        _emitChatEvent(ChatEvent(type: 'approval/resolved', data: {'approvalId': aid}));
+        _emitChatEvent(ChatEvent(type: 'approval/resolved', sessionId: resolvedSessionId, data: {'approvalId': aid, 'sessionId': resolvedSessionId}));
         return;
       }
       return;
@@ -848,9 +929,9 @@ class AppStore extends ChangeNotifier {
     }
     if (type == 'session/context') {
       // 上下文窗口实时帧：转发给聊天页（圆环即时刷新，无需重进会话）
-      final fsid = frame['sessionId'];
-      if (sessionId == null || fsid == sessionId) {
-        _emitChatEvent(ChatEvent(type: 'session/context', data: {'contextWindow': frame['contextWindow']}));
+      final fsid = frame['sessionId'] as String?;
+      if (fsid != null && fsid.isNotEmpty) {
+        _emitChatEvent(ChatEvent(type: 'session/context', sessionId: fsid, data: {'contextWindow': frame['contextWindow'], 'sessionId': fsid}));
       }
       return;
     }
@@ -860,9 +941,7 @@ class AppStore extends ChangeNotifier {
       if (fsid != null) {
         jobsBySession[fsid] = (frame['jobs'] as List? ?? []).cast<Map<String, dynamic>>();
         notifyListeners();
-        if (sessionId == null || fsid == sessionId) {
-          _emitChatEvent(ChatEvent(type: 'session/jobs', data: {'sessionId': fsid, 'jobs': jobsBySession[fsid]}));
-        }
+        _emitChatEvent(ChatEvent(type: 'session/jobs', sessionId: fsid, data: {'sessionId': fsid, 'jobs': jobsBySession[fsid]}));
       }
       return;
     }
@@ -880,24 +959,37 @@ class AppStore extends ChangeNotifier {
         _debounceNotifs();
       }
       // 排障日志：帧到达与归属（高频 chunk 不记）
-      if (evType != 'assistant/chunk' && evType != 'tool/call' && evType != 'tool/result') {
+      if (evType != 'assistant/chunk' && evType != 'assistant/live-chunk' && evType != 'tool/call' && evType != 'tool/result') {
         AppLog.instance.log('SSE: session/event $evType from=$fsid 当前=${sessionId ?? "无"}');
       }
       // v2.7.2 review(M1)：不再按全局 sessionId 过滤——全部广播并携带 sessionId，
       // 各 ChatScreen 按自己的会话过滤（叠层页面各收各的，旧页不被新会话事件污染）
       final ce = ChatEvent.fromJson(event);
-      _emitChatEvent(ChatEvent(seq: ce.seq, type: ce.type, data: ce.data, sessionId: fsid as String?));
+      _emitChatEvent(ChatEvent(
+        seq: ce.seq,
+        type: ce.type,
+        data: ce.data,
+        sessionId: fsid as String?,
+        detailAvailable: ce.detailAvailable,
+      ));
     } else if (type == 'agent/status') {
-      // v2.7.1 修复：状态是"每个 agent"的——全量入映射；
-      // 仅当前会话（或无会话时的兜底）才更新显示值并转发聊天页，避免别的会话状态串台。
+      // agentId 与 sessionId 是不同标识；页面路由必须使用 frame.sessionId。
       final aid = frame['agentId'] as String?;
+      final sid = frame['sessionId'] as String?;
       final st = frame['status'];
       final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
       if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
-      if (aid == null || sessionId == null || aid == sessionId) {
+      if (sid != null && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
+      final current = sid != null && sid.isNotEmpty ? sid == sessionId : aid == sessionId;
+      if (current || (sid == null && aid == null)) {
         agentStatus = norm;
         notifyListeners();
-        _emitChatEvent(ChatEvent(type: 'agent/status', data: {'status': st}));
+      }
+      if (sid != null && sid.isNotEmpty) {
+        _emitChatEvent(ChatEvent(type: 'agent/status', sessionId: sid, data: {'status': st, 'sessionId': sid, 'agentId': aid}));
+      } else if (current) {
+        // Legacy frame without sessionId: only the currently bound page may see it.
+        _emitChatEvent(ChatEvent(type: 'agent/status', sessionId: sessionId, data: {'status': st, 'sessionId': sessionId, 'agentId': aid}));
       }
     }
   }

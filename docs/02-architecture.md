@@ -110,12 +110,14 @@ sequenceDiagram
 ### 5.2 事件摘要规则（服务端，防止移动端流量膨胀）
 | 事件类型 | 下发给移动端的载荷 |
 |---|---|
-| `user/message` | 全部 text blocks（≤2000 字符） |
-| `assistant/message` | 全部 text blocks（≤20000 字符），reasoning 折叠计数 |
+| `user/message` | 全部 text blocks（≤2000 字符），图片/文件仅下发引用元数据 |
+| `assistant/message` | 全部 text blocks（≤20000 字符），reasoning 折叠计数，图片/文件仅下发引用元数据 |
 | `assistant/chunk` | 仅 text delta（≤4000 字符缓冲合并） |
-| `tool/result` | 工具名 + 成功/失败 + 截断内容（≤2000 字符） |
+| `tool/result` | 工具名 + 成功/失败 + 截断内容（≤2000 字符）+ 文件/图片引用元数据 |
 | `turn/start` / `turn/end` | 类型 + 轮次数 / 结束原因 |
-| 其他 | 仅类型名（可忽略事件不推送） |
+| 其他 | 保留 type/seq；无损详情按需读取（`ignorable` 不改变可见性，敏感/内部事件除外） |
+| 协议元数据（`session/title`、`model/selection`、`feedback/*` 等） | 仍下发并保留 seq/详情指针，但普通模式折叠、调试模式可展开 |
+| 内部/重建/快照（`request/*`、`step/*`、`system/message`、`assistant/attempt`、`compaction/*`） | 历史、实时与详情端点均不返回 |
 
 ## 6. 状态机
 ```mermaid
@@ -138,7 +140,7 @@ stateDiagram-v2
 | D2 | 口令认证默认关闭 | 信任网络层（自家 WiFi + 虚拟组网）；口令是可选加固而非默认摩擦 |
 | D3 | SSE 而非轮询 | 现有 `/plugins/events` 同款模式；事件延迟 <500ms 需求 |
 | D4 | 移动页不发起新会话 | 会话创建/模型配置语义复杂（preset、模型选择），v1 只续接 |
-| D5 | 摘要下放而非全量事件 | 控制流量与渲染成本；桌面 GUI 全量能力不受影响 |
+| D5 | 摘要作为默认展示，完整 Visible event 通过详情按需读取 | 保持移动端列表流量与渲染成本可控，同时允许调试模式审阅主会话工具链；未知事件保留类型/顺序，不静默丢弃（取代旧的“摘要而非全量”表述） |
 
 ## 8. 非功能架构
 - **连接管理**：SSE 连接 Set，上限 16；dispose 时 `res.destroy()` 全部连接。

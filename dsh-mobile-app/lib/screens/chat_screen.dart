@@ -5,12 +5,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../logger.dart';
 import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';
+import '../timeline.dart';
 import '../theme.dart';
 import '../md.dart';
 import '../fmt.dart';
@@ -115,6 +117,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<_MsgItem> _olderItems = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
+  // Shared pure projection owns seq de-duplication/call correlation for both live and history paths;
+  // _MsgItem remains the richer Flutter rendering adapter.
+  final TimelineReducer _timelineReducer = TimelineReducer();
   String _reasoning = '';
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
@@ -126,8 +131,10 @@ class _ChatScreenState extends State<ChatScreen> {
   int? _lastUserSeq;
   int? _lastAssistantSeq;
   DateTime? _lastResyncAt; // 兜底补拉节流（10s）
+  int _loadGeneration = 0; // 丢弃跨越 reset/会话切换的旧 history 响应
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
+  String get _pageAgentStatus => widget.store.agentStatusForSession(_mySessionId);
   // v2.7.2：排队消息停靠区（对齐 PC 端 Queue Dock）——可见、自解释，无需操作手册
   List<Map<String, dynamic>> _queue = [];
   bool _queueCollapsed = true; // 多条时折叠成计数头
@@ -135,6 +142,8 @@ class _ChatScreenState extends State<ChatScreen> {
   // todo/write 整份覆盖、turn/start 清空；面板默认折叠成一行计数（对齐 PC 端任务面板）
   List<Map<String, dynamic>> _todos = [];
   bool _todosCollapsed = true;
+  int _todoProjectionVersion = 0;
+  int _todoRefreshRequest = 0;
   String? _editingQueueId;
   final _queueEditCtrl = TextEditingController();
   Timer? _queueRefreshTimer;
@@ -147,10 +156,13 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
   QuestionRequest? _question; // 内核问询弹窗（当前会话，思考中途需要拍板）
   ApprovalRequest? _approval; // 内核权限审批弹窗（当前会话）
+  final Set<String> _transientFrameKeys = {}; // mobile/frame 无 durable seq，按业务 id 去重
   bool _sending = false;
   String? _title;
   Map<String, dynamic> _usage = {};
   bool _usageLoaded = false;
+  int _usageVersion = 0;
+  int _usageRequest = 0;
   Timer? _draftTimer; // 流式草稿节流刷新（chunk 合并，避免每帧全量重建）
   int _lastLoggedCount = -1; // 排障：itemCount 变化时打日志
   bool _scrolledLogged = false; // 排障：滚动状态打一次日志
@@ -168,6 +180,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
   static const _infiniteMode = true; // 微信式无限上翻（配合 Impeller 实验）
   static const _histPageSize = 30; // 历史分段每段条数
+  static const _catchupMaxPages = 20; // 断线补拉页数上限（20×100 条），超出由下次补拉收敛
   bool _inHistory = false;
   List<_MsgItem> _histItems = []; // 当前历史段：旧→新顺序（普通列表，最旧在顶部）
   int _histOldestSeq = 0;
@@ -186,17 +199,15 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
     // 进入会话时恢复挂起的问询/审批（例如从"需要你回答"通知点进来）
-    final pq = widget.store.pendingQuestion;
-    final pa = widget.store.pendingApproval;
-    _question = pq != null && pq.sessionId == widget.store.sessionId ? pq : null;
-    _approval = pa != null && pa.sessionId == widget.store.sessionId ? pa : null;
     _mySessionId = widget.store.sessionId; // v2.7.2 review(M1)：绑定本页会话
+    _question = widget.store.questionForSession(_mySessionId);
+    _approval = widget.store.approvalForSession(_mySessionId);
     _queue = widget.store.queueOf(_mySessionId ?? ''); // v3.0.0：初始即取镜像快照（帧/缓存）
     widget.store.addChatListener(_handleEvent); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
     _scrollCtrl.addListener(_onScrollTick);
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
-    final sid = widget.store.sessionId;
+    final sid = _mySessionId;
     if (sid != null) {
       final draft = widget.store.draftOf(sid);
       if (draft.isNotEmpty) _inputCtrl.text = draft;
@@ -210,7 +221,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// v2.7：输入变化 → 按会话保存草稿（返回/重进后恢复；清空即移除）。
   /// v2.7.2(B 方案)：输入变化同时刷新「排队发送」胶囊的显隐。
   void _onDraftChanged() {
-    final sid = widget.store.sessionId;
+    final sid = _mySessionId;
     if (sid != null) widget.store.saveDraft(sid, _inputCtrl.text);
     if (mounted) setState(() {});
   }
@@ -331,39 +342,49 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 丢弃现有条目并从历史重建，`_lastSeq` 以历史末条为准。默认 false：打开会话时带并发保护
   /// （保留历史请求期间 SSE 已入列的新条目）。
   Future<void> _load({bool reset = false}) async {
-    final id = widget.store.sessionId;
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
+    final generation = ++_loadGeneration;
     AppLog.instance.log(reset ? 'Chat: 重同步会话（按新表面重载）$id' : 'Chat: 打开会话 $id');
     try {
       final events = await api.history(id, limit: _liveMax);
       AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       setState(() {
         // 并发保护：历史请求期间 SSE 可能已把更新的事件入列（位于 _items 头部）。
         // 先收集保留项，再重建其余部分，不回退 _lastSeq。
         final fetchedLast = events.isNotEmpty ? (events.last.seq ?? 0) : 0;
         final keep = <_MsgItem>[];
-        if (fetchedLast > 0) {
-          for (final m in _items) {
-            if (reset) break; // 重同步：不保留任何旧条目（表面已被重写）
-            if (m.seq != null && m.seq! > fetchedLast) {
-              keep.add(m);
-            } else if (m.seq == null && m.kind == _MsgKind.user) {
-              // review：无 seq 的乐观消息（刚发送尚未回显）也保留，避免重建后短暂消失
-              keep.add(m);
+        // _items is newest-first. Rebuild every load from this durable snapshot,
+        // then replay the post-snapshot cursor below; this avoids split tool cards
+        // when a live result merged into a call card anchored at an older seq.
+        for (final m in _items) {
+          final cardSeq = m.latestSeq ?? m.seq;
+          if (cardSeq != null) {
+            if (cardSeq > fetchedLast) {
+              // Durable replay below reconstitutes these records into the same
+              // grouped card; do not insert the old rendered projection directly.
               continue;
-            } else if (m.seq == null) {
-              // v2.7.2 乱序排查：无 seq 的非用户条目（如"发送失败"提示条）在头部时
-              // 不能 break——否则其后的真新事件被丢弃/错位；跳过继续向上收集
-              continue;
-            } else {
-              break; // _items 最新在前：一旦遇到 seq ≤ fetchedLast 即可停止
             }
+            if (cardSeq <= fetchedLast) {
+              // 列表按 seq 从新到旧排列，遇到快照内事件即可停止。
+              break;
+            }
+            // reset=true：跳过请求期间的 SSE 条目，稍后从 durable cursor 重放。
+            continue;
           }
+          if (m.kind == _MsgKind.user) {
+            // 无 seq 的乐观消息（刚发送尚未回显）也保留，避免重建后短暂消失。
+            keep.add(m);
+          }
+          // 无 seq 的非用户条目（如发送失败提示）跳过。
         }
         _noMoreHistory = false;
         _items.clear();
         _olderItems.clear();
+        _histItems.clear();
+        _timelineReducer.reset();
+        _transientFrameKeys.clear();
         _activeTools.clear();
         _reasoning = '';
         _reasoningExpanded = false;
@@ -382,12 +403,17 @@ class _ChatScreenState extends State<ChatScreen> {
         _todos = foldedTodos;
         // 最新在前（渲染时倒序，最新位于列表底部）
         for (final ev in events.reversed) {
-          if (ev.seq != null && ev.seq! > fetchedLast) continue; // 已在 keep 中
+          if (ev.seq != null && ev.seq! > fetchedLast) continue;
           _appendEvent(ev, history: true, tail: true);
         }
+        _rebuildActiveToolsFromHistory(events);
         // v3.1.4（issue #13）：跟踪字段按**时间正序**重算——历史是倒序入列的，
         // 沿用循环里的赋值会得到"最旧一条"，导致轮次兜底误判。
         // 条件与渲染保持一致：真人 user 消息（含旧内核无 sourceKind 的）+ 非空文本的回复。
+        if (reset) {
+          _lastUserSeq = null;
+          _lastAssistantSeq = null;
+        }
         for (final ev in events) {
           if (ev.seq == null) continue;
           if (ev.type == 'user/message') {
@@ -397,22 +423,21 @@ class _ChatScreenState extends State<ChatScreen> {
             _lastAssistantSeq = ev.seq;
           }
         }
-        _items.insertAll(0, keep); // SSE 期间的新事件放回头部
-        if (events.isNotEmpty) {
-          _earliestSeq = events.first.seq ?? 0;
-          // v3.1.4：重同步后按新表面重建条目；_lastSeq 仍取"已处理过的最大 seq"
-          // （只增不减——下调会让后续 catchup 重复补拉已渲染的事件）
-          if (reset) {
-            _lastUserSeq = null;
-            _lastAssistantSeq = null;
-          }
-          if (fetchedLast > _lastSeq) _lastSeq = fetchedLast;
-        }
-        if (keep.isNotEmpty) {
-          final newest = keep.first.seq;
-          if (newest != null && newest > _lastSeq) _lastSeq = newest;
-        }
+        final durableUsers = _items.where((m) => m.kind == _MsgKind.user).toList();
+        final keepWithoutEcho = keep.where((m) {
+          final duplicate = durableUsers.any((d) {
+            if (m.messageId != null && d.messageId != null) return m.messageId == d.messageId;
+            return m.messageId == null && d.messageId == null && m.text.trim().isNotEmpty && m.text == d.text;
+          });
+          return !duplicate;
+        }).toList();
+        _items.insertAll(0, keepWithoutEcho); // SSE 期间的新事件放回头部
+        if (events.isNotEmpty) _earliestSeq = events.first.seq ?? 0;
+        // All durable events newer than this snapshot are replayed below,
+        // including an in-flight tool result whose card had an older anchor seq.
+        _lastSeq = fetchedLast;
       });
+      unawaited(_catchup(force: true));
       // v2.7.2 review：队列同步移到 setState 之外（避免误导为嵌套 setState）
       _refreshQueue();
       // v3.1.4：任务清单权威读法（内核投影同源）——历史折叠只在最近窗口内有效，
@@ -423,10 +448,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _refreshUsage();
       widget.store.refreshSessionConfig();
     } catch (e) {
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
-        showToast(context, '${L10n.t('该会话暂不可用：', 'This session is unavailable: ')}$e');
-        Navigator.of(context).pop();
+        if (_items.isNotEmpty || _olderItems.isNotEmpty) {
+          showToast(context, L10n.t('连接不可用，已保留当前时间线；稍后可重试详情', 'Connection unavailable; cached timeline kept, retry details later'));
+        } else {
+          showToast(context, '${L10n.t('该会话暂不可用：', 'This session is unavailable: ')}$e');
+          Navigator.of(context).pop();
+        }
       }
     }
   }
@@ -435,13 +465,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 滑到 live 顶部时静默加载更早一页：追加到 center 之前的旧消息 sliver。
   /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
   Future<void> _loadMoreInfinite() async {
-    final id = widget.store.sessionId;
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) return;
     _loadingMore = true;
+    final generation = _loadGeneration;
     AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
     try {
       final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         _noMoreHistory = true;
         showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
@@ -478,13 +509,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 历史分段浏览 ──
   /// 进入"查看更早"：加载 live 窗口之前的一页（旧→新顺序），普通列表从顶部展示。
   Future<void> _openHistory() async {
-    final id = widget.store.sessionId;
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0) return;
     _loadingMore = true;
+    final generation = _loadGeneration;
     AppLog.instance.log('Chat: 查看更早 before=$_earliestSeq');
     try {
       final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
         return;
@@ -508,13 +540,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 历史分段翻页：更早一段（替换式，列表高度恒定，绕开设备绘制上限）。
   Future<void> _histOlder() async {
-    final id = widget.store.sessionId;
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || !_histHasOlder) return;
     _loadingMore = true;
+    final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更早 before=$_histOldestSeq');
     try {
       final events = await api.history(id, before: _histOldestSeq, limit: _histPageSize);
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         setState(() => _histHasOlder = false);
         return;
@@ -536,13 +569,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 历史分段翻页：更新一段（更接近 live 窗口）。
   Future<void> _histNewer() async {
-    final id = widget.store.sessionId;
+    final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || !_histHasNewer) return;
     _loadingMore = true;
+    final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更新 after=$_histNewestSeq');
     try {
       final events = await api.history(id, after: _histNewestSeq, limit: _histPageSize);
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         setState(() => _histHasNewer = false);
         return;
@@ -699,9 +733,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
     final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
+    final request = ++_usageRequest;
+    final version = _usageVersion;
+    final generation = _loadGeneration;
     try {
       final u = await api.usage(id);
-      if (mounted) {
+      if (mounted && request == _usageRequest && version == _usageVersion && generation == _loadGeneration && id == _mySessionId) {
         setState(() {
           _usage = u;
           _usageLoaded = true;
@@ -713,8 +750,29 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── 事件处理（对齐网页端 handleEvent） ──
   void _handleEvent(ChatEvent ev) {
     if (!mounted) return;
-    // v2.7.2 review(M1)：只处理本页会话的事件（store 全量广播，叠层页面各收各的）
-    if (ev.sessionId != null && ev.sessionId != _mySessionId) return;
+    // v2.7.2 review(M1)：只处理本页会话的事件（store 全量广播，叠层页面各收各的）。
+    // bridge 事件兼容旧 store：若 sessionId 只存在 data 中也必须按页面绑定过滤。
+    final eventSessionId = ev.sessionId ?? ev.data?['sessionId']?.toString();
+    if (eventSessionId != null && eventSessionId != _mySessionId) return;
+    // 所有带 durable seq 的事件先去重，再更新任何投影（todo/jobs/tool card）。
+    // 否则 SSE 重复帧与 catch-up 会各自追加一张 timeline card。
+    if (ev.seq != null) {
+      if (ev.seq! <= _lastSeq) return;
+      _lastSeq = ev.seq!;
+    }
+    if (ev.type == 'compaction/end') {
+      _resyncAfterCompaction();
+      return;
+    }
+    if (hiddenTimelineTypes.contains(ev.type)) {
+      // Consume its cursor without retaining sensitive payloads.
+      return;
+    }
+    if (ev.type == '_capabilities') {
+      // Bootstrap/SSE hello can arrive after history; rebuild detail affordances.
+      setState(() {});
+      return;
+    }
     if (ev.type == '_catchup') {
       _catchup();
       _refreshTodos(); // v3.1.4：重连/唤醒后任务清单也对齐一次
@@ -726,40 +784,61 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     // 内核问询/审批弹窗帧（store 已按 sessionId 分发，这里只认当前会话）
     if (ev.type == 'question/requested') {
-      final q = widget.store.pendingQuestion;
-      if (q != null && q.sessionId == widget.store.sessionId) {
-        setState(() => _question = q);
+      final q = widget.store.questionForSession(_mySessionId);
+      if (q != null && q.sessionId == _mySessionId) {
+        final key = 'question:${q.rpcId}:requested';
+        setState(() {
+          _question = q;
+          if (_transientFrameKeys.add(key)) _appendEvent(ev);
+        });
       }
       return;
     }
     if (ev.type == 'question/resolved') {
       final rid = ev.data?['rpcId'];
-      if (rid != null && _question?.rpcId == rid) setState(() => _question = null);
+      if (eventSessionId != _mySessionId) return;
+      final key = 'question:${rid ?? 'unknown'}:resolved';
+      setState(() {
+        if (rid != null && _question?.rpcId == rid) _question = null;
+        if (_transientFrameKeys.add(key)) _appendEvent(ev);
+      });
       return;
     }
     if (ev.type == 'approval/requested') {
-      final a = widget.store.pendingApproval;
-      if (a != null && a.sessionId == widget.store.sessionId) {
-        setState(() => _approval = a);
+      final a = widget.store.approvalForSession(_mySessionId);
+      if (a != null && a.sessionId == _mySessionId) {
+        final key = 'approval:${a.approvalId}:requested';
+        setState(() {
+          _approval = a;
+          if (_transientFrameKeys.add(key)) _appendEvent(ev);
+        });
       }
       return;
     }
     if (ev.type == 'approval/resolved') {
       final aid = ev.data?['approvalId'];
-      if (aid != null && _approval?.approvalId == aid) setState(() => _approval = null);
+      if (eventSessionId != _mySessionId) return;
+      final key = 'approval:${aid ?? 'unknown'}:resolved';
+      setState(() {
+        if (aid != null && _approval?.approvalId == aid) _approval = null;
+        if (_transientFrameKeys.add(key)) _appendEvent(ev);
+      });
       return;
     }
     // 上下文窗口实时帧：更新圆环数据（无需重进会话）
     if (ev.type == 'session/context') {
       final window = (ev.data?['contextWindow'] as num?)?.toInt();
       if (window != null && window > 0) {
-        _usage['contextWindow'] = window;
+        _usageVersion++;
+         _usage['contextWindow'] = window;
         setState(() {});
       }
       return;
     }
     // v2.7：会话任务视图更新（后台任务卡片/工具弹层刷新）
     if (ev.type == 'session/jobs') {
+      // jobs is a non-durable projection rendered by the top JobCard; do not
+      // turn every reconnect snapshot into another timeline event.
       if (mounted) setState(() {});
       return;
     }
@@ -768,11 +847,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // 这里是实时 SSE 路径；历史/回放由 _loadInitial 按**时间正序**折叠后再存状态
     // （历史事件是倒序入列的，顺序折叠会得到旧状态）。
     if (ev.type == 'todo/write') {
+      _todoProjectionVersion++;
       _todos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
-      if (mounted) setState(() {});
-      return; // 不产生消息气泡
+      // 任务面板与时间线同时更新；不要把 todo/write 静默成只有当前投影。
     }
     if (ev.type == 'turn/start') {
+      _todoProjectionVersion++;
       _todos = []; // 新一轮开始清空清单（继续走下方渲染，保留"轮次 N 开始"分隔条）
     }
     // v3.0.0：队列快照帧（认领/删除/编辑即时反映）→ 本页 dock 即时同步
@@ -787,20 +867,10 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     // 关键事件日志（排除高频 chunk，便于排障）
-    if (ev.type != 'assistant/chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
+    if (ev.type != 'assistant/chunk' && ev.type != 'assistant/live-chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
       AppLog.instance.log('Chat: SSE 事件 ${ev.type} seq=${ev.seq}');
     }
-    if (ev.seq != null) {
-      if (ev.seq! <= _lastSeq) return;
-      _lastSeq = ev.seq!;
-    }
-    // v3.1.4（issue #13）：/compact 走 surfaceOp=replace 重写会话表面——
-    // 收到 compression 结束事件即按新表面重载一次，避免手机继续显示已被 shadow 的旧消息。
-    if (ev.type == 'compaction/end') {
-      _resyncAfterCompaction();
-      return;
-    }
-    if (ev.type == 'assistant/chunk') {
+    if (ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') {
       final text = ev.data?['text'] as String? ?? '';
       final reasoning = ev.data?['reasoning'] == true;
       if (text.isNotEmpty && !reasoning) {
@@ -810,6 +880,14 @@ class _ChatScreenState extends State<ChatScreen> {
         // 思考内容实时累积（活动条面板，可展开）
         if (_reasoning.isEmpty) AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
         _reasoning += text;
+        _scheduleActivityFlush();
+      }
+      if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
+        final data = ev.data ?? const <String, dynamic>{};
+        _activeTools[_toolActivityKey(data, ev.seq, _items.length)] = ev.data?['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
+        // 参数 delta 可达数百上千条：只更新模型，交给 80ms 节流统一重建
+        // （与正文草稿 _scheduleDraftFlush 同口径），避免每个 delta 触发一次全量 setState。
+        _appendEvent(ev);
         _scheduleActivityFlush();
       }
       return;
@@ -835,7 +913,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == 'assistant/message') {
       final u = ev.data?['usage'] as Map<String, dynamic>?;
       if (u != null) {
-        final input = (u['inputTokens'] as num?) ?? 0;
+        _usageVersion++;
+         final input = (u['inputTokens'] as num?) ?? 0;
         final read = (u['cacheReadTokens'] as num?) ?? 0;
         final write = (u['cacheWriteTokens'] as num?) ?? 0;
         _usage['pressureTokens'] = input + read + write;
@@ -879,37 +958,65 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _refreshTodos() async {
     final id = _mySessionId ?? widget.store.sessionId;
     if (id == null) return;
+    final request = ++_todoRefreshRequest;
+    final version = _todoProjectionVersion;
+    final generation = _loadGeneration;
     try {
       final list = await api.todos(id);
-      if (!mounted || list == null) return; // null = 未激活/旧内核：保持历史折叠结果
+      if (!mounted || request != _todoRefreshRequest || version != _todoProjectionVersion || generation != _loadGeneration || id != _mySessionId || list == null) return;
       setState(() => _todos = list);
     } catch (e) {
       AppLog.instance.log('Chat: 任务清单拉取失败 $id → $e');
     }
   }
 
-  Future<void> _catchup() async {
-    // v2.7.2 review(M1)：按本页绑定的会话补拉（此前用全局 sessionId，叠层时旧页会拉到新会话的增量）
+  Future<void> _catchup({bool force = false}) async {
+    // v2.7.2 review(M1)：按本页绑定的会话补拉（此前用全局 sessionId，叠层时旧页会拉到新会话的增量）。
+    // 新服务端通过 hasMore 声明 durable cursor 后仍有下一页；每页立即上屏（长间隔不必等全部读完），
+    // 同时设页数上限——长时间离线后不能变成无界的请求风暴（剩余缺口由下次补拉继续收敛）。
     final id = _mySessionId ?? widget.store.sessionId;
-    if (id == null || _lastSeq <= 0) return;
+    if (id == null || (!force && _lastSeq <= 0)) return;
+    final generation = _loadGeneration;
     try {
-      final events = await api.history(id, after: _lastSeq, limit: 100);
-      if (!mounted) return;
-      setState(() {
-        for (final ev in events) {
-          if (ev.seq != null && ev.seq! <= _lastSeq) continue;
-          if (ev.seq != null) _lastSeq = ev.seq!;
-          // v3.1.4：任务清单随补拉前进（正序：todo/write 覆盖、turn/start 清空）——
-          // 补拉走 _appendEvent 而非 _handleEvent，这里必须同步折叠，否则重连后清单是旧的。
-          if (ev.type == 'turn/start') {
-            _todos = [];
-          } else if (ev.type == 'todo/write') {
-            _todos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
-          }
-          _appendEvent(ev);
+      var cursor = _lastSeq;
+      var pageNo = 0;
+      var truncated = false;
+      while (pageNo < _catchupMaxPages) {
+        pageNo++;
+        final page = await api.historyPage(id, after: cursor, limit: 100);
+        if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+        final fresh = <ChatEvent>[];
+        for (final ev in page.events) {
+          if (ev.seq != null && ev.seq! <= cursor) continue;
+          fresh.add(ev);
+          if (ev.seq != null && ev.seq! > cursor) cursor = ev.seq!;
         }
-      });
-    } catch (_) {}
+        if (fresh.isEmpty) break;
+        if (fresh.any((ev) => ev.type == 'compaction/end')) {
+          _resyncAfterCompaction();
+          return;
+        }
+        setState(() {
+          for (final ev in fresh) {
+            if (ev.seq != null && ev.seq! <= _lastSeq) continue;
+            if (ev.seq != null) _lastSeq = ev.seq!;
+            if (ev.type == 'turn/start') {
+              _todoProjectionVersion++;
+              _todos = [];
+            } else if (ev.type == 'todo/write') {
+              _todoProjectionVersion++;
+              _todos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
+            }
+            _appendEvent(ev);
+          }
+        });
+        if (!page.hasMore) break;
+        truncated = pageNo >= _catchupMaxPages;
+      }
+      if (truncated) AppLog.instance.log('Chat: catch-up 截断于 $_catchupMaxPages 页（cursor=$cursor），剩余由下次补拉收敛');
+    } catch (e) {
+      AppLog.instance.log('Chat: catch-up failed $e');
+    }
   }
 
   /// v2.7.2：拉取本会话排队消息（对齐 PC 端 Queue Dock 数据源 agent.inbox）。
@@ -1254,11 +1361,107 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
-  /// 上下文快照 / 后台任务通知。
-  bool _isNoiseText(String text) =>
-      text.contains('Current runtime context') ||
-      text.contains('This snapshot supersedes') ||
-      text.startsWith('background job ');
+  /// 上下文快照 / 后台任务通知。判据与模型侧共用同一实现。
+  bool _isNoiseText(String text) => timelineIsInjectedNoise(text);
+
+  /// 工具关联 id 与模型侧共用同一实现（避免两处规则分叉）。
+  String _toolActivityKey(Map<String, dynamic> data, int? seq, int fallback) =>
+      timelineCallIdOf(data, seq, fallback);
+
+  void _rebuildActiveToolsFromHistory(List<ChatEvent> events) {
+    _activeTools.clear();
+    for (final ev in events) {
+      final data = ev.data ?? const <String, dynamic>{};
+      if (ev.type == 'tool/call') {
+        _activeTools[_toolActivityKey(data, ev.seq, _activeTools.length)] =
+            data['name']?.toString() ?? data['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
+      } else if (ev.type == 'tool/result') {
+        _activeTools.remove(_toolActivityKey(data, ev.seq, _activeTools.length));
+      } else if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
+        _activeTools.clear();
+      }
+    }
+  }
+
+  /// Tool activity 的 Flutter 侧投影：**合并规则由 [TimelineReducer] 单点实现**
+  /// （参数替换/追加、status、anchor/detail seq、关联 id、images/files），
+  /// 这里只负责放置位置与携带 UI 专属状态（rawData / detailLoading）。
+  /// 曾经在此复刻合并规则，导致 tool/call 的整串参数被拼在 delta 之后（参数重复）。
+  void _upsertToolItem(List<_MsgItem> out, ChatEvent ev, {required bool history}) {
+    final d = ev.data ?? const <String, dynamic>{};
+    final callId = timelineCallIdOf(d, ev.seq, out.length);
+    final isResult = ev.type == 'tool/result';
+    var owner = out;
+    var index = out.indexWhere((m) => m.kind == _MsgKind.tool && m.toolCallId == callId);
+    if (index < 0) {
+      for (final candidate in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+        if (identical(candidate, out)) continue;
+        final found = candidate.indexWhere((m) => m.kind == _MsgKind.tool && m.toolCallId == callId);
+        if (found >= 0) {
+          owner = candidate;
+          index = found;
+          break;
+        }
+      }
+    }
+    final old = index >= 0 ? owner[index] : null;
+    // apply() 已在 _buildInto 入口执行，故 tools[callId] 已是合并后的权威生命周期。
+    final lifecycle = _timelineReducer.tools[callId] ??
+        ToolLifecycle(
+          id: callId,
+          name: d['name']?.toString() ?? d['toolCall']?.toString() ?? L10n.t('工具', 'Tool'),
+          seq: ev.seq,
+        );
+    final item = _MsgItem.tool(
+      toolCallId: lifecycle.id,
+      toolName: lifecycle.name,
+      toolArguments: lifecycle.arguments,
+      toolResult: lifecycle.result,
+      toolStatus: lifecycle.status,
+      toolError: lifecycle.isError,
+      seq: lifecycle.seq,
+      latestSeq: lifecycle.latestSeq ?? lifecycle.seq,
+      detailSeq: lifecycle.detailSeq ?? lifecycle.seq,
+      files: lifecycle.files,
+      images: lifecycle.images,
+      detailAvailable: lifecycle.detailAvailable,
+      rawData: old?.rawData,
+      detailLoading: isResult ? false : (old?.detailLoading ?? false),
+    );
+    if (index >= 0) {
+      final settled = old?.toolStatus == 'success' || old?.toolStatus == 'failed';
+      if (history && !isResult && settled) {
+        owner.removeAt(index);
+        owner.add(item);
+      } else {
+        owner[index] = item;
+      }
+    } else if (history) {
+      out.add(item);
+    } else {
+      out.insert(0, item);
+    }
+  }
+
+  void _appendVisibleEvent(List<_MsgItem> out, ChatEvent ev, {required bool history}) {
+    final d = ev.data ?? const <String, dynamic>{};
+    // 标题映射与模型侧共用（timeline.dart）：未知类型原样显示类型名，不静默丢弃。
+    final title = timelineTitleFor(ev.type);
+    final text = (d['text'] ?? d['detail'] ?? d['reason'] ?? '').toString();
+    final item = _MsgItem.event(
+      eventType: ev.type,
+      text: text.isEmpty ? title : '$title\n$text',
+      seq: ev.seq,
+      rawData: ev.detailAvailable ? d : null,
+      detailAvailable: ev.detailAvailable,
+      toolError: d['isError'] == true || ev.type.contains('error'),
+    );
+    if (history) {
+      out.add(item);
+    } else {
+      out.insert(0, item);
+    }
+  }
 
   /// 将事件构建为消息条目并插入 out（live 语义：最新在前，insert(0)；
   /// 历史分段：旧→新顺序，追加到末尾）。
@@ -1267,21 +1470,22 @@ class _ChatScreenState extends State<ChatScreen> {
   void _buildInto(List<_MsgItem> out, ChatEvent ev,
       {bool history = false, bool tail = false}) {
     final d = ev.data;
+    if (hiddenTimelineTypes.contains(ev.type)) return;
+    // Historical reconstruction must still render a record even when the same seq
+    // arrived via SSE while the REST request was in flight. Live ingestion can
+    // discard the duplicate because _handleEvent already owns the visible stream.
+    if (!_timelineReducer.apply(ev) && !history) return;
     switch (ev.type) {
       case 'user/message':
         final text = d?['text'] as String? ?? '';
-        // 过滤 dsh 注入的系统上下文快照与后台任务通知（PC 端 GUI 也不显示）
-        if (_isNoiseText(text)) {
-          AppLog.instance.log('Chat: 过滤注入消息 seq=${ev.seq}');
-          return;
-        }
+        // 已知 runtime context 噪声保留 seq/model 对账，但系统提示词与上下文快照在所有模式均隐藏。
         final mid = d?['messageId'] as String?;
         // v3.1.4（issue #12）：内核来源标记——非 "user" 即系统注入（plugin/agent-instructions/tool…），
         // 渲染成可折叠块；缺字段（旧内核）时为 null，退回关键词启发式。
         final sourceKind = d?['sourceKind'] as String?;
         // v3.1.4（issue #13）：只有**真人提问**参与"本轮是否缺回复"的兜底判定
         // （注入消息不是提问，不该因它触发补拉）
-        if (sourceKind == null || sourceKind == 'user') {
+        if ((!history || tail) && (sourceKind == null || sourceKind == 'user')) {
           if (ev.seq != null) _lastUserSeq = ev.seq;
         }
         // 去重（SSE 回显 vs 本地乐观添加）：
@@ -1303,20 +1507,13 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
         if (history) {
-          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), sourceKind: sourceKind));
+          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), files: _filesOf(d), sourceKind: sourceKind));
         } else {
-          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), sourceKind: sourceKind));
+          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), files: _filesOf(d), sourceKind: sourceKind));
         }
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
-        // 过滤系统注入的上下文快照与后台任务通知
-        if (_isNoiseText(body)) {
-          if (!history || tail) {
-            _draft = '';
-            _streaming = false;
-          }
-          return;
-        }
+        // 噪声 assistant 记录保留在模型中，但系统提示词与上下文快照在所有模式均隐藏。
         // 工具阶段中间产物（正文为空的多步消息）：不渲染空气泡，过程由活动条呈现
         if (body.trim().isEmpty) {
           if (!history || tail) {
@@ -1337,9 +1534,12 @@ class _ChatScreenState extends State<ChatScreen> {
             seq: ev.seq,
             messageId: d?['messageId'] as String?,
             images: _imagesOf(d),
-            reasoning: reasoningText.isEmpty ? null : reasoningText);
-        // v3.1.4（issue #13）：记录最近一条渲染出来的回复，供轮次兜底判定
-        if (ev.seq != null) _lastAssistantSeq = ev.seq;
+            files: _filesOf(d),
+            reasoning: reasoningText.isEmpty ? null : reasoningText,
+            detailAvailable: ev.detailAvailable);
+        // v3.1.4（issue #13）：记录最近一条**会渲染出来**的回复，供轮次兜底判定
+        // （注入的上下文快照虽然进模型但界面隐藏，不能算作本轮已有回复）。
+        if ((!history || tail) && ev.seq != null && !timelineIsInjectedNoise(body)) _lastAssistantSeq = ev.seq;
         if (history) {
           out.add(item);
         } else {
@@ -1350,6 +1550,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _streaming = false;
         }
       case 'assistant/chunk':
+      case 'assistant/live-chunk':
         if (history && !tail) break; // 历史页不渲染 chunk：完整文本由 assistant/message 呈现
         final text = d?['text'] as String? ?? '';
         final reasoning = d?['reasoning'] == true;
@@ -1357,25 +1558,29 @@ class _ChatScreenState extends State<ChatScreen> {
           _draft += text;
           _streaming = true;
         }
+        if (d?['toolCall'] != null || d?['argumentsDelta'] != null) {
+          _upsertToolItem(out, ev, history: history);
+        }
       case 'tool/call':
-        // 只驱动活动条（live）；历史加载不重建工具痕迹
+        final name = d?['name']?.toString() ?? L10n.t('工具', 'Tool');
         if (!history) {
-          final callId = d?['callId'] as String? ?? '';
-          final name = d?['name'] as String? ?? L10n.t('工具', 'Tool');
-          _activeTools[callId] = name;
+          _activeTools[_toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length)] = name;
           _scheduleActivityFlush();
         }
+        _upsertToolItem(out, ev, history: history);
       case 'tool/result':
         if (!history) {
-          final callId = d?['callId'] as String? ?? '';
-          _activeTools.remove(callId);
+          _activeTools.remove(_toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length));
           _scheduleActivityFlush();
         }
+        _upsertToolItem(out, ev, history: history);
+      case 'todo/write':
+        _appendVisibleEvent(out, ev, history: history);
       case 'turn/start':
         if (history) {
-          out.add(_MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started')));
+          out.add(_MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'), seq: ev.seq));
         } else {
-          out.insert(0, _MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started')));
+          out.insert(0, _MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'), seq: ev.seq));
         }
       case 'turn/end':
         if (!history || tail) {
@@ -1385,14 +1590,16 @@ class _ChatScreenState extends State<ChatScreen> {
         final reason = (d?['reason'] as Map<String, dynamic>?)?['kind'];
         final item = _MsgItem.divider(
             L10n.t('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}',
-                'Turn ${d?['turn']} ended${reason != null ? ' ($reason)' : ''}'));
+                'Turn ${d?['turn']} ended${reason != null ? ' ($reason)' : ''}'),
+            seq: ev.seq);
         if (history) {
           out.add(item);
         } else {
           out.insert(0, item);
         }
       default:
-        break;
+        // 未知 Visible event 不再静默丢弃；普通模式显示类型摘要，调试模式可展开原始详情。
+        _appendVisibleEvent(out, ev, history: history);
     }
   }
 
@@ -1431,7 +1638,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final id = _mySessionId ?? widget.store.sessionId;
     if ((text.isEmpty && _pendingImages.isEmpty) || id == null || _sending || preset != null && _pendingImages.isNotEmpty) return;
     // v3.0.0 图像链路：有待发图片 → 走图片通路（原始字节不压缩；成功/失败处理独立）
-    if (mode == 'steer' && widget.store.agentStatus != 'running') {
+    if (mode == 'steer' && _pageAgentStatus != 'running') {
       showToast(context, L10n.t('agent 空闲，已按普通消息发送', 'Agent idle — sent as a normal message'));
       mode = 'followup';
     }
@@ -1443,7 +1650,7 @@ class _ChatScreenState extends State<ChatScreen> {
     AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}');
     // v3.0.0：运行中排队（followup）→ 消息**不进对话窗口**（与 PC 端一致：仅进 Queue Dock，
     // 被 agent 认领执行时 user/message 回显才上屏）——乐观气泡只保留给「立即生效」的发送
-    final queued = mode != 'steer' && widget.store.agentStatus == 'running';
+    final queued = mode != 'steer' && _pageAgentStatus == 'running';
     // v3.0.0(热修 05)：requestId 与草稿内容绑定——内容未变的重试复用同一 id
     // （服务端幂等，重复投递最多一次）；内容变化（文本/图片改动）则换新 id。
     final signature = composerSignature(id, mode, text, _pendingImages.map((f) => f.path).toList());
@@ -1455,7 +1662,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // 收起键盘，输入框回到原位
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）；插队时不提示排队
-    if (widget.store.agentStatus == 'running' && preset == null && mode != 'steer') {
+    if (_pageAgentStatus == 'running' && preset == null && mode != 'steer') {
       showToast(context, L10n.t('agent 正在处理上一轮，消息会排队等待', 'The agent is still processing the last turn — your message will be queued'));
     }
     setState(() {
@@ -1812,7 +2019,7 @@ class _ChatScreenState extends State<ChatScreen> {
             final old = list[i];
             list[i] = _MsgItem.assistant(old.text,
                 usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating,
-                images: old.images, reasoning: old.reasoning);
+                images: old.images, files: old.files, reasoning: old.reasoning, detailAvailable: old.detailAvailable, rawData: old.rawData, detailLoading: old.detailLoading);
           }
 
           setState(() {
@@ -1840,7 +2047,7 @@ class _ChatScreenState extends State<ChatScreen> {
           final childId = await api.forkSession(id, atSeq: seq);
           if (!mounted) return;
           showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
-          final prevId = widget.store.sessionId;
+          final prevId = _mySessionId;
           widget.store.refreshSessions();
           // Phase 2(A4)：统一打开会话流程；返回后恢复原会话（分支页不改变主会话）
           await openChat(context, widget.store, childId,
@@ -1878,16 +2085,26 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Text(_title ?? L10n.t('会话', 'Session'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(width: 8),
-            _StatusDot(status: store.connState == 'connected' ? store.agentStatus : 'offline'),
+            _StatusDot(status: store.connState == 'connected' ? _pageAgentStatus : 'offline'),
           ],
         ),
         actions: [
+          IconButton(
+            icon: Icon(store.timelineDebug ? Icons.bug_report_outlined : Icons.timeline_outlined, size: 20),
+            tooltip: store.timelineDebug
+                ? L10n.t('切换普通模式', 'Switch to ordinary mode')
+                : L10n.t('切换调试模式', 'Switch to debug mode'),
+            onPressed: () async {
+              await store.setTimelineDebug(!store.timelineDebug);
+              if (mounted) setState(() {});
+            },
+          ),
           // v2.7：会话工具（任务 / 子代理 / 目标）
           IconButton(
             icon: const Icon(Icons.assignment_outlined, size: 20),
             tooltip: L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
             onPressed: () {
-              final sid = widget.store.sessionId;
+              final sid = _mySessionId;
               if (sid != null) showSessionToolsSheet(context, widget.store, sid);
             },
           ),
@@ -1905,9 +2122,9 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           // v2.8.0：后台任务卡片移到对话框顶部（不再与问询/审批卡堆在底部），可收纳、默认收起
-          if (!_inHistory && widget.store.hasRunningJobs(widget.store.sessionId ?? ''))
+          if (!_inHistory && widget.store.hasRunningJobs(_mySessionId ?? ''))
             _JobCard(
-              jobs: widget.store.jobsOf(widget.store.sessionId ?? ''),
+              jobs: widget.store.jobsOf(_mySessionId ?? ''),
               onOpen: _openTools,
               onKill: _killJob,
             ),
@@ -2062,7 +2279,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                               // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）；
                               // 固定宽度（不参与收缩，始终完整显示）
-                              if (widget.store.agentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
+                              if (_pageAgentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
                                 const SizedBox(width: 6),
                                 _Pill(
                                   label: L10n.t('排队发送', 'Queue send'),
@@ -2083,7 +2300,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         GestureDetector(
                           onTap: _sending
                               ? null
-                              : (widget.store.agentStatus == 'running' ? _stop : _send),
+                              : (_pageAgentStatus == 'running' ? _stop : _send),
                           onLongPress: _sending
                               ? null
                               : () => _send(null, 'steer'),
@@ -2091,7 +2308,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             width: 32,
                             height: 32,
                             decoration: BoxDecoration(color: brand, borderRadius: BorderRadius.circular(9)),
-                            child: widget.store.agentStatus == 'running'
+                            child: _pageAgentStatus == 'running'
                                 ? Center(
                                     child: Container(
                                       width: 10,
@@ -2438,25 +2655,217 @@ class _ChatScreenState extends State<ChatScreen> {
     return (used / window).clamp(0.0, 1.0);
   }
 
-  /// v3.0.0 图像链路：事件摘要里的图片元数据 [{attachmentId, mediaType, width?, height?}]
-  List<Map<String, dynamic>> _imagesOf(Map<String, dynamic>? d) =>
-      ((d?['images']) as List?)?.map((e) => e as Map<String, dynamic>).toList() ?? const [];
+  /// v3.0.0 图像链路：事件摘要/无损详情里的图片元数据 [{attachmentId, mediaType, width?, height?}]。
+  /// 只保留 attachment 引用，绝不把 raw/base64 image data 带入 Flutter 卡片。
+  List<Map<String, dynamic>> _imagesOf(Map<String, dynamic>? d) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    void visit(Object? value, [bool imageContext = false]) {
+      if (value is List) {
+        for (final entry in value) {
+          visit(entry, imageContext);
+        }
+        return;
+      }
+      if (value is! Map) return;
+      final attachment = value['type'] == 'image' && value['attachment'] is Map ? value['attachment'] : value;
+      final attachmentId = attachment is Map ? attachment['attachmentId']?.toString() : null;
+       final mediaType = attachment is Map ? attachment['mediaType']?.toString() ?? '' : '';
+       final isImage = imageContext || value['type'] == 'image' || mediaType.startsWith('image/');
+      if (isImage && attachmentId != null && attachmentId.isNotEmpty && seen.add(attachmentId)) {
+        out.add({
+          'attachmentId': attachmentId,
+          'mediaType': attachment['mediaType']?.toString() ?? 'image/jpeg',
+          if (attachment['width'] is num) 'width': attachment['width'],
+          if (attachment['height'] is num) 'height': attachment['height'],
+          if (attachment['name'] is String && (attachment['name'] as String).isNotEmpty) 'name': attachment['name'],
+        });
+      }
+      visit(value['images'], true);
+      visit(value['content'], imageContext);
+      visit(value['message'], imageContext);
+    }
+    visit(d?['images'], true);
+    visit(d?['message']);
+    return out;
+  }
+
+  List<Map<String, dynamic>> _filesOf(Map<String, dynamic>? d) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    void visit(Object? value) {
+      if (value is List) {
+        for (final entry in value) {
+          visit(entry);
+        }
+        return;
+      }
+      if (value is! Map) return;
+      final attachment = value['attachment'] is Map ? value['attachment'] as Map : value;
+      final id = (attachment['attachmentId'] ?? attachment['id'])?.toString();
+      final mediaType = attachment['mediaType']?.toString() ?? attachment['mimeType']?.toString() ?? '';
+      final isImage = value['type'] == 'image' || mediaType.startsWith('image/');
+      final path = (attachment['path'] ?? attachment['filePath'])?.toString();
+      final name = attachment['name']?.toString() ?? path?.split(RegExp(r'[/\\]')).last;
+      if (!isImage && (id != null && id.isNotEmpty || path != null && path.isNotEmpty) && seen.add(id ?? path!)) {
+        out.add({
+          if (id != null && id.isNotEmpty) 'attachmentId': id,
+          if (path != null && path.isNotEmpty) 'path': path,
+          if (name != null && name.isNotEmpty) 'name': name,
+          if (mediaType.isNotEmpty) 'mediaType': mediaType,
+          if (attachment['size'] is num) 'size': attachment['size'],
+        });
+      }
+      visit(value['files']);
+      visit(value['file']);
+      visit(value['attachments']);
+      visit(value['content']);
+      visit(value['result']);
+      visit(value['message']);
+    }
+    visit(d);
+    return out;
+  }
+
+  bool _sameTimelineItem(_MsgItem a, _MsgItem b) {
+    if (a.kind != b.kind) return false;
+    if (a.kind == _MsgKind.tool) {
+      return a.toolCallId == b.toolCallId;
+    }
+    return a.seq == b.seq && a.eventType == b.eventType;
+  }
+
+  void _replaceTimelineItem(_MsgItem old, _MsgItem next) {
+    for (final list in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+      final i = list.indexWhere((item) => _sameTimelineItem(item, old));
+      if (i >= 0) list[i] = next;
+    }
+  }
+
+  _MsgItem? _currentTimelineItem(_MsgItem original) {
+    for (final list in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+      final i = list.indexWhere((item) => _sameTimelineItem(item, original));
+      if (i >= 0) return list[i];
+    }
+    return null;
+  }
+
+  String _prettyTimeline(Map<String, dynamic> value) {
+    try {
+      final text = JsonEncoder.withIndent('  ').convert(value);
+      const maxChars = 240000;
+      return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
+    } catch (_) {
+      return value.toString();
+    }
+  }
+
+  Future<void> _loadEventDetail(_MsgItem item) async {
+    final id = _mySessionId ?? widget.store.sessionId;
+    final detailSeq = item.detailSeq ?? item.seq;
+    if (id == null || detailSeq == null || item.detailLoading || !api.timelineCapabilities.detail) return;
+    final generation = _loadGeneration;
+    final loading = item.kind == _MsgKind.tool
+        ? item.copyTool(detailLoading: true)
+        : item.kind == _MsgKind.assistant
+            ? item.copyAssistant(detailLoading: true)
+            : item.copyEvent(detailLoading: true);
+    if (mounted) setState(() => _replaceTimelineItem(item, loading));
+    try {
+      final full = await api.eventDetail(id, detailSeq);
+      final data = full['data'] is Map ? Map<String, dynamic>.from(full['data'] as Map) : <String, dynamic>{};
+      String textOf(Object? value) {
+        if (value is String) return value;
+        if (value is List) return value.map(textOf).where((text) => text.isNotEmpty).join();
+        if (value is Map) {
+          if (value['text'] is String) return value['text'] as String;
+          return textOf(value['content']);
+        }
+        return '';
+      }
+      if (!mounted || generation != _loadGeneration) return;
+      final current = _currentTimelineItem(item);
+      if (current == null) return;
+      if (current.kind == _MsgKind.tool && current.detailSeq != detailSeq) {
+        // A newer result superseded this request; never let an older call
+        // response overwrite the result detail. Only clear its spinner.
+        setState(() => _replaceTimelineItem(item, current.copyTool(detailLoading: false)));
+        return;
+      }
+      if (current.kind == _MsgKind.tool) {
+        final args = data['arguments'] is String ? data['arguments'] as String : (data['arguments'] == null ? current.toolArguments : JsonEncoder.withIndent('  ').convert(data['arguments']));
+        final directResult = textOf(data['text']);
+        final nestedResult = textOf(data['result']).isNotEmpty ? textOf(data['result']) : textOf(data['message']);
+        final result = directResult.isNotEmpty ? directResult : (nestedResult.isNotEmpty ? nestedResult : current.toolResult);
+        setState(() => _replaceTimelineItem(item, current.copyTool(
+          arguments: args,
+          result: result,
+          error: data['isError'] == true || current.toolError,
+          images: _imagesOf(data).isNotEmpty ? _imagesOf(data) : current.images,
+          rawData: full,
+          files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
+          detailAvailable: true,
+          detailLoading: false,
+        )));
+      } else if (current.kind == _MsgKind.assistant) {
+        final fullText = textOf(data['text']).isNotEmpty ? textOf(data['text']) : textOf(data['message']);
+        setState(() => _replaceTimelineItem(item, current.copyAssistant(
+          text: fullText.isNotEmpty ? fullText : current.text,
+          rawData: full,
+          files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
+          detailAvailable: true,
+          detailLoading: false,
+        )));
+      } else {
+        setState(() => _replaceTimelineItem(item, current.copyEvent(rawData: full, detailLoading: false)));
+      }
+    } catch (e) {
+      if (!mounted || generation != _loadGeneration) return;
+      final current = _currentTimelineItem(item);
+      if (current == null || ((current.kind == _MsgKind.tool || current.kind == _MsgKind.assistant) && current.detailSeq != detailSeq)) return;
+      final fallback = current.kind == _MsgKind.tool
+          ? current.copyTool(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false)
+          : current.kind == _MsgKind.assistant
+              ? current.copyAssistant(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false)
+              : current.copyEvent(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false);
+      setState(() => _replaceTimelineItem(item, fallback));
+    }
+  }
 
   Widget _buildItem(_MsgItem item) {
     switch (item.kind) {
       case _MsgKind.user:
         // v3.1.4（issue #12）：系统注入消息（内核 source.kind ≠ "user"）不当普通气泡铺屏，
         // 改为可折叠块——默认收起、点按展开，展开状态按 messageId 持久化（同思维链机制）。
-        if (item.injected && item.images.isEmpty) {
+        if (_isNoiseText(item.text)) return const SizedBox.shrink();
+        if (item.injected && !widget.store.timelineDebug) return const SizedBox.shrink();
+        if (item.injected) {
           final ikey = item.messageId ?? 's${item.seq}';
+          final expanded = widget.store.reasoningOverrideOf(_mySessionId ?? '', 'inj:$ikey') ?? false;
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: _InjectedBubble(
-              text: item.text,
-              sourceKind: item.sourceKind,
-              expanded: widget.store.reasoningOverrideOf(_mySessionId ?? '', 'inj:$ikey') ?? false,
-              onToggle: (v) => setState(() =>
-                  widget.store.setReasoningOverride(_mySessionId ?? '', 'inj:$ikey', v)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _InjectedBubble(
+                  text: item.text,
+                  sourceKind: item.sourceKind,
+                  expanded: expanded,
+                  onToggle: (v) => setState(() =>
+                      widget.store.setReasoningOverride(_mySessionId ?? '', 'inj:$ikey', v)),
+                ),
+                if (expanded && (item.images.isNotEmpty || item.files.isNotEmpty))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Column(
+                       crossAxisAlignment: CrossAxisAlignment.start,
+                       children: [
+                         _ImagesGrid(images: item.images, sessionId: _mySessionId ?? ''),
+                         if (item.files.isNotEmpty) _FileResults(files: item.files, sessionId: _mySessionId ?? ''),
+                       ],
+                     ),
+                  ),
+              ],
             ),
           );
         }
@@ -2484,12 +2893,15 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             if (images.isNotEmpty)
               userBubble(_ImagesGrid(images: images, sessionId: _mySessionId ?? '')),
+             if (item.files.isNotEmpty)
+               userBubble(_FileResults(files: item.files, sessionId: _mySessionId ?? '')),
             if (text.isNotEmpty)
               userBubble(Text(text, style: const TextStyle(fontSize: 15, height: 1.5))),
             const SizedBox(height: 12),
           ],
         );
       case _MsgKind.assistant:
+        if (_isNoiseText(item.text)) return const SizedBox.shrink();
         // v2.8.0：常驻操作栏（对齐 PC 端 MessageIconActions）——复制/好的回答/有问题的回答/分支，
         // 移除长按弹面板（操作可见即用）；逻辑与 _showMessageActions 共用 _runMessageAction
         final rk = item.messageId ?? 's${item.seq}';
@@ -2507,11 +2919,67 @@ class _ChatScreenState extends State<ChatScreen> {
               expandedOverride: widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
               onOverride: (v) => setState(() => widget.store.setReasoningOverride(_mySessionId ?? '', rk, v)),
             ),
-            _MessageActionsBar(
+            if (item.files.isNotEmpty)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 6),
+                 child: _FileResults(files: item.files, sessionId: _mySessionId ?? ''),
+               ),
+             if (item.detailAvailable && item.seq != null)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 4),
+                 child: Row(
+                   mainAxisSize: MainAxisSize.min,
+                   children: [
+  if (item.detailLoading) const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                     TextButton(
+                       onPressed: api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null,
+                       child: Text(item.rawData == null ? L10n.t('加载完整正文', 'Load full response') : L10n.t('重新加载正文', 'Reload full response')),
+                     ),
+                   ],
+                 ),
+               )
+             else if (item.rawData == null)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 4),
+                 child: Text(L10n.t('完整正文不可用（旧服务端未保存）', 'Full response unavailable (not retained by server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+               ),
+             if (widget.store.timelineDebug && item.rawData != null)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 8),
+                 child: SelectableText(_prettyTimeline(item.rawData!), style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+               ),
+             _MessageActionsBar(
               item: item,
               onAction: (a) => _runMessageAction(item, a),
             ),
           ],
+        );
+      case _MsgKind.tool:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: _ToolActivityCard(
+            key: ValueKey<String>('tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}'),
+            item: item,
+            debug: widget.store.timelineDebug,
+            sessionId: _mySessionId ?? '',
+            onLoadDetail: api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+          ),
+        );
+      case _MsgKind.event:
+        // 协议/运行时元数据在普通模式不渲染（模型里仍保留 seq 与详情指针）；
+        // 调试模式完整呈现。可见性判据与模型侧共用同一实现。
+        if (!timelineTypeVisibleIn(
+            widget.store.timelineDebug ? TimelineMode.debug : TimelineMode.ordinary, item.eventType ?? '')) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: _TimelineEventCard(
+            key: ValueKey<String>('event:${item.eventType}:${item.seq ?? item.text}'),
+            item: item,
+            debug: widget.store.timelineDebug,
+            onLoadDetail: api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+          ),
         );
       case _MsgKind.divider:
         return Padding(
@@ -2525,51 +2993,204 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 // ── 消息模型 ──
-enum _MsgKind { user, assistant, divider }
+enum _MsgKind { user, assistant, divider, tool, event }
 
 class _MsgItem {
   final _MsgKind kind;
   final String text;
   final Map<String, dynamic>? usage;
+  /// Anchor used for grouping/render order; tool cards may receive later result seqs.
   final int? seq;
+  final int? latestSeq;
+  final int? detailSeq;
   final String? messageId;
   // v2.8.0：本地反馈状态（positive / negative / null=未评），驱动操作栏图标高亮与 toggle
   final String? rating;
   // v3.0.0 图像链路：消息附图元数据 [{attachmentId, mediaType, width?, height?, name?}]
   final List<Map<String, dynamic>> images;
+  final List<Map<String, dynamic>> files;
   // 思维链正文（可折叠；assistant 消息专用，null/空 = 无思维链）
   final String? reasoning;
   /// v3.1.4（issue #12）：内核对 user 消息的来源标记（createUserMessage({source}).kind）——
   /// "user" = 真人发言；"plugin" / "agent-instructions" / "tool" 等 = 系统注入；
   /// null = 旧内核未下发（客户端退回启发式判断）。
   final String? sourceKind;
-  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.sourceKind})
+  // 对话时间线 Tool activity / 未知 Visible event 字段。
+  final String? toolCallId;
+  final String? toolName;
+  final String toolArguments;
+  final String toolResult;
+  final String toolStatus;
+  final bool toolError;
+  final bool detailAvailable;
+  final Map<String, dynamic>? rawData;
+  final String? eventType;
+  final bool detailLoading;
+  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.files = const [], this.sourceKind})
       : kind = _MsgKind.user,
+        latestSeq = seq,
+        detailSeq = seq,
         usage = null,
         rating = null,
-        reasoning = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.reasoning})
+        reasoning = null,
+        toolCallId = null,
+        toolName = null,
+        toolArguments = '',
+        toolResult = '',
+        toolStatus = 'complete',
+        toolError = false,
+        detailAvailable = false,
+        rawData = null,
+        eventType = null,
+        detailLoading = false;
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false})
       : kind = _MsgKind.assistant,
-        sourceKind = null;
-  _MsgItem.divider(this.text)
+        latestSeq = seq,
+        detailSeq = seq,
+        sourceKind = null,
+        toolCallId = null,
+        toolName = null,
+        toolArguments = '',
+        toolResult = '',
+        toolStatus = 'complete',
+        toolError = false,
+        eventType = null;
+  _MsgItem.divider(this.text, {this.seq})
       : kind = _MsgKind.divider,
+        latestSeq = seq,
+        detailSeq = seq,
         usage = null,
-        seq = null,
         messageId = null,
         rating = null,
         images = const [],
+         files = const [],
         reasoning = null,
-        sourceKind = null;
+        sourceKind = null,
+        toolCallId = null,
+        toolName = null,
+        toolArguments = '',
+        toolResult = '',
+        toolStatus = 'complete',
+        toolError = false,
+        detailAvailable = false,
+        rawData = null,
+        eventType = null,
+        detailLoading = false;
+  _MsgItem.tool({
+    required this.toolCallId,
+    required this.toolName,
+    this.toolArguments = '',
+    this.toolResult = '',
+    this.toolStatus = 'running',
+    this.toolError = false,
+    this.seq,
+    this.latestSeq,
+    this.detailSeq,
+     this.files = const [],
+    this.images = const [],
+    this.detailAvailable = false,
+    this.rawData,
+    this.detailLoading = false,
+  })  : kind = _MsgKind.tool,
+        text = toolResult.isNotEmpty ? toolResult : toolArguments,
+        usage = null,
+        messageId = null,
+        rating = null,
+        reasoning = null,
+        sourceKind = null,
+        eventType = 'tool/activity';
+  _MsgItem.event({
+    required this.eventType,
+    required this.text,
+    this.seq,
+    int? latestSeq,
+
+    int? detailSeq,
+    this.rawData,
+    this.detailAvailable = false,
+    this.detailLoading = false,
+    this.toolError = false,
+  })  : kind = _MsgKind.event,
+        latestSeq = latestSeq ?? seq,
+        detailSeq = detailSeq ?? seq,
+        usage = null,
+        messageId = null,
+        rating = null,
+        images = const [],
+         files = const [],
+        reasoning = null,
+        sourceKind = null,
+        toolCallId = null,
+        toolName = null,
+        toolArguments = '',
+        toolResult = '',
+        toolStatus = 'complete';
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
 
   _MsgItem copyWith({int? seq, String? messageId}) {
-    // v3.0.0：本方法仅用于 user 乐观消息补 messageId/seq——若未来复用到
-    // assistant/divider 会静默变成用户消息，这里显式断言防住
     assert(kind == _MsgKind.user, 'copyWith only supports user items');
-    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId, sourceKind: sourceKind);
+    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId, images: images, files: files, sourceKind: sourceKind);
   }
+
+  _MsgItem copyTool({
+    String? name,
+     int? anchorSeq,
+    String? arguments,
+    String? result,
+    String? status,
+    bool? error,
+    List<Map<String, dynamic>>? images,
+     List<Map<String, dynamic>>? files,
+    bool? detailAvailable,
+    int? latestSeq,
+
+    int? detailSeq,
+    Map<String, dynamic>? rawData,
+    bool? detailLoading,
+  }) => _MsgItem.tool(
+        toolCallId: toolCallId,
+        toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
+        toolArguments: arguments ?? toolArguments,
+        toolResult: result ?? toolResult,
+        toolStatus: status ?? toolStatus,
+        toolError: error ?? toolError,
+        seq: anchorSeq ?? seq,
+        latestSeq: latestSeq ?? this.latestSeq ?? seq,
+        detailSeq: detailSeq ?? this.detailSeq ?? seq,
+        images: images ?? this.images,
+         files: files ?? this.files,
+        detailAvailable: detailAvailable ?? this.detailAvailable,
+        rawData: rawData ?? this.rawData,
+        detailLoading: detailLoading ?? this.detailLoading,
+      );
+
+  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading}) => _MsgItem.assistant(
+        text ?? this.text,
+        usage: usage,
+        seq: seq,
+        messageId: messageId,
+        rating: rating,
+        images: images,
+        files: files ?? this.files,
+        reasoning: reasoning,
+        detailAvailable: detailAvailable ?? this.detailAvailable,
+        rawData: rawData ?? this.rawData,
+        detailLoading: detailLoading ?? this.detailLoading,
+      );
+
+  _MsgItem copyEvent({Map<String, dynamic>? rawData, bool? detailLoading}) => _MsgItem.event(
+        eventType: eventType ?? 'unknown',
+        text: text,
+        seq: seq,
+        latestSeq: latestSeq,
+        detailSeq: detailSeq,
+        rawData: rawData ?? this.rawData,
+        detailAvailable: detailAvailable,
+        detailLoading: detailLoading ?? this.detailLoading,
+        toolError: toolError,
+      );
 }
 
 // ── 气泡组件 ──
@@ -2640,6 +3261,283 @@ class _InjectedBubble extends StatelessWidget {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                 child: Text(text, style: TextStyle(fontSize: 12.5, height: 1.45, color: ink3)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolActivityCard extends StatefulWidget {
+  final _MsgItem item;
+  final bool debug;
+  final String sessionId;
+  final VoidCallback? onLoadDetail;
+  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.onLoadDetail});
+
+  @override
+  State<_ToolActivityCard> createState() => _ToolActivityCardState();
+}
+
+class _ToolActivityCardState extends State<_ToolActivityCard> {
+  bool expanded = false;
+  bool requested = false;
+
+  @override
+  void initState() {
+    super.initState();
+    expanded = widget.item.toolError || widget.item.toolStatus == 'failed';
+  }
+
+  @override
+  void didUpdateWidget(covariant _ToolActivityCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.item.toolError || widget.item.toolStatus == 'failed') expanded = true;
+    if (oldWidget.item.toolCallId != widget.item.toolCallId || oldWidget.item.detailSeq != widget.item.detailSeq) {
+      requested = false;
+      if (expanded && widget.item.detailSeq != null && widget.onLoadDetail != null && !widget.item.detailLoading) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !requested) {
+            requested = true;
+            widget.onLoadDetail!();
+          }
+        });
+      }
+    }
+  }
+
+  void _setExpanded(bool value) {
+    setState(() => expanded = value);
+    if (value && !requested && widget.onLoadDetail != null) {
+      requested = true;
+      widget.onLoadDetail!();
+    }
+  }
+
+  String _status() {
+    if (widget.item.detailLoading) return L10n.t('加载详情…', 'Loading details…');
+    if (widget.item.toolStatus == 'failed' || widget.item.toolError) return L10n.t('失败', 'Failed');
+    if (widget.item.toolStatus == 'success') return L10n.t('成功', 'Succeeded');
+    return L10n.t('进行中', 'Running');
+  }
+
+  String _pretty(Object? value) {
+    if (value == null) return '';
+    if (value is String) return value;
+    try {
+      final text = JsonEncoder.withIndent('  ').convert(value);
+       const maxChars = 240000;
+       return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
+    } catch (_) {
+      return value.toString();
+    }
+  }
+
+  bool _looksMarkdown(String value) => value.contains('```') ||
+       RegExp(r'(^|\n)\s{0,3}(#{1,6} |[-*] |\d+\. )').hasMatch(value) ||
+       value.contains('**') || value.contains('`');
+
+   Widget _markdownResult(String value) => Padding(
+         padding: const EdgeInsets.only(top: 8),
+         child: Container(
+           width: double.infinity,
+           padding: const EdgeInsets.all(8),
+           decoration: BoxDecoration(color: DshColors.surface(context), borderRadius: BorderRadius.circular(6)),
+           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: renderMarkdownBlocks(value, context)),
+         ),
+       );
+
+   Widget _code(String label, String value) => Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: DshColors.ink3(context))),
+            const SizedBox(height: 3),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxHeight: 260),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: DshColors.surface(context), borderRadius: BorderRadius.circular(6)),
+              child: SingleChildScrollView(child: SelectableText(value, style: const TextStyle(fontSize: 11, height: 1.35, fontFamily: 'monospace'))),
+            ),
+          ],
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    // 工具 schema 目前只在少数内核/服务端形态下随详情下发（tool/call 的 data 里）；
+    // 内核 SessionEventMap 的 tool/call 只有 turn/step/callId/name/arguments，
+    // 因此这里读不到就不显示，不做任何猜测重建。
+    final raw = item.rawData;
+    final rawData = raw?['data'] is Map ? raw!['data'] as Map : const {};
+    final schema = raw?['toolSchema'] ??
+        raw?['schema'] ??
+        raw?['inputSchema'] ??
+        rawData['toolSchema'] ??
+        rawData['schema'] ??
+        rawData['inputSchema'];
+    final accent = item.toolError ? Colors.redAccent : DshColors.brand(context);
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: item.toolError ? Colors.redAccent.withValues(alpha: .5) : DshColors.line(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => _setExpanded(!expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(item.toolError ? Icons.error_outline : Icons.build_outlined, size: 16, color: accent),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(item.toolName ?? L10n.t('工具', 'Tool'), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                  ),
+                  Text(_status(), style: TextStyle(fontSize: 11, color: item.toolError ? Colors.redAccent : DshColors.ink3(context))),
+                  const SizedBox(width: 4),
+                  Icon(expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 18, color: DshColors.ink3(context)),
+                ],
+              ),
+            ),
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (item.toolCallId != null) Text('callId: ${item.toolCallId}', style: TextStyle(fontSize: 10, color: DshColors.ink3(context))),
+                  if (item.toolArguments.isNotEmpty) _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                  if (item.toolResult.isNotEmpty)
+                     _looksMarkdown(item.toolResult) && !widget.debug
+                         ? _markdownResult(item.toolResult)
+                         : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  if (item.images.isNotEmpty) Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: _ImagesGrid(images: item.images, sessionId: widget.sessionId),
+                   ),
+                   if (item.files.isNotEmpty)
+                     Padding(
+                       padding: const EdgeInsets.only(top: 8),
+                       child: _FileResults(files: item.files, sessionId: widget.sessionId),
+                     ),
+                  if (item.detailLoading) const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+                  ),
+                  if (!item.detailAvailable && item.rawData == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(L10n.t('详情不可用（旧服务端未保存）', 'Details unavailable (not retained by the server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+                    ),
+                  if (item.rawData?['unavailable'] == true && widget.onLoadDetail != null)
+                    TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
+                  if (widget.debug && schema != null) _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
+                   if (widget.debug && item.rawData != null) _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TimelineEventCard extends StatefulWidget {
+  final _MsgItem item;
+  final bool debug;
+  final VoidCallback? onLoadDetail;
+  const _TimelineEventCard({super.key, required this.item, required this.debug, this.onLoadDetail});
+
+  @override
+  State<_TimelineEventCard> createState() => _TimelineEventCardState();
+}
+
+class _TimelineEventCardState extends State<_TimelineEventCard> {
+  bool expanded = false;
+  bool requested = false;
+
+  @override
+  void initState() {
+    super.initState();
+    expanded = widget.item.toolError;
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineEventCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.item.toolError) expanded = true;
+    if (oldWidget.item.seq != widget.item.seq) requested = false;
+  }
+
+  void _toggle(bool value) {
+    setState(() => expanded = value);
+    if (value && !requested && widget.onLoadDetail != null) {
+      requested = true;
+      widget.onLoadDetail!();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    String raw() {
+      try {
+        final text = JsonEncoder.withIndent('  ').convert(item.rawData);
+        const maxChars = 240000;
+        return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
+      } catch (_) {
+        return item.rawData.toString();
+      }
+    }
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: item.toolError ? Colors.redAccent.withValues(alpha: .5) : DshColors.line(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => _toggle(!expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(item.toolError ? Icons.error_outline : Icons.bolt_outlined, size: 15, color: DshColors.ink3(context)),
+                  const SizedBox(width: 7),
+                  Expanded(child: Text(item.text.split('\n').first, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+                  if (item.seq != null) Text('#${item.seq}', style: TextStyle(fontSize: 10, color: DshColors.ink3(context))),
+                  const SizedBox(width: 4),
+                  Icon(expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 17, color: DshColors.ink3(context)),
+                ],
+              ),
+            ),
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (item.text.contains('\n')) Padding(padding: const EdgeInsets.only(top: 6), child: Text(item.text.substring(item.text.indexOf('\n') + 1), style: const TextStyle(fontSize: 12, height: 1.4))),
+                  if (item.detailLoading) const Padding(padding: EdgeInsets.only(top: 8), child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))),
+                  if (!item.detailAvailable && item.rawData == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(L10n.t('详情不可用', 'Details unavailable'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context)))),
+                  if (item.rawData?['unavailable'] == true && widget.onLoadDetail != null)
+                    TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
+                  if (widget.debug && item.rawData != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(raw(), style: const TextStyle(fontSize: 11, fontFamily: 'monospace'))),
+                ],
               ),
             ),
         ],
@@ -2929,6 +3827,131 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
 }
 
 // ── v3.0.0 图像链路：消息附图渲染（按 attachmentId 经 /attachment 拉取字节，LRU 缓存） ──
+
+/// 下载/保存目标目录。Android 优先应用外部私有目录（可经文件管理器/USB 访问），
+/// 其它平台回退应用文档目录——`getExternalStorageDirectory()` 在 iOS 会抛
+/// `UnsupportedError`，异常不会走到 `??` 的右操作数，必须显式 platform 判定 + try。
+/// 两者都是**应用私有**目录，不会出现在系统相册/下载列表，提示文案需如实说明。
+Future<Directory> _appSaveDirectory() async {
+  if (Platform.isAndroid) {
+    try {
+      final external = await getExternalStorageDirectory();
+      if (external != null) return external;
+    } catch (_) {
+      // 外部存储不可用（无介质/被策略限制）→ 回退内部目录
+    }
+  }
+  return getApplicationDocumentsDirectory();
+}
+
+class _FileResults extends StatelessWidget {
+  final List<Map<String, dynamic>> files;
+  final String sessionId;
+  const _FileResults({required this.files, required this.sessionId});
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final file in files) _FileResultTile(file: file, sessionId: sessionId),
+        ],
+      );
+}
+
+class _FileResultTile extends StatefulWidget {
+  final Map<String, dynamic> file;
+  final String sessionId;
+  const _FileResultTile({required this.file, required this.sessionId});
+
+  @override
+  State<_FileResultTile> createState() => _FileResultTileState();
+}
+
+class _FileResultTileState extends State<_FileResultTile> {
+  bool _busy = false;
+  String? _savedPath;
+
+  String get _label {
+    final name = widget.file['name']?.toString();
+    if (name != null && name.isNotEmpty) return name;
+    final path = widget.file['path']?.toString();
+    if (path != null && path.isNotEmpty) return path.split(RegExp(r'[/\\]')).last;
+    return L10n.t('文件结果', 'File result');
+  }
+
+  Future<void> _download() async {
+    if (_busy) return;
+    final attachmentId = widget.file['attachmentId']?.toString();
+    final path = widget.file['path']?.toString();
+    if ((attachmentId == null || attachmentId.isEmpty) && (path == null || path.isEmpty)) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = path != null && path.isNotEmpty
+          ? await api.downloadFile(path)
+          : await api.attachmentBytes(widget.sessionId, attachmentId!);
+      final dir = await _appSaveDirectory();
+      final safeName = _label.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
+      final shortId = attachmentId == null || attachmentId.isEmpty ? '' : attachmentId.substring(0, attachmentId.length > 12 ? 12 : attachmentId.length);
+      final suffix = shortId.isEmpty ? '' : '-$shortId';
+      final target = File('${dir.path}/$safeName$suffix');
+      await target.writeAsBytes(bytes, flush: true);
+      if (!mounted) return;
+      setState(() => _savedPath = target.path);
+      showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
+    } catch (e) {
+      if (mounted) showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaType = widget.file['mediaType']?.toString();
+    final sizeValue = widget.file['size'];
+    final size = sizeValue is num ? sizeValue.toInt() : null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+        decoration: BoxDecoration(
+          color: DshColors.surface(context),
+          border: Border.all(color: DshColors.line(context)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.insert_drive_file_outlined, size: 18),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  if (mediaType != null || size != null || _savedPath != null)
+                    Text(
+                      [
+                        if (mediaType != null && mediaType.isNotEmpty) mediaType,
+                        if (size != null) '${(size / 1024).ceil()} KB',
+                        if (_savedPath != null) L10n.t('已保存到应用目录（私有）', 'Saved to app storage (private)'),
+                      ].join(' · '),
+                      style: TextStyle(fontSize: 10, color: DshColors.ink3(context)),
+                    ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: L10n.t('下载文件', 'Download file'),
+              onPressed: _busy ? null : _download,
+              icon: _busy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download_outlined, size: 19),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ImagesGrid extends StatelessWidget {
   final List<Map<String, dynamic>> images;
   final String sessionId;
@@ -2941,7 +3964,11 @@ class _ImagesGrid extends StatelessWidget {
       children: [
         for (final img in images) ...[
           if (img != images.first) const SizedBox(height: 6),
-          _MsgImage(image: img, sessionId: sessionId),
+          _MsgImage(
+            key: ValueKey<String>('$sessionId:${img['attachmentId']}'),
+            image: img,
+            sessionId: sessionId,
+          ),
         ],
       ],
     );
@@ -2951,7 +3978,7 @@ class _ImagesGrid extends StatelessWidget {
 class _MsgImage extends StatefulWidget {
   final Map<String, dynamic> image;
   final String sessionId;
-  const _MsgImage({required this.image, required this.sessionId});
+  const _MsgImage({super.key, required this.image, required this.sessionId});
 
   @override
   State<_MsgImage> createState() => _MsgImageState();
@@ -2960,6 +3987,9 @@ class _MsgImage extends StatefulWidget {
 class _MsgImageState extends State<_MsgImage> {
   Uint8List? _bytes;
   bool _loading = true;
+  int _loadToken = 0;
+
+  String get _attachmentId => widget.image['attachmentId'] as String? ?? '';
 
   @override
   void initState() {
@@ -2967,25 +3997,52 @@ class _MsgImageState extends State<_MsgImage> {
     _load();
   }
 
-  Future<void> _load() async {
-    if (!_loading) {
-      setState(() => _loading = true);
+  @override
+  void didUpdateWidget(covariant _MsgImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldId = oldWidget.image['attachmentId'] as String? ?? '';
+    if (oldId != _attachmentId || oldWidget.sessionId != widget.sessionId) {
+      _loadToken++;
+      _bytes = null;
+      _loading = true;
+      _load();
     }
-    final id = widget.image['attachmentId'] as String? ?? '';
-    if (id.isEmpty || widget.sessionId.isEmpty) {
-      if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _load() async {
+    final token = ++_loadToken;
+    if (!_loading && mounted) setState(() => _loading = true);
+    final id = _attachmentId;
+    final sessionId = widget.sessionId;
+    if (id.isEmpty || sessionId.isEmpty) {
+      if (mounted && token == _loadToken) setState(() => _loading = false);
       return;
     }
     try {
-      final bytes = await api.attachmentBytes(widget.sessionId, id);
-      if (!mounted) return;
+      final bytes = await api.attachmentBytes(sessionId, id);
+      if (!mounted || token != _loadToken || sessionId != widget.sessionId || id != _attachmentId) return;
       setState(() {
         _bytes = bytes;
         _loading = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || token != _loadToken || sessionId != widget.sessionId || id != _attachmentId) return;
       setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _saveImage() async {
+    final b = _bytes;
+    if (b == null) return;
+    try {
+      final dir = await _appSaveDirectory();
+      final media = widget.image['mediaType']?.toString() ?? 'image/jpeg';
+      final ext = media.split('/').last.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '');
+      final target = File('${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}');
+      await target.writeAsBytes(b, flush: true);
+      if (mounted) showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
+    } catch (e) {
+      if (mounted) showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
     }
   }
 
@@ -3007,9 +4064,19 @@ class _MsgImageState extends State<_MsgImage> {
             Positioned(
               top: 8,
               right: 8,
-              child: IconButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                icon: const Icon(Icons.close, color: Colors.white),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    onPressed: _saveImage,
+                    tooltip: L10n.t('保存图片', 'Save image'),
+                    icon: const Icon(Icons.download_outlined, color: Colors.white),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
               ),
             ),
           ],

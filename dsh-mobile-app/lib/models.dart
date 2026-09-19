@@ -168,19 +168,55 @@ class AppNotification {
       );
 }
 
-// 消息流事件（服务端摘要格式）
+// 消息流事件（服务端摘要格式）。新增 detail 元数据后，旧插件/旧 App 仍可互相忽略未知字段。
 class ChatEvent {
   final int? seq;
   final String type;
   final Map<String, dynamic>? data;
   // v2.7.2 review(M1)：事件所属会话（store 广播时附加）——叠层聊天页各收各的
   final String? sessionId;
-  ChatEvent({this.seq, required this.type, this.data, this.sessionId});
+  final bool detailAvailable;
+  ChatEvent({this.seq, required this.type, this.data, this.sessionId, this.detailAvailable = false});
   factory ChatEvent.fromJson(Map<String, dynamic> j) => ChatEvent(
         seq: (j['seq'] as num?)?.toInt(),
-        type: j['type'] as String,
-        data: j['data'] as Map<String, dynamic>?,
+        type: j['type'] as String? ?? 'unknown',
+        data: j['data'] is Map ? Map<String, dynamic>.from(j['data'] as Map) : null,
+        detailAvailable: (j['detail'] as Map?)?['available'] == true,
       );
+}
+
+class HistoryPage {
+  final List<ChatEvent> events;
+  final bool hasMore;
+  const HistoryPage({required this.events, this.hasMore = false});
+}
+
+class TimelineCapabilities {
+  final int version;
+  final bool live;
+  final bool history;
+  final bool detail;
+  final bool unknownEvents;
+  final bool callCorrelation;
+  const TimelineCapabilities({
+    this.version = 0,
+    this.live = false,
+    this.history = false,
+    this.detail = false,
+    this.unknownEvents = false,
+    this.callCorrelation = false,
+  });
+  factory TimelineCapabilities.fromJson(Map<String, dynamic>? j) {
+    final m = j ?? const <String, dynamic>{};
+    return TimelineCapabilities(
+      version: (m['version'] as num?)?.toInt() ?? 0,
+      live: m['live'] == true,
+      history: m['history'] == true,
+      detail: m['detail'] == true,
+      unknownEvents: m['unknownEvents'] == true,
+      callCorrelation: m['callCorrelation'] == true,
+    );
+  }
 }
 
 // ── 内核问询/审批弹窗（question/requested · approval/requested，与 PC 端同一通道） ──
