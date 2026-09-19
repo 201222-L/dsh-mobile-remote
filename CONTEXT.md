@@ -5,7 +5,7 @@ DSH Mobile Remote extends a single user's computer-hosted DeepSeek Harness into 
 ## Language
 
 **Usage and allowance**:
-The mobile account area that groups provider-specific monetary balances and time-window quotas without pretending they share one additive total.
+The grouping of provider-specific monetary balances and time-window quotas in the mobile UI, without pretending they share one additive total.
 _Avoid_: Balance page, total balance
 
 **Balance**:
@@ -33,9 +33,9 @@ A Codex workspace member's exact allowance, used amount, and remaining amount; i
 _Avoid_: Monthly quota, Codex credits
 
 **Usage source**:
-A provider account whose latest balance or quota query succeeds; a source stops being available as soon as its latest query fails and is omitted from the detail view.
+A provider account whose latest balance or quota query succeeds; a source stops being available as soon as its latest query fails and is omitted wherever usage sources are listed.
 _Avoid_: Account, model
 
 **Usage summary**:
-The count of currently available usage sources shown in the account area; it never aggregates balances or quota percentages.
+The at-a-glance rendering of the currently available usage sources in the mobile UI, shown as independent per-source entries; it never aggregates balances or quota percentages.
 _Avoid_: Total balance, combined quota
