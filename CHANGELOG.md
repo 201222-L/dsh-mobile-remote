@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — 手机用量与额度
+
+- 设置 → 账户新增“用量与额度”详情页与来源数量摘要。
+- 服务端新增 `GET /m/api/account-usage`：DeepSeek CNY 余额、dsh-codex-connect 当前活动 Codex 账户配额、OpenCode Go 5h/周/月套餐窗口；凭据只在电脑端使用，来源独立失败/隐藏。
+- Codex Credits 与个人消费上限独立展示；配额显示剩余百分比、重置时间和三档风险颜色；DeepSeek 原充值与金额预警保持不变。
+- 新增服务端归一化自检 `node tools/account-usage-check.mjs` 与 App 模型测试 `usage_model_test.dart`。
+
 ## v3.1.4（2026-09-16，issue #14 / #12 / #13）— 离线待答不再丢 + 任务面板 + 注入折叠 + 压缩后重同步
 
 > 范围：插件侧三项（离线待答、ntfy 标题、诊断补齐）+ App 侧四项（横滑误触发、注入消息折叠、任务面板、`/compact` 后重同步与轮次兜底）。

@@ -1,6 +1,6 @@
 # 09 兼容性说明（Compatibility）
 
-> 版本：v3.1.3（2026-09-08 开发中：issue #9 审批双端呈现 / 可配置策略 approvalMode，机制基线 0.1.2-rc.1） · 面向：开源使用者 / 二次开发 / 多设备部署
+> 版本：v3.2.0（用量与额度；机制基线 0.1.2-rc.1） · 面向：开源使用者 / 二次开发 / 多设备部署
 
 本文回答两个问题：**App 在哪些手机上能跑**，以及**插件在什么样的 Harness 上能跑**。
 
@@ -11,10 +11,11 @@
 | 组件 | 要求 |
 |---|---|
 | 桌面端 DSH（Harness） | **v3.1.2/v3.1.3 机制基线：`0.1.2-rc.1` 服务包 = DSH Desktop v2.0.5**（approval/request 瀑布 answerer + `$events` 远程事件双端审批 + RPC 网关，见 §2）；旧基线 `0.1.1-rc.2` = v2.0.2 起适配（本文件 §2 同时保留两代机制说明，`apiProxy` 帧桥为旧内核路径） |
-| dsh-mobile-remote 插件 | **v3.0.0（与 App/git tag 版本号统一）**；`/m/api/diagnostics` 可自检 |
-| 手机 App（Android） | v3.0.0（与插件同版本 = 完美配对；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」）；Android 7.0+、64 位机型 |
+| dsh-mobile-remote 插件 | **v3.0.0 基线；v3.2.0+ 才提供用量与额度**；`/m/api/diagnostics` 可自检 |
+| 手机 App（Android） | v3.0.0 基线（用量与额度需 v3.2.0+；与插件同版本 = 完美配对）；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」；Android 7.0+、64 位机型 |
 | 字段级兼容（v3.1.0 候选） | `reasoning`/`title` 为纯增量字段：新插件+旧 App 无影响（忽略新字段）；新 App+旧插件自动回退（不渲染折叠块 / 悬浮球标题兜底短码）——任意组合均可使用 |
 | 字段级兼容（v3.1.1） | `/m/api/directories` 根视图新增 `sep`（服务端路径分隔符）；新插件+旧 App 忽略该字段即可（旧 App 在 WSL 上仍按 `\` 拼接，由服务端`normalizeServerPath` 归一化兜底，浏览/建夹/建会话均可用）；新 App+旧插件缺少 `sep` 时按根视图推断分隔符——任意组合均可使用 |
+| 用量与额度（v3.2） | 新插件+新 App 通过 `/m/api/account-usage` 显示 DeepSeek/Codex/OpenCode Go；旧 App 忽略新端点。新 App+旧插件进入该入口会显示“电脑端插件版本过旧”，不影响其它功能；升级插件后无需重新配置凭据 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
 **快速自检**：手机 App → 设置 → 环境诊断。`services` 一节列出每个内核服务是否存在；**v3.1.3+ 看 `checks.approvalMode`**（生效策略）与 **`checks.remoteEvents`**（`true` = `$events` 双端呈现通道就绪，`false` = both 降级 mobile 或配置即 mobile/desktop）；`notes` 首行说明当前审批策略实际语义。旧内核（0.1.1-rc.2 及更早）宿主才会出现 `services.apiProxy` / `checks.respondBridge` / `checks.frameBridge` / `checks.pendingFrames`（帧桥 era 探测项，v3.1.3 起仅帧桥激活时输出）——**0.1.2-rc.1+ 宿主看不到这些键属正常**。
