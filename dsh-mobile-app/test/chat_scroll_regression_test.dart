@@ -4,11 +4,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 FixedScrollMetrics metrics({
   AxisDirection direction = AxisDirection.down,
+  double min = 0,
   double pixels = 0,
   double max = 1000,
 }) =>
     FixedScrollMetrics(
-      minScrollExtent: 0,
+      minScrollExtent: min,
       maxScrollExtent: max,
       pixels: pixels,
       viewportDimension: 600,
@@ -48,6 +49,16 @@ void main() {
         ),
       );
       expect(shouldLoadOlderFromScroll(notification, infiniteMode: true), isTrue);
+    });
+
+    testWidgets('center 负 offset 未到真实顶部时不触发分页', (tester) async {
+      final context = await testContext(tester);
+      final notification = ScrollUpdateNotification(
+        metrics: metrics(min: -300, pixels: 0),
+        context: context,
+        scrollDelta: -20,
+      );
+      expect(shouldLoadOlderFromScroll(notification, infiniteMode: true), isFalse);
     });
 
     testWidgets('横向 update 不触发分页', (tester) async {
@@ -127,8 +138,18 @@ void main() {
     controller.jumpTo(controller.position.maxScrollExtent - 150);
     await tester.pump();
     final before = controller.offset;
-    update(() => older = List<int>.generate(10, (i) => i + 20));
+    update(() => older = List<int>.generate(10, (i) => 29 - i));
     await tester.pumpAndSettle();
     expect(controller.offset, before);
+
+    // 前置 sliver 在 center 之前按相反的绘制方向显示：数组开头才是
+    // 当前窗口最近的旧消息。第二页追加到数组尾部后，已有消息的屏幕位置不变。
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pump();
+    final oldVisibleTop = tester.getTopLeft(find.text('old 24')).dy;
+    update(() => older = <int>[...older, ...List<int>.generate(10, (i) => 19 - i)]);
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(find.text('old 24')).dy, oldVisibleTop);
+    expect(tester.getTopLeft(find.text('old 20')).dy, lessThan(tester.getTopLeft(find.text('old 21')).dy));
   });
 }

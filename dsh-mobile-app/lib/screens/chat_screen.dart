@@ -66,14 +66,15 @@ bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool i
   if (notification.metrics.axis != Axis.vertical) return false;
   // ScrollStart/ScrollEnd/UserScroll 在 pixels=0 时也会冒泡；异步分页若在 start 时
   // 启动、在 end 前完成，end 会立刻再触发一页。只响应真正向顶部发生的位移更新。
+  final distanceToLeadingEdge = notification.metrics.pixels - notification.metrics.minScrollExtent;
   if (notification is ScrollUpdateNotification) {
     final delta = notification.scrollDelta;
-    return delta != null && delta < 0 && notification.metrics.pixels < 80;
+    return delta != null && delta < 0 && distanceToLeadingEdge < 80;
   }
   // Android 顶部下拉没有 ScrollUpdate，只有负向 overscroll；接受它以便用户
   // 在已到顶部或上一页加载失败后可以重试，但仍拒绝 start/end 空通知。
   if (notification is OverscrollNotification) {
-    return notification.overscroll < 0 && notification.metrics.pixels <= 80;
+    return notification.overscroll < 0 && distanceToLeadingEdge <= 80;
   }
   return false;
 }
@@ -109,8 +110,8 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _liveCenterKey = ValueKey<String>('chat-live-center');
   // live 视图：最新在前（普通列表渲染时倒序，最新位于列表底部）
   final List<_MsgItem> _items = [];
-  // 无限上翻时放在 center 之前的旧消息（视觉顺序：旧→新）。借助
-  // CustomScrollView.center，向顶部插入旧消息不会改变当前 viewport 锚点。
+  // 无限上翻时放在 center 之前的旧消息，按“距 center 近→远”排列（新→旧）。
+  // 新分页追加到尾部，已有 child index 不变，CustomScrollView.center 可保持锚点。
   final List<_MsgItem> _olderItems = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
@@ -451,8 +452,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _buildInto(pageItems, ev, history: true);
       }
       setState(() {
-        // center 之前的 sliver 按旧→新排列；新取到的一页比已有旧页更早。
-        _olderItems.insertAll(0, pageItems);
+        // center 之前的 sliver 按距 center 近→远排列；新取到的一页更早，
+        // 反转后追加到尾部，已有 child index 与屏幕位置保持不变。
+        _olderItems.addAll(pageItems.reversed);
         _earliestSeq = events.first.seq ?? _earliestSeq;
       });
       AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq');
