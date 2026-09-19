@@ -6,6 +6,7 @@
 - 服务端新增 `GET /m/api/account-usage`：DeepSeek CNY 余额、dsh-codex-connect 当前活动 Codex 账户配额、OpenCode Go 5h/周/月套餐窗口；凭据只在电脑端使用，来源独立失败/隐藏。
 - Codex Credits 与个人消费上限独立展示；配额显示剩余百分比、重置时间和三档风险颜色；DeepSeek 原充值与金额预警保持不变。
 - 新增服务端归一化自检 `node tools/account-usage-check.mjs` 与 App 模型测试 `usage_model_test.dart`。
+- 悬浮球面板新增「用量与额度」区块（ADR 0002）：展开时按需获取 + 客户端节流（2 分钟），不可用（旧插件 / 未配置 / 失败）时整体降级为原有单行余额；金额行保留文字（CNY 优先）、配额行只出细条与颜色、不出数字；面板不显示账户身份与附加 Codex bucket；配额窗口永不相加、不参与预警。点击区块/「详情 ▸」直达 App 用量页，「去充值」保留。顺带修复悬浮球余额取数非 CNY 优先（与详情页不一致）的问题。新增纯 Kotlin 面板模型 seam（JVM 单测 26 例）。
 
 ## v3.1.4（2026-09-16，issue #14 / #12 / #13）— 离线待答不再丢 + 任务面板 + 注入折叠 + 压缩后重同步
 

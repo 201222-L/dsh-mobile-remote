@@ -1123,8 +1123,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 (
                   L10n.t('内容', 'Content'),
                   L10n.t(
-                    '运行中会话 / 最近通知 / 打开 App / 去充值',
-                    'Active sessions / notifications / open app / top up',
+                    '运行中会话 / 最近通知 / 用量与额度 / 打开 App / 去充值',
+                    'Active sessions / notifications / usage & allowance / open app / top up',
                   ),
                 ),
                 (

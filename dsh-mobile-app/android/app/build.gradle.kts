@@ -76,3 +76,10 @@ flutter {
     source = "../.."
 }
 
+dependencies {
+    // 悬浮球面板模型 seam 的纯 JVM 单测（UsagePanelModelTest）：
+    // org.json 在 Android 与 JVM 同规范，测试类路径单独引入即可。
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}
+
