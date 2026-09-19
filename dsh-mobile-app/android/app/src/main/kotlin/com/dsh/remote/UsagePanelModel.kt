@@ -10,7 +10,7 @@ import java.util.Locale
  * 刻意不依赖任何 Android 框架类型：普通 JVM 即可单测（UsagePanelModelTest），
  * 服务只负责喂入 JSON / 时间并把渲染模型画出来。
  *
- * 领域约定（CONTEXT.md / docs/adr/0002）：
+ * 领域约定（与 App 用量详情页同语义）：
  * - Balance 是金额、Quota 是时间窗口容量，二者永不相加；
  * - 区块只展示每个来源主 bucket 的窗口，附加 bucket（服务端命名「名称 · 5h」）留在详情页；
  * - 配额窗口只以细条 + 颜色表意、不出任何百分比数字；金额项保留文字；

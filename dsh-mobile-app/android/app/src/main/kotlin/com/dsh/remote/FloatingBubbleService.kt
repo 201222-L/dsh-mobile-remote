@@ -65,7 +65,7 @@ class FloatingBubbleService : Service() {
     private var panelNotifsBadge: TextView? = null
     private var panelCharge: View? = null
     private var panelBalance: TextView? = null
-    // 用量与额度区块（v3.2，ADR 0002）：展开面板时按需获取 + 客户端节流；
+    // 用量与额度区块（v3.2）：展开面板时按需获取 + 客户端节流；
     // 不可用时整块消失，降级为上方/下方单行余额（点击语义不变）。
     private var panelUsage: LinearLayout? = null
     private var panelUsageRows: LinearLayout? = null
@@ -773,7 +773,7 @@ class FloatingBubbleService : Service() {
         root.addView(notifsBox)
         panelNotifs = notifsBox
 
-        // 用量与额度区块（v3.2，ADR 0002）：整块可点 → App 用量页；不可用时降级为下方单行余额。
+        // 用量与额度区块（v3.2）：整块可点 → App 用量页；不可用时降级为下方单行余额。
         // 每来源一行：金额行保留文字（Balance 无分母不画条），配额行只出细条与颜色、不出数字。
         val usageRoot = LinearLayout(this)
         usageRoot.orientation = LinearLayout.VERTICAL
@@ -918,7 +918,7 @@ class FloatingBubbleService : Service() {
         postState()
         refreshPanelData()
         // 用量与额度：先落节流/在途标记再渲染——fetchAllowance 同步置 in-flight 后，
-        // 紧接的 render 即呈「查询中…」，避免首次展开先闪一帧降级单行（ADR 0002）
+        // 紧接的 render 即呈「查询中…」，避免首次展开先闪一帧降级单行
         val usageModel = currentUsageModel()
         if (usageModel.fetchDue) fetchAllowance()
         renderUsageBlock(currentUsageModel())
@@ -1396,7 +1396,7 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    // ── 用量与额度区块（v3.2，ADR 0002）──────────────────────────────
+    // ── 用量与额度区块（v3.2）──────────────────────────────────────
     /** 当前区块状态快照（读 volatile 字段，拼给纯模型；可在任意线程调用）。 */
     private fun currentUsageModel(): UsagePanelModel.View = UsagePanelModel.build(
         UsagePanelModel.State(
@@ -1518,7 +1518,7 @@ class FloatingBubbleService : Service() {
 
     /**
      * 用量与额度拉取：后台线程 + 20 秒超时（面板异步更新，不阻塞 UI）。
-     * 成功时缓存 payload 并让预警金额与显示的 DeepSeek 金额同口径；失败静默保留旧值（ADR 0002）。
+     * 成功时缓存 payload 并让预警金额与显示的 DeepSeek 金额同口径；失败静默保留旧值。
      */
     private fun fetchAllowance() {
         if (allowanceFetching) return
