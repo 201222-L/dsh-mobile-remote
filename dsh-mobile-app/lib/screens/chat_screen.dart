@@ -58,6 +58,27 @@ String composerSignature(String sessionId, String mode, String text, List<String
 bool needsTurnEndResync({int? lastUserSeq, int? lastAssistantSeq}) =>
     lastUserSeq != null && (lastAssistantSeq == null || lastAssistantSeq <= lastUserSeq);
 
+/// 是否应由本次滚动通知触发“加载更早”。抽出为纯判定，避免 ScrollStart/ScrollEnd
+/// 在列表已位于顶部时重复触发异步分页。
+bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool infiniteMode}) {
+  if (!infiniteMode || !notification.metrics.hasContentDimensions) return false;
+  if (notification.depth != 0) return false;
+  if (notification.metrics.axis != Axis.vertical) return false;
+  // ScrollStart/ScrollEnd/UserScroll 在 pixels=0 时也会冒泡；异步分页若在 start 时
+  // 启动、在 end 前完成，end 会立刻再触发一页。只响应真正向顶部发生的位移更新。
+  final distanceToLeadingEdge = notification.metrics.pixels - notification.metrics.minScrollExtent;
+  if (notification is ScrollUpdateNotification) {
+    final delta = notification.scrollDelta;
+    return delta != null && delta < 0 && distanceToLeadingEdge < 80;
+  }
+  // Android 顶部下拉没有 ScrollUpdate，只有负向 overscroll；接受它以便用户
+  // 在已到顶部或上一页加载失败后可以重试，但仍拒绝 start/end 空通知。
+  if (notification is OverscrollNotification) {
+    return notification.overscroll < 0 && distanceToLeadingEdge <= 80;
+  }
+  return false;
+}
+
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
 Future<void> openChat(BuildContext context, AppStore store, String sessionId,
@@ -86,8 +107,12 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
+  static const _liveCenterKey = ValueKey<String>('chat-live-center');
   // live 视图：最新在前（普通列表渲染时倒序，最新位于列表底部）
   final List<_MsgItem> _items = [];
+  // 无限上翻时放在 center 之前的旧消息，按“距 center 近→远”排列（新→旧）。
+  // 新分页追加到尾部，已有 child index 不变，CustomScrollView.center 可保持锚点。
+  final List<_MsgItem> _olderItems = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
   String _reasoning = '';
@@ -338,6 +363,7 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         _noMoreHistory = false;
         _items.clear();
+        _olderItems.clear();
         _activeTools.clear();
         _reasoning = '';
         _reasoningExpanded = false;
@@ -406,8 +432,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ── 无限上翻（微信式） ──
-  /// 滑到 live 顶部时静默加载更早一页：追加到 _items 尾部（reverse 视觉顶部）。
-  /// 列表偏移锚定在最新端，尾部增长不会跳动，视觉连续无缝（普通列表，最新在底部）。
+  /// 滑到 live 顶部时静默加载更早一页：追加到 center 之前的旧消息 sliver。
+  /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
   Future<void> _loadMoreInfinite() async {
     final id = widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) return;
@@ -421,14 +447,17 @@ class _ChatScreenState extends State<ChatScreen> {
         showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
         return; // 已到最顶：不再查询，_earliestSeq 保持不动
       }
+      final pageItems = <_MsgItem>[];
+      for (final ev in events) {
+        _buildInto(pageItems, ev, history: true);
+      }
       setState(() {
-        // 页面最旧→最新；_items 最新在前，故逆序追加到尾部（视觉最顶部）
-        for (final ev in events.reversed) {
-          _appendEvent(ev, history: true);
-        }
+        // center 之前的 sliver 按距 center 近→远排列；新取到的一页更早，
+        // 反转后追加到尾部，已有 child index 与屏幕位置保持不变。
+        _olderItems.addAll(pageItems.reversed);
         _earliestSeq = events.first.seq ?? _earliestSeq;
       });
-      AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length} firstSeq=$_earliestSeq');
+      AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq');
     } catch (e) {
       AppLog.instance.log('Chat: 无限上翻失败 $e');
     } finally {
@@ -440,14 +469,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
   /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
   bool _onLiveScroll(ScrollNotification n) {
-    if (!_infiniteMode || !n.metrics.hasContentDimensions) return false;
-    // v3.1.4（issue #14）：忽略**嵌套滚动**与横向滚动——代码块/表格内部的横向
-    // SingleChildScrollView 会向上冒泡出 pixels=0 的通知，此前被误判成"滚到视觉顶部"
-    // → 每次横滑都触发加载更早、列表跳回该轮上方。
-    // ScrollNotification.depth：外层列表自身为 0，嵌套滚动冒泡上来时 > 0。
-    if (n.depth != 0) return false;
-    if (n.metrics.axis != Axis.vertical) return false;
-    if (n.metrics.pixels < 80) {
+    if (shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
     }
     return false;
@@ -573,40 +595,51 @@ class _ChatScreenState extends State<ChatScreen> {
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
     final loadingTail = _infiniteMode && _loadingMore && _earliestSeq > 0;
-    final itemCount = _items.length + (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
+    final currentExtra = (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
+    final itemCount = _olderItems.length + _items.length + currentExtra;
     if (itemCount != _lastLoggedCount) {
       _lastLoggedCount = itemCount;
-      AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length}');
+      AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length + _olderItems.length}');
     }
     return NotificationListener<ScrollNotification>(
       onNotification: _onLiveScroll,
-      child: ListView.builder(
+      child: CustomScrollView(
         controller: _scrollCtrl,
-        reverse: false,
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-        itemCount: itemCount,
-        itemBuilder: (context, index) {
-          // 普通列表：index 0 = 视觉顶部 → 顶部按钮/加载条 → 消息（最旧→最新）→ 草稿
-          if (topButton && index == 0) {
-            return _OlderButton(busy: _loadingMore, onTap: _openHistory);
-          }
-          if (loadingTail && index == 0) {
-            return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 10),
-              child: Center(
-                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+        center: _liveCenterKey,
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) => _buildItem(_olderItems[index]),
+                childCount: _olderItems.length,
               ),
-            );
-          }
-          final dataIndex = index - (topButton || loadingTail ? 1 : 0);
-          if (dataIndex < _items.length) {
-            return _buildItem(_items[_items.length - 1 - dataIndex]);
-          }
-          if (hasDraft) {
-            return _AssistantBubble(text: _draft, streaming: true);
-          }
-          return const SizedBox.shrink();
-        },
+            ),
+          ),
+          const SliverToBoxAdapter(key: _liveCenterKey, child: SizedBox.shrink()),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
+                  if ((topButton || loadingTail) && index == 0) {
+                    if (topButton) return _OlderButton(busy: _loadingMore, onTap: _openHistory);
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 10),
+                      child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),),
+                    );
+                  }
+                  final dataIndex = index - (topButton || loadingTail ? 1 : 0);
+                  if (dataIndex < _items.length) return _buildItem(_items[_items.length - 1 - dataIndex]);
+                  if (hasDraft) return _AssistantBubble(text: _draft, streaming: true);
+                  return const SizedBox.shrink();
+                },
+                childCount: _items.length + currentExtra,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
