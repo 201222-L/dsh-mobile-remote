@@ -1,6 +1,6 @@
 # 05 测试用例设计文档 — dsh-mobile-remote
 
-> 版本：v3.1.1（2026-08-26 发布，v3.0.0 之前内容已按实际验证结果填写；v3.1.0 用例见 F-20~F-22，v3.1.1 用例见 F-23） · 配套：03-api.md、04-security.md
+> 版本：v3.2.0（用量与额度见 F-24~F-32；v3.1.1 用例见 F-23） · 配套：03-api.md、04-security.md
 > 环境：Windows + DSH Desktop（desktop profile，内核 0.1.1-rc.2；web profile 亦适用） + Android（DSH Remote App）
 > 前置：插件已安装并启用（LAN 桥监听 0.0.0.0:3080）；访问口令为安装时生成的随机串（下文 `<TOKEN>`）。
 ## 1. 测试范围与环境
@@ -187,6 +187,74 @@
 | 变体 B | 旧版 App（≤v3.0.0）+ 新版插件：浏览路径为 `/\home` 形态，服务端归一化后仍可正常进入/选择（`//home` 在 POSIX 与 `/home` 等价） |
 | 单测 | `flutter test test/dirpicker_logic_test.dart`（joinDirPath/dirSepOf）；`node tools/wsl-path-check.mjs`（normalizeServerPath，8/8） |
 
+### F-24 用量与额度投影：DeepSeek
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 电脑端配置 `DEEPSEEK_API_KEY`，插件已重启 |
+| 步骤 | 带 token 请求 `GET /m/api/account-usage`，打开 App 设置 → 账户 → 用量与额度 |
+| 预期 | 200；`sources` 含 `deepseek` 的 CNY 金额；App 卡片显示金额；key 不出现在响应、日志或页面 |
+
+### F-25 Codex Connect 当前活动账户
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 安装并登录 `dsh-codex-connect`，保存至少一个 Codex 账户 |
+| 步骤 | 请求 `/m/api/account-usage`，切换 dsh-codex-connect 活动账户后再次刷新 |
+| 预期 | `sources` 含 `codex`；仅显示当前活动账户的 displayName/maskedEmail 与有效主/附加配额窗口、Credits/个人上限（若接口返回）；不返回 OAuth token；活动账户切换后下一次刷新跟随新账户 |
+
+### F-26 OpenCode Go 套餐窗口
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | DSH 凭据配置 `OPENCODE_GO_API_KEY`，且账号有 OpenCode Go 套餐 |
+| 步骤 | 请求 `/m/api/account-usage`，检查 App 详情卡片 |
+| 预期 | `sources` 含 `opencode-go`；rolling/weekly/monthly 的原始已用百分比转换为剩余百分比；`rate-limited` 窗口保留为 0% 并标记限流；percent=0 的占位重置时间不显示；其它有效重置时间按手机本地时间显示 |
+
+### F-27 部分来源失败与空状态
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 让一个已配置来源返回 401/网络失败，另一个来源保持可用；再分别测试所有来源均未配置 |
+| 预期 | 成功来源仍显示；失败来源从 `sources` 隐藏且 `failedCount` 增加，App 显示汇总提示；全部未配置时 `sources=[]`，App 保留入口并显示电脑端配置引导 |
+
+### F-28 缓存、并发与手动刷新
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 快速连续进入设置和详情页；点击详情页顶部刷新；观察服务端上游请求与 App 显示 |
+| 预期 | 普通进入请求复用 60 秒成功快照且并发请求共享一轮上游查询；手动刷新请求 `?refresh=1` 并发查询全部来源；不产生本地持久化额度文件，不周期轮询上游 |
+
+### F-29 悬浮球面板三来源区块
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 插件 v3.2+（含 `/account-usage`）、App 开启悬浮球，DeepSeek / Codex / OpenCode Go 至少各一个来源可用 |
+| 步骤 | 展开悬浮球面板，等待用量与额度区块渲染 |
+| 预期 | 出现「用量与额度」区块（含「详情 ▸」）；每来源一行：DeepSeek 出金额文字（CNY ¥），Codex / OpenCode Go 配额行每个进度条上方居中显示窗口短标签（Codex：5h / 每周；OpenCode Go：5h / 每周 / 每月），条只出细条与颜色、不出百分比数字；主 bucket 窗口按 5h → 周 → 月排列；金额行在低余额时变红；点击区块或「详情 ▸」打开 App 用量页；底部「去充值」保留 |
+
+### F-30 悬浮球展开时按需获取与节流
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 反复快速展开/收起悬浮球面板；观察服务端 account-usage 调用次数 |
+| 预期 | 每次展开最多触发一次查询；2 分钟节流窗内重复展开复用在途/缓存结果，不反复打上游；首次展开区块先显示「查询中…」再异步就地更新；App 被杀后展开面板仍能拉到数据 |
+
+### F-31 悬浮球面板降级与陈值
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 场景 A：旧插件（无 `/account-usage`，404）；场景 B：全部来源未配置；场景 C：单次拉取失败 |
+| 步骤 | 展开面板，分别观察 A / B / C |
+| 预期 | A/B/C 下区块整体不出现、不显示任何报错，原有单行余额原位显示且点击仍=去充值（A 不退化现有功能）；C 曾成功过 → 区块保留旧值并以小灰字标注相对时间（超过 10 分钟才标注）；C 从未成功过 → 退回单行余额；不产生本地持久化额度文件 |
+
+### F-32 悬浮球面板隐私边界
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 展开面板，检查区块、球体与操作说明弹窗 |
+| 预期 | 区块不显示 Codex 账户身份（displayName/maskedEmail）；球体自身不常驻金额；配额窗口与来源永不相加、不换算；附加 Codex bucket（服务端命名「名称 · 5h」）不出现在面板；设置 → 悬浮球操作说明的面板内容已包含「用量与额度」 |
+
 ## 3. 安全测试用例
 
 ### S-01 Host 校验
@@ -220,5 +288,6 @@
 
 ## 4. 回归执行建议
 
-- 每次修改插件源码后：`cd C:\Users\<用户>\.dsh\profiles\desktop && corepack pnpm install`（同步 file: 副本）→ 重启 DSH Desktop → 跑 `tools/e2e-check.mjs` → 手机 App 冒烟（连接/发消息/通知/新建会话/图片发送）。
-- 修改 App 后：`flutter analyze` → `flutter test`（`test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单）→ `flutter build apk --release` → 覆盖安装。
+- 每次修改插件源码后：`cd C:\Users\<用户>\.dsh\profiles\desktop && corepack pnpm install`（同步 file: 副本）→ 重启 DSH Desktop → 跑 `tools/e2e-check.mjs` 与 `node tools/account-usage-check.mjs` → 手机 App 冒烟（连接/发消息/通知/新建会话/图片发送/用量与额度）。
+- 修改 App 后：`flutter analyze` → `flutter test`（新增 `test/usage_model_test.dart`；另含 `test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单）→ `flutter build apk --release` → 覆盖安装。
+- 修改原生悬浮球后：`cd dsh-mobile-app/android && ./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.UsagePanelModelTest"`（面板模型 seam 纯 JVM 单测：节流/降级/主 bucket/分档/过期/CNY）→ 真机冒烟（F-29~F-32：三来源区块、展开节流、降级与陈值标注、隐私边界）。

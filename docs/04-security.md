@@ -1,6 +1,6 @@
 # 04 安全设计文档 — dsh-mobile-remote
 
-> 版本：v3.0.0 · 状态：已实现 · 配套：02-architecture.md、03-api.md、09-compatibility.md
+> 版本：v3.2.0 · 状态：已实现 · 配套：02-architecture.md、03-api.md、09-compatibility.md
 
 ## 1. 威胁模型
 
@@ -80,6 +80,8 @@
 - **二维码数据端点 `/m/api/qr-config` 仅允许 loopback**（TCP socket 来源校验，无法伪造）—— 桌面设置页读取后展示二维码；二维码含地址+口令，请勿截屏转发。
 - **问询/审批应答（`/m/api/respond`）不绕过内核安全**：插件只是把客户端 payload 转交 `apiProxy.respond`，答案内容（选项合法性、custom/selected 互斥、审批 outcome 枚举）全部由内核 schema 校验；rpcId 必须命中内核 pending 表（先到先得，不可伪造待答）。取消操作同样走内核 `ASK_CANCELLED` 语义。
 - **第三方推送通道脱敏（v2.6）**：Server酱/ntfy/Bark/generic 等推送默认只收到「事件类型 + 会话短码」（`pushContent: minimal`），会话标题/错误详情等核心内容默认不出本机；仅显式配置 `pushContent: standard` 后外发——第三方服务不可信。
+- **用量与额度投影（v3.2）**：`/m/api/account-usage` 只返回成功来源的余额/配额、脱敏 Codex 账户标签和汇总失败数；DeepSeek/OpenCode Go 密钥与 Codex OAuth token 永不进入响应、App 日志或持久化文件。OpenCode Go 只请求固定官方 HTTPS 端点；Codex 启用代理但代理不可用时拒绝直连。服务端只保留 60 秒进程内快照，单来源失败不回退到过期数据。
+- **悬浮球 overlay 面板脱敏（v3.2）**：悬浮球是 **`TYPE_APPLICATION_OVERLAY` 系统级浮层**，可能出现在锁屏、他人可见、或覆盖其它应用之上。因此面板的用量与额度区块只展示来源标题、金额文字与配额细条/颜色；**不显示账户身份（displayName/maskedEmail）**、不显示任何聚合或换算数值；配额窗口永不相加。数据仅按需获取（展开面板时，客户端节流）、失败沿用旧值并标注相对时间，不新增后台轮询或持久化。
 ## 7. 安全测试要点（并入 05-test-cases.md）
 1. 口令启用后：未认证访问 bootstrap/send/events/history 返回 401；错误口令 401。
 2. 口令关闭时：以上端点返回 200。

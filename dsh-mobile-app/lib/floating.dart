@@ -19,7 +19,8 @@ class Floating {
   static Future<void> openOverlaySettings() =>
       _channel.invokeMethod('openOverlaySettings');
 
-  /// 余额刷新后同步给悬浮球（低余额时亮起 + 气泡）。value 形如 "10.5:CNY"。
+  /// 余额刷新后同步给悬浮球（低余额时亮起 + 气泡）。value 为裸数字字符串（如 "10.50"），
+  /// 币种固定 CNY（App 侧取值已 CNY 优先，原生 onBalance 也按此解析）。
   static Future<void> notifyBalance(double total) =>
       _channel.invokeMethod('notifyBalance', {'value': total.toStringAsFixed(2)});
 
