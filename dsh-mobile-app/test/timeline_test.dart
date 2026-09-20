@@ -147,4 +147,44 @@ void main() {
     expect(item.detailAvailable, isTrue);
     expect(item.data['nested'], {'answer': 7});
   });
+
+  test('详情正文只认服务端规范化 text，绝不从 content 拼接 reasoning（issue #1 需求变更）', () {
+    // 服务端给了规范化正文：直接采用。
+    expect(timelineDetailText({'text': 'VISIBLE-BODY'}), 'VISIBLE-BODY');
+    // 未给（旧服务端 / 非 assistant）：返回 null，调用方保持原正文——
+    // 不得回退到递归拼接 message.content（那会把 reasoning 并进正文，使思维链重复）。
+    expect(
+      timelineDetailText({
+        'message': {
+          'content': [
+            {'type': 'reasoning', 'text': 'THINKING-CHAIN'},
+            {'type': 'text', 'text': 'VISIBLE-BODY'},
+          ],
+        },
+      }),
+      isNull,
+    );
+    expect(timelineDetailText(const {}), isNull);
+    expect(timelineDetailText({'text': 42}), isNull);
+  });
+
+  test('详情增量判定：textChars 大于可见正文长度才提示有增量', () {
+    expect(timelineHasTextIncrement(200, 71), isTrue);
+    expect(timelineHasTextIncrement(71, 71), isFalse); // 与摘要相同 → 普通模式不显示加载入口
+    expect(timelineHasTextIncrement(70, 71), isFalse);
+    expect(timelineHasTextIncrement(null, 71), isFalse); // 无提示（旧服务端/非 assistant）→ 不显示
+  });
+
+  test('assistant 事件把详情长度提示带入时间线模型', () {
+    final reducer = TimelineReducer();
+    reducer.apply(ChatEvent(
+      seq: 1,
+      type: 'assistant/message',
+      data: {'text': 'BODY'},
+      detailAvailable: true,
+      detailTextChars: 500,
+    ));
+    expect(reducer.items.single.detailTextChars, 500);
+    expect(timelineHasTextIncrement(reducer.items.single.detailTextChars, 4), isTrue);
+  });
 }

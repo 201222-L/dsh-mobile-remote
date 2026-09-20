@@ -104,6 +104,21 @@ bool timelineIsInjectedNoise(String text) =>
     text.contains('This snapshot supersedes') ||
     text.startsWith('background job ');
 
+/// 详情正文：**只认服务端给出的规范化 `text`**（与事件摘要同一个 `blocksToText` 口径，
+/// 已跳过 `reasoning` 与内部块）；字段缺失时返回 null。
+///
+/// 客户端**不得**自行递归拼接 `message.content` 兜底——那会把 `reasoning` 块并进正文，
+/// 使思维链在折叠块之外重复出现（issue #1 需求变更记录）。
+String? timelineDetailText(Map<String, dynamic> eventData) {
+  final text = eventData['text'];
+  return text is String ? text : null;
+}
+
+/// 详情是否带来正文增量：服务端 `detail.textChars`（未截断正文长度）大于当前可见正文长度。
+/// 普通模式据此只在确有增量时才显示加载入口；调试模式提供原始事件入口，不受此限。
+bool timelineHasTextIncrement(int? detailTextChars, int visibleChars) =>
+    detailTextChars != null && detailTextChars > visibleChars;
+
 enum TimelineItemKind { message, tool, divider, event }
 
 class TimelineItem {
@@ -120,6 +135,8 @@ class TimelineItem {
   final bool isError;
   final bool detailAvailable;
   final bool filteredInOrdinary;
+  /// 详情正文长度提示（`detail.textChars`）：与摘要同口径的未截断正文长度。
+  final int? detailTextChars;
 
   const TimelineItem({
     required this.kind,
@@ -135,6 +152,7 @@ class TimelineItem {
     this.isError = false,
     this.detailAvailable = false,
     this.filteredInOrdinary = false,
+    this.detailTextChars,
   });
 
   bool visibleIn(TimelineMode mode) => mode == TimelineMode.debug || !filteredInOrdinary;
@@ -282,6 +300,7 @@ class TimelineReducer {
       status: 'complete',
       isError: data['isError'] == true || event.type.contains('error'),
       detailAvailable: event.detailAvailable,
+      detailTextChars: event.detailTextChars,
       // 注入噪声 + 普通模式折叠的协议元数据都不进默认视图；调试模式仍可审阅。
       filteredInOrdinary: injected || !timelineTypeVisibleIn(TimelineMode.ordinary, event.type),
     ));

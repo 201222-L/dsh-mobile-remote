@@ -176,13 +176,21 @@ class ChatEvent {
   // v2.7.2 review(M1)：事件所属会话（store 广播时附加）——叠层聊天页各收各的
   final String? sessionId;
   final bool detailAvailable;
-  ChatEvent({this.seq, required this.type, this.data, this.sessionId, this.detailAvailable = false});
-  factory ChatEvent.fromJson(Map<String, dynamic> j) => ChatEvent(
-        seq: (j['seq'] as num?)?.toInt(),
-        type: j['type'] as String? ?? 'unknown',
-        data: j['data'] is Map ? Map<String, dynamic>.from(j['data'] as Map) : null,
-        detailAvailable: (j['detail'] as Map?)?['available'] == true,
-      );
+  /// 详情正文长度提示（服务端 `detail.textChars`，仅 assistant/message 提供）：
+  /// 与摘要同 `blocksToText` 口径的**未截断**正文长度，供“是否真有正文增量”判定。
+  final int? detailTextChars;
+  ChatEvent({this.seq, required this.type, this.data, this.sessionId, this.detailAvailable = false, this.detailTextChars});
+  factory ChatEvent.fromJson(Map<String, dynamic> j) {
+    final detail = j['detail'];
+    final d = detail is Map ? detail : const <String, dynamic>{};
+    return ChatEvent(
+      seq: (j['seq'] as num?)?.toInt(),
+      type: j['type'] as String? ?? 'unknown',
+      data: j['data'] is Map ? Map<String, dynamic>.from(j['data'] as Map) : null,
+      detailAvailable: d['available'] == true,
+      detailTextChars: (d['textChars'] as num?)?.toInt(),
+    );
+  }
 }
 
 class HistoryPage {

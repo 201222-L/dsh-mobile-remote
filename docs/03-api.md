@@ -222,7 +222,7 @@
 
 详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。旧服务端未保存详情时客户端显示“详情不可用”，不猜测重建。
 
-**规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。客户端以该字段与摘要 `text` 比较，据以判断是否存在正文增量；`tool/result` 等其它类型的详情仍以原始事件载荷为准。
+**规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。`tool/result` 等其它类型的详情仍以原始事件载荷为准；原始 `message` 块原样保留。
 
 ### 3.6 GET /m/api/events（SSE）
 `Content-Type: text/event-stream`。帧格式（`data:` 单行 JSON）：
@@ -232,6 +232,8 @@
 ```
 
 **事件摘要 `event` 字段**：实时和历史使用同一摘要 envelope；摘要可包含 `detail: { available: true, seq }`，长参数/结果通过 3.5b 按需读取，不在列表中静默截断。只有 `/event-detail` 真能取回的事件才带该指针（token delta 与内部/快照记录不带，避免客户端显示必然 404 的详情按钮）。
+
+`assistant/message` 的指针额外带 **`textChars`**：与摘要同 `blocksToText` 口径的**未截断**正文长度。客户端据此**在加载前**判断「详情是否真有正文增量」（`textChars > 当前可见正文长度`），从而普通模式只在确有增量时显示加载入口；调试模式不受此限，始终提供「查看原始事件」。该字段为纯增量，旧客户端忽略即可。
 
 | event.type | event.data 内容 |
 |---|---|

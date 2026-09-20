@@ -1536,7 +1536,8 @@ class _ChatScreenState extends State<ChatScreen> {
             images: _imagesOf(d),
             files: _filesOf(d),
             reasoning: reasoningText.isEmpty ? null : reasoningText,
-            detailAvailable: ev.detailAvailable);
+            detailAvailable: ev.detailAvailable,
+            detailTextChars: ev.detailTextChars);
         // v3.1.4（issue #13）：记录最近一条**会渲染出来**的回复，供轮次兜底判定
         // （注入的上下文快照虽然进模型但界面隐藏，不能算作本轮已有回复）。
         if ((!history || tail) && ev.seq != null && !timelineIsInjectedNoise(body)) _lastAssistantSeq = ev.seq;
@@ -2808,13 +2809,18 @@ class _ChatScreenState extends State<ChatScreen> {
           detailLoading: false,
         )));
       } else if (current.kind == _MsgKind.assistant) {
-        final fullText = textOf(data['text']).isNotEmpty ? textOf(data['text']) : textOf(data['message']);
+        // 正文口径（issue #1 需求变更）：只认服务端给出的规范化 text（与摘要同一
+        // blocksToText 口径，已跳过 reasoning/内部块）。**不得**递归拼接 message.content
+        // ——那会把 reasoning 并进正文，使思维链在折叠块之外重复出现。
+        final canonical = timelineDetailText(data);
+        final fullText = canonical ?? '';
         setState(() => _replaceTimelineItem(item, current.copyAssistant(
           text: fullText.isNotEmpty ? fullText : current.text,
           rawData: full,
           files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
           detailAvailable: true,
           detailLoading: false,
+          detailTextChars: fullText.isNotEmpty ? fullText.length : current.detailTextChars,
         )));
       } else {
         setState(() => _replaceTimelineItem(item, current.copyEvent(rawData: full, detailLoading: false)));
@@ -2924,7 +2930,10 @@ class _ChatScreenState extends State<ChatScreen> {
                  padding: const EdgeInsets.only(left: 4, bottom: 6),
                  child: _FileResults(files: item.files, sessionId: _mySessionId ?? ''),
                ),
-             if (item.detailAvailable && item.seq != null)
+             // 详情入口（issue #1 需求变更）：普通模式只在**确有正文增量**时出现
+             // （服务端 detail.textChars 大于当前可见正文长度）；调试模式提供原始事件入口。
+             // 两者都不再默认出现“看着像能加载更多、实际只会多出一份思维链”的按钮。
+             if (item.detailAvailable && item.seq != null && (widget.store.timelineDebug || timelineHasTextIncrement(item.detailTextChars, item.text.length)))
                Padding(
                  padding: const EdgeInsets.only(left: 4, bottom: 4),
                  child: Row(
@@ -2933,15 +2942,19 @@ class _ChatScreenState extends State<ChatScreen> {
   if (item.detailLoading) const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
                      TextButton(
                        onPressed: api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null,
-                       child: Text(item.rawData == null ? L10n.t('加载完整正文', 'Load full response') : L10n.t('重新加载正文', 'Reload full response')),
+                       child: Text(
+                         widget.store.timelineDebug
+                             ? (item.rawData == null ? L10n.t('查看原始事件', 'View raw event') : L10n.t('重新加载原始事件', 'Reload raw event'))
+                             : (item.rawData == null ? L10n.t('加载完整正文', 'Load full response') : L10n.t('重新加载正文', 'Reload full response')),
+                       ),
                      ),
                    ],
                  ),
                )
-             else if (item.rawData == null)
+             else if (widget.store.timelineDebug && item.rawData == null && !item.detailAvailable)
                Padding(
                  padding: const EdgeInsets.only(left: 4, bottom: 4),
-                 child: Text(L10n.t('完整正文不可用（旧服务端未保存）', 'Full response unavailable (not retained by server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+                 child: Text(L10n.t('详情不可用（旧服务端未保存）', 'Detail unavailable (not retained by server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
                ),
              if (widget.store.timelineDebug && item.rawData != null)
                Padding(
@@ -3026,7 +3039,9 @@ class _MsgItem {
   final Map<String, dynamic>? rawData;
   final String? eventType;
   final bool detailLoading;
-  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.files = const [], this.sourceKind})
+  /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
+  final int? detailTextChars;
+  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.files = const [], this.sourceKind, this.detailTextChars})
       : kind = _MsgKind.user,
         latestSeq = seq,
         detailSeq = seq,
@@ -3043,7 +3058,7 @@ class _MsgItem {
         rawData = null,
         eventType = null,
         detailLoading = false;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false})
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false, this.detailTextChars})
       : kind = _MsgKind.assistant,
         latestSeq = seq,
         detailSeq = seq,
@@ -3059,6 +3074,7 @@ class _MsgItem {
       : kind = _MsgKind.divider,
         latestSeq = seq,
         detailSeq = seq,
+        detailTextChars = null,
         usage = null,
         messageId = null,
         rating = null,
@@ -3091,6 +3107,7 @@ class _MsgItem {
     this.detailAvailable = false,
     this.rawData,
     this.detailLoading = false,
+    this.detailTextChars,
   })  : kind = _MsgKind.tool,
         text = toolResult.isNotEmpty ? toolResult : toolArguments,
         usage = null,
@@ -3110,6 +3127,7 @@ class _MsgItem {
     this.detailAvailable = false,
     this.detailLoading = false,
     this.toolError = false,
+    this.detailTextChars,
   })  : kind = _MsgKind.event,
         latestSeq = latestSeq ?? seq,
         detailSeq = detailSeq ?? seq,
@@ -3131,7 +3149,7 @@ class _MsgItem {
 
   _MsgItem copyWith({int? seq, String? messageId}) {
     assert(kind == _MsgKind.user, 'copyWith only supports user items');
-    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId, images: images, files: files, sourceKind: sourceKind);
+    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId, images: images, files: files, sourceKind: sourceKind, detailTextChars: detailTextChars);
   }
 
   _MsgItem copyTool({
@@ -3164,9 +3182,10 @@ class _MsgItem {
         detailAvailable: detailAvailable ?? this.detailAvailable,
         rawData: rawData ?? this.rawData,
         detailLoading: detailLoading ?? this.detailLoading,
+        detailTextChars: detailTextChars,
       );
 
-  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading}) => _MsgItem.assistant(
+  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading, int? detailTextChars}) => _MsgItem.assistant(
         text ?? this.text,
         usage: usage,
         seq: seq,
@@ -3178,6 +3197,7 @@ class _MsgItem {
         detailAvailable: detailAvailable ?? this.detailAvailable,
         rawData: rawData ?? this.rawData,
         detailLoading: detailLoading ?? this.detailLoading,
+        detailTextChars: detailTextChars ?? this.detailTextChars,
       );
 
   _MsgItem copyEvent({Map<String, dynamic>? rawData, bool? detailLoading}) => _MsgItem.event(
@@ -3190,6 +3210,7 @@ class _MsgItem {
         detailAvailable: detailAvailable,
         detailLoading: detailLoading ?? this.detailLoading,
         toolError: toolError,
+        detailTextChars: detailTextChars,
       );
 }
 

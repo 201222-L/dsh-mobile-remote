@@ -50,6 +50,34 @@ const visibleCall = mod.summarizeEvent({ seq: 30, type: "tool/call", data: { tur
 check("可见事件声明详情指针", visibleCall.detail?.available === true && visibleCall.detail.seq === 30);
 const structuredCall = mod.summarizeEvent({ seq: 11, type: "tool/call", data: { callId: "call-structured", name: "shell", arguments: { command: "ls", cwd: "/tmp" } } });
 check("结构化工具参数不退化为 [object Object]", structuredCall.data?.arguments?.includes('"command"') === true);
+
+// issue #1 需求变更：正文口径收敛（摘要与详情共用 blocksToText、跳过 reasoning）+ 详情指针长度提示
+const reasoningMessage = mod.summarizeEvent({
+  seq: 12,
+  type: "assistant/message",
+  data: { turn: 1, step: 1, message: { id: "m1", content: [
+    { type: "reasoning", text: "THINKING-CHAIN" },
+    { type: "text", text: "VISIBLE-BODY" },
+  ] } },
+});
+check("assistant 摘要正文不含 reasoning 块文本", reasoningMessage.data?.text === "VISIBLE-BODY", JSON.stringify(reasoningMessage.data?.text));
+check("assistant 摘要仍单独下发 reasoning 供折叠块", reasoningMessage.data?.reasoning === "THINKING-CHAIN");
+check("详情指针带未截断正文长度提示", reasoningMessage.detail?.textChars === "VISIBLE-BODY".length, String(reasoningMessage.detail?.textChars));
+check("无 content 的 assistant 事件不给长度提示", mod.summarizeEvent({ seq: 13, type: "assistant/message", data: { turn: 1 } }).detail?.textChars === undefined);
+check("非 assistant 事件不给长度提示", visibleCall.detail?.textChars === undefined);
+
+const assistantDetail = mod.detailEventFor({
+  seq: 12,
+  type: "assistant/message",
+  data: { turn: 1, message: { id: "m1", content: [
+    { type: "reasoning", text: "THINKING-CHAIN" },
+    { type: "text", text: "VISIBLE-BODY" },
+  ] } },
+});
+check("详情规范化正文不含 reasoning 块文本", assistantDetail.data?.text === "VISIBLE-BODY", JSON.stringify(assistantDetail.data?.text));
+check("详情保留原始 message 块（无损语义）", assistantDetail.data?.message?.content?.length === 2);
+check("详情规范化正文与指针提示同口径", assistantDetail.data?.text?.length === reasoningMessage.detail?.textChars);
+check("详情不改写其它类型事件的 data", mod.detailEventFor({ seq: 22, type: "tool/result", data: { text: "raw" } }).data?.text === "raw");
 const liveChunk = mod.summarizeEvent({
   seq: 10,
   type: "assistant/live-chunk",

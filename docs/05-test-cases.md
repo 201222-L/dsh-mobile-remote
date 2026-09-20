@@ -209,7 +209,7 @@
 | 变体 | 并行同名工具、失败工具、已解决的审批、todo/Job 状态、压缩前事件、流式工具参数（delta → tool/call）|
 | 预期 | 各自按 callId/事件 seq 保持独立；工具参数以 `tool/call` 的完整实参为准（不得出现 delta 与整串拼接）；审批走 durable `approval/asked`/`approval/decided` 可历史回放，问询只有瞬态帧（重进会话不保证回放）；失败默认展开 |
 | 变体 | 带思维链的 assistant 消息；详情无正文增量 |
-| 预期 | 正文提取口径与服务端摘要同源（`blocksToText`）：原始事件/详情正文**不得包含 `reasoning` 块文本**（思维链只在折叠块出现一次，不因加载详情而重复）；详情正文与摘要 `text` 相同时，普通模式**不显示**加载按钮；调试模式的入口文案为「查看原始事件」（不再叫「加载完整正文」） |
+| 预期 | 正文提取口径与服务端摘要同源（`blocksToText`）：原始事件/详情正文**不得包含 `reasoning` 块文本**（思维链只在折叠块出现一次，不因加载详情而重复）；普通模式仅当 `detail.textChars` 大于当前可见正文长度（确有增量）时才显示加载入口，相等时不显示；调试模式入口文案为「查看原始事件」（不再叫「加载完整正文」）；单测 `flutter test test/timeline_test.dart` 覆盖 `timelineDetailText`（不从 `content` 拼接 reasoning）与 `timelineHasTextIncrement`；契约 `tools/timeline-contract-check.mjs` 覆盖摘要/详情的正文口径与 `textChars` 一致性 |
 
 > 边界说明：问询（`question/requested`）在核心里只有瞬态远程帧、没有 durable 事件，因此**不保证**历史回放；审批有 durable 事件，重进会话仍可见。
 
