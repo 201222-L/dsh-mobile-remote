@@ -222,6 +222,8 @@
 
 详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。旧服务端未保存详情时客户端显示“详情不可用”，不猜测重建。
 
+**规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。客户端以该字段与摘要 `text` 比较，据以判断是否存在正文增量；`tool/result` 等其它类型的详情仍以原始事件载荷为准。
+
 ### 3.6 GET /m/api/events（SSE）
 `Content-Type: text/event-stream`。帧格式（`data:` 单行 JSON）：
 
