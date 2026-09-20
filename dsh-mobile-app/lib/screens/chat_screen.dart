@@ -2867,7 +2867,7 @@ class _ChatScreenState extends State<ChatScreen> {
                        crossAxisAlignment: CrossAxisAlignment.start,
                        children: [
                          _ImagesGrid(images: item.images, sessionId: _mySessionId ?? ''),
-                         if (item.files.isNotEmpty) _FileResults(files: item.files, sessionId: _mySessionId ?? ''),
+                         if (item.files.isNotEmpty) _FileResults(files: item.files),
                        ],
                      ),
                   ),
@@ -2900,7 +2900,7 @@ class _ChatScreenState extends State<ChatScreen> {
             if (images.isNotEmpty)
               userBubble(_ImagesGrid(images: images, sessionId: _mySessionId ?? '')),
              if (item.files.isNotEmpty)
-               userBubble(_FileResults(files: item.files, sessionId: _mySessionId ?? '')),
+               userBubble(_FileResults(files: item.files)),
             if (text.isNotEmpty)
               userBubble(Text(text, style: const TextStyle(fontSize: 15, height: 1.5))),
             const SizedBox(height: 12),
@@ -2925,12 +2925,8 @@ class _ChatScreenState extends State<ChatScreen> {
               expandedOverride: widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
               onOverride: (v) => setState(() => widget.store.setReasoningOverride(_mySessionId ?? '', rk, v)),
             ),
-            if (item.files.isNotEmpty)
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 6),
-                 child: _FileResults(files: item.files, sessionId: _mySessionId ?? ''),
-               ),
-             // 详情入口（issue #1 需求变更）：普通模式只在**确有正文增量**时出现
+            // 需求变更（issue #1）：assistant 产出文件不再展示（时间线不提供该下载入口）。
+            // 详情入口（issue #1 需求变更）：普通模式只在**确有正文增量**时出现
              // （服务端 detail.textChars 大于当前可见正文长度）；调试模式提供原始事件入口。
              // 两者都不再默认出现“看着像能加载更多、实际只会多出一份思维链”的按钮。
              if (item.detailAvailable && item.seq != null && (widget.store.timelineDebug || timelineHasTextIncrement(item.detailTextChars, item.text.length)))
@@ -3446,11 +3442,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                     padding: const EdgeInsets.only(top: 8),
                     child: _ImagesGrid(images: item.images, sessionId: widget.sessionId),
                    ),
-                   if (item.files.isNotEmpty)
-                     Padding(
-                       padding: const EdgeInsets.only(top: 8),
-                       child: _FileResults(files: item.files, sessionId: widget.sessionId),
-                     ),
+                  // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
                   if (item.detailLoading) const Padding(
                     padding: EdgeInsets.only(top: 8),
                     child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
@@ -3865,71 +3857,37 @@ Future<Directory> _appSaveDirectory() async {
   return getApplicationDocumentsDirectory();
 }
 
+/// 消息附件展示（issue #1 需求变更）：只显示文件名/类型/大小，**不提供下载**。
+/// 工具与 assistant 产出的文件行已整体移除，这里只服务用户自己的附件。
 class _FileResults extends StatelessWidget {
   final List<Map<String, dynamic>> files;
-  final String sessionId;
-  const _FileResults({required this.files, required this.sessionId});
+  const _FileResults({required this.files});
 
   @override
   Widget build(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final file in files) _FileResultTile(file: file, sessionId: sessionId),
+          for (final file in files) _FileResultTile(file: file),
         ],
       );
 }
 
-class _FileResultTile extends StatefulWidget {
+class _FileResultTile extends StatelessWidget {
   final Map<String, dynamic> file;
-  final String sessionId;
-  const _FileResultTile({required this.file, required this.sessionId});
-
-  @override
-  State<_FileResultTile> createState() => _FileResultTileState();
-}
-
-class _FileResultTileState extends State<_FileResultTile> {
-  bool _busy = false;
-  String? _savedPath;
+  const _FileResultTile({required this.file});
 
   String get _label {
-    final name = widget.file['name']?.toString();
+    final name = file['name']?.toString();
     if (name != null && name.isNotEmpty) return name;
-    final path = widget.file['path']?.toString();
+    final path = file['path']?.toString();
     if (path != null && path.isNotEmpty) return path.split(RegExp(r'[/\\]')).last;
-    return L10n.t('文件结果', 'File result');
-  }
-
-  Future<void> _download() async {
-    if (_busy) return;
-    final attachmentId = widget.file['attachmentId']?.toString();
-    final path = widget.file['path']?.toString();
-    if ((attachmentId == null || attachmentId.isEmpty) && (path == null || path.isEmpty)) return;
-    setState(() => _busy = true);
-    try {
-      final bytes = path != null && path.isNotEmpty
-          ? await api.downloadFile(path)
-          : await api.attachmentBytes(widget.sessionId, attachmentId!);
-      final dir = await _appSaveDirectory();
-      final safeName = _label.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
-      final shortId = attachmentId == null || attachmentId.isEmpty ? '' : attachmentId.substring(0, attachmentId.length > 12 ? 12 : attachmentId.length);
-      final suffix = shortId.isEmpty ? '' : '-$shortId';
-      final target = File('${dir.path}/$safeName$suffix');
-      await target.writeAsBytes(bytes, flush: true);
-      if (!mounted) return;
-      setState(() => _savedPath = target.path);
-      showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
-    } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    return L10n.t('附件', 'Attachment');
   }
 
   @override
   Widget build(BuildContext context) {
-    final mediaType = widget.file['mediaType']?.toString();
-    final sizeValue = widget.file['size'];
+    final mediaType = file['mediaType']?.toString();
+    final sizeValue = file['size'];
     final size = sizeValue is num ? sizeValue.toInt() : null;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
@@ -3949,22 +3907,16 @@ class _FileResultTileState extends State<_FileResultTile> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(_label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                  if (mediaType != null || size != null || _savedPath != null)
+                  if (mediaType != null || size != null)
                     Text(
                       [
                         if (mediaType != null && mediaType.isNotEmpty) mediaType,
                         if (size != null) '${(size / 1024).ceil()} KB',
-                        if (_savedPath != null) L10n.t('已保存到应用目录（私有）', 'Saved to app storage (private)'),
                       ].join(' · '),
                       style: TextStyle(fontSize: 10, color: DshColors.ink3(context)),
                     ),
                 ],
               ),
-            ),
-            IconButton(
-              tooltip: L10n.t('下载文件', 'Download file'),
-              onPressed: _busy ? null : _download,
-              icon: _busy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download_outlined, size: 19),
             ),
           ],
         ),

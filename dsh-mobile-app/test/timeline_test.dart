@@ -78,15 +78,14 @@ void main() {
     expect(reducer.tools['c5']?.latestSeq, 9);
   });
 
-  test('tool/result 带上文件/图片元数据供下载与预览', () {
+  test('tool/result 保留图片元数据；文件元数据不再下发（issue #1 需求变更）', () {
     final reducer = TimelineReducer();
     reducer.apply(ev(1, 'tool/result', {
       'callId': 'c6',
       'text': 'ok',
-      'files': [{'path': '/tmp/report.md', 'name': 'report.md'}],
       'images': [{'attachmentId': 'att-1', 'mediaType': 'image/png'}],
     }));
-    expect(reducer.tools['c6']?.files.single['path'], '/tmp/report.md');
+    expect(reducer.tools['c6']?.files, isEmpty);
     expect(reducer.tools['c6']?.images.single['attachmentId'], 'att-1');
   });
 

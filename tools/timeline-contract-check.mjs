@@ -98,7 +98,27 @@ const directToolResult = mod.summarizeEvent({
 });
 check("直接形态工具结果保留 identity/text", directToolResult.data?.callId === "call-1" && directToolResult.data?.name === "read_file" && directToolResult.data?.text === "direct result");
 check("直接形态图片只保留 metadata", directToolResult.data?.images?.length === 1 && directToolResult.data.images[0].attachmentId === "att-1" && directToolResult.data.images[0].data === undefined);
-check("直接形态文件保留下载 metadata", directToolResult.data?.files?.length === 1 && directToolResult.data.files[0].path === "/tmp/report.md" && directToolResult.data.files[0].data === undefined);
+check("tool/result 不再下发文件元数据（issue #1 需求变更）", directToolResult.data?.files === undefined, JSON.stringify(directToolResult.data?.files));
+
+// issue #1 需求变更：产出文件（tool/result / assistant/message）停发 files；用户自己的附件保留
+const assistantWithFile = mod.summarizeEvent({
+  seq: 21,
+  type: "assistant/message",
+  data: { turn: 1, step: 1, message: { id: "a1", content: [
+    { type: "text", text: "写好了" },
+    { type: "file", path: "/tmp/out.md", name: "out.md" },
+  ] } },
+});
+check("assistant/message 不再下发文件元数据", assistantWithFile.data?.files === undefined, JSON.stringify(assistantWithFile.data?.files));
+const userWithFile = mod.summarizeEvent({
+  seq: 22,
+  type: "user/message",
+  data: { id: "u1", content: [
+    { type: "text", text: "看这个" },
+    { type: "file", path: "/tmp/a.md", name: "a.md" },
+  ] },
+});
+check("user/message 仍下发附件元数据", userWithFile.data?.files?.length === 1 && userWithFile.data.files[0].name === "a.md", JSON.stringify(userWithFile.data?.files));
 
 // 最小真实路由 harness：验证 bootstrap/history/event-detail 走同一鉴权/路由入口，
 // 同时覆盖 active session 与 session-query 的 dormant fallback。

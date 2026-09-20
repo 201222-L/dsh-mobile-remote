@@ -237,11 +237,11 @@
 
 | event.type | event.data 内容 |
 |---|---|
-| `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符）；v3.0.0 起附图 `images: [{ attachmentId, mediaType, width?, height?, name? }]`；文件块可带 `files: [{ attachmentId?, path?, name?, mediaType?, size? }]` |
-| `assistant/message` | `{ text: string, reasoningChars: number, reasoning?: string }`（`reasoning` 为思维链正文，仅当非空时下发，供移动端折叠块；≤20000 字符）；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义）；文件块可带 `files: [...]` |
+| `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符）；v3.0.0 起附图 `images: [{ attachmentId, mediaType, width?, height?, name? }]`；文件块可带 `files: [{ attachmentId?, path?, name?, mediaType?, size? }]`（**用户自己的附件，保留**；App 只显示文件名/类型/大小，不提供下载——issue #1 需求变更） |
+| `assistant/message` | `{ text: string, reasoningChars: number, reasoning?: string }`（`reasoning` 为思维链正文，仅当非空时下发，供移动端折叠块；≤20000 字符）；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义）；**文件块不再下发 `files`**（issue #1 需求变更：时间线不提供产出文件的下载入口） |
 | `assistant/chunk` / `assistant/live-chunk` | `{ text: string }` 文本/reasoning delta；工具参数 delta 的 canonical `chunk.id` 归一为摘要 `callId`（仅实时过程，历史过滤） |
 | `tool/call` | `{ turn, step, callId, name, arguments }`；长参数可通过详情端点获取 |
-| `tool/result` | `{ callId, name, isError, text, images?, files? }`；长结果可通过详情端点获取；`files` 仅携带下载所需元数据，不携带文件字节 |
+| `tool/result` | `{ callId, name, isError, text, images? }`；长结果可通过详情端点获取；**不再下发 `files`**（issue #1 需求变更：工具产出文件不上时间线；图片仍带 `images`） |
 | `turn/start` | `{ turn: number }` |
 | `turn/end` | `{ turn: number, reason: object }` |
 | 其他 | 保留 `type`、`seq` 和详情指针；调试模式展开无损数据 |
