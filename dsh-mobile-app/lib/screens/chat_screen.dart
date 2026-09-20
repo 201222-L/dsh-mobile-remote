@@ -2090,16 +2090,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: Icon(store.timelineDebug ? Icons.bug_report_outlined : Icons.timeline_outlined, size: 20),
-            tooltip: store.timelineDebug
-                ? L10n.t('切换普通模式', 'Switch to ordinary mode')
-                : L10n.t('切换调试模式', 'Switch to debug mode'),
-            onPressed: () async {
-              await store.setTimelineDebug(!store.timelineDebug);
-              if (mounted) setState(() {});
-            },
-          ),
           // v2.7：会话工具（任务 / 子代理 / 目标）
           IconButton(
             icon: const Icon(Icons.assignment_outlined, size: 20),
