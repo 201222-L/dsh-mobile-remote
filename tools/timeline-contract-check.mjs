@@ -139,7 +139,8 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     { seq: 20, type: "compaction/start", data: { compactionId: "cmp-1" } },
   ];
   const active = { id: "session-1", header: { createdAt: 1, cwd: "/tmp" }, events, snapshotEvents() { return this.events; } };
-  const sessions = new Map([[active.id, active]]);
+  const activeReadError = { id: "session-active-read-error", header: { createdAt: 1, cwd: "/tmp" }, events: [], snapshotEvents() { return this.events; } };
+  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError]]);
   const dormant = [{ seq: 8, type: "future/dormant", data: { dormant: true } }];
   const seededSurface = [{ seq: 8, type: "future/seeded-surface", data: { recovered: true } }];
   const services = {
@@ -157,7 +158,7 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       async readEvent({ sessionId, seq }) {
         if (sessionId === "session-dormant" && seq === 8) return { session: { id: "session-dormant" }, target: dormant[0], events: [dormant[0]] };
         if (sessionId === "session-wrong" && seq === 8) return { session: { id: "other-session" }, target: dormant[0], events: [dormant[0]] };
-        if (sessionId === "session-read-error") throw new Error("sensitive host path /home/mark/private/session.zstd");
+        if (sessionId === "session-read-error" || sessionId === "session-active-read-error") throw new Error("sensitive host path /home/mark/private/session.zstd");
         if (sessionId === "session-missing") throw Object.assign(new Error("missing storage path"), { code: "SESSION_QUERY_SESSION_NOT_FOUND" });
         if (sessionId === "session-corrupt") throw Object.assign(new Error("corrupt storage path /private/session.zstd"), { code: "SESSION_QUERY_CORRUPT_SESSION" });
         if (sessionId === "session-fallback-error") return null;
@@ -257,7 +258,15 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         && !JSON.stringify(readFailureDetail.json).includes("/home/mark/private"),
       JSON.stringify(readFailureDetail.json),
     );
-    const missingSessionDetail = await call("/m/api/event-detail?sessionId=session-missing&seq=8");
+    const activeReadFailureDetail = await call("/m/api/event-detail?sessionId=session-active-read-error&seq=8");
+     check(
+       "event-detail 活动会话读取异常不被快照回退伪装",
+       activeReadFailureDetail.statusCode === 500
+         && activeReadFailureDetail.json?.error === "event-read-failed"
+         && !JSON.stringify(activeReadFailureDetail.json).includes("/home/mark/private"),
+       JSON.stringify(activeReadFailureDetail.json),
+     );
+     const missingSessionDetail = await call("/m/api/event-detail?sessionId=session-missing&seq=8");
     check(
       "event-detail 仅把明确不存在映射为 session-not-found",
       missingSessionDetail.statusCode === 404 && missingSessionDetail.json?.error === "session-not-found",

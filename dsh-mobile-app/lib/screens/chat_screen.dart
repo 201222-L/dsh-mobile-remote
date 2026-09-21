@@ -122,6 +122,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // _MsgItem remains the richer Flutter rendering adapter.
   final TimelineReducer _timelineReducer = TimelineReducer();
   final Map<String, bool> _failureExpansionOverrides = {};
+  final Set<String> _failureDetailRequests = {};
   String _reasoning = '';
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
@@ -1457,7 +1458,7 @@ class _ChatScreenState extends State<ChatScreen> {
       seq: ev.seq,
       rawData: ev.detailAvailable ? d : null,
       detailAvailable: ev.detailAvailable,
-      toolError: d['isError'] == true || ev.type.contains('error'),
+      toolError: d['isError'] == true || d['error'] == true || d['status'] == 'failed',
     );
     if (history) {
       out.add(item);
@@ -2754,6 +2755,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  String _failureKey(_MsgItem item) => item.kind == _MsgKind.tool
+      ? 'tool:${item.toolCallId ?? item.seq}'
+      : 'event:${item.eventType}:${item.seq ?? item.text}';
+
+  void _autoLoadFailureDetail(_MsgItem item) {
+    final key = '${_failureKey(item)}:${item.detailSeq ?? item.seq}';
+    if (_failureDetailRequests.add(key)) _loadEventDetail(item);
+  }
+
   Future<void> _loadEventDetail(_MsgItem item) async {
     final id = _mySessionId ?? widget.store.sessionId;
     final detailSeq = item.detailSeq ?? item.seq;
@@ -2932,7 +2942,23 @@ class _ChatScreenState extends State<ChatScreen> {
               expandedOverride: widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
               onOverride: (v) => setState(() => widget.store.setReasoningOverride(_mySessionId ?? '', rk, v)),
             ),
-            // 需求变更（issue #1）：assistant 产出文件不再展示（时间线不提供该下载入口）。
+            if (item.detailDegraded)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 4),
+                 child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
+               ),
+             if (item.detailErrorCode != null)
+               Padding(
+                 padding: const EdgeInsets.only(left: 4, bottom: 4),
+                 child: Row(
+                   mainAxisSize: MainAxisSize.min,
+                   children: [
+                     Text(_detailErrorLabel(item.detailErrorCode!), style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
+                     TextButton(onPressed: _api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null, child: Text(L10n.t('重试', 'Retry'))),
+                   ],
+                 ),
+               ),
+             // 需求变更（issue #1）：assistant 产出文件不再展示（时间线不提供该下载入口）。
             // 详情入口（issue #1 需求变更）：普通模式只在**确有正文增量**时出现
              // （服务端 detail.textChars 大于当前可见正文长度）；调试模式提供原始事件入口。
              // 两者都不再默认出现“看着像能加载更多、实际只会多出一份思维链”的按钮。
@@ -2977,6 +3003,7 @@ class _ChatScreenState extends State<ChatScreen> {
             key: ValueKey<String>('tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}'),
              expandedOverride: _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'],
              onExpandedOverride: (value) => setState(() => _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'] = value),
+             onAutoLoadDetail: () => _autoLoadFailureDetail(item),
             item: item,
             debug: widget.store.timelineDebug,
             sessionId: _mySessionId ?? '',
@@ -2994,6 +3021,9 @@ class _ChatScreenState extends State<ChatScreen> {
           padding: const EdgeInsets.only(bottom: 10),
           child: _TimelineEventCard(
             key: ValueKey<String>('event:${item.eventType}:${item.seq ?? item.text}'),
+             expandedOverride: _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'],
+             onExpandedOverride: (value) => setState(() => _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'] = value),
+             onAutoLoadDetail: () => _autoLoadFailureDetail(item),
             item: item,
             debug: widget.store.timelineDebug,
             onLoadDetail: _api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
@@ -3341,7 +3371,8 @@ class _ToolActivityCard extends StatefulWidget {
   final bool? expandedOverride;
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
-  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail});
+  final VoidCallback? onAutoLoadDetail;
+  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail, this.onAutoLoadDetail});
 
   @override
   State<_ToolActivityCard> createState() => _ToolActivityCardState();
@@ -3356,9 +3387,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool get _defaultExpanded => widget.debug && _failed;
 
   void _requestDetailIfNeeded() {
-    if (expanded && !requested && widget.item.detailSeq != null && widget.onLoadDetail != null && !widget.item.detailLoading) {
+    if (expanded && !requested && widget.item.detailSeq != null && widget.onAutoLoadDetail != null && !widget.item.detailLoading) {
       requested = true;
-      widget.onLoadDetail!();
+      widget.onAutoLoadDetail!();
     }
   }
 
@@ -3543,8 +3574,11 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
 class _TimelineEventCard extends StatefulWidget {
   final _MsgItem item;
   final bool debug;
+  final bool? expandedOverride;
+  final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
-  const _TimelineEventCard({super.key, required this.item, required this.debug, this.onLoadDetail});
+  final VoidCallback? onAutoLoadDetail;
+  const _TimelineEventCard({super.key, required this.item, required this.debug, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail, this.onAutoLoadDetail});
 
   @override
   State<_TimelineEventCard> createState() => _TimelineEventCardState();
@@ -3560,11 +3594,12 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
   @override
   void initState() {
     super.initState();
-    expanded = _defaultExpanded;
+    expanded = widget.expandedOverride ?? _defaultExpanded;
+    userOverride = widget.expandedOverride != null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && expanded && !requested && widget.onLoadDetail != null) {
+      if (mounted && expanded && !requested && widget.onAutoLoadDetail != null) {
         requested = true;
-        widget.onLoadDetail!();
+        widget.onAutoLoadDetail!();
       }
     });
   }
@@ -3572,12 +3607,24 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
   @override
   void didUpdateWidget(covariant _TimelineEventCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final override = widget.expandedOverride;
+    userOverride = override != null;
     if (!userOverride && (oldWidget.debug != widget.debug || widget.item.toolError)) expanded = _defaultExpanded;
-    if (oldWidget.item.seq != widget.item.seq || oldWidget.debug != widget.debug) requested = false;
+    if (override != null && override != expanded) expanded = override;
+    if (oldWidget.item.seq != widget.item.seq || oldWidget.debug != widget.debug) {
+      requested = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && expanded && widget.onAutoLoadDetail != null && !widget.item.detailLoading) {
+          requested = true;
+          widget.onAutoLoadDetail!();
+        }
+      });
+    }
   }
 
   void _toggle(bool value) {
     userOverride = true;
+    widget.onExpandedOverride?.call(value);
     setState(() => expanded = value);
     if (value && !requested && widget.onLoadDetail != null) {
       requested = true;

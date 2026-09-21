@@ -198,7 +198,7 @@
 | 预期 | 保留旧摘要与聊天；详情显示“不可用”，不伪造数据 |
 | 变体 B | 手机离线后展开详情 |
 | 预期 | 已缓存摘要保留；详情显示不可用并可在恢复连接后重试 |
-| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，57/57）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
+| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，58/58）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
 
 ### F-25 普通/调试模式与富内容
 
