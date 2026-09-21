@@ -169,6 +169,20 @@ class AppNotification {
 }
 
 // 消息流事件（服务端摘要格式）
+/// 历史页结果：事件列表 + 服务端降级读取标记（v3.1.5，休眠会话 current-surface）。
+/// `degraded=true` 表示时间线只含可恢复的表面、更早 log-only 历史不可用。
+class HistoryPage {
+  const HistoryPage({
+    required this.events,
+    required this.degraded,
+    this.historyMode,
+  });
+
+  final List<ChatEvent> events;
+  final bool degraded;
+  final String? historyMode;
+}
+
 class ChatEvent {
   final int? seq;
   final String type;
