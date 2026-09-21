@@ -100,7 +100,8 @@ class ChatScreen extends StatefulWidget {
   final AppStore store;
   final String? initialSend; // 首页直达发送
   final VoidCallback onTitleChanged;
-  const ChatScreen({super.key, required this.store, this.initialSend, required this.onTitleChanged});
+  final Api? apiClient;
+  const ChatScreen({super.key, required this.store, this.initialSend, required this.onTitleChanged, this.apiClient});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -120,6 +121,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // Shared pure projection owns seq de-duplication/call correlation for both live and history paths;
   // _MsgItem remains the richer Flutter rendering adapter.
   final TimelineReducer _timelineReducer = TimelineReducer();
+  final Map<String, bool> _failureExpansionOverrides = {};
   String _reasoning = '';
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
@@ -134,6 +136,7 @@ class _ChatScreenState extends State<ChatScreen> {
   int _loadGeneration = 0; // 丢弃跨越 reset/会话切换的旧 history 响应
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
+  Api get _api => widget.apiClient ?? api;
   String get _pageAgentStatus => widget.store.agentStatusForSession(_mySessionId);
   // v2.7.2：排队消息停靠区（对齐 PC 端 Queue Dock）——可见、自解释，无需操作手册
   List<Map<String, dynamic>> _queue = [];
@@ -347,7 +350,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = ++_loadGeneration;
     AppLog.instance.log(reset ? 'Chat: 重同步会话（按新表面重载）$id' : 'Chat: 打开会话 $id');
     try {
-      final events = await api.history(id, limit: _liveMax);
+      final events = await _api.history(id, limit: _liveMax);
       AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       setState(() {
@@ -471,7 +474,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
     try {
-      final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
+      final events = await _api.history(id, before: _earliestSeq, limit: _histPageSize);
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         _noMoreHistory = true;
@@ -515,7 +518,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 查看更早 before=$_earliestSeq');
     try {
-      final events = await api.history(id, before: _earliestSeq, limit: _histPageSize);
+      final events = await _api.history(id, before: _earliestSeq, limit: _histPageSize);
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         showToast(context, L10n.t('没有更早的消息了', 'No earlier messages'));
@@ -546,7 +549,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更早 before=$_histOldestSeq');
     try {
-      final events = await api.history(id, before: _histOldestSeq, limit: _histPageSize);
+      final events = await _api.history(id, before: _histOldestSeq, limit: _histPageSize);
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         setState(() => _histHasOlder = false);
@@ -575,7 +578,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更新 after=$_histNewestSeq');
     try {
-      final events = await api.history(id, after: _histNewestSeq, limit: _histPageSize);
+      final events = await _api.history(id, after: _histNewestSeq, limit: _histPageSize);
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       if (events.isEmpty) {
         setState(() => _histHasNewer = false);
@@ -737,7 +740,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final version = _usageVersion;
     final generation = _loadGeneration;
     try {
-      final u = await api.usage(id);
+      final u = await _api.usage(id);
       if (mounted && request == _usageRequest && version == _usageVersion && generation == _loadGeneration && id == _mySessionId) {
         setState(() {
           _usage = u;
@@ -962,7 +965,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final version = _todoProjectionVersion;
     final generation = _loadGeneration;
     try {
-      final list = await api.todos(id);
+      final list = await _api.todos(id);
       if (!mounted || request != _todoRefreshRequest || version != _todoProjectionVersion || generation != _loadGeneration || id != _mySessionId || list == null) return;
       setState(() => _todos = list);
     } catch (e) {
@@ -983,7 +986,7 @@ class _ChatScreenState extends State<ChatScreen> {
       var truncated = false;
       while (pageNo < _catchupMaxPages) {
         pageNo++;
-        final page = await api.historyPage(id, after: cursor, limit: 100);
+        final page = await _api.historyPage(id, after: cursor, limit: 100);
         if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
         final fresh = <ChatEvent>[];
         for (final ev in page.events) {
@@ -1027,7 +1030,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null) return;
     final seq = ++_queueRefreshSeq;
     try {
-      final q = await api.queue(id);
+      final q = await _api.queue(id);
       if (!mounted || seq != _queueRefreshSeq) return;
       // v3.0.0：统一经 store 镜像——帧为权威源（认领/删除即时反映且不落后）；
       // 无帧可依时（SSE 断线等）REST 结果兜底生效，任务栏即时收敛
@@ -1080,7 +1083,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null) return;
     _queueBusy = true;
     try {
-      await api.updateQueueMessage(id, itemId, {
+      await _api.updateQueueMessage(id, itemId, {
         'kind': 'edit',
         'content': [
           {'type': 'text', 'text': text}
@@ -1121,10 +1124,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ok != true || !mounted) return;
     _queueBusy = true;
     try {
-      await api.updateQueueMessage(id, itemId, {'kind': 'remove'});
+      await _api.updateQueueMessage(id, itemId, {'kind': 'remove'});
       // v2.7.2 review：内核 remove 不校验结果——若消息已被 agent 认领（正在执行），
       // 仍返回 accepted:true 但实际没删掉。删除后立即复查队列，还在则明确提示。
-      final q = await api.queue(id);
+      final q = await _api.queue(id);
       if (mounted && q.any((r) => r['id'] == itemId)) {
         showToast(context, L10n.t('该消息已被 agent 开始处理，未能删除', 'The agent already picked it up — could not remove'));
       }
@@ -1152,7 +1155,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null) return;
     _queueBusy = true;
     try {
-      await api.updateQueueMessage(id, itemId, {'kind': 'steer'});
+      await _api.updateQueueMessage(id, itemId, {'kind': 'steer'});
       _refreshQueue();
     } catch (e) {
       if (mounted) {
@@ -1620,7 +1623,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<Map<String, dynamic>?> _resolveUnknownSend(String sessionId, String requestId) async {
     for (var i = 0; i < 4; i++) {
       try {
-        final receipt = await api.sendReceipt(sessionId, requestId, timeout: const Duration(seconds: 3));
+        final receipt = await _api.sendReceipt(sessionId, requestId, timeout: const Duration(seconds: 3));
         final status = receipt['status'] as String?;
         if (status == 'done' || status == 'error') return receipt;
         // in-progress：稍后再查
@@ -1673,7 +1676,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
-      final (mid, note) = await api.send(id, text, mode: mode, requestId: requestId);
+      final (mid, note) = await _api.send(id, text, mode: mode, requestId: requestId);
       _pendingRequestId = null;
       _pendingSignature = null;
       AppLog.instance.log('Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}');
@@ -1841,7 +1844,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       requestId = _pendingRequestId!;
       AppLog.instance.log('Chat: 发送(图) → $id : ${images.length} 张, 共 $total 字节${mode == 'steer' ? '（插队）' : ''}');
-      final (accepted, note) = await api.sendImages(id, text, images, mode: mode, requestId: requestId);
+      final (accepted, note) = await _api.sendImages(id, text, images, mode: mode, requestId: requestId);
       _pendingRequestId = null;
       _pendingSignature = null;
       if (!mounted) return;
@@ -1953,7 +1956,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null || _sending) return;
     AppLog.instance.log('Chat: 请求停止会话 $id');
     try {
-      await api.stopSession(id);
+      await _api.stopSession(id);
       if (mounted) {
         showToast(context, L10n.t('已请求停止，agent 当前轮次结束后停下', 'Stop requested — the agent will halt after its current turn'));
       }
@@ -1970,7 +1973,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
     try {
-      await api.jobKill(sid, jobId);
+      await _api.jobKill(sid, jobId);
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
@@ -2008,7 +2011,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // toggle：再点当前已选的评级 → 取消反馈
         final target = item.rating == action ? 'none' : action;
         try {
-          await api.putFeedback(id, mid, target);
+          await _api.putFeedback(id, mid, target);
           if (!mounted) return;
           // 服务端确认后更新本地状态（驱动操作栏图标高亮/熄灭）。
           // 按 messageId 匹配而非对象引用——SSE 回显合并/重建会产生新对象，引用查找会漏；
@@ -2045,7 +2048,7 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         try {
-          final childId = await api.forkSession(id, atSeq: seq);
+          final childId = await _api.forkSession(id, atSeq: seq);
           if (!mounted) return;
           showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
           final prevId = _mySessionId;
@@ -2448,7 +2451,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) showToast(context, L10n.t('读取文件失败', 'Failed to read the file'));
         return;
       }
-      final r = await api.uploadFile(sid, name, bytes);
+      final r = await _api.uploadFile(sid, name, bytes);
       if (mounted) {
         showToast(context,
             '${L10n.t('已上传到电脑工作目录：', 'Uploaded to PC workspace: ')}${r['path'] ?? name}');
@@ -2464,7 +2467,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final path = await showFilePicker(context);
     if (path == null || path.isEmpty || !mounted) return;
     try {
-      final bytes = await api.downloadFile(path);
+      final bytes = await _api.downloadFile(path);
       final name = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ?? 'file';
       final saved = await _filesChannel
           .invokeMethod<String>('saveToDownloads', {'name': name, 'bytes': bytes});
@@ -2573,7 +2576,7 @@ class _ChatScreenState extends State<ChatScreen> {
     List<Map<String, dynamic>> cmds;
     var unavailable = false;
     try {
-      (cmds, unavailable) = await api.commands(id);
+      (cmds, unavailable) = await _api.commands(id);
     } catch (e) {
       if (!mounted) return;
       showToast(context, '${L10n.t('命令列表加载失败：', 'Failed to load commands: ')}$e');
@@ -2754,16 +2757,17 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _loadEventDetail(_MsgItem item) async {
     final id = _mySessionId ?? widget.store.sessionId;
     final detailSeq = item.detailSeq ?? item.seq;
-    if (id == null || detailSeq == null || item.detailLoading || !api.timelineCapabilities.detail) return;
+    if (id == null || detailSeq == null || item.detailLoading || !_api.timelineCapabilities.detail) return;
     final generation = _loadGeneration;
     final loading = item.kind == _MsgKind.tool
-        ? item.copyTool(detailLoading: true)
+        ? item.copyTool(detailLoading: true, clearDetailError: true)
         : item.kind == _MsgKind.assistant
-            ? item.copyAssistant(detailLoading: true)
-            : item.copyEvent(detailLoading: true);
+            ? item.copyAssistant(detailLoading: true, clearDetailError: true)
+            : item.copyEvent(detailLoading: true, clearDetailError: true);
     if (mounted) setState(() => _replaceTimelineItem(item, loading));
     try {
-      final full = await api.eventDetail(id, detailSeq);
+      final detail = await _api.eventDetail(id, detailSeq);
+      final full = detail.event;
       final data = full['data'] is Map ? Map<String, dynamic>.from(full['data'] as Map) : <String, dynamic>{};
       String textOf(Object? value) {
         if (value is String) return value;
@@ -2797,6 +2801,9 @@ class _ChatScreenState extends State<ChatScreen> {
           files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
           detailAvailable: true,
           detailLoading: false,
+          detailDegraded: detail.degraded,
+          detailMode: detail.detailMode,
+          clearDetailError: true,
         )));
       } else if (current.kind == _MsgKind.assistant) {
         // 正文口径（issue #1 需求变更）：只认服务端给出的规范化 text（与摘要同一
@@ -2810,20 +2817,30 @@ class _ChatScreenState extends State<ChatScreen> {
           files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
           detailAvailable: true,
           detailLoading: false,
+          detailDegraded: detail.degraded,
+          detailMode: detail.detailMode,
+          clearDetailError: true,
           detailTextChars: fullText.isNotEmpty ? fullText.length : current.detailTextChars,
         )));
       } else {
-        setState(() => _replaceTimelineItem(item, current.copyEvent(rawData: full, detailLoading: false)));
+        setState(() => _replaceTimelineItem(item, current.copyEvent(
+          rawData: full,
+          detailLoading: false,
+          detailDegraded: detail.degraded,
+          detailMode: detail.detailMode,
+          clearDetailError: true,
+        )));
       }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       final current = _currentTimelineItem(item);
       if (current == null || ((current.kind == _MsgKind.tool || current.kind == _MsgKind.assistant) && current.detailSeq != detailSeq)) return;
+      final code = e is ApiException ? (e.code ?? 'event-detail-unavailable') : 'event-detail-unavailable';
       final fallback = current.kind == _MsgKind.tool
-          ? current.copyTool(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false)
+          ? current.copyTool(detailErrorCode: code, detailLoading: false)
           : current.kind == _MsgKind.assistant
-              ? current.copyAssistant(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false)
-              : current.copyEvent(rawData: {'unavailable': true, 'error': e.toString()}, detailLoading: false);
+              ? current.copyAssistant(detailErrorCode: code, detailLoading: false)
+              : current.copyEvent(detailErrorCode: code, detailLoading: false);
       setState(() => _replaceTimelineItem(item, fallback));
     }
   }
@@ -2927,7 +2944,7 @@ class _ChatScreenState extends State<ChatScreen> {
                    children: [
   if (item.detailLoading) const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
                      TextButton(
-                       onPressed: api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null,
+                       onPressed: _api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null,
                        child: Text(
                          widget.store.timelineDebug
                              ? (item.rawData == null ? L10n.t('查看原始事件', 'View raw event') : L10n.t('重新加载原始事件', 'Reload raw event'))
@@ -2958,10 +2975,12 @@ class _ChatScreenState extends State<ChatScreen> {
           padding: const EdgeInsets.only(bottom: 10),
           child: _ToolActivityCard(
             key: ValueKey<String>('tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}'),
+             expandedOverride: _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'],
+             onExpandedOverride: (value) => setState(() => _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'] = value),
             item: item,
             debug: widget.store.timelineDebug,
             sessionId: _mySessionId ?? '',
-            onLoadDetail: api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+            onLoadDetail: _api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
           ),
         );
       case _MsgKind.event:
@@ -2977,7 +2996,7 @@ class _ChatScreenState extends State<ChatScreen> {
             key: ValueKey<String>('event:${item.eventType}:${item.seq ?? item.text}'),
             item: item,
             debug: widget.store.timelineDebug,
-            onLoadDetail: api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+            onLoadDetail: _api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
           ),
         );
       case _MsgKind.divider:
@@ -3025,6 +3044,9 @@ class _MsgItem {
   final Map<String, dynamic>? rawData;
   final String? eventType;
   final bool detailLoading;
+  final bool detailDegraded;
+  final String? detailMode;
+  final String? detailErrorCode;
   /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
   final int? detailTextChars;
   _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.files = const [], this.sourceKind, this.detailTextChars})
@@ -3043,8 +3065,11 @@ class _MsgItem {
         detailAvailable = false,
         rawData = null,
         eventType = null,
-        detailLoading = false;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false, this.detailTextChars})
+        detailLoading = false,
+        detailDegraded = false,
+        detailMode = null,
+        detailErrorCode = null;
+  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false, this.detailDegraded = false, this.detailMode, this.detailErrorCode, this.detailTextChars})
       : kind = _MsgKind.assistant,
         latestSeq = seq,
         detailSeq = seq,
@@ -3077,7 +3102,10 @@ class _MsgItem {
         detailAvailable = false,
         rawData = null,
         eventType = null,
-        detailLoading = false;
+        detailLoading = false,
+        detailDegraded = false,
+        detailMode = null,
+        detailErrorCode = null;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -3093,6 +3121,9 @@ class _MsgItem {
     this.detailAvailable = false,
     this.rawData,
     this.detailLoading = false,
+    this.detailDegraded = false,
+    this.detailMode,
+    this.detailErrorCode,
     this.detailTextChars,
   })  : kind = _MsgKind.tool,
         text = toolResult.isNotEmpty ? toolResult : toolArguments,
@@ -3112,6 +3143,9 @@ class _MsgItem {
     this.rawData,
     this.detailAvailable = false,
     this.detailLoading = false,
+    this.detailDegraded = false,
+    this.detailMode,
+    this.detailErrorCode,
     this.toolError = false,
     this.detailTextChars,
   })  : kind = _MsgKind.event,
@@ -3153,6 +3187,10 @@ class _MsgItem {
     int? detailSeq,
     Map<String, dynamic>? rawData,
     bool? detailLoading,
+    bool? detailDegraded,
+    String? detailMode,
+    String? detailErrorCode,
+    bool clearDetailError = false,
   }) => _MsgItem.tool(
         toolCallId: toolCallId,
         toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
@@ -3168,10 +3206,13 @@ class _MsgItem {
         detailAvailable: detailAvailable ?? this.detailAvailable,
         rawData: rawData ?? this.rawData,
         detailLoading: detailLoading ?? this.detailLoading,
+        detailDegraded: detailDegraded ?? this.detailDegraded,
+        detailMode: detailMode ?? this.detailMode,
+        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
         detailTextChars: detailTextChars,
       );
 
-  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading, int? detailTextChars}) => _MsgItem.assistant(
+  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading, bool? detailDegraded, String? detailMode, String? detailErrorCode, bool clearDetailError = false, int? detailTextChars}) => _MsgItem.assistant(
         text ?? this.text,
         usage: usage,
         seq: seq,
@@ -3183,10 +3224,13 @@ class _MsgItem {
         detailAvailable: detailAvailable ?? this.detailAvailable,
         rawData: rawData ?? this.rawData,
         detailLoading: detailLoading ?? this.detailLoading,
+        detailDegraded: detailDegraded ?? this.detailDegraded,
+        detailMode: detailMode ?? this.detailMode,
+        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
         detailTextChars: detailTextChars ?? this.detailTextChars,
       );
 
-  _MsgItem copyEvent({Map<String, dynamic>? rawData, bool? detailLoading}) => _MsgItem.event(
+  _MsgItem copyEvent({Map<String, dynamic>? rawData, bool? detailLoading, bool? detailDegraded, String? detailMode, String? detailErrorCode, bool clearDetailError = false}) => _MsgItem.event(
         eventType: eventType ?? 'unknown',
         text: text,
         seq: seq,
@@ -3195,6 +3239,9 @@ class _MsgItem {
         rawData: rawData ?? this.rawData,
         detailAvailable: detailAvailable,
         detailLoading: detailLoading ?? this.detailLoading,
+        detailDegraded: detailDegraded ?? this.detailDegraded,
+        detailMode: detailMode ?? this.detailMode,
+        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
         toolError: toolError,
         detailTextChars: detailTextChars,
       );
@@ -3276,12 +3323,25 @@ class _InjectedBubble extends StatelessWidget {
   }
 }
 
+String _detailErrorLabel(String code) {
+  switch (code) {
+    case 'session-not-found': return L10n.t('会话不存在', 'Session not found');
+    case 'event-not-found': return L10n.t('事件不存在', 'Event not found');
+    case 'session-corrupt': return L10n.t('会话数据损坏', 'Session data is corrupt');
+    case 'event-detail-too-large': return L10n.t('事件详情过大', 'Event details are too large');
+    case 'event-read-failed': return L10n.t('事件详情读取失败', 'Could not read event details');
+    default: return L10n.t('详情暂时不可用', 'Details are temporarily unavailable');
+  }
+}
+
 class _ToolActivityCard extends StatefulWidget {
   final _MsgItem item;
   final bool debug;
   final String sessionId;
+  final bool? expandedOverride;
+  final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
-  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.onLoadDetail});
+  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail});
 
   @override
   State<_ToolActivityCard> createState() => _ToolActivityCardState();
@@ -3290,31 +3350,46 @@ class _ToolActivityCard extends StatefulWidget {
 class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool expanded = false;
   bool requested = false;
+  bool userOverride = false;
+
+  bool get _failed => widget.item.toolError || widget.item.toolStatus == 'failed';
+  bool get _defaultExpanded => widget.debug && _failed;
+
+  void _requestDetailIfNeeded() {
+    if (expanded && !requested && widget.item.detailSeq != null && widget.onLoadDetail != null && !widget.item.detailLoading) {
+      requested = true;
+      widget.onLoadDetail!();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    expanded = widget.item.toolError || widget.item.toolStatus == 'failed';
+    expanded = widget.expandedOverride ?? _defaultExpanded;
+    userOverride = widget.expandedOverride != null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _requestDetailIfNeeded();
+    });
   }
 
   @override
   void didUpdateWidget(covariant _ToolActivityCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.item.toolError || widget.item.toolStatus == 'failed') expanded = true;
-    if (oldWidget.item.toolCallId != widget.item.toolCallId || oldWidget.item.detailSeq != widget.item.detailSeq) {
+    final override = widget.expandedOverride;
+    userOverride = override != null;
+    if (!userOverride && (_failed || oldWidget.debug != widget.debug)) expanded = _defaultExpanded;
+    if (override != null && override != expanded) expanded = override;
+    if (oldWidget.item.toolCallId != widget.item.toolCallId || oldWidget.item.detailSeq != widget.item.detailSeq || oldWidget.debug != widget.debug) {
       requested = false;
-      if (expanded && widget.item.detailSeq != null && widget.onLoadDetail != null && !widget.item.detailLoading) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !requested) {
-            requested = true;
-            widget.onLoadDetail!();
-          }
-        });
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _requestDetailIfNeeded();
+      });
     }
   }
 
   void _setExpanded(bool value) {
+    userOverride = true;
+    widget.onExpandedOverride?.call(value);
     setState(() => expanded = value);
     if (value && !requested && widget.onLoadDetail != null) {
       requested = true;
@@ -3437,12 +3512,22 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                     padding: EdgeInsets.only(top: 8),
                     child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
                   ),
-                  if (!item.detailAvailable && item.rawData == null)
+                  if (item.detailDegraded)
+                     Padding(
+                       padding: const EdgeInsets.only(top: 8),
+                       child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
+                     ),
+                   if (item.detailErrorCode != null)
+                     Padding(
+                       padding: const EdgeInsets.only(top: 8),
+                       child: Text(_detailErrorLabel(item.detailErrorCode!), style: TextStyle(fontSize: 11, color: Colors.redAccent)),
+                     ),
+                   if (!item.detailAvailable && item.rawData == null)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(L10n.t('详情不可用（旧服务端未保存）', 'Details unavailable (not retained by the server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
                     ),
-                  if (item.rawData?['unavailable'] == true && widget.onLoadDetail != null)
+                  if (item.detailErrorCode != null && widget.onLoadDetail != null)
                     TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
                   if (widget.debug && schema != null) _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
                    if (widget.debug && item.rawData != null) _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
@@ -3468,21 +3553,31 @@ class _TimelineEventCard extends StatefulWidget {
 class _TimelineEventCardState extends State<_TimelineEventCard> {
   bool expanded = false;
   bool requested = false;
+  bool userOverride = false;
+
+  bool get _defaultExpanded => widget.debug && widget.item.toolError;
 
   @override
   void initState() {
     super.initState();
-    expanded = widget.item.toolError;
+    expanded = _defaultExpanded;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && expanded && !requested && widget.onLoadDetail != null) {
+        requested = true;
+        widget.onLoadDetail!();
+      }
+    });
   }
 
   @override
   void didUpdateWidget(covariant _TimelineEventCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.item.toolError) expanded = true;
-    if (oldWidget.item.seq != widget.item.seq) requested = false;
+    if (!userOverride && (oldWidget.debug != widget.debug || widget.item.toolError)) expanded = _defaultExpanded;
+    if (oldWidget.item.seq != widget.item.seq || oldWidget.debug != widget.debug) requested = false;
   }
 
   void _toggle(bool value) {
+    userOverride = true;
     setState(() => expanded = value);
     if (value && !requested && widget.onLoadDetail != null) {
       requested = true;
@@ -3536,8 +3631,18 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
                 children: [
                   if (item.text.contains('\n')) Padding(padding: const EdgeInsets.only(top: 6), child: Text(item.text.substring(item.text.indexOf('\n') + 1), style: const TextStyle(fontSize: 12, height: 1.4))),
                   if (item.detailLoading) const Padding(padding: EdgeInsets.only(top: 8), child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))),
-                  if (!item.detailAvailable && item.rawData == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(L10n.t('详情不可用', 'Details unavailable'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context)))),
-                  if (item.rawData?['unavailable'] == true && widget.onLoadDetail != null)
+                  if (item.detailDegraded)
+                     Padding(
+                       padding: const EdgeInsets.only(top: 8),
+                       child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
+                     ),
+                   if (item.detailErrorCode != null)
+                     Padding(
+                       padding: const EdgeInsets.only(top: 8),
+                       child: Text(_detailErrorLabel(item.detailErrorCode!), style: TextStyle(fontSize: 11, color: Colors.redAccent)),
+                     ),
+                   if (!item.detailAvailable && item.rawData == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(L10n.t('详情不可用', 'Details unavailable'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context)))),
+                  if (item.detailErrorCode != null && widget.onLoadDetail != null)
                     TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
                   if (widget.debug && item.rawData != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(raw(), style: const TextStyle(fontSize: 11, fontFamily: 'monospace'))),
                 ],

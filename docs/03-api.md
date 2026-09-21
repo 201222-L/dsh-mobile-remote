@@ -220,7 +220,9 @@
 }
 ```
 
-详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。旧服务端未保存详情时客户端显示“详情不可用”，不猜测重建。
+当服务端只能从 seeded session 的当前 surface 读取时，成功响应额外包含 `"degraded": true, "detailMode": "current-surface"`；客户端必须保留该元数据并提示详情可能不完整。详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。
+
+稳定错误矩阵：`session-not-found`（会话不存在）、`event-not-found`（seq 不存在/不可见）、`session-corrupt`（会话数据损坏）、`event-read-failed`（读取失败）和 `event-detail-too-large`（超过 8 MiB）。错误响应不得泄露主机路径或原始异常；旧服务端未保存详情时客户端显示安全错误并提供重试，不猜测重建。
 
 **规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。`tool/result` 等其它类型的详情仍以原始事件载荷为准；原始 `message` 块原样保留。
 

@@ -198,7 +198,7 @@
 | 预期 | 保留旧摘要与聊天；详情显示“不可用”，不伪造数据 |
 | 变体 B | 手机离线后展开详情 |
 | 预期 | 已缓存摘要保留；详情显示不可用并可在恢复连接后重试 |
-| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，40/40）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
+| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，57/57）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
 
 ### F-25 普通/调试模式与富内容
 
@@ -207,7 +207,7 @@
 | 步骤 | 普通模式查看工具、注入事件、图片/Markdown/附件；切换调试模式逐条展开 |
 | 预期 | 普通模式摘要且隐藏选定 runtime 注入与协议元数据（`session/title`、`model/selection`、`feedback/*` 等）；调试模式显示协议元数据、未知事件、原始工具 IO；图片/Markdown 可预览；**工具与 assistant 产出的文件不展示**（issue #1 需求变更，普通与调试模式都不出现；要看原始载荷走「查看原始事件」）；用户自己的附件只显示文件名/类型/大小、**不提供下载**；系统提示词、请求快照与压缩摘要永不显示 |
 | 变体 | 并行同名工具、失败工具、已解决的审批、todo/Job 状态、压缩前事件、流式工具参数（delta → tool/call）|
-| 预期 | 各自按 callId/事件 seq 保持独立；工具参数以 `tool/call` 的完整实参为准（不得出现 delta 与整串拼接）；审批走 durable `approval/asked`/`approval/decided` 可历史回放，问询只有瞬态帧（重进会话不保证回放）；失败默认展开 |
+| 预期 | 各自按 callId/事件 seq 保持独立；工具参数以 `tool/call` 的完整实参为准（不得出现 delta 与整串拼接）；审批走 durable `approval/asked`/`approval/decided` 可历史回放，问询只有瞬态帧（重进会话不保证回放）；明确失败卡片普通模式默认收起，调试模式默认展开并自动加载详情；用户手动展开/收起优先于自动规则，覆盖仅在当前会话页面有效 |
 | 变体 | 带思维链的 assistant 消息；详情无正文增量 |
 | 预期 | 正文提取口径与服务端摘要同源（`blocksToText`）：原始事件/详情正文**不得包含 `reasoning` 块文本**（思维链只在折叠块出现一次，不因加载详情而重复）；普通模式仅当 `detail.textChars` 大于当前可见正文长度（确有增量）时才显示加载入口，相等时不显示；调试模式入口文案为「查看原始事件」（不再叫「加载完整正文」）；单测 `flutter test test/timeline_test.dart` 覆盖 `timelineDetailText`（不从 `content` 拼接 reasoning）与 `timelineHasTextIncrement`；契约 `tools/timeline-contract-check.mjs` 覆盖摘要/详情的正文口径与 `textChars` 一致性 |
 

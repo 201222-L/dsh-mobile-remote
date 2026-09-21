@@ -141,6 +141,7 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
   const active = { id: "session-1", header: { createdAt: 1, cwd: "/tmp" }, events, snapshotEvents() { return this.events; } };
   const sessions = new Map([[active.id, active]]);
   const dormant = [{ seq: 8, type: "future/dormant", data: { dormant: true } }];
+  const seededSurface = [{ seq: 8, type: "future/seeded-surface", data: { recovered: true } }];
   const services = {
     sessions: { get: (id) => sessions.get(id), list: () => [...sessions.values()] },
     agents: {
@@ -149,13 +150,26 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     },
     sessionQuery: {
       async readSession(id) {
+        if (id === "session-read-error" || id === "session-fallback-error") throw new Error("sensitive host path /home/mark/private/session.zstd");
         if (id !== "session-dormant") throw new Error("not dormant");
         return { events: dormant };
       },
       async readEvent({ sessionId, seq }) {
         if (sessionId === "session-dormant" && seq === 8) return { session: { id: "session-dormant" }, target: dormant[0], events: [dormant[0]] };
         if (sessionId === "session-wrong" && seq === 8) return { session: { id: "other-session" }, target: dormant[0], events: [dormant[0]] };
+        if (sessionId === "session-read-error") throw new Error("sensitive host path /home/mark/private/session.zstd");
+        if (sessionId === "session-missing") throw Object.assign(new Error("missing storage path"), { code: "SESSION_QUERY_SESSION_NOT_FOUND" });
+        if (sessionId === "session-corrupt") throw Object.assign(new Error("corrupt storage path /private/session.zstd"), { code: "SESSION_QUERY_CORRUPT_SESSION" });
+        if (sessionId === "session-fallback-error") return null;
+        if (sessionId === "session-seeded" || sessionId === "session-seeded-missing") {
+          throw new Error("seeded session constructor seed must equal its inherited prefix");
+        }
         throw new Error("not indexed");
+      },
+      async readSurface(id) {
+        if (id === "session-seeded") return { events: seededSurface };
+        if (id === "session-seeded-missing") return { events: [{ seq: 9, type: "future/other", data: {} }] };
+        throw new Error("surface unavailable");
       },
     },
   };
@@ -235,6 +249,51 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     check("event-detail 不泄露 request/header", hiddenDetail.statusCode === 404 && hiddenDetail.json?.error === "event-not-found", JSON.stringify(hiddenDetail.json));
     const dormantDetail = await call("/m/api/event-detail?sessionId=session-dormant&seq=8");
     check("dormant event-detail 使用 sessionQuery", dormantDetail.json?.event?.data?.dormant === true, `${dormantDetail.json?.error ?? ''} ${wireWarnings.at(-1) ?? ''}`);
+    const readFailureDetail = await call("/m/api/event-detail?sessionId=session-read-error&seq=8");
+    check(
+      "event-detail 读取异常返回稳定 500 且不泄露原始错误",
+      readFailureDetail.statusCode === 500
+        && readFailureDetail.json?.error === "event-read-failed"
+        && !JSON.stringify(readFailureDetail.json).includes("/home/mark/private"),
+      JSON.stringify(readFailureDetail.json),
+    );
+    const missingSessionDetail = await call("/m/api/event-detail?sessionId=session-missing&seq=8");
+    check(
+      "event-detail 仅把明确不存在映射为 session-not-found",
+      missingSessionDetail.statusCode === 404 && missingSessionDetail.json?.error === "session-not-found",
+      JSON.stringify(missingSessionDetail.json),
+    );
+    const corruptSessionDetail = await call("/m/api/event-detail?sessionId=session-corrupt&seq=8");
+    check(
+      "event-detail 区分会话损坏且不泄露原始错误",
+      corruptSessionDetail.statusCode === 500
+        && corruptSessionDetail.json?.error === "session-corrupt"
+        && !JSON.stringify(corruptSessionDetail.json).includes("/private/session.zstd"),
+      JSON.stringify(corruptSessionDetail.json),
+    );
+    const seededDetail = await call("/m/api/event-detail?sessionId=session-seeded&seq=8");
+    check(
+      "event-detail seeded 缺陷降级读取 current surface 并显式标记",
+      seededDetail.statusCode === 200
+        && seededDetail.json?.event?.data?.recovered === true
+        && seededDetail.json?.degraded === true
+        && seededDetail.json?.detailMode === "current-surface",
+      JSON.stringify(seededDetail.json),
+    );
+    const seededMissingDetail = await call("/m/api/event-detail?sessionId=session-seeded-missing&seq=8");
+    check(
+      "event-detail current surface 未命中时返回 event-not-found",
+      seededMissingDetail.statusCode === 404 && seededMissingDetail.json?.error === "event-not-found",
+      JSON.stringify(seededMissingDetail.json),
+    );
+    const fallbackFailureDetail = await call("/m/api/event-detail?sessionId=session-fallback-error&seq=8");
+    check(
+      "event-detail 快照回退异常不伪装成 session-not-found",
+      fallbackFailureDetail.statusCode === 500
+        && fallbackFailureDetail.json?.error === "event-read-failed"
+        && !JSON.stringify(fallbackFailureDetail.json).includes("/home/mark/private"),
+      JSON.stringify(fallbackFailureDetail.json),
+    );
     const wrongSessionDetail = await call("/m/api/event-detail?sessionId=session-wrong&seq=8");
     check("event-detail 校验 query session identity", wrongSessionDetail.statusCode === 404, JSON.stringify(wrongSessionDetail.json));
     const badDetail = await call("/m/api/event-detail?sessionId=session-1&seq=not-a-number");

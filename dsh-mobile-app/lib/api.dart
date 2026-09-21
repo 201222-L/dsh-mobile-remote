@@ -36,6 +36,8 @@ final Api api = Api();
 typedef DirListing = ({List<String> dirs, List<String> files, String? sep});
 
 class Api {
+  Api({http.Client? client}) : _client = client ?? http.Client();
+
   String baseUrl = '';
   String token = '';
   /// v3.0.0 review：插件挂载路径（默认 /m；由扫描地址/二维码解析，bootstrap 权威校正）。
@@ -56,7 +58,7 @@ class Api {
 
   /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
   /// socket/定时器导致内存耗尽闪退。
-  final http.Client _client = http.Client();
+  final http.Client _client;
 
   /// 地址归一：只保留 scheme://host[:port]（路径剥掉）——挂载路径由 [_pathOf] 单独解析。
   static String _normBase(String s) {
@@ -577,13 +579,17 @@ class Api {
   }
 
   /// 按 seq 读取一条无损事件详情。详情不可用时由调用方显示明确降级状态。
-  Future<Map<String, dynamic>> eventDetail(String sessionId, int seq, {Duration timeout = const Duration(seconds: 20)}) async {
+  Future<EventDetail> eventDetail(String sessionId, int seq, {Duration timeout = const Duration(seconds: 20)}) async {
     final data = await getJson('/api/event-detail?sessionId=${Uri.encodeQueryComponent(sessionId)}&seq=$seq', timeout: timeout);
     final event = data['event'];
     if (event is! Map || event['type'] is! String) {
       throw ApiException('event detail unavailable', code: 'event-detail-unavailable');
     }
-    return Map<String, dynamic>.from(event);
+    return EventDetail(
+      event: Map<String, dynamic>.from(event),
+      degraded: data['degraded'] == true,
+      detailMode: data['detailMode'] as String?,
+    );
   }
   Future<List<AppNotification>> notifications() async {
     final data = await getJson('/api/notifications');

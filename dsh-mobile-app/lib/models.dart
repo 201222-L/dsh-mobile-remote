@@ -199,6 +199,14 @@ class HistoryPage {
   const HistoryPage({required this.events, this.hasMore = false});
 }
 
+/// 单个 Visible event 的按需详情及其读取来源。
+class EventDetail {
+  final Map<String, dynamic> event;
+  final bool degraded;
+  final String? detailMode;
+  const EventDetail({required this.event, this.degraded = false, this.detailMode});
+}
+
 class TimelineCapabilities {
   final int version;
   final bool live;

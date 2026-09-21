@@ -63,6 +63,8 @@
 
 > ⚠ **Issue #1 时间线能力协商（纯增量）：** `/bootstrap` 与 SSE `hello` 的 `capabilities.eventTimeline` 声明 `detail`、`unknownEvents`、`callCorrelation` 等能力。新版 App 只在 `capabilities.eventTimeline.detail` 且事件摘要带 `detail.available` 时请求 `/event-detail`；能力是端点级声明，单事件仍可能因旧日志/离线而不可用。旧插件没有声明时继续使用已有摘要/历史路径，并把详情显示为不可用，不按插件版本号猜测能力。
 >
+> ⚠ **当前界面降级与 dormant-session 依赖：** seeded session 若只能读取当前 surface，`/event-detail` 返回 `degraded: true` 与 `detailMode: "current-surface"`，新版 App 展示不完整提示；无法读取时使用稳定错误码和重试，不显示原始异常。休眠会话的完整读取依赖 issue #7 的独立修复，本分支不复制该实现。
+>
 > ⚠ **`/bootstrap` 的 `agents[*].sessionId`（纯增量）**：`agentId` 与 `sessionId` 不是同一标识（`session:` 前缀、子代理场景），新版 App 按 session 维护运行状态，需要 bootstrap 一并下发映射，否则冷启动/重连后要等 `agent/status` 变化帧才知道会话在跑（发送键会短暂显示为「发送」而非「停止」）。旧插件不发该字段时 App 回退按 `agentId == sessionId` 取值。`agents[*].title` 的兜底短码也改由 sessionId 派生（旧插件缺字段时不影响）。
 
 ### 2.3 高度自定义化的 Harness
