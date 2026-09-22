@@ -904,8 +904,17 @@ class Api {
     // 也必须立即取消——旧实现 .then 挂在 timeout 包装链上，超时后 response 无人消费，
     // 跨重连会累积半开 socket
     var timedOut = false;
+    // v3.1.5 修复：`controller.isClosed` **判不出"订阅已取消"** —— Dart SDK 里流控制器
+    // 的 `_STATE_CANCELED(2)` 与 `_STATE_CLOSED(4)` 是两回事，`isClosed` 只查 closed 位，
+    // 取消后仍为 false，且取消后的 `add()` 不抛错（帧被静默丢弃）。窗口期内 `onCancel`
+    // 跑得比这行早，`bodySub` 还是 null 什么都不做，于是晚到的响应会挂上一条**没人再取消**
+    // 的响应流 → 每条泄漏连接的 TCP 都是活的（服务端靠 res.on("close") 清理，永不触发），
+    // 累积到服务端 maxConnections 后手机直接 503 连不上（症状：必须把 App 划掉重开）。
+    // 显式标志位补上这一位。
+    var cancelled = false;
     final controller = StreamController<Map<String, dynamic>>(
       onCancel: () {
+        cancelled = true;
         bodySub?.cancel();
       },
     );
@@ -924,7 +933,7 @@ class Api {
     _client
         .send(req)
         .then((res) {
-          if (timedOut || controller.isClosed) {
+          if (timedOut || cancelled || controller.isClosed) {
             // 晚到的响应/已取消：立即消费并释放，不留半开 socket
             res.stream.listen((_) {}).cancel();
             return;
