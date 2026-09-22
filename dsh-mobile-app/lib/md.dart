@@ -28,6 +28,37 @@ final _mdBulletRe = RegExp(r'^\s*[-*+]\s+(.*)$');
 final _mdNumberedRe = RegExp(r'^\s*(\d+)\.\s+(.*)$');
 final _mdQuoteRe = RegExp(r'^\s*>\s?');
 
+/// 合法代码围栏开启行 → 返回反引号数量 N；否则返回 null。
+///
+/// 规则：trim 后以 ≥3 个反引号开头，且其后的信息串（语言标注）不含反引号。
+/// 缩进有意不做限制：CommonMark 只允许 ≤3 空格，但放宽可保住列表内缩进的代码块。
+int? fenceOpenCount(String line) {
+  final t = line.trim();
+  if (!t.startsWith('```')) return null;
+  var n = 0;
+  while (n < t.length && t.codeUnitAt(n) == 0x60) {
+    n++;
+  }
+  if (n < 3) return null;
+  if (t.substring(n).contains('`')) return null; // 信息串含反引号 → 不是围栏
+  return n;
+}
+
+/// 是否为长度为 [openCount] 的开启围栏的合法闭合行。
+///
+/// 规则：trim 后仅由 ≥openCount 个反引号组成（允许尾随空白）。因此围栏内部带其它
+/// 字符的反引号行（例如 4 反引号文档围栏里的内层 ```js）不会被误判为闭合。
+bool isFenceClose(String line, int openCount) {
+  final t = line.trim();
+  if (t.isEmpty || !t.startsWith('`')) return false;
+  var n = 0;
+  while (n < t.length && t.codeUnitAt(n) == 0x60) {
+    n++;
+  }
+  if (n < openCount) return false;
+  return t.substring(n).trim().isEmpty;
+}
+
 /// 渲染完整 Markdown 文本 → 块级 Widget 列表（放置于 Column 中）。
 List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
   final ink = DshColors.ink(context);
@@ -39,6 +70,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
   final lines = text.split('\n');
   var i = 0;
   var inCode = false;
+  var fenceLen = 0; // 当前开启围栏的反引号数量（闭合需 ≥ 该值）
   final codeBuf = <String>[];
   var listEl = <String>[]; // 当前列表项内容
   var listOrdered = false;
@@ -158,18 +190,24 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
 
   while (i < lines.length) {
     final raw = lines[i];
-    final lineT = raw.trim();
-    if (lineT.startsWith('```')) {
-      flushPara();
-      flushList();
-      flushTable();
-      if (!inCode) {
+    // v3.1.5（issue #9）：围栏按「开启反引号数量」配对——开启行记录 N，闭合行必须
+    // 仅由 ≥N 个反引号组成。修复此前 startsWith('```') 二元翻转导致 4 反引号文档围栏
+    // 包裹 3 反引号代码块时「正文被吞成代码、代码被当作正文」的错位。
+    if (!inCode) {
+      final open = fenceOpenCount(raw);
+      if (open != null) {
+        flushPara();
+        flushList();
+        flushTable();
         inCode = true;
+        fenceLen = open;
         codeBuf.clear();
-      } else {
-        pushCodeBlock();
-        inCode = false;
+        i++;
+        continue;
       }
+    } else if (isFenceClose(raw, fenceLen)) {
+      pushCodeBlock();
+      inCode = false;
       i++;
       continue;
     }
