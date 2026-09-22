@@ -43,6 +43,12 @@
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/dsh-sandbox-policy": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/dsh-scope": ">=0.1.0-rc.6 <0.2.0",
-    "@deepseek-ai/schemastery": ">=3.18.1"
+    "@deepseek-ai/schemastery": ">=3.18.1",
+    "dsh-codex-connect": ">=0.1.0-alpha.4.5"
+  },
+  "peerDependenciesMeta": {
+    "dsh-codex-connect": {
+      "optional": true
+    }
   }
 }

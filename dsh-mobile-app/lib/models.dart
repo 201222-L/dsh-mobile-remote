@@ -16,22 +16,24 @@ class Session {
     this.lastActivity,
   });
   factory Session.fromJson(Map<String, dynamic> j) => Session(
-        id: j['id'] as String,
-        title: j['title'] as String?,
-        cwd: j['cwd'] as String?,
-        createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
-        archived: j['archived'] as bool? ?? false,
-        lastActivity: (j['lastActivity'] as num?)?.toInt(),
-      );
+    id: j['id'] as String,
+    title: j['title'] as String?,
+    cwd: j['cwd'] as String?,
+    createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
+    archived: j['archived'] as bool? ?? false,
+    lastActivity: (j['lastActivity'] as num?)?.toInt(),
+  );
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'cwd': cwd,
-        'createdAt': createdAt,
-        'archived': archived,
-        'lastActivity': lastActivity,
-      };
-  String get label => (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
+    'id': id,
+    'title': title,
+    'cwd': cwd,
+    'createdAt': createdAt,
+    'archived': archived,
+    'lastActivity': lastActivity,
+  };
+  String get label =>
+      (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
+
   /// 排序键：最近活跃优先，无活跃记录回退创建时间。
   int get sortKey => lastActivity ?? createdAt;
 }
@@ -44,39 +46,54 @@ class CatalogModel {
   final int? contextWindow;
   // v3.0.0 图像链路：模型是否支持图片输入（inputModalities 标注）
   final bool imageSupported;
-  CatalogModel({required this.provider, required this.id, required this.name, this.description, this.contextWindow, this.imageSupported = false});
+  CatalogModel({
+    required this.provider,
+    required this.id,
+    required this.name,
+    this.description,
+    this.contextWindow,
+    this.imageSupported = false,
+  });
   factory CatalogModel.fromJson(Map<String, dynamic> j) => CatalogModel(
-        provider: j['provider'] as String? ?? 'deepseek-official',
-        id: j['id'] as String,
-        name: j['name'] as String? ?? j['id'] as String,
-        description: j['description'] as String?,
-        contextWindow: (j['contextWindow'] as num?)?.toInt(),
-        imageSupported: j['imageSupported'] == true,
-      );
+    provider: j['provider'] as String? ?? 'deepseek-official',
+    id: j['id'] as String,
+    name: j['name'] as String? ?? j['id'] as String,
+    description: j['description'] as String?,
+    contextWindow: (j['contextWindow'] as num?)?.toInt(),
+    imageSupported: j['imageSupported'] == true,
+  );
 }
 
 class AgentPreset {
   final String id;
   final String name;
   final String description;
-  AgentPreset({required this.id, required this.name, required this.description});
+  AgentPreset({
+    required this.id,
+    required this.name,
+    required this.description,
+  });
   factory AgentPreset.fromJson(Map<String, dynamic> j) => AgentPreset(
-        id: j['id'] as String,
-        name: j['name'] as String? ?? j['id'] as String,
-        description: j['description'] as String? ?? '',
-      );
+    id: j['id'] as String,
+    name: j['name'] as String? ?? j['id'] as String,
+    description: j['description'] as String? ?? '',
+  );
 }
 
 class PermissionPreset {
   final String id;
   final String name;
   final String description;
-  PermissionPreset({required this.id, required this.name, required this.description});
+  PermissionPreset({
+    required this.id,
+    required this.name,
+    required this.description,
+  });
   factory PermissionPreset.fromJson(Map<String, dynamic> j) => PermissionPreset(
-        id: j['id'] as String,
-        name: j['name'] as String? ?? j['id'] as String,
-        description: j['description'] as String? ?? '',
-      );
+    id: j['id'] as String,
+    name: j['name'] as String? ?? j['id'] as String,
+    description: j['description'] as String? ?? '',
+  );
 }
 
 class Catalog {
@@ -100,15 +117,26 @@ class Catalog {
     this.imageLimits = const {},
   });
   factory Catalog.fromJson(Map<String, dynamic> j) => Catalog(
-        models: (j['models'] as List? ?? []).map((e) => CatalogModel.fromJson(e as Map<String, dynamic>)).toList(),
-        reasoningEfforts: (j['reasoningEfforts'] as List? ?? []).map((e) => e as String).toList(),
-        permissionPresets: (j['permissionPresets'] as List? ?? []).map((e) => PermissionPreset.fromJson(e as Map<String, dynamic>)).toList(),
-        agentPresets: (j['agentPresets'] as List? ?? []).map((e) => AgentPreset.fromJson(e as Map<String, dynamic>)).toList(),
-        defaults: (j['defaults'] as Map<String, dynamic>?) ?? {},
-        rechargeUrl: j['rechargeUrl'] as String? ?? 'https://platform.deepseek.com/top_up',
-        providers: (j['providers'] as List? ?? []).map((e) => ProviderInfo.fromJson(e as Map<String, dynamic>)).toList(),
-        imageLimits: (j['imageLimits'] as Map<String, dynamic>?) ?? const {},
-      );
+    models: (j['models'] as List? ?? [])
+        .map((e) => CatalogModel.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    reasoningEfforts: (j['reasoningEfforts'] as List? ?? [])
+        .map((e) => e as String)
+        .toList(),
+    permissionPresets: (j['permissionPresets'] as List? ?? [])
+        .map((e) => PermissionPreset.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    agentPresets: (j['agentPresets'] as List? ?? [])
+        .map((e) => AgentPreset.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    defaults: (j['defaults'] as Map<String, dynamic>?) ?? {},
+    rechargeUrl:
+        j['rechargeUrl'] as String? ?? 'https://platform.deepseek.com/top_up',
+    providers: (j['providers'] as List? ?? [])
+        .map((e) => ProviderInfo.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    imageLimits: (j['imageLimits'] as Map<String, dynamic>?) ?? const {},
+  );
 }
 
 /// v2.6：提供商元信息（与 PC 端模型目录同源）。
@@ -116,11 +144,190 @@ class ProviderInfo {
   final String id;
   final String name;
   final bool dormant; // true = 可配置但未激活（未配置端点/密钥）
-  const ProviderInfo({required this.id, required this.name, required this.dormant});
+  const ProviderInfo({
+    required this.id,
+    required this.name,
+    required this.dormant,
+  });
   factory ProviderInfo.fromJson(Map<String, dynamic> j) => ProviderInfo(
-        id: j['id'] as String? ?? 'deepseek-official',
-        name: j['name'] as String? ?? (j['id'] as String? ?? 'deepseek-official'),
-        dormant: j['dormant'] == true,
+    id: j['id'] as String? ?? 'deepseek-official',
+    name: j['name'] as String? ?? (j['id'] as String? ?? 'deepseek-official'),
+    dormant: j['dormant'] == true,
+  );
+}
+
+String? _text(dynamic value) {
+  if (value is String) return value;
+  if (value is num || value is bool) return value.toString();
+  return null;
+}
+
+/// 设置页“用量与额度”快照。余额与配额来源彼此独立，不做跨来源求和。
+class UsageSnapshot {
+  final DateTime? fetchedAt;
+  final List<UsageSource> sources;
+  final int failedCount;
+
+  const UsageSnapshot({
+    this.fetchedAt,
+    this.sources = const [],
+    this.failedCount = 0,
+  });
+
+  factory UsageSnapshot.fromJson(Map<String, dynamic> j) {
+    final rawSources = j['sources'];
+    final rawFailed = j['failedCount'];
+    return UsageSnapshot(
+      fetchedAt: _dateOf(j['fetchedAt']),
+      sources: rawSources is List
+          ? rawSources
+                .whereType<Map>()
+                .map((e) => UsageSource.fromJson(Map<String, dynamic>.from(e)))
+                .toList()
+          : const [],
+      failedCount: rawFailed is num
+          ? rawFailed.toInt()
+          : int.tryParse('$rawFailed') ?? 0,
+    );
+  }
+
+  UsageSource? sourceOf(String id) {
+    for (final source in sources) {
+      if (source.id == id) return source;
+    }
+    return null;
+  }
+
+  static DateTime? _dateOf(dynamic value) =>
+      value is String ? DateTime.tryParse(value) : null;
+}
+
+class UsageSource {
+  final String id;
+  final String title;
+  final String kind; // balance | quota
+  final String? amount;
+  final String? currency;
+  final bool available;
+  final List<UsageWindow> windows;
+  final UsageAccount? account;
+  final UsageCredits? credits;
+  final UsageIndividualLimit? individualLimit;
+
+  const UsageSource({
+    required this.id,
+    required this.title,
+    required this.kind,
+    this.amount,
+    this.currency,
+    this.available = true,
+    this.windows = const [],
+    this.account,
+    this.credits,
+    this.individualLimit,
+  });
+
+  factory UsageSource.fromJson(Map<String, dynamic> j) {
+    final rawWindows = j['windows'];
+    final rawAccount = j['account'];
+    final rawCredits = j['credits'];
+    final rawLimit = j['individualLimit'];
+    final id = _text(j['id']) ?? '';
+    return UsageSource(
+      id: id,
+      title: _text(j['title']) ?? id,
+      kind: _text(j['kind']) ?? 'quota',
+      amount: _text(j['amount']),
+      currency: _text(j['currency']),
+      available: j['available'] is bool ? j['available'] as bool : true,
+      windows: rawWindows is List
+          ? rawWindows
+                .whereType<Map>()
+                .map((e) => UsageWindow.fromJson(Map<String, dynamic>.from(e)))
+                .toList()
+          : const [],
+      account: rawAccount is Map
+          ? UsageAccount.fromJson(Map<String, dynamic>.from(rawAccount))
+          : null,
+      credits: rawCredits is Map
+          ? UsageCredits.fromJson(Map<String, dynamic>.from(rawCredits))
+          : null,
+      individualLimit: rawLimit is Map
+          ? UsageIndividualLimit.fromJson(Map<String, dynamic>.from(rawLimit))
+          : null,
+    );
+  }
+
+  double? get amountNumber => amount == null ? null : double.tryParse(amount!);
+}
+
+class UsageWindow {
+  final String window;
+  final double remainingPercent;
+  final DateTime? resetAt;
+  final bool limited;
+
+  const UsageWindow({
+    required this.window,
+    required this.remainingPercent,
+    this.resetAt,
+    this.limited = false,
+  });
+
+  factory UsageWindow.fromJson(Map<String, dynamic> j) => UsageWindow(
+    window: _text(j['window']) ?? '',
+    remainingPercent: j['remainingPercent'] is num
+        ? (j['remainingPercent'] as num).toDouble()
+        : 0,
+    resetAt: j['resetAt'] is String
+        ? DateTime.tryParse(j['resetAt'] as String)
+        : null,
+    limited: j['limited'] is bool ? j['limited'] as bool : false,
+  );
+}
+
+class UsageAccount {
+  final String? displayName;
+  final String? maskedEmail;
+  const UsageAccount({this.displayName, this.maskedEmail});
+
+  factory UsageAccount.fromJson(Map<String, dynamic> j) => UsageAccount(
+    displayName: _text(j['displayName']),
+    maskedEmail: _text(j['maskedEmail']),
+  );
+}
+
+class UsageCredits {
+  final bool unlimited;
+  final String? balance;
+  const UsageCredits({required this.unlimited, this.balance});
+
+  factory UsageCredits.fromJson(Map<String, dynamic> j) => UsageCredits(
+    unlimited: j['unlimited'] == true,
+    balance: _text(j['balance']),
+  );
+}
+
+class UsageIndividualLimit {
+  final String limit;
+  final String used;
+  final String remaining;
+  final double remainingPercent;
+  const UsageIndividualLimit({
+    required this.limit,
+    required this.used,
+    required this.remaining,
+    required this.remainingPercent,
+  });
+
+  factory UsageIndividualLimit.fromJson(Map<String, dynamic> j) =>
+      UsageIndividualLimit(
+        limit: _text(j['limit']) ?? '',
+        used: _text(j['used']) ?? '',
+        remaining: _text(j['remaining']) ?? '',
+        remainingPercent: j['remainingPercent'] is num
+            ? (j['remainingPercent'] as num).toDouble()
+            : 0,
       );
 }
 
@@ -130,14 +337,20 @@ class SessionConfig {
   final String? reasoningEffort;
   final String? permissionPreset;
   final String? agentPreset;
-  SessionConfig({this.model, this.provider, this.reasoningEffort, this.permissionPreset, this.agentPreset});
+  SessionConfig({
+    this.model,
+    this.provider,
+    this.reasoningEffort,
+    this.permissionPreset,
+    this.agentPreset,
+  });
   factory SessionConfig.fromJson(Map<String, dynamic> j) => SessionConfig(
-        model: j['model'] as String?,
-        provider: j['provider'] as String?,
-        reasoningEffort: j['reasoningEffort'] as String?,
-        permissionPreset: j['permissionPreset'] as String?,
-        agentPreset: j['agentPreset'] as String?,
-      );
+    model: j['model'] as String?,
+    provider: j['provider'] as String?,
+    reasoningEffort: j['reasoningEffort'] as String?,
+    permissionPreset: j['permissionPreset'] as String?,
+    agentPreset: j['agentPreset'] as String?,
+  );
 }
 
 class AppNotification {
@@ -158,14 +371,14 @@ class AppNotification {
     required this.unread,
   });
   factory AppNotification.fromJson(Map<String, dynamic> j) => AppNotification(
-        id: j['id'] as String,
-        kind: j['kind'] as String,
-        sessionId: j['sessionId'] as String,
-        title: j['title'] as String? ?? '',
-        detail: j['detail'] as String? ?? '',
-        time: (j['time'] as num?)?.toInt() ?? 0,
-        unread: j['unread'] as bool? ?? false,
-      );
+    id: j['id'] as String,
+    kind: j['kind'] as String,
+    sessionId: j['sessionId'] as String,
+    title: j['title'] as String? ?? '',
+    detail: j['detail'] as String? ?? '',
+    time: (j['time'] as num?)?.toInt() ?? 0,
+    unread: j['unread'] as bool? ?? false,
+  );
 }
 
 // 消息流事件（服务端摘要格式）
@@ -191,10 +404,10 @@ class ChatEvent {
   final String? sessionId;
   ChatEvent({this.seq, required this.type, this.data, this.sessionId});
   factory ChatEvent.fromJson(Map<String, dynamic> j) => ChatEvent(
-        seq: (j['seq'] as num?)?.toInt(),
-        type: j['type'] as String,
-        data: j['data'] as Map<String, dynamic>?,
-      );
+    seq: (j['seq'] as num?)?.toInt(),
+    type: j['type'] as String,
+    data: j['data'] as Map<String, dynamic>?,
+  );
 }
 
 // ── 内核问询/审批弹窗（question/requested · approval/requested，与 PC 端同一通道） ──
@@ -203,8 +416,10 @@ class AskOption {
   final String label;
   final String? description;
   AskOption({required this.label, this.description});
-  factory AskOption.fromJson(Map<String, dynamic> j) =>
-      AskOption(label: j['label'] as String? ?? '', description: j['description'] as String?);
+  factory AskOption.fromJson(Map<String, dynamic> j) => AskOption(
+    label: j['label'] as String? ?? '',
+    description: j['description'] as String?,
+  );
 }
 
 class AskQuestion {
@@ -214,7 +429,8 @@ class AskQuestion {
   final String? detail;
   final List<AskOption> options;
   final bool multiSelect;
-  final Map<String, dynamic>? intent; // { kind: 'plan-review', approve: 'label' }
+  final Map<String, dynamic>?
+  intent; // { kind: 'plan-review', approve: 'label' }
   AskQuestion({
     required this.id,
     required this.question,
@@ -225,16 +441,16 @@ class AskQuestion {
     this.intent,
   });
   factory AskQuestion.fromJson(Map<String, dynamic> j) => AskQuestion(
-        id: j['id'] as String? ?? '',
-        question: j['question'] as String? ?? '',
-        header: j['header'] as String?,
-        detail: j['detail'] as String?,
-        options: (j['options'] as List? ?? [])
-            .map((o) => AskOption.fromJson(o as Map<String, dynamic>))
-            .toList(),
-        multiSelect: j['multiSelect'] == true,
-        intent: j['intent'] as Map<String, dynamic>?,
-      );
+    id: j['id'] as String? ?? '',
+    question: j['question'] as String? ?? '',
+    header: j['header'] as String?,
+    detail: j['detail'] as String?,
+    options: (j['options'] as List? ?? [])
+        .map((o) => AskOption.fromJson(o as Map<String, dynamic>))
+        .toList(),
+    multiSelect: j['multiSelect'] == true,
+    intent: j['intent'] as Map<String, dynamic>?,
+  );
 }
 
 /// question/requested 帧整体：rpcId 用于应答回写。
@@ -242,7 +458,11 @@ class QuestionRequest {
   final String rpcId;
   final String sessionId;
   final List<AskQuestion> questions;
-  QuestionRequest({required this.rpcId, required this.sessionId, required this.questions});
+  QuestionRequest({
+    required this.rpcId,
+    required this.sessionId,
+    required this.questions,
+  });
 }
 
 /// approval/requested 帧整体：工具权限审批。

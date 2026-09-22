@@ -29,6 +29,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 /**
  * 悬浮球常驻服务（v2.7）：
@@ -64,6 +65,16 @@ class FloatingBubbleService : Service() {
     private var panelNotifsBadge: TextView? = null
     private var panelCharge: View? = null
     private var panelBalance: TextView? = null
+    // 用量与额度区块（v3.2）：展开面板时按需获取 + 客户端节流；
+    // 不可用时整块消失，降级为上方/下方单行余额（点击语义不变）。
+    private var panelUsage: LinearLayout? = null
+    private var panelUsageRows: LinearLayout? = null
+    private var panelUsageStale: TextView? = null
+    // 用量与额度取数状态（线程间仅 volatile；渲染一律走 mainHandler.post/renderUsageBlock）
+    @Volatile private var allowancePayload: org.json.JSONObject? = null
+    @Volatile private var allowanceFetchedAt = 0L
+    @Volatile private var allowanceFetching = false
+    @Volatile private var allowanceLastFetchStart = 0L
     private var panelVisible = false
     private var scrim: View? = null // 全屏透明触摸层：点击面板外部关闭（位于面板窗口之下）
     private var lastPanelRefresh = 0L
@@ -165,14 +176,8 @@ class FloatingBubbleService : Service() {
             Thread({
                 try {
                     val txt = httpGet("balance", 8000) ?: return@Thread
-                    val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
-                    val first = infos?.optJSONObject(0)
-                    val total = first?.opt("total_balance")
-                    val v = when (total) {
-                        is Number -> total.toDouble()
-                        is String -> total.toDoubleOrNull() ?: 0.0
-                        else -> 0.0
-                    }
+                    // v3.2：CNY 优先（与详情页同口径），修掉旧 balance_infos[0] 位置取值
+                    val v = UsagePanelModel.deepseekBalanceFromBalancePayload(txt) ?: 0.0
                     if (v > 0) onBalance("$v:")
                 } catch (_: Exception) {
                     // v2.8.0 review：httpGet 只吞网络/HTTP 异常，200 但畸形响应体的 JSONException 需在此兜底
@@ -768,7 +773,46 @@ class FloatingBubbleService : Service() {
         root.addView(notifsBox)
         panelNotifs = notifsBox
 
-        // 常驻余额行（点击去充值；低余额红色，正常白色，未拉到数据显示占位）
+        // 用量与额度区块（v3.2）：整块可点 → App 用量页；不可用时降级为下方单行余额。
+        // 每来源一行：金额行保留文字（Balance 无分母不画条），配额行只出细条与颜色、不出数字。
+        val usageRoot = LinearLayout(this)
+        usageRoot.orientation = LinearLayout.VERTICAL
+        usageRoot.visibility = View.GONE
+        val uHead = LinearLayout(this)
+        uHead.orientation = LinearLayout.HORIZONTAL
+        uHead.gravity = Gravity.CENTER_VERTICAL
+        val uLabel = TextView(this)
+        uLabel.text = text("用量与额度", "Usage & allowance")
+        uLabel.setTextColor(Color.parseColor("#9AA3AF"))
+        uLabel.textSize = 10.5f
+        uLabel.gravity = Gravity.CENTER_VERTICAL
+        uLabel.setIncludeFontPadding(false)
+        uHead.addView(uLabel, LinearLayout.LayoutParams(0, dp(24), 1f))
+        val uMore = TextView(this)
+        uMore.text = text("详情 ▸", "Details ▸")
+        uMore.setTextColor(Color.parseColor("#6C8CFF"))
+        uMore.textSize = 10.5f
+        uMore.gravity = Gravity.CENTER_VERTICAL
+        uMore.setIncludeFontPadding(false)
+        uMore.setPadding(dp(8), 0, 0, 0)
+        uHead.addView(uMore, LinearLayout.LayoutParams(dp(60), dp(24)))
+        usageRoot.addView(uHead)
+        val uRows = LinearLayout(this)
+        uRows.orientation = LinearLayout.VERTICAL
+        usageRoot.addView(uRows)
+        val uStale = TextView(this)
+        uStale.setTextColor(Color.parseColor("#5C6470"))
+        uStale.textSize = 10f
+        uStale.setPadding(0, dp(2), 0, 0)
+        uStale.visibility = View.GONE
+        usageRoot.addView(uStale)
+        usageRoot.setOnClickListener { hidePanel(); openUsage() }
+        root.addView(usageRoot)
+        panelUsage = usageRoot
+        panelUsageRows = uRows
+        panelUsageStale = uStale
+
+        // 常驻余额行（区块不可用时的降级显示；区块可见时隐藏。点击去充值；低余额红色）
         val balanceRow = TextView(this)
         balanceRow.gravity = Gravity.CENTER_VERTICAL
         balanceRow.textSize = 12.5f
@@ -873,6 +917,11 @@ class FloatingBubbleService : Service() {
         mainHandler.removeCallbacks(clearNotifRunnable)
         postState()
         refreshPanelData()
+        // 用量与额度：先落节流/在途标记再渲染——fetchAllowance 同步置 in-flight 后，
+        // 紧接的 render 即呈「查询中…」，避免首次展开先闪一帧降级单行
+        val usageModel = currentUsageModel()
+        if (usageModel.fetchDue) fetchAllowance()
+        renderUsageBlock(currentUsageModel())
         // 面板开着期间周期刷新（兜底）
         mainHandler.removeCallbacks(panelRefreshRunnable)
         mainHandler.postDelayed(panelRefreshRunnable, 5000)
@@ -981,18 +1030,12 @@ class FloatingBubbleService : Service() {
                 }
             }
 
-            // 余额（面板打开时顺带刷新常驻余额行，静默不弹提示）
+            // 余额（面板打开时顺带刷新常驻余额行，静默不弹提示；金额取 CNY 优先，与详情页同口径）
             runCatching {
                 httpGet("balance")?.let { txt ->
-                    val infos = JSONObject(txt).optJSONObject("balance")?.optJSONArray("balance_infos")
-                    val first = infos?.optJSONObject(0)
-                    val total = first?.opt("total_balance")
-                    val v = when (total) {
-                        is Number -> total.toDouble()
-                        is String -> total.toDoubleOrNull() ?: 0.0
-                        else -> 0.0
+                    UsagePanelModel.deepseekBalanceFromBalancePayload(txt)?.let { v ->
+                        if (v > 0) applyBalance(v, tip = false)
                     }
-                    if (v > 0) applyBalance(v, tip = false)
                 }
             }
 
@@ -1093,6 +1136,8 @@ class FloatingBubbleService : Service() {
             (panelCharge as? TextView)?.background = roundedRect(Color.parseColor("#3A3F47"), 20f)
         }
         updateBalanceRow()
+        // 用量与额度区块随每次面板刷新重绘（数据到达/余额变化后颜色与行数也能跟上）
+        renderUsageBlock(currentUsageModel())
     }
 
     // ── 状态渲染 ──
@@ -1326,7 +1371,7 @@ class FloatingBubbleService : Service() {
                     balanceAlerting = true
                     mainHandler.removeCallbacks(clearBalanceAlertRunnable)
                     mainHandler.postDelayed(clearBalanceAlertRunnable, 60000)
-                    showTip(text("余额不足 ¥" + String.format("%.2f", total) + "，点我去充值", "Low balance ¥" + String.format("%.2f", total) + " — tap to top up"))
+                    showTip(text("余额不足 ¥" + String.format(Locale.ROOT, "%.2f", total) + "，点我去充值", "Low balance ¥" + String.format(Locale.ROOT, "%.2f", total) + " — tap to top up"))
                 }
             }
         }
@@ -1346,9 +1391,157 @@ class FloatingBubbleService : Service() {
             tv.text = text("余额 --", "Balance --")
             tv.setTextColor(Color.parseColor("#9AA3AF"))
         } else {
-            tv.text = text("余额 ¥" + String.format("%.2f", t), "Balance ¥" + String.format("%.2f", t))
+            tv.text = text("余额 ¥" + String.format(Locale.ROOT, "%.2f", t), "Balance ¥" + String.format(Locale.ROOT, "%.2f", t))
             tv.setTextColor(if (lowBalance) Color.parseColor("#FF6B6B") else Color.WHITE)
         }
+    }
+
+    // ── 用量与额度区块（v3.2）──────────────────────────────────────
+    /** 当前区块状态快照（读 volatile 字段，拼给纯模型；可在任意线程调用）。 */
+    private fun currentUsageModel(): UsagePanelModel.View = UsagePanelModel.build(
+        UsagePanelModel.State(
+            allowancePayload, allowanceFetchedAt, allowanceFetching, allowanceLastFetchStart,
+            lowBalance, System.currentTimeMillis()
+        )
+    )
+
+    /**
+     * 渲染区块。区块可见时隐藏单行余额（区块内的 DeepSeek 行承担金额展示）；
+     * 不可见时恢复单行余额（降级路径，点击语义保持为去充值）。仅主线程调用。
+     */
+    private fun renderUsageBlock(m: UsagePanelModel.View) {
+        val root = panelUsage ?: return
+        val bal = panelBalance ?: return
+        if (!m.blockVisible) {
+            root.visibility = View.GONE
+            bal.visibility = View.VISIBLE
+            return
+        }
+        bal.visibility = View.GONE
+        root.visibility = View.VISIBLE
+        val rowsBox = panelUsageRows ?: return
+        rowsBox.removeAllViews()
+        if (m.querying) {
+            val q = TextView(this)
+            q.text = text("查询中…", "Loading…")
+            q.setTextColor(Color.parseColor("#5C6470"))
+            q.textSize = 11f
+            q.setPadding(0, dp(2), 0, dp(2))
+            rowsBox.addView(q)
+        } else {
+            for (row in m.rows) rowsBox.addView(usageRowView(row))
+        }
+        val st = panelUsageStale ?: return
+        if (m.stale) {
+            st.text = text("上次更新：", "Updated: ") + relTime(allowanceFetchedAt)
+            st.visibility = View.VISIBLE
+        } else {
+            st.visibility = View.GONE
+        }
+    }
+
+    /** 一行：左侧来源名 + 右侧金额文字（金额行）或并排细条（配额行）。整行可点 → App 用量页。 */
+    private fun usageRowView(row: UsagePanelModel.SourceRow): View {
+        val line = LinearLayout(this)
+        line.orientation = LinearLayout.HORIZONTAL
+        line.gravity = Gravity.CENTER_VERTICAL
+        line.setPadding(0, dp(2), 0, dp(2))
+        val title = TextView(this)
+        title.text = row.title
+        title.setTextColor(Color.parseColor("#B4BCC6"))
+        title.textSize = 11f
+        title.maxLines = 1
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        line.addView(title, LinearLayout.LayoutParams(dp(76), dp(19)))
+        if (row.isBalance) {
+            val amt = TextView(this)
+            val t = row.balance?.text ?: ""
+            amt.text = if (t.isEmpty()) text("--", "--") else t
+            amt.setTextColor(if (row.balance?.low == true) Color.parseColor("#FF6B6B") else Color.WHITE)
+            amt.textSize = 12.5f
+            line.addView(amt, LinearLayout.LayoutParams(0, dp(19), 1f))
+        } else {
+            val bars = LinearLayout(this)
+            bars.orientation = LinearLayout.HORIZONTAL
+            bars.gravity = Gravity.CENTER_VERTICAL
+            for (b in row.bars) {
+                bars.addView(usageQuotaCell(b), LinearLayout.LayoutParams(0, dp(19), 1f).apply { setMargins(dp(1), 0, dp(1), 0) })
+            }
+            line.addView(bars, LinearLayout.LayoutParams(0, dp(19), 1f))
+        }
+        line.setOnClickListener { hidePanel(); openUsage() }
+        return line
+    }
+
+    /** 配额单元格：上为窗口短标签（与进度条居中对齐），下为细条。 */
+    private fun usageQuotaCell(b: UsagePanelModel.Bar): View {
+        val cell = LinearLayout(this)
+        cell.orientation = LinearLayout.VERTICAL
+        cell.gravity = Gravity.CENTER_HORIZONTAL
+        val label = TextView(this)
+        label.text = windowShortLabel(b.label)
+        label.setTextColor(Color.parseColor("#9AA3AF"))
+        label.textSize = 8.5f
+        label.gravity = Gravity.CENTER_HORIZONTAL
+        label.maxLines = 1
+        cell.addView(label, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(10)))
+        cell.addView(usageBarView(b), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(5)))
+        return cell
+    }
+
+    /** 窗口短标签（与详情页同语义、取简短版）：5h / 每周 / 每月；未知保留原始短标签。 */
+    private fun windowShortLabel(raw: String): String = when (raw) {
+        "5h" -> text("5h", "5h")
+        "weekly" -> text("每周", "weekly")
+        "monthly" -> text("每月", "monthly")
+        else -> raw
+    }
+
+    /** 细条：轨道 + 按剩余比例填充的颜色段（配色沿用 DshTheme 暗色语义色，与详情页一致）。 */
+    private fun usageBarView(b: UsagePanelModel.Bar): View {
+        val track = LinearLayout(this)
+        track.orientation = LinearLayout.HORIZONTAL
+        track.background = roundedRect(Color.parseColor("#3A3F47"), 2.5f)
+        val color = when (b.severity) {
+            UsagePanelModel.Severity.OK -> Color.parseColor("#4CB86F")
+            UsagePanelModel.Severity.WARN -> Color.parseColor("#D9A94A")
+            UsagePanelModel.Severity.DANGER -> Color.parseColor("#E0655F")
+        }
+        if (b.ratio > 0.0) {
+            val fill = View(this)
+            fill.background = roundedRect(color, 2.5f)
+            track.addView(fill, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, b.ratio.toFloat()))
+        }
+        track.addView(View(this), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, (1.0 - b.ratio).toFloat()))
+        return track
+    }
+
+    /**
+     * 用量与额度拉取：后台线程 + 20 秒超时（面板异步更新，不阻塞 UI）。
+     * 成功时缓存 payload 并让预警金额与显示的 DeepSeek 金额同口径；失败静默保留旧值。
+     */
+    private fun fetchAllowance() {
+        if (allowanceFetching) return
+        allowanceFetching = true
+        allowanceLastFetchStart = System.currentTimeMillis()
+        mainHandler.post { renderUsageBlock(currentUsageModel()) }
+        Thread({
+            try {
+                val txt = httpGet("account-usage", 20000)
+                val parsed = txt?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+                if (parsed != null && parsed.optBoolean("ok", false)) {
+                    allowancePayload = parsed
+                    allowanceFetchedAt = System.currentTimeMillis()
+                    // Q12：面板金额与预警金额同口径（CNY 优先），显示与判定一致
+                    UsagePanelModel.deepseekAmount(parsed)?.let { amt -> if (amt > 0) applyBalance(amt, tip = false) }
+                }
+            } catch (_: Exception) {
+                // httpGet 已吞网络/HTTP 异常；此处只兜 JSON 意外
+            } finally {
+                allowanceFetching = false
+            }
+            mainHandler.post { renderUsageBlock(currentUsageModel()) }
+        }, "dsh-bubble-usage").apply { isDaemon = true; start() }
     }
 
     // ── 动作 ──
@@ -1360,6 +1553,9 @@ class FloatingBubbleService : Service() {
 
     /** 打开 App 通知页（MainActivity extra，Flutter 侧处理）。 */
     private fun openNotifs() = openApp("open_notifs", true)
+
+    /** 打开 App 用量与额度页（MainActivity extra，Flutter 侧处理）。 */
+    private fun openUsage() = openApp("open_usage", true)
 
     /** 相对时间：刚刚 / N 分钟前 / N 小时前 / 日期。 */
     private fun relTime(ms: Long): String {

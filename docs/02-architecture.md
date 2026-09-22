@@ -1,6 +1,6 @@
 # 02 系统架构设计说明书 — dsh-mobile-remote
 
-> 版本：v3.0.0 · 状态：已实现（v2.3 问询/审批弹窗桥、v2.4~v2.5 连接自愈、v2.6 安全加固+模型提供商互通、v2.9/v3.0 LAN 桥 + 图像链路） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
+> 版本：v3.2.0 · 状态：已实现（v2.3 问询/审批弹窗桥、v2.4~v2.5 连接自愈、v2.6 安全加固+模型提供商互通、v2.9/v3.0 LAN 桥 + 图像链路、v3.2 用量与额度） · 配套：01-PRD.md、03-api.md、04-security.md、09-compatibility.md
 
 ## 1. 背景与范围
 DSH 由 Cordis 组合出宿主（desktop 版 `dsh-plugin-desktop` 或 web 版 `dsh --profile web`），webserver 默认只绑定 `127.0.0.1`（**桌面版 0.1.1-rc.2 起强制回环**，DesktopsWebServer 对非回环 host 直接 throw）。本插件在宿主侧挂载 Cordis 插件：在 webServer 上注册 `/m` 前缀路由，并在 **LAN 桥**（`lanBridge`，默认 `0.0.0.0:3080`）自建监听把移动端请求流式转发到回环 webserver——移动端形态为**原生 Flutter App**（`dsh-mobile-app`），经 `/m/api` 与插件通信。插件不修改桌面 GUI 的任何现有 UI。
@@ -77,7 +77,7 @@ graph TB
 | App 消息流（`chat_screen.dart`） | user/assistant 气泡、流式合并（节流）、Markdown 渲染、活动条（思考/工具过程，v2.6）、轮次分隔 |
 | App 通知页 | turn/end 分类通知（完成/失败/需回答）、已读持久化、未读角标 |
 | App 会话/新建 | 会话列表、新建会话（模式 + 目录跨盘浏览） |
-| App 设置 | 余额、默认预设、深色模式、诊断、重新配置 |
+| App 设置 | 用量与额度（DeepSeek / Codex / OpenCode Go）、充值/DeepSeek 金额预警、默认预设、深色模式、诊断、重新配置 |
 | 桌面客户端模块（`client.js`） | dsh 设置页「连接移动端设备」：拉取 `/m/api/qr-config` 展示二维码 |
 
 ## 5. 核心时序
@@ -244,3 +244,4 @@ sequenceDiagram
 - 本地存储：连接配置（地址/口令）、UI 偏好（工具显示、主题、工作区选择）
 - 连接自愈（v2.4.1~v2.5.1）：bootstrap `server.urls` 收集全部地址（局域网 + 蒲公英/虚拟组网，排除 169.254/16 链路本地与 VMware 虚拟网卡）；SSE 心跳看门狗（45s 无心跳强制重建）+ 超时即轮换（黑洞地址约 10s 故障切换）；下拉刷新「探测 → 自愈 → 拉数据」；SSE 周期断连经实测系手机息屏 Doze（屏亮自动重连+唤醒重同步，非缺陷）
 - 通知：App 内通知中心实时角标（SSE 推送）；后台系统级提醒依赖 Phase 2 推送桥（App 不保活长连接）
+- 用量与额度：设置页进入时调用 `/m/api/account-usage`；服务端并发查询 DeepSeek、dsh-codex-connect 当前活动 Codex 账户、OpenCode Go，并只返回本轮成功来源。额度查询为只读投影，凭据停留在电脑端；App 端仅运行期缓存/复用初始快照，配额窗口不聚合。
