@@ -13,6 +13,10 @@ enum TimelineMode { ordinary, debug }
 const hiddenTimelineTypes = <String>{
   'request/header',
   'request/context',
+  // LLM 请求快照：data 里带 system（系统提示词）与 messages（对话正文），
+  // 与 request/header 同类 —— 任何模式都不进时间线，也不允许经详情端点回到 UI。
+  'session/title-llm-request',
+  'web/deepseek-search-llm-request',
   'session/end-seed',
   'step/start',
   'step/end',
@@ -52,11 +56,31 @@ const debugOnlyTimelineTypes = <String>{
   'approval/policy',
   'tool/ptc-dispatch-start',
   'tool/ptc-dispatch',
+  // 与内核 KNOWN_SESSION_EVENT_TYPES 对差补齐（此前遗漏 → 普通模式会显示裸类型名）：
+  'deliverables/presented',
+  'hook/invoked',
+  'hook/result',
+  'llm/retry',
+  'llm/retry-started',
+  'plan/mode',
+  'permission/preset',
+  'schedule/change',
+  'session-log-deepseek/delivery-accepted',
+  'subagent/model-selection-policy',
+  'tool-workflow/agent-start',
+  'tool-workflow/agent-end',
+  'tool-workflow/run-start',
+  'tool-workflow/run-end',
 };
+
+/// LLM 请求快照的段边界匹配（与服务端 `LLM_REQUEST_TYPE_PATTERN` 同规则）：
+/// 匹配 `session/title-llm-request`、`web/deepseek-search-llm-request`、
+/// `web/<provider>-llm-request`、`future/llm-request`；不误伤 `future/llm-request-note`。
+final RegExp llmRequestTypePattern = RegExp(r'(?:^|[/-])llm-request$');
 
 /// 事件可见性的唯一实现：TimelineReducer 与 ChatScreen 共用，避免两处规则分叉。
 bool timelineTypeVisibleIn(TimelineMode mode, String type) {
-  if (hiddenTimelineTypes.contains(type)) return false;
+  if (hiddenTimelineTypes.contains(type) || llmRequestTypePattern.hasMatch(type)) return false;
   return mode == TimelineMode.debug || !debugOnlyTimelineTypes.contains(type);
 }
 
@@ -67,6 +91,14 @@ String timelineCallIdOf(Map<String, dynamic>? data, int? seq, [int fallback = 0]
   if (id != null && id.isNotEmpty) return id;
   return 'unavailable-${seq ?? fallback}';
 }
+
+/// 详情正文上限：摘要被服务端 clamp，但**详情返回的是原始事件**（上限 8 MiB），
+/// 直接进 markdown 解析 / 文本布局会造成卡顿与内存尖峰 —— 统一在渲染前截断。
+const timelineDetailTextMax = 20000;
+
+String clampTimelineDetailText(String text, {int max = timelineDetailTextMax}) => text.length <= max
+    ? text
+    : '${text.substring(0, max)}\n…（详情已截断：共 ${text.length} 字，上方为前 $max 字）';
 
 /// 已知事件的可读标题；未知类型原样返回类型名（事件保真契约：不静默丢弃）。
 String timelineTitleFor(String type) {
@@ -298,7 +330,8 @@ class TimelineReducer {
       text: text,
       data: data,
       status: 'complete',
-      isError: data['isError'] == true || event.type.contains('error'),
+      // 失败判定只认结构化字段（不按事件名里的 error/fail 关键词猜）。
+      isError: data['isError'] == true,
       detailAvailable: event.detailAvailable,
       detailTextChars: event.detailTextChars,
       // 注入噪声 + 普通模式折叠的协议元数据都不进默认视图；调试模式仍可审阅。

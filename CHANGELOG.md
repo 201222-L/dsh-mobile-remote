@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — 对话时间线（工具调用与事件详情）
+
+- 对话页新增执行时间线：工具调用按 `callId` 关联调用与结果，合并为单张 Tool activity 卡片（参数/结果/失败态可展开）；**未知但用户可见**的事件进入通用事件卡，不再因 App 尚未认识而被静默丢弃。
+- 新增**普通 / 调试**两种展示模式（设置页开关，默认普通）：普通模式只呈现对话与工具活动；调试模式额外展示原始事件与按需加载的无损详情。**行为变更**：系统注入消息与协议/运行时记录在普通模式下不再占屏（v3.1.4 是折叠块），调试模式下仍可审阅。
+- 服务端新增 `GET /m/api/event-detail`（认证与其它 `/m/api/*` 一致）：按 durable `seq` 取单事件详情，稳定错误语义 `session-not-found` / `event-not-found` / `session-corrupt` / `event-read-failed` / `event-detail-too-large`（8 MiB）；原始异常与主机路径只进服务端日志，不进响应。
+- **事件保真与隐私边界（fail-closed）**：`assistant/chunk`、`assistant/attempt`、`request/header`、`request/context`、`session/title-llm-request`、`web/deepseek-search-llm-request`（LLM 请求快照，data 含 system prompt / messages）、`compaction/*`（含压缩摘要正文）、`system/message`（DSH 系统提示词）等内部记录在**历史、实时、详情三处都不下发**；详情面只对显式 allow-list 的可见类型返回原始载荷，其余类型不给 `detail` 指针、`/event-detail` 返回 404。其余未知事件仍在时间线保留（不静默丢弃）。
+- 详情正文在 App 侧统一钳制（默认 20000 字 + 截断标注）：详情返回的是原始事件，不钳制会把超长工具结果直接送进 markdown 解析与文本布局。
+- `/api/history` 的表面过滤由白名单改为 `isTimelineRecord` 黑名单，并新增 `hasMore` durable cursor 分页（`after`/`before`/`limit` 非法值 → 400，与既有参数校验一致）；降级（`historyMode: "current-surface"`）语义与 `configDegraded` 保持不变，降级会话的 `hasMore=false` **不代表历史到底**。
+- 验收门禁：`node tools/timeline-contract-check.mjs`（含「LLM 请求快照不得外泄」「未命名类型详情 404」两条新增断言）。
+
 ## Unreleased — 手机用量与额度
 
 - 设置 → 账户新增“用量与额度”详情页与来源数量摘要。

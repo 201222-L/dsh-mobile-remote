@@ -29,7 +29,9 @@ const check = (name, condition, detail = "") => {
 const unknown = { seq: 7, type: "future/visible", data: { secretLike: "raw-value" } };
 const summary = mod.summarizeEvent(unknown);
 check("未知事件保留 type/seq", summary.type === unknown.type && summary.seq === unknown.seq);
-check("未知事件提供按需详情指针", summary.detail?.available === true && summary.detail.seq === 7);
+// PR #24 复核：详情端点改为 fail-closed（allow-list），未知类型不再声明必然 404 的详情指针。
+check("未知事件不再声明详情指针（fail-closed）", summary.detail === undefined, JSON.stringify(summary.detail));
+check("未知事件摘要不下发原始 data", summary.data === undefined, JSON.stringify(summary.data));
 check("未知事件可进入历史时间线", mod.isTimelineRecord(unknown) === true);
 check("ignorable 未知事件仍保留 opaque identity", mod.isTimelineRecord({ seq: 8, type: "future/ignorable", ignorable: true, data: {} }) === true);
 check("敏感/内部事件不进入时间线", ["request/header", "request/context", "system/message", "step/start", "compaction/end"].every((type) => mod.isTimelineRecord({ seq: 8, type, data: {} }) === false));
@@ -38,6 +40,22 @@ check("token chunk 不进入历史时间线", mod.isTimelineRecord({ seq: 8, typ
 check("token chunk 仍进入实时流", mod.isLiveTimelineRecord({ seq: 8, type: "assistant/chunk", data: {} }) === true);
 check("内部事件不进入实时 session/event", mod.isLiveTimelineRecord({ seq: 8, type: "request/header", data: {} }) === false);
 check("compaction 控制事件进入实时但不进历史", mod.isLiveTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === true && mod.isTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === false);
+
+// PR #24 复核（阻断级泄露）：LLM 请求快照含 system prompt / messages 正文，按命名约定拦截。
+const llmRequestTypes = ["session/title-llm-request", "web/deepseek-search-llm-request", "web/future-provider-llm-request", "future/llm-request"];
+check("LLM 请求快照不进入历史时间线", llmRequestTypes.every((type) => mod.isTimelineRecord({ seq: 8, type, data: { system: "SECRET" } }) === false));
+check("LLM 请求快照不进入实时流", llmRequestTypes.every((type) => mod.isLiveTimelineRecord({ seq: 8, type, data: { system: "SECRET" } }) === false));
+check("LLM 请求快照不声明详情指针", llmRequestTypes.every((type) => mod.summarizeEvent({ seq: 8, type, data: { system: "SECRET" } }).detail === undefined));
+check(
+  "llm-request 规则按段边界匹配、不误伤其它类型",
+  mod.isTimelineRecord({ seq: 8, type: "future/llm-request-note", data: {} }) === true
+    && mod.isTimelineRecord({ seq: 8, type: "future/visible", data: {} }) === true
+    && mod.isTimelineRecord({ seq: 8, type: "assistant/live-chunk", data: {} }) === false,
+  "future/llm-request-note 仍应保留",
+);
+check("详情 allow-list 只放行 App 真正消费的类型", ["user/message", "assistant/message", "tool/call", "tool/result", "todo/write", "turn/start", "turn/end"].every((type) => mod.isDetailVisibleType(type) === true));
+check("详情 allow-list 拒绝协议元数据/未知/未命名类型", ["session/title", "model/selection", "approval/asked", "question/requested", "session/jobs", "subagent/descriptor", "future/visible", "request/something-new", "session/title-llm-request"].every((type) => mod.isDetailVisibleType(type) === false));
+check("实时草稿类型无详情可读（未落 durable 历史）", mod.isDetailVisibleType("assistant/chunk") === false && mod.isDetailVisibleType("assistant/live-chunk") === false);
 
 const toolDelta = mod.summarizeEvent({
   seq: 9,
@@ -137,12 +155,20 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     { seq: 18, type: "assistant/attempt", data: { turn: 1, step: 1, stream: [{ text: "RAW-STREAM" }] } },
     { seq: 19, type: "compaction/summary", data: { summary: [{ text: "SNAPSHOT-SECRET" }], shadowedSeqs: [1, 2] } },
     { seq: 20, type: "compaction/start", data: { compactionId: "cmp-1" } },
+    // PR #24 复核：内核真实存在的两类 LLM 请求快照（system prompt + 对话正文 + route）。
+    { seq: 21, type: "session/title-llm-request", data: { titleProvider: "deepseek", route: "/v1/chat", system: "SYSTEM-PROMPT-SECRET", messages: [{ text: "CONVERSATION-BODY" }], maxTokens: 64 } },
+    { seq: 22, type: "web/deepseek-search-llm-request", data: { endpoint: "https://api.example/v1", apiVersion: "2023-06-01", body: { system: "SEARCH-SYSTEM-SECRET" }, hostPath: "C:\\Users\\mark\\secret" } },
+    // 未命名/未知可见事件：带敏感夹具，验证详情端点 fail-closed 而不是 200 泄露。
+    { seq: 23, type: "request/something-new", data: { systemPrompt: "UNNAMED-SYSTEM-SECRET", messages: [{ text: "UNNAMED-BODY" }] } },
   ];
+  const hugeText = "A".repeat(8 * 1024 * 1024 + 1024);
+  const huge = { id: "session-huge", header: { createdAt: 1, cwd: "/tmp" }, events: [{ seq: 1, type: "tool/result", data: { callId: "call-huge", text: hugeText } }], snapshotEvents() { return this.events; } };
   const active = { id: "session-1", header: { createdAt: 1, cwd: "/tmp" }, events, snapshotEvents() { return this.events; } };
   const activeReadError = { id: "session-active-read-error", header: { createdAt: 1, cwd: "/tmp" }, events: [], snapshotEvents() { return this.events; } };
-  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError]]);
-  const dormant = [{ seq: 8, type: "future/dormant", data: { dormant: true } }];
-  const seededSurface = [{ seq: 8, type: "future/seeded-surface", data: { recovered: true } }];
+  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge]]);
+  const dormant = [{ seq: 8, type: "tool/result", data: { dormant: true, callId: "call-dormant", text: "dormant raw result" } }];
+  const dormantUnlisted = [{ seq: 8, type: "future/dormant-unlisted", data: { secret: "DORMANT-SECRET" } }];
+  const seededSurface = [{ seq: 8, type: "tool/result", data: { recovered: true, callId: "call-surface", text: "surface raw result" } }];
   const services = {
     sessions: { get: (id) => sessions.get(id), list: () => [...sessions.values()] },
     agents: {
@@ -157,6 +183,7 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       },
       async readEvent({ sessionId, seq }) {
         if (sessionId === "session-dormant" && seq === 8) return { session: { id: "session-dormant" }, target: dormant[0], events: [dormant[0]] };
+        if (sessionId === "session-dormant-unlisted" && seq === 8) return { session: { id: "session-dormant-unlisted" }, target: dormantUnlisted[0], events: [dormantUnlisted[0]] };
         if (sessionId === "session-wrong" && seq === 8) return { session: { id: "other-session" }, target: dormant[0], events: [dormant[0]] };
         if (sessionId === "session-read-error" || sessionId === "session-active-read-error") throw new Error("sensitive host path /home/mark/private/session.zstd");
         if (sessionId === "session-missing") throw Object.assign(new Error("missing storage path"), { code: "SESSION_QUERY_SESSION_NOT_FOUND" });
@@ -218,6 +245,13 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       for (let i = 0; i < 50 && !res.ended; i++) await new Promise((resolve) => setTimeout(resolve, 2));
       return res;
     };
+    // 大载荷用例（8 MiB+ JSON 校验）需要更宽的就绪等待预算。
+    const callSlow = async (url, options = {}, attempts = 600) => {
+      const res = response();
+      route?.handler(request(url, options), res);
+      for (let i = 0; i < attempts && !res.ended; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      return res;
+    };
     const unauthorized = await call("/m/api/bootstrap", { token: null });
     check("缺 token 返回 401", unauthorized.statusCode === 401 && unauthorized.json?.error === "auth-required", JSON.stringify(unauthorized.json));
     const wrongToken = await call("/m/api/bootstrap", { token: "wrong" });
@@ -238,6 +272,47 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     );
     const snapshotDetail = await call("/m/api/event-detail?sessionId=session-1&seq=19");
     check("event-detail 不泄露压缩摘要快照", snapshotDetail.statusCode === 404 && snapshotDetail.json?.error === "event-not-found", JSON.stringify(snapshotDetail.json));
+    // PR #24 复核（阻断级泄露）：LLM 请求快照既不出现在 history，也不能经详情端点取回。
+    check(
+      "history 不返回 LLM 请求快照",
+      !fullHistory.json?.events?.some((e) => e.type.includes("llm-request")),
+      JSON.stringify(fullHistory.json?.events?.map((e) => e.type)),
+    );
+    const titleRequestSummary = fullHistory.json?.events?.find((e) => e.type === "session/title-llm-request");
+    check("LLM 请求快照不出现在任何摘要里", titleRequestSummary === undefined, JSON.stringify(titleRequestSummary));
+    const titleRequestDetail = await call("/m/api/event-detail?sessionId=session-1&seq=21");
+    check(
+      "event-detail 不泄露标题 LLM 请求快照（system prompt/messages）",
+      titleRequestDetail.statusCode === 404
+        && titleRequestDetail.json?.error === "event-not-found"
+        && !JSON.stringify(titleRequestDetail.json).includes("SYSTEM-PROMPT-SECRET"),
+      JSON.stringify(titleRequestDetail.json),
+    );
+    const searchRequestDetail = await call("/m/api/event-detail?sessionId=session-1&seq=22");
+    check(
+      "event-detail 不泄露 web 搜索 LLM 请求快照",
+      searchRequestDetail.statusCode === 404
+        && searchRequestDetail.json?.error === "event-not-found"
+        && !JSON.stringify(searchRequestDetail.json).includes("SEARCH-SYSTEM-SECRET")
+        && !JSON.stringify(searchRequestDetail.json).includes("mark"),
+      JSON.stringify(searchRequestDetail.json),
+    );
+    // fail-closed：未命名/未知可见事件仍保留在 history（事件保真契约），但不再给详情指针。
+    const unlistedSummary = fullHistory.json?.events?.find((e) => e.type === "request/something-new");
+    check(
+      "未知可见事件仍保留在 history",
+      unlistedSummary !== undefined && unlistedSummary.seq === 23 && unlistedSummary.data === undefined,
+      JSON.stringify(unlistedSummary),
+    );
+    check("未知可见事件不再声明详情指针", unlistedSummary?.detail === undefined, JSON.stringify(unlistedSummary?.detail));
+    const unlistedDetail = await call("/m/api/event-detail?sessionId=session-1&seq=23");
+    check(
+      "event-detail 对未列入 allow-list 的未知类型 fail-closed（404，非 200 泄露）",
+      unlistedDetail.statusCode === 404
+        && unlistedDetail.json?.error === "event-not-found"
+        && !JSON.stringify(unlistedDetail.json).includes("UNNAMED-SYSTEM-SECRET"),
+      JSON.stringify(unlistedDetail.json),
+    );
     const badAfter = await call("/m/api/history?sessionId=session-1&after=12junk");
     check("history 校验 malformed after", badAfter.statusCode === 400 && badAfter.json?.error === "bad-request", JSON.stringify(badAfter.json));
     const emptyBefore = await call("/m/api/history?sessionId=session-1&before=");
@@ -250,6 +325,14 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     check("event-detail 不泄露 request/header", hiddenDetail.statusCode === 404 && hiddenDetail.json?.error === "event-not-found", JSON.stringify(hiddenDetail.json));
     const dormantDetail = await call("/m/api/event-detail?sessionId=session-dormant&seq=8");
     check("dormant event-detail 使用 sessionQuery", dormantDetail.json?.event?.data?.dormant === true, `${dormantDetail.json?.error ?? ''} ${wireWarnings.at(-1) ?? ''}`);
+    const dormantUnlistedDetail = await call("/m/api/event-detail?sessionId=session-dormant-unlisted&seq=8");
+    check(
+      "event-detail 在 sessionQuery 路径同样 fail-closed",
+      dormantUnlistedDetail.statusCode === 404
+        && dormantUnlistedDetail.json?.error === "event-not-found"
+        && !JSON.stringify(dormantUnlistedDetail.json).includes("DORMANT-SECRET"),
+      JSON.stringify(dormantUnlistedDetail.json),
+    );
     const readFailureDetail = await call("/m/api/event-detail?sessionId=session-read-error&seq=8");
     check(
       "event-detail 读取异常返回稳定 500 且不泄露原始错误",
@@ -305,6 +388,13 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     );
     const wrongSessionDetail = await call("/m/api/event-detail?sessionId=session-wrong&seq=8");
     check("event-detail 校验 query session identity", wrongSessionDetail.statusCode === 404, JSON.stringify(wrongSessionDetail.json));
+    // 8 MiB 上限（PR #24 复核补测）：allow-list 内的大事件仍受体积上限保护，返回 413。
+    const hugeDetail = await callSlow("/m/api/event-detail?sessionId=session-huge&seq=1");
+    check(
+      "event-detail 超过 8 MiB 返回 413 event-detail-too-large",
+      hugeDetail.statusCode === 413 && hugeDetail.json?.error === "event-detail-too-large",
+      `${hugeDetail.statusCode} ${JSON.stringify(hugeDetail.json)} ${wireWarnings.at(-1) ?? ''}`,
+    );
     const badDetail = await call("/m/api/event-detail?sessionId=session-1&seq=not-a-number");
     check("event-detail 校验 seq", badDetail.statusCode === 400 && badDetail.json?.error === "bad-request", JSON.stringify(badDetail.json));
     const emptyDetail = await call("/m/api/event-detail?sessionId=session-1&seq=");

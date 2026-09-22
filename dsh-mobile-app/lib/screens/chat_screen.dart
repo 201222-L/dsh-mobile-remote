@@ -2856,14 +2856,20 @@ class _ChatScreenState extends State<ChatScreen> {
       : 'event:${item.eventType}:${item.seq ?? item.text}';
 
   void _autoLoadFailureDetail(_MsgItem item) {
-    final key = '${_failureKey(item)}:${item.detailSeq ?? item.seq}';
-    if (_failureDetailRequests.add(key)) _loadEventDetail(item);
+    // 只有服务端声明了详情指针（detail.available）的类型才自动拉取：allow-list 之外的
+    // 协议元数据/未命名事件没有指针，自动拉只会打出 404 与错误码（debug 模式尤甚）。
+    if (!item.detailAvailable) return;
+    _loadEventDetail(item);
   }
 
   Future<void> _loadEventDetail(_MsgItem item) async {
     final id = _mySessionId ?? widget.store.sessionId;
     final detailSeq = item.detailSeq ?? item.seq;
     if (id == null || detailSeq == null || item.detailLoading || !_api.timelineCapabilities.detail) return;
+    // 去重登记下沉到唯一入口：手动展开此前不登记，卡片重锚重建后会对同一 (卡, detailSeq)
+    // 再发一次 HTTP；失败时移除登记，保证「重试」按钮仍能重新请求。
+    final requestKey = '${_failureKey(item)}:$detailSeq';
+    if (!_failureDetailRequests.add(requestKey)) return;
     final generation = _loadGeneration;
     final loading = item.kind == _MsgKind.tool
         ? item.copyTool(detailLoading: true, clearDetailError: true)
@@ -2894,10 +2900,17 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       if (current.kind == _MsgKind.tool) {
-        final args = data['arguments'] is String ? data['arguments'] as String : (data['arguments'] == null ? current.toolArguments : JsonEncoder.withIndent('  ').convert(data['arguments']));
+        // 详情是**原始事件**（服务端上限 8 MiB）——渲染前统一截断，避免超长参数/结果进 markdown。
+        final rawArgs = data['arguments'] is String
+            ? data['arguments'] as String
+            : (data['arguments'] == null
+                ? current.toolArguments
+                : JsonEncoder.withIndent('  ').convert(data['arguments']));
+        final args = clampTimelineDetailText(rawArgs);
         final directResult = textOf(data['text']);
         final nestedResult = textOf(data['result']).isNotEmpty ? textOf(data['result']) : textOf(data['message']);
-        final result = directResult.isNotEmpty ? directResult : (nestedResult.isNotEmpty ? nestedResult : current.toolResult);
+        final result = clampTimelineDetailText(
+            directResult.isNotEmpty ? directResult : (nestedResult.isNotEmpty ? nestedResult : current.toolResult));
         setState(() => _replaceTimelineItem(item, current.copyTool(
           arguments: args,
           result: result,
@@ -2916,7 +2929,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // blocksToText 口径，已跳过 reasoning/内部块）。**不得**递归拼接 message.content
         // ——那会把 reasoning 并进正文，使思维链在折叠块之外重复出现。
         final canonical = timelineDetailText(data);
-        final fullText = canonical ?? '';
+        final fullText = clampTimelineDetailText(canonical ?? '');
         setState(() => _replaceTimelineItem(item, current.copyAssistant(
           text: fullText.isNotEmpty ? fullText : current.text,
           rawData: full,
@@ -2939,6 +2952,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
+      _failureDetailRequests.remove(requestKey); // 允许用户点「重试」重新请求
       final current = _currentTimelineItem(item);
       if (current == null || ((current.kind == _MsgKind.tool || current.kind == _MsgKind.assistant) && current.detailSeq != detailSeq)) return;
       final code = e is ApiException ? (e.code ?? 'event-detail-unavailable') : 'event-detail-unavailable';

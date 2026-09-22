@@ -180,9 +180,17 @@
 - `before`（可选）：**上翻分页**——只返回 `seq < before` 的最近 `limit` 条事件（对话内滚动到顶部加载更早）。
 - 三种模式优先级：`after` > `before` > 初始加载（缺省时返回最近 `limit` 条，即尾部）。
 - `limit`（可选，默认 500，上限 1000）：最多返回条数
-**过滤规则**：返回可进入 Conversation timeline 的事件；`assistant/chunk` / `assistant/live-chunk` 只用于实时草稿，`agent/inbox/spliced` 由队列投影承载，`request/header`（含 system prompt/tool schema）、`request/context`、`session/end-seed`、`step/start`、`step/end`、`system/message`、`assistant/attempt`（重试/中断的原始 stream 记录）与 `compaction/start` / `compaction/summary` / `compaction/prune` / `compaction/end`（压缩生命周期；summary 正文即替换 shadowed 区间后的上下文快照）属于内部/重建/快照元数据，历史、实时与 3.5b 详情三处都不返回。`compaction/end` 作为不落卡片的实时控制帧通知 App 重新加载 durable snapshot。未知 type（即使带 `ignorable: true`）保留 `seq`/`type` 和详情指针，不能因客户端尚未认识类型而静默丢弃。完整原始事件通过 3.5b 按需读取。
+**过滤规则**：返回可进入 Conversation timeline 的事件；`assistant/chunk` / `assistant/live-chunk` 只用于实时草稿，`agent/inbox/spliced` 由队列投影承载，`request/header`（含 system prompt/tool schema）、`request/context`、`session/title-llm-request` / `web/deepseek-search-llm-request`（LLM 请求快照：data 含 `system` 系统提示词与 `messages` 对话正文）、`session/end-seed`、`step/start`、`step/end`、`system/message`、`assistant/attempt`（重试/中断的原始 stream 记录）与 `compaction/start` / `compaction/summary` / `compaction/prune` / `compaction/end`（压缩生命周期；summary 正文即替换 shadowed 区间后的上下文快照）属于内部/重建/快照元数据，历史、实时与 3.5b 详情三处都不返回。`compaction/end` 作为不落卡片的实时控制帧通知 App 重新加载 durable snapshot。
 
-> 客户端呈现约定：`session/title`、`model/selection`、`sandbox/mode`、`agent-preset/selected`、`subagent/*`、`team/*`、`feedback/*`、`command/*`、`approval/policy`、`tool/ptc-dispatch*`、`goal/change` 属协议/运行时元数据——仍下发并保留 `seq` 与详情指针，但普通模式不渲染，调试模式可展开审阅（见 05-test-cases F-34）。`approval/asked` / `approval/decided` 是 durable 审批记录，普通模式以可读标题呈现（历史回放的权威源；问询只有瞬态帧，不保证回放）。
+未知 type（即使带 `ignorable: true`）**保留 `seq`/`type` 进入时间线**（事件保真：不能因客户端尚未认识类型而静默丢弃），但**不下发详情指针**——`detail.available` 只对下方 allow-list 内的可见类型为真，其余类型调 3.5b 返回 `404 event-not-found`。这保证「新类型照常可见」与「未命名记录的原始载荷不外泄」同时成立（fail-closed）。
+
+**详情可见类型（allow-list）**：`user/message`、`assistant/message`、`tool/call`、`tool/result`、`todo/write`、`turn/start`、`turn/end`。
+
+判定依据：这几类正是 `summarizeEventCore` **逐个类型显式审过载荷**并下发给 App 的类型；其余类型走 default 分支只给 `{seq, type}`，App 从不消费其 data。`assistant/chunk` / `assistant/live-chunk` 虽被 App 消费，但属于实时草稿（不落 durable 历史），故不在名单内。
+
+**有意的 fail-closed 取舍**：`approval/*`、`question/*`、`session/jobs`、`session/title`、`subagent/*`、`command/*`、`tool/ptc-dispatch*` 这些 App 会渲染卡片、但插件**尚未审过载荷**的类型当前**不在** allow-list —— 调试模式下展开这类卡片会显示「详情不可用」。原因是它们可能携带 prompt / 命令正文（如 `subagent/descriptor`、`command/run`）。要放行某个类型，需先逐类型审计载荷，然后**同时**改服务端 `DETAIL_VISIBLE_TYPES` 与 App 侧详情入口白名单。
+
+> 客户端呈现约定：`session/title`、`model/selection`、`sandbox/mode`、`agent-preset/selected`、`subagent/*`、`team/*`、`feedback/*`、`command/*`、`approval/policy`、`tool/ptc-dispatch*`、`goal/change`、`plan/mode`、`permission/preset`、`schedule/change`、`hook/*`、`llm/retry*`、`deliverables/presented`、`tool-workflow/*`、`session-log-deepseek/delivery-accepted`、`subagent/model-selection-policy` 属协议/运行时元数据——仍下发并保留 `seq`，但普通模式不渲染，调试模式可展开审阅（见 05-test-cases F-34）。`approval/asked` / `approval/decided` 是 durable 审批记录，普通模式以可读标题呈现（历史回放的权威源；问询只有瞬态帧，不保证回放）。
 **响应 200**
 
 ```json
@@ -223,7 +231,9 @@
 
 当服务端只能从 seeded session 的当前 surface 读取时，成功响应额外包含 `"degraded": true, "detailMode": "current-surface"`；客户端必须保留该元数据并提示详情可能不完整。详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。
 
-稳定错误矩阵：`session-not-found`（会话不存在）、`event-not-found`（seq 不存在/不可见）、`session-corrupt`（会话数据损坏）、`event-read-failed`（读取失败）和 `event-detail-too-large`（超过 8 MiB）。错误响应不得泄露主机路径或原始异常；旧服务端未保存详情时客户端显示安全错误并提供重试，不猜测重建。
+稳定错误矩阵：`session-not-found`（会话不存在）、`event-not-found`（seq 不存在/不可见/无详情权限）、`session-corrupt`（会话数据损坏）、`event-read-failed`（读取失败）和 `event-detail-too-large`（超过 8 MiB）。错误响应不得泄露主机路径或原始异常；旧服务端未保存详情时客户端显示安全错误并提供重试，不猜测重建。
+
+> 命名说明：本端点的读取失败码是 **`event-read-failed`**（单事件级），与 `/m/api/history` 的 **`session-read-failed`**（整会话回放失败）语义不同，**不要**为"统一"而合并——App 侧对两者有各自的文案与重试路径。
 
 **规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。`tool/result` 等其它类型的详情仍以原始事件载荷为准；原始 `message` 块原样保留。
 
