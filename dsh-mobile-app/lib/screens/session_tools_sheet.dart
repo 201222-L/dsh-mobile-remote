@@ -1,26 +1,58 @@
 // 会话工具弹层（v2.7）：任务（后台任务）/ 子代理 / 目标 三个页签。
 // 数据与 PC 端同源：任务走 session/jobs 帧 + /api/jobs；子代理/目标走插件端点。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../api.dart';
 import '../l10n.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
+import 'chat_screen.dart';
 
-void showSessionToolsSheet(BuildContext context, AppStore store, String sessionId) {
-  showModalBottomSheet(
+/// 打开会话工具面板。
+///
+/// [onTitleChanged] 由调用方（聊天页）透传：跳进子代理会话后，标题变化仍能同步到会话列表。
+/// [apiClient] 仅供测试注入（与 `ChatScreen.apiClient` 同款）；生产路径传 null 即用全局 `api`。
+void showSessionToolsSheet(BuildContext context, AppStore store, String sessionId,
+    {VoidCallback? onTitleChanged, Api? apiClient}) {
+  // 面板关闭与子会话跳转都挂在**调用方上下文**上——面板自己的 ctx 在 pop 之后就不能再用。
+  final navigator = Navigator.of(context);
+  showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Theme.of(context).colorScheme.surface,
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-    builder: (ctx) => _SessionToolsSheet(store: store, sessionId: sessionId),
+    builder: (ctx) => _SessionToolsSheet(
+      store: store,
+      sessionId: sessionId,
+      apiClient: apiClient,
+      // #11 复核补正：子代理行可点 → 跳到该子代理会话。
+      // 走统一入口 openChat，返回时恢复原会话（与「分支」流程同款语义：顺路看一眼，不改主会话）。
+      onOpenSubagent: (childId) {
+        navigator.pop();
+        unawaited(openChat(context, store, childId,
+            onTitleChanged: onTitleChanged ?? () {},
+            apiClient: apiClient,
+            onReturn: () async {
+          if (sessionId != childId) await store.setSession(sessionId);
+        }));
+      },
+    ),
   );
 }
 
 class _SessionToolsSheet extends StatefulWidget {
   final AppStore store;
   final String sessionId;
-  const _SessionToolsSheet({required this.store, required this.sessionId});
+  final void Function(String childSessionId) onOpenSubagent;
+  final Api? apiClient;
+  const _SessionToolsSheet({
+    required this.store,
+    required this.sessionId,
+    required this.onOpenSubagent,
+    this.apiClient,
+  });
 
   @override
   State<_SessionToolsSheet> createState() => _SessionToolsSheetState();
@@ -58,8 +90,12 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
                 child: TabBarView(
                   children: [
                     _JobsTab(store: widget.store, sessionId: widget.sessionId),
-                    _SubagentsTab(sessionId: widget.sessionId),
-                    _GoalTab(sessionId: widget.sessionId),
+                    _SubagentsTab(
+                      sessionId: widget.sessionId,
+                      onOpenSubagent: widget.onOpenSubagent,
+                      apiClient: widget.apiClient,
+                    ),
+                    _GoalTab(sessionId: widget.sessionId, apiClient: widget.apiClient),
                   ],
                 ),
               ),
@@ -203,7 +239,9 @@ class _JobsTabState extends State<_JobsTab> {
 // ── 子代理页签 ──
 class _SubagentsTab extends StatefulWidget {
   final String sessionId;
-  const _SubagentsTab({required this.sessionId});
+  final void Function(String childSessionId) onOpenSubagent;
+  final Api? apiClient;
+  const _SubagentsTab({required this.sessionId, required this.onOpenSubagent, this.apiClient});
 
   @override
   State<_SubagentsTab> createState() => _SubagentsTabState();
@@ -224,7 +262,7 @@ class _SubagentsTabState extends State<_SubagentsTab> {
   Future<void> _load() async {
     setState(() => _subs = null);
     try {
-      final list = await api.subagents(widget.sessionId);
+      final list = await (widget.apiClient ?? api).subagents(widget.sessionId);
       if (!mounted) return;
       setState(() => _subs = list);
     } catch (e) {
@@ -237,7 +275,7 @@ class _SubagentsTabState extends State<_SubagentsTab> {
     if (_interruptBusy) return;
     _interruptBusy = true;
     try {
-      await api.subagentInterrupt(widget.sessionId, childId);
+      await (widget.apiClient ?? api).subagentInterrupt(widget.sessionId, childId);
       if (mounted) showToast(context, L10n.t('已请求中断子代理', 'Interrupt requested'));
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('中断失败：', 'Interrupt failed: ')}$e');
@@ -281,40 +319,45 @@ class _SubagentsTabState extends State<_SubagentsTab> {
           final s = subs[i];
           final id = (s['id'] as String? ?? '').toString();
           final running = s['status'] == 'running';
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(
-              children: [
-                Icon(Icons.polyline_outlined, size: 16, color: warn),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        (s['title'] as String? ?? id).toString(),
-                        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        [id, (s['status'] as String? ?? '').toString()].join(' · '),
-                        style: TextStyle(fontSize: 11.5, color: ink3),
-                      ),
-                    ],
-                  ),
-                ),
-                if (running)
-                  TextButton(
-                    onPressed: () => _interrupt(id),
-                    style: TextButton.styleFrom(
-                      minimumSize: const Size(0, 30),
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          return InkWell(
+            // v3.1.5（#11 复核补正）：整行可点 → 跳到该子代理会话；右侧箭头提示可进入。
+            onTap: id.isEmpty ? null : () => widget.onOpenSubagent(id),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.polyline_outlined, size: 16, color: warn),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          (s['title'] as String? ?? id).toString(),
+                          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          [id, (s['status'] as String? ?? '').toString()].join(' · '),
+                          style: TextStyle(fontSize: 11.5, color: ink3),
+                        ),
+                      ],
                     ),
-                    child: Text(L10n.t('中断', 'Interrupt'), style: TextStyle(fontSize: 12, color: danger)),
                   ),
-              ],
+                  if (running)
+                    TextButton(
+                      onPressed: () => _interrupt(id),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 30),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(L10n.t('中断', 'Interrupt'), style: TextStyle(fontSize: 12, color: danger)),
+                    ),
+                  if (id.isNotEmpty) Icon(Icons.chevron_right, size: 18, color: ink3),
+                ],
+              ),
             ),
           );
         },
@@ -326,7 +369,8 @@ class _SubagentsTabState extends State<_SubagentsTab> {
 // ── 目标页签 ──
 class _GoalTab extends StatefulWidget {
   final String sessionId;
-  const _GoalTab({required this.sessionId});
+  final Api? apiClient;
+  const _GoalTab({required this.sessionId, this.apiClient});
 
   @override
   State<_GoalTab> createState() => _GoalTabState();
@@ -357,7 +401,7 @@ class _GoalTabState extends State<_GoalTab> {
       _error = null;
     });
     try {
-      final g = await api.goal(widget.sessionId);
+      final g = await (widget.apiClient ?? api).goal(widget.sessionId);
       if (!mounted) return;
       setState(() {
         _goal = g;
@@ -372,7 +416,7 @@ class _GoalTabState extends State<_GoalTab> {
   Future<void> _act(String action, {String? objective}) async {
     setState(() => _busy = true);
     try {
-      await api.goalAction(action, sessionId: widget.sessionId, objective: objective);
+      await (widget.apiClient ?? api).goalAction(action, sessionId: widget.sessionId, objective: objective);
       if (mounted) showToast(context, '${L10n.t('已', '')}${action == 'create' ? L10n.t('创建', 'Created') : action}');
       if (action == 'create') _objCtrl.clear();
     } catch (e) {

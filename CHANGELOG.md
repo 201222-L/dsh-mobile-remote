@@ -3,7 +3,7 @@
 ## v3.1.5（2026-09-22，issue #12 / #15 / #19 / #22 / #24，PR #11 / #18 / #21）— 对话时间线 + 用量额度 + 复制对话 + 安全加固
 
 > 版本：插件 `3.1.5` / App `3.1.5+22`。
-> 验收门禁：`node --test test/*.mjs`（28）、`node tools/timeline-contract-check.mjs`（77）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（132）。
+> 验收门禁：`node --test test/*.mjs`（28）、`node tools/timeline-contract-check.mjs`（77）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（133）。
 
 ### 对话时间线（工具调用与事件详情）
 
@@ -36,6 +36,7 @@
 - **错误文本路径脱敏**：`/send`、`rpcError`、`/files`、`/directions` 等不再把内核原始 message（含主机绝对路径/cwd）回客户端；`pushContent: "standard"` 的推送正文同样脱敏。
 - **上传边界**：指定会话无法解析或会话无 cwd → 404（不再静默写进首个工作区根）；文件名黑名单补 `\0`。
 - **App 侧**：修复陈旧 agent 状态导致的"发送键变停止 / 消息被静默转排队"（bootstrap 改为全量权威重建）、详情按钮一旦加载成功即永久失效、调试模式 24 万字符原文进 `SelectableText`、缩略图全分辨率解码（OOM）、问询卡换人时的 null-check 崩溃、叠层场景取消问询静默失败。
+- **子代理面板行可点（#11 复核补正）**：会话工具 →「子代理」原来只是纯展示（行上没有 `onTap`），现在整行可点 → 跳进该子代理会话，右侧补箭头提示；走统一入口 `openChat`，**返回时恢复原会话**（与「分支」流程同款语义：顺路看一眼，不改主会话）。`showSessionToolsSheet` / `openChat` 增加仅测试用的 `apiClient` 注入位（与 `ChatScreen.apiClient` 同款，生产路径传 null 即用全局 `api`），并新增回归 `subagent_row_navigation_test.dart`（面板不切会话 → 点行切到子会话且推入会话页 → 返回恢复原会话）。
 - **SSE 事件流取消窗口的连接泄漏**：`eventsRaw()` 判不出「订阅已取消」—— Dart 的 `StreamController.isClosed` 只反映 `closed` 位、不反映 `canceled` 位（取消后仍为 false，且取消后的 `add()` 不抛错）。取消窗口内晚到的响应于是挂上一条**无人再取消**的响应流：连接永不释放、线性累积；服务端用 `connections.size` 做配额依据（`maxConnections` 默认 16），攒满后手机直接 `503 too-many-connections`，且服务端会误判「手机在线」（审批 fail-close 判据被污染）——症状就是「必须把 App 划掉重开」。修复为显式 `cancelled` 标志；真机触发路径：`resume()`（bootstrap 失败 / 旧流 >45s 无心跳）、`switchBase()` → `disposeBridge()`、`_reconfigure()`。
 - **新增 SSE 与 #13 回归测试 5 个文件**：假 SSE 宿主（`bufferOutput=false` + 帧推送 + 条件轮询 + 请求计数）、API 层收帧与分帧、store 连接态与分发、`turn/end` → 无回复条目 → 兜底补拉全量 `/api/history`、取消窗口残留连接（修复前 0/1/3 → 修复后 0/0/0）。
 - **排查澄清（#13）**：`/compact` 后首条回复丢失的修复本身没有问题 —— 此前端到端用例跑不通是**测试载体**限制：dart:io `HttpResponse.bufferOutput` 默认 `true` 时，<8KB 的 SSE 帧既不上线也不受显式 `await flush()` 影响（实测 298B/2990B → 0 字节，8990B → 8106B），所以「有时收不到帧」与帧体积相关；关掉该缓冲后三层用例全部稳定通过。

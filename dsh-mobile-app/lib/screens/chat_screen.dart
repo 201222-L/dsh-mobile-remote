@@ -84,14 +84,15 @@ bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool i
 
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
+/// [apiClient] 仅供测试注入（与 `ChatScreen.apiClient` 同款）；生产路径传 null 即用全局 `api`。
 Future<void> openChat(BuildContext context, AppStore store, String sessionId,
-    {VoidCallback? onTitleChanged, Future<void> Function()? onReturn}) async {
+    {VoidCallback? onTitleChanged, Future<void> Function()? onReturn, Api? apiClient}) async {
   await store.setSession(sessionId);
   store.refreshSessionConfig();
   if (!context.mounted) return;
   await Navigator.of(context).push(
     MaterialPageRoute(
-      builder: (_) => ChatScreen(store: store, onTitleChanged: onTitleChanged ?? () {}),
+      builder: (_) => ChatScreen(store: store, onTitleChanged: onTitleChanged ?? () {}, apiClient: apiClient),
     ),
   );
   if (onReturn != null) await onReturn();
@@ -2075,7 +2076,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    showSessionToolsSheet(context, widget.store, sid);
+    showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
   }
 
   /// 执行消息操作（v2.8.0：常驻操作栏入口）：copy / positive / negative / fork。
@@ -2196,7 +2197,7 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
             onPressed: () {
               final sid = _mySessionId;
-              if (sid != null) showSessionToolsSheet(context, widget.store, sid);
+              if (sid != null) showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
             },
           ),
           // v3.1.5（issue #15）：会话级复制入口（范围=当前已加载的消息，见 _conversationText）
