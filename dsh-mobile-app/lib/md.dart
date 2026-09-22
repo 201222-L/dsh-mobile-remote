@@ -314,36 +314,112 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
 }
 
 /// 表格（对齐 .md-table：边框、表头灰底、nowrap）。
-Widget _buildTable(List<String> rows, BuildContext context, Color line, Color ink) {  List<String> parseRow(String l) =>
+///
+/// 缺陷修复（GitLab !3）：此前每行是独立 `Row`、单元格各取自然宽，导致同一列在不同行的
+/// x 起点相差数百像素、边框呈阶梯状错位（观感像内容跑到表格外）；且单元格用裸 `Text`，
+/// 行内 Markdown（`**加粗**`、`` `code` ``、链接）会把标记原样显示。现改为：
+/// 1. **共享列宽**——先测量每列的最大自然宽（含表头），所有行共用同一组宽度；
+/// 2. 单元格复用 [_InlineText]，与段落同一套行内解析；
+/// 3. 边框改为「单一外框 + 行/列单线分隔」，同行单元格等高，不再出现双线与断框。
+///
+/// 列宽 = 内容自然宽、不换行、不设上限；整表超宽时仍横向滚动（行为与网页端 `.md-table`
+/// 的 nowrap 一致）。
+Widget _buildTable(List<String> rows, BuildContext context, Color line, Color ink) {
+  List<String> parseRow(String l) =>
       l.trim().replaceAll(RegExp(r'^\||\|$'), '').split('|').map((s) => s.trim()).toList();
   final head = parseRow(rows[0]);
   final body = <List<String>>[];
   for (var i = 2; i < rows.length; i++) {
     body.add(parseRow(rows[i]));
   }
-  Widget cell(String text, {bool header = false}) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+
+  const hPad = 9.0; // 单元格左右内边距
+  const vPad = 5.0; // 单元格上下内边距
+  const fontSize = 13.0;
+
+  TextStyle cellStyle({bool header = false}) => TextStyle(
+        fontSize: fontSize,
+        fontWeight: header ? FontWeight.w600 : FontWeight.w400,
+        color: ink,
+      );
+
+  var colCount = head.length;
+  for (final r in body) {
+    if (r.length > colCount) colCount = r.length;
+  }
+  if (colCount == 0) return const SizedBox.shrink();
+
+  // 用与渲染完全相同的 spans（含粗体/代码样式）测量，并按系统字号缩放；
+  // 否则粗体或放大字号下测量偏小，单元格会意外换行。
+  final textScaler = MediaQuery.textScalerOf(context);
+  // 必须与渲染路径同源：`_InlineText` 的 Text.rich 会把样式并入 ambient DefaultTextStyle
+  // （字体族/度量都参与），只按裸 style 测量会偏小 → 单元格意外换行。
+  final ambient = DefaultTextStyle.of(context).style;
+  double measure(String text, {required bool header}) {
+    final style = ambient.merge(cellStyle(header: header));
+    final tp = TextPainter(
+      text: TextSpan(children: _inlineSpans(text, context), style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: textScaler,
+      maxLines: 1,
+    )..layout();
+    return tp.width;
+  }
+
+  final widths = List<double>.filled(colCount, 0);
+  for (var c = 0; c < colCount; c++) {
+    var w = c < head.length ? measure(head[c], header: true) : 0.0;
+    for (final r in body) {
+      if (c < r.length) {
+        final m = measure(r[c], header: false);
+        if (m > w) w = m;
+      }
+    }
+    // +1 抵消亚像素取整，保证不换行
+    widths[c] = w + hPad * 2 + 1;
+  }
+
+  Widget cell(String text, int c,
+          {required bool header, required bool lastRow, required bool lastCol}) =>
+      Container(
+        width: widths[c],
+        padding: const EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
         decoration: BoxDecoration(
-          border: Border.all(color: line),
           color: header ? line : null,
-        ),
-        child: Text(
-          text,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: header ? FontWeight.w600 : FontWeight.w400,
-            color: ink,
+          // 内部只画右/下分隔线，最后一行/列不画；外框由外层容器统一提供 → 单线不重叠
+          border: Border(
+            right: lastCol ? BorderSide.none : BorderSide(color: line),
+            bottom: lastRow ? BorderSide.none : BorderSide(color: line),
           ),
         ),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: _InlineText(text, style: cellStyle(header: header)),
+        ),
       );
+
+  Widget row(List<String> cells, {required bool header, required bool lastRow}) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var c = 0; c < colCount; c++)
+            cell(c < cells.length ? cells[c] : '', c,
+                header: header, lastRow: lastRow, lastCol: c == colCount - 1),
+        ],
+      );
+
   return SingleChildScrollView(
     scrollDirection: Axis.horizontal,
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(children: [for (final h in head) cell(h, header: true)]),
-        for (final row in body) Row(children: [for (final c in row) cell(c)]),
-      ],
+    child: Container(
+      decoration: BoxDecoration(border: Border.all(color: line)),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          row(head, header: true, lastRow: body.isEmpty),
+          for (var r = 0; r < body.length; r++)
+            row(body[r], header: false, lastRow: r == body.length - 1),
+        ],
+      ),
     ),
   );
 }
