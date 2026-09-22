@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../toast.dart';
 import '../api.dart';
+import '../chat_copy.dart';
 import '../logger.dart';
 import '../l10n.dart';
 import '../models.dart';
@@ -592,35 +593,39 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLoggedCount = itemCount;
       AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length}');
     }
-    return NotificationListener<ScrollNotification>(
-      onNotification: _onLiveScroll,
-      child: ListView.builder(
-        controller: _scrollCtrl,
-        reverse: false,
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-        itemCount: itemCount,
-        itemBuilder: (context, index) {
-          // 普通列表：index 0 = 视觉顶部 → 顶部按钮/加载条 → 消息（最旧→最新）→ 草稿
-          if (topButton && index == 0) {
-            return _OlderButton(busy: _loadingMore, onTap: _openHistory);
-          }
-          if (loadingTail && index == 0) {
-            return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 10),
-              child: Center(
-                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-              ),
-            );
-          }
-          final dataIndex = index - (topButton || loadingTail ? 1 : 0);
-          if (dataIndex < _items.length) {
-            return _buildItem(_items[_items.length - 1 - dataIndex]);
-          }
-          if (hasDraft) {
-            return _AssistantBubble(text: _draft, streaming: true);
-          }
-          return const SizedBox.shrink();
-        },
+    // v3.1.5（issue #15）：整条消息流包一层 SelectionArea —— 普通 Text 也能长按选中复制，
+    // 且不引入 SelectableText（后者在部分 Android 设备上长文本换行/重叠渲染异常，见 md.dart 注释）。
+    return SelectionArea(
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _onLiveScroll,
+        child: ListView.builder(
+          controller: _scrollCtrl,
+          reverse: false,
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+          itemCount: itemCount,
+          itemBuilder: (context, index) {
+            // 普通列表：index 0 = 视觉顶部 → 顶部按钮/加载条 → 消息（最旧→最新）→ 草稿
+            if (topButton && index == 0) {
+              return _OlderButton(busy: _loadingMore, onTap: _openHistory);
+            }
+            if (loadingTail && index == 0) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Center(
+                  child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                ),
+              );
+            }
+            final dataIndex = index - (topButton || loadingTail ? 1 : 0);
+            if (dataIndex < _items.length) {
+              return _buildItem(_items[_items.length - 1 - dataIndex]);
+            }
+            if (hasDraft) {
+              return _AssistantBubble(text: _draft, streaming: true);
+            }
+            return const SizedBox.shrink();
+          },
+        ),
       ),
     );
   }
@@ -665,15 +670,47 @@ class _ChatScreenState extends State<ChatScreen> {
         Expanded(
           child: _histItems.isEmpty
               ? Center(child: Text(L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages')))
-              : ListView.builder(
-                  controller: _scrollCtrl,
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-                  itemCount: _histItems.length,
-                  itemBuilder: (context, index) => _buildItem(_histItems[index]),
+              : SelectionArea(
+                  child: ListView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+                    itemCount: _histItems.length,
+                    itemBuilder: (context, index) => _buildItem(_histItems[index]),
+                  ),
                 ),
         ),
       ],
     );
+  }
+
+  /// v3.1.5（issue #15）：已加载消息 → 可复制的整段对话纯文本（时间正序）。
+  /// - live 视图用 `_items`（**最新在前**，需 reversed）
+  /// - 历史浏览视图用 `_histItems`（**旧→新**，已是正序）——复制当前正在看的那一段
+  /// 轮次分隔条不导出（正文为空的行由 conversationText 跳过）。
+  String _conversationText() {
+    final inHistory = _inHistory && _histItems.isNotEmpty;
+    final ordered = inHistory ? _histItems : _items.reversed.toList();
+    return conversationText([
+      for (final m in ordered)
+        if (m.kind != _MsgKind.divider)
+          switch (m.kind) {
+            _MsgKind.user => (m.injected ? '系统注入' : '你', m.text),
+            _MsgKind.assistant => ('助手', m.text),
+            _MsgKind.divider => ('', ''),
+          },
+    ]);
+  }
+
+  /// v3.1.5（issue #15）：复制整段对话（当前已加载的消息，含角色标注）到剪贴板。
+  Future<void> _copyConversation() async {
+    final text = _conversationText();
+    if (text.isEmpty) {
+      showToast(context, L10n.t('当前没有可复制的对话内容', 'Nothing to copy'));
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    showToast(context, L10n.t('已复制整段对话', 'Conversation copied'));
   }
 
   Future<void> _refreshUsage() async {
@@ -1886,6 +1923,12 @@ class _ChatScreenState extends State<ChatScreen> {
               if (sid != null) showSessionToolsSheet(context, widget.store, sid);
             },
           ),
+          // v3.1.5（issue #15）：会话级「复制整段对话」入口
+          IconButton(
+            icon: const Icon(Icons.copy_all, size: 20),
+            tooltip: L10n.t('复制整段对话', 'Copy whole conversation'),
+            onPressed: _copyConversation,
+          ),
         ],
       ),
       body: Column(
@@ -2504,7 +2547,20 @@ class _ChatScreenState extends State<ChatScreen> {
               userBubble(_ImagesGrid(images: images, sessionId: _mySessionId ?? '')),
             if (text.isNotEmpty)
               userBubble(Text(text, style: const TextStyle(fontSize: 15, height: 1.5))),
-            const SizedBox(height: 12),
+            // v3.1.5（issue #15）：用户消息此前没有任何复制入口（只有助手消息有操作栏）——
+            // 这里右对齐补一个「复制」，复用 _runMessageAction('copy')：复制正文 + 「已复制」提示，
+            // 与助手消息行为一致。整段选择另由 SelectionArea 承担（长按选词）。
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 2, bottom: 14),
+                child: _ActionIcon(
+                  icon: Icons.content_copy,
+                  tooltip: L10n.t('复制', 'Copy'),
+                  onTap: () => _runMessageAction(item, 'copy'),
+                ),
+              ),
+            ),
           ],
         );
       case _MsgKind.assistant:
