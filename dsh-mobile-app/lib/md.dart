@@ -313,6 +313,21 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
   return blocks;
 }
 
+/// spans → 纯文本；WidgetSpan 取其 Text child 的文字。
+/// 用于无法布局 WidgetSpan 的测量路径（见 _buildTable 的 measure）。
+String _plainTextOfSpans(List<InlineSpan> spans) {
+  final sb = StringBuffer();
+  for (final s in spans) {
+    if (s is WidgetSpan) {
+      final child = s.child;
+      if (child is Text) sb.write(child.data ?? '');
+    } else {
+      sb.write(s.toPlainText());
+    }
+  }
+  return sb.toString();
+}
+
 /// 表格（对齐 .md-table：边框、表头灰底、nowrap）。
 ///
 /// 缺陷修复（GitLab !3）：此前每行是独立 `Row`、单元格各取自然宽，导致同一列在不同行的
@@ -357,8 +372,16 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
   final ambient = DefaultTextStyle.of(context).style;
   double measure(String text, {required bool header}) {
     final style = ambient.merge(cellStyle(header: header));
+    final spans = _inlineSpans(text, context);
+    // 链接在 _inlineSpans 中是 WidgetSpan，而 WidgetSpan 无法在裸 TextPainter 里布局
+    // （需要 placeholder dimensions，否则断言 'dimensions != null' / 空指针 → 整条消息
+    // 渲染失败）。此时退化为「按 spans 还原的纯文本」测量：链接 child 只改颜色与下划线、
+    // 不改字号与字体，宽度与真实渲染一致。
+    final span = spans.any((s) => s is WidgetSpan)
+        ? TextSpan(text: _plainTextOfSpans(spans), style: style)
+        : TextSpan(children: spans, style: style);
     final tp = TextPainter(
-      text: TextSpan(children: _inlineSpans(text, context), style: style),
+      text: span,
       textDirection: TextDirection.ltr,
       textScaler: textScaler,
       maxLines: 1,
@@ -398,13 +421,19 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
         ),
       );
 
-  Widget row(List<String> cells, {required bool header, required bool lastRow}) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (var c = 0; c < colCount; c++)
-            cell(c < cells.length ? cells[c] : '', c,
-                header: header, lastRow: lastRow, lastCol: c == colCount - 1),
-        ],
+  // IntrinsicHeight + stretch：同行单元格强制等高。行内代码（等宽字体）与链接
+  // （WidgetSpan 的 Text child）的自然行高比普通文本高，若各按自然高度渲染，该行的下
+  // 边框会出现断口（阶梯状分隔线）。等高后行/列分隔线连续。
+  Widget row(List<String> cells, {required bool header, required bool lastRow}) =>
+      IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var c = 0; c < colCount; c++)
+              cell(c < cells.length ? cells[c] : '', c,
+                  header: header, lastRow: lastRow, lastCol: c == colCount - 1),
+          ],
+        ),
       );
 
   return SingleChildScrollView(
