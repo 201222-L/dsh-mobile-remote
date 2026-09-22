@@ -486,9 +486,11 @@ class Api {
   Future<void> updateQueueMessage(String sessionId, String itemId, Map<String, dynamic> action) async {
     await postJson('/api/messages', {'sessionId': sessionId, 'itemId': itemId, 'action': action});
   }
-  /// v3.0.0：返回 (messageId, note)。note=held-until-idle 表示消息被插件持存
+  /// v3.0.0：返回 (messageId, note, configDegraded)。note=held-until-idle 表示消息被插件持存
   /// （运行中排队，任务结束才释放）——排队消息不进对话窗口，只进 dock（与 PC 端一致）。
-  Future<(String, String?)> send(String sessionId, String text, {String mode = 'followup', String? requestId}) async {
+  /// v3.1.5：configDegraded=true 表示休眠会话（seeded 降级）的模型/权限/预设折叠失败、
+  /// 服务端已回退默认配置——调用方必须提示用户，否则配置被静默改写。
+  Future<(String, String?, bool)> send(String sessionId, String text, {String mode = 'followup', String? requestId}) async {
     // v2.7.2：mode=steer 插队发送（插到 agent 下一步执行）；默认 followup 排队
     final r = await postJson('/api/send', {
       'sessionId': sessionId,
@@ -496,12 +498,12 @@ class Api {
       if (mode == 'steer') 'mode': 'steer',
       'requestId': ?requestId,
     });
-    return (r['messageId'] as String? ?? '', r['note'] as String?);
+    return (r['messageId'] as String? ?? '', r['note'] as String?, r['configDegraded'] == true);
   }
 
   /// v3.0.0 图像链路：发送文本+图片（原始文件字节 base64，与 PC 端 wire 同形；不压缩）。
-  /// 返回 (accepted, note)。note=held-until-idle 表示插件持存（任务结束才释放）。
-  Future<(bool, String?)> sendImages(
+  /// 返回 (accepted, note, configDegraded)；configDegraded 语义同 [send]。
+  Future<(bool, String?, bool)> sendImages(
     String sessionId,
     String text,
     List<Map<String, dynamic>> images, {
@@ -515,7 +517,7 @@ class Api {
       if (mode == 'steer') 'mode': 'steer',
       'requestId': ?requestId,
     }, timeout: const Duration(seconds: 90));
-    return (r['accepted'] == true, r['note'] as String?);
+    return (r['accepted'] == true, r['note'] as String?, r['configDegraded'] == true);
   }
 
   /// v3.0.0(热修 05)：发送回执查询——网络层错误（reset/超时）后据此判断是否已送达。

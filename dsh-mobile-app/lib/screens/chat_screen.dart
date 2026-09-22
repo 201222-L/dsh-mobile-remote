@@ -117,6 +117,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _queueBusy = false; // v2.7.2 review：队列操作忙碌锁（防连点双发）
   int _earliestSeq = 0; // live 窗口最旧条目的 seq（"查看更早"分页起点）
   bool _historyDegraded = false; // 休眠会话降级读取（current surface）：持续提示"部分历史"
+  bool _configDegraded = false; // 休眠会话配置已回退默认（服务端 configDegraded）：持续提示
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
@@ -313,7 +314,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await api.history(id, limit: _liveMax);
       final events = page.events;
-      if (page.degraded) _historyDegraded = true;
+      // 打开/重同步会话时以本次响应为准（赋值，而非 |=）：避免上一条会话的「仅部分历史」
+      // 横幅残留到正常会话。后续增量分页（after/before）仍用 |=：任一页降级即持续提示。
+      _historyDegraded = page.degraded;
       AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
       if (!mounted) return;
       setState(() {
@@ -1445,11 +1448,18 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
-      final (mid, note) = await api.send(id, text, mode: mode, requestId: requestId);
+      final (mid, note, configDegraded) = await api.send(id, text, mode: mode, requestId: requestId);
       _pendingRequestId = null;
       _pendingSignature = null;
-      AppLog.instance.log('Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}');
+      AppLog.instance.log('Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}${configDegraded ? ' configDegraded' : ''}');
       if (!mounted) return;
+      // v3.1.5：休眠会话配置折叠失败 → 服务端已用默认模型/权限恢复该会话。必须让用户知道，
+      // 否则配置被静默改写（issue #20 验收里「configDegraded 显式标记」在 App 侧的兑现）：
+      // 置常驻横幅标记，并首次即时 toast（后续 toast 可能覆盖，横幅仍在）。
+      if (configDegraded && !_configDegraded) {
+        setState(() => _configDegraded = true);
+        showToast(context, L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'));
+      }
       // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
       _scheduleQueueRefresh();
       if (queued) {
@@ -1613,10 +1623,15 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       requestId = _pendingRequestId!;
       AppLog.instance.log('Chat: 发送(图) → $id : ${images.length} 张, 共 $total 字节${mode == 'steer' ? '（插队）' : ''}');
-      final (accepted, note) = await api.sendImages(id, text, images, mode: mode, requestId: requestId);
+      final (accepted, note, configDegraded) = await api.sendImages(id, text, images, mode: mode, requestId: requestId);
       _pendingRequestId = null;
       _pendingSignature = null;
       if (!mounted) return;
+      // v3.1.5：语义同文本发送——配置回退默认必须显式提示（常驻横幅 + 首次 toast）
+      if (configDegraded && !_configDegraded) {
+        setState(() => _configDegraded = true);
+        showToast(context, L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'));
+      }
       _scheduleQueueRefresh();
       if (!accepted) {
         // v3.0.0：先判 accepted，避免与下方 note 提示产生矛盾（不弹"已排队"却弹"未被接受"）
@@ -1891,15 +1906,27 @@ class _ChatScreenState extends State<ChatScreen> {
               onOpen: _openTools,
               onKill: _killJob,
             ),
-          // v3.1.5：休眠会话降级（current surface）常驻提示——部分历史不可恢复
-          if (_historyDegraded)
+          // v3.1.5：休眠会话降级常驻提示——历史只含 current surface / 配置已回退默认
+          if (_historyDegraded || _configDegraded)
             Container(
               width: double.infinity,
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Text(
-                L10n.t('当前仅能恢复部分历史，更早内容可能不可用', 'Only partial history available'),
-                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_historyDegraded)
+                    Text(
+                      L10n.t('当前仅能恢复部分历史，更早内容可能不可用', 'Only partial history available'),
+                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                  if (_configDegraded)
+                    Text(
+                      L10n.t('该会话配置已回退默认（模型/权限/预设）',
+                          'Session settings reverted to defaults (model/permissions)'),
+                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                ],
               ),
             ),
           // 消息流：live 视图（普通列表，最新在底部）或历史分段浏览；
