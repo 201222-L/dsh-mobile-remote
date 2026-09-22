@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased — 对话时间线（工具调用与事件详情）
+## v3.1.5（2026-09-22，issue #12 / #15 / #19 / #22 / #24，PR #11 / #18 / #21）— 对话时间线 + 用量额度 + 复制对话 + 安全加固
+
+> 版本：插件 `3.1.5` / App `3.1.5+22`。
+> 验收门禁：`node --test test/*.mjs`（28）、`node tools/timeline-contract-check.mjs`（75）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（118）。
+
+### 对话时间线（工具调用与事件详情）
 
 - 对话页新增执行时间线：工具调用按 `callId` 关联调用与结果，合并为单张 Tool activity 卡片（参数/结果/失败态可展开）；**未知但用户可见**的事件进入通用事件卡，不再因 App 尚未认识而被静默丢弃。
 - 新增**普通 / 调试**两种展示模式（设置页开关，默认普通）：普通模式只呈现对话与工具活动；调试模式额外展示原始事件与按需加载的无损详情。**行为变更**：系统注入消息与协议/运行时记录在普通模式下不再占屏（v3.1.4 是折叠块），调试模式下仍可审阅。
@@ -10,13 +15,27 @@
 - `/api/history` 的表面过滤由白名单改为 `isTimelineRecord` 黑名单，并新增 `hasMore` durable cursor 分页（`after`/`before`/`limit` 非法值 → 400，与既有参数校验一致）；降级（`historyMode: "current-surface"`）语义与 `configDegraded` 保持不变，降级会话的 `hasMore=false` **不代表历史到底**。
 - 验收门禁：`node tools/timeline-contract-check.mjs`（含「LLM 请求快照不得外泄」「未命名类型详情 404」两条新增断言）。
 
-## Unreleased — 手机用量与额度
+### 手机用量与额度
 
 - 设置 → 账户新增“用量与额度”详情页与来源数量摘要。
 - 服务端新增 `GET /m/api/account-usage`：DeepSeek CNY 余额、dsh-codex-connect 当前活动 Codex 账户配额、OpenCode Go 5h/周/月套餐窗口；凭据只在电脑端使用，来源独立失败/隐藏。
 - Codex Credits 与个人消费上限独立展示；配额显示剩余百分比、重置时间和三档风险颜色；DeepSeek 原充值与金额预警保持不变。
 - 新增服务端归一化自检 `node tools/account-usage-check.mjs` 与 App 模型测试 `usage_model_test.dart`。
 - 悬浮球面板新增「用量与额度」区块：展开时按需获取 + 客户端节流（2 分钟），不可用（旧插件 / 未配置 / 失败）时整体降级为原有单行余额；金额行保留文字（CNY 优先）、配额行只出细条与颜色、不出数字（每个进度条上方居中显示 5h / 每周 / 每月 窗口短标签）；面板不显示账户身份与附加 Codex bucket；配额窗口永不相加、不参与预警。点击区块/「详情 ▸」直达 App 用量页，「去充值」保留。顺带修复悬浮球余额取数非 CNY 优先（与详情页不一致）的问题。新增纯 Kotlin 面板模型 seam（JVM 单测 27 例）。
+
+### 安全与健壮性加固（PR #11 存活审计 + 五份全量复核）
+
+- **修复子代理与目标面板必然失败**：插件发出的 RPC 端点在宿主注册表里不存在（`subagent/list`、`subagent/interrupt`、`goal/*`）→ 改为内核真名与 wire 形状：`subagents/list`(`parentSessionId`)、`subagents/interruptByParent`(`childSessionId,parentSessionId,mode`)、`goals/create|pause|resume|complete`(`{agentId, request{objective,maxGoalRounds?}}` / `{agentId, ref{id,revision}}`)。
+- **修复问询取消/超时把 `null` 当答案交给内核**（内核读 `.answers` 抛 TypeError）：改为 `{kind:"rejected", error:{name:"UserQuestionError", message, code:"ASK_CANCELLED"}}`，四处调用点全覆盖；`/respond` 新增 `sessionId` 归属校验与 `validateQuestionAnswers` 结构校验（非法 400 且 pending 保留可重试）。
+- **修复 `/m/api/defaults` 静默提权**：改为与会话级路径同一守卫（`danger-full-access` 需 `confirmDanger===true`）+ preset 名白名单。
+- **修复 LAN 桥可被未鉴权请求崩溃**：不再把 `req.url` 原样拼进上游 URL（absolute-form 会同步抛 `ERR_INVALID_URL` → uncaughtException → 进程退出），改为正规解析 + 非 origin-form 直接 400。
+- **新增非 GET 跨站防护**：`Sec-Fetch-Site: cross-site|same-site` 或来源主机不在允许集（回环/本机网卡 IP/请求 Host/trustedHosts）→ 403；`Origin: null` 解析失败 fail-closed。App、curl、桌面原生客户端不受影响。
+- **修复浮动 promise 导致宿主退出**（`pushNotification` 未 await 未 catch → unhandled rejection 在宿主 fail-loud 下 = `exit(1)`）。
+- **修复持存队列"插队"静默丢消息**：会话无 live agent 时不再返回 200 却零投递，改为 409 `steer-unavailable` 并保留队列行。
+- **错误文本路径脱敏**：`/send`、`rpcError`、`/files`、`/directions` 等不再把内核原始 message（含主机绝对路径/cwd）回客户端；`pushContent: "standard"` 的推送正文同样脱敏。
+- **上传边界**：指定会话无法解析或会话无 cwd → 404（不再静默写进首个工作区根）；文件名黑名单补 `\0`。
+- **App 侧**：修复陈旧 agent 状态导致的"发送键变停止 / 消息被静默转排队"（bootstrap 改为全量权威重建）、详情按钮一旦加载成功即永久失效、调试模式 24 万字符原文进 `SelectableText`、缩略图全分辨率解码（OOM）、问询卡换人时的 null-check 崩溃、叠层场景取消问询静默失败。
+- 真机复验范围（下个版本装机）：时间线卡片与模式切换、用量页与悬浮球区块、复制交互、休眠会话降级横幅、子代理/目标面板、问询取消/超时、审批链路。
 
 ## v3.1.4（2026-09-16，issue #14 / #12 / #13）— 离线待答不再丢 + 任务面板 + 注入折叠 + 压缩后重同步
 
