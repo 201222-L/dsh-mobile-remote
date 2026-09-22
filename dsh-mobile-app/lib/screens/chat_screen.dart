@@ -305,6 +305,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// 取消（跳过）挂起的问询/审批：卡片已乐观收起，这里只负责把取消送到内核。
+  /// v3.1.6（app-audit ①6）：显式带本页会话 id（本地挂起表可能已被对端先答清空），
+  /// 失败不再静默——离线时明确告诉用户"取消失败"，而不是让他以为已经取消。
+  Future<void> _cancelPending(String rpcId) async {
+    final err = await widget.store.cancelRespond(rpcId, sessionId: _mySessionId);
+    if (!mounted || err == null) return;
+    showToast(context, err);
+  }
+
   /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
   /// 历史浏览视图不跟随滚动。
   void _scrollToBottom({bool force = false}) {
@@ -356,12 +365,14 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, limit: _liveMax);
       final events = page.events;
-      // 打开/重同步会话时以本次响应为准（赋值，而非 |=）：避免上一条会话的「仅部分历史」
-      // 横幅残留到正常会话。后续增量分页（after/before）仍用 |=：任一页降级即持续提示。
-      _historyDegraded = page.degraded;
       AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
+      // v3.1.6（app-audit ②）：守卫之后才写降级标记——过期响应（会话切换/重同步重叠）此前
+      // 也会改写横幅状态：`_historyDegraded` 是赋值语义，过期页能把已置位的提示抹回 false。
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
       setState(() {
+        // 打开/重同步会话时以本次响应为准（赋值，而非 |=）：避免上一条会话的「仅部分历史」
+        // 横幅残留到正常会话。后续增量分页（after/before）仍用 |=：任一页降级即持续提示。
+        _historyDegraded = page.degraded;
         // 并发保护：历史请求期间 SSE 可能已把更新的事件入列（位于 _items 头部）。
         // 先收集保留项，再重建其余部分，不回退 _lastSeq。
         final fetchedLast = events.isNotEmpty ? (events.last.seq ?? 0) : 0;
@@ -396,6 +407,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _histItems.clear();
         _timelineReducer.reset();
         _transientFrameKeys.clear();
+        _debugPreviewCache.clear(); // 重建后 rawData 全变，旧预览缓存无意义
         _activeTools.clear();
         _reasoning = '';
         _reasoningExpanded = false;
@@ -484,8 +496,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, before: _earliestSeq, limit: _histPageSize);
       final events = page.events;
-      if (page.degraded) _historyDegraded = true;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
+      if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         _noMoreHistory = true;
         showToast(context, L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息了', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages'));
@@ -530,8 +543,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, before: _earliestSeq, limit: _histPageSize);
       final events = page.events;
-      if (page.degraded) _historyDegraded = true;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
+      if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         showToast(context, L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息了', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages'));
         return;
@@ -563,8 +577,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, before: _histOldestSeq, limit: _histPageSize);
       final events = page.events;
-      if (page.degraded) _historyDegraded = true;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
+      if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         setState(() => _histHasOlder = false);
         return;
@@ -594,8 +609,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, after: _histNewestSeq, limit: _histPageSize);
       final events = page.events;
-      if (page.degraded) _historyDegraded = true;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
+      if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         setState(() => _histHasNewer = false);
         return;
@@ -754,17 +770,22 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// v3.1.5（issue #15）：已加载消息 → 可复制的整段对话纯文本（时间正序）。
+  /// v3.1.5（issue #15）：已加载消息 → 可复制的纯文本（时间正序）。
   /// - live 视图用 `_items`（**最新在前**，需 reversed）
   /// - 历史浏览视图用 `_histItems`（**旧→新**，已是正序）——复制当前正在看的那一段
   /// 轮次分隔条不导出；工具活动卡/未知可见事件只在有文本摘要时导出（正文为空的行由
   /// conversationText 跳过，避免把超长工具结果灌进剪贴板）。
+  ///
+  /// v3.1.6（app-audit ②）：导出范围与**渲染口径**对齐——`_isNoiseText` 噪声（PC 端也不显示）
+  /// 与普通模式隐藏的系统注入消息都不进剪贴板：此前它们界面上看不见、却被"复制整段"带出去。
+  /// 另注意范围是**当前已加载**的消息（长会话只含最近若干页），文案据此表述。
   String _conversationText() {
     final inHistory = _inHistory && _histItems.isNotEmpty;
     final ordered = inHistory ? _histItems : _items.reversed.toList();
+    final debug = widget.store.timelineDebug;
     return conversationText([
       for (final m in ordered)
-        if (m.kind != _MsgKind.divider)
+        if (m.kind != _MsgKind.divider && !_isNoiseText(m.text) && !(m.injected && !debug))
           switch (m.kind) {
             _MsgKind.user => (m.injected ? '系统注入' : '你', m.text),
             _MsgKind.assistant => ('助手', m.text),
@@ -775,7 +796,7 @@ class _ChatScreenState extends State<ChatScreen> {
     ]);
   }
 
-  /// v3.1.5（issue #15）：复制整段对话（当前已加载的消息，含角色标注）到剪贴板。
+  /// v3.1.5（issue #15）：复制当前已加载的对话（含角色标注）到剪贴板。
   Future<void> _copyConversation() async {
     final text = _conversationText();
     if (text.isEmpty) {
@@ -784,7 +805,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    showToast(context, L10n.t('已复制整段对话', 'Conversation copied'));
+    showToast(context, L10n.t('已复制当前已加载的对话', 'Loaded conversation copied'));
   }
 
   Future<void> _refreshUsage() async {
@@ -1042,8 +1063,9 @@ class _ChatScreenState extends State<ChatScreen> {
       while (pageNo < _catchupMaxPages) {
         pageNo++;
         final page = await _api.historyPage(id, after: cursor, limit: 100);
-        if (page.degraded) _historyDegraded = true;
         if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+        // v3.1.6（app-audit ②）：守卫之后才写降级标记（过期响应不得改写横幅）
+        if (page.degraded) _historyDegraded = true;
         final fresh = <ChatEvent>[];
         for (final ev in page.events) {
           if (ev.seq != null && ev.seq! <= cursor) continue;
@@ -2089,9 +2111,15 @@ class _ChatScreenState extends State<ChatScreen> {
             final i = list.indexWhere((m) => m.kind == _MsgKind.assistant && m.messageId == mid);
             if (i == -1) return;
             final old = list[i];
+            // v3.1.6（app-audit ②）：重建条目必须**带上全部详情字段**——此前漏了
+            // detailTextChars/detailDegraded/detailMode/detailErrorCode，点一次 👍/👎
+            // 就把「加载完整正文」入口、降级提示与错误重试一起抹掉。
             list[i] = _MsgItem.assistant(old.text,
                 usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating,
-                images: old.images, files: old.files, reasoning: old.reasoning, detailAvailable: old.detailAvailable, rawData: old.rawData, detailLoading: old.detailLoading);
+                images: old.images, files: old.files, reasoning: old.reasoning,
+                detailAvailable: old.detailAvailable, rawData: old.rawData, detailLoading: old.detailLoading,
+                detailDegraded: old.detailDegraded, detailMode: old.detailMode,
+                detailErrorCode: old.detailErrorCode, detailTextChars: old.detailTextChars);
           }
 
           setState(() {
@@ -2170,10 +2198,10 @@ class _ChatScreenState extends State<ChatScreen> {
               if (sid != null) showSessionToolsSheet(context, widget.store, sid);
             },
           ),
-          // v3.1.5（issue #15）：会话级「复制整段对话」入口
+          // v3.1.5（issue #15）：会话级复制入口（范围=当前已加载的消息，见 _conversationText）
           IconButton(
             icon: const Icon(Icons.copy_all, size: 20),
-            tooltip: L10n.t('复制整段对话', 'Copy whole conversation'),
+            tooltip: L10n.t('复制当前已加载的对话', 'Copy loaded conversation'),
             onPressed: _copyConversation,
           ),
         ],
@@ -2247,12 +2275,17 @@ class _ChatScreenState extends State<ChatScreen> {
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
             _QuestionCard(
+              // v3.1.6（app-audit ①5）：按 rpcId 给 key —— 同一会话连续两条问询若中间没有
+              // 一帧 `_question == null`（store 的 per-session pending 是覆盖式写入），
+              // 无 key 时 Flutter 会复用同一个 State：它按旧问询 id 建的 _selected/_ctrls
+              // 找不到新 id → `_selected[q.id]!` 抛 null-check 异常（整页构建失败）。
+              key: ValueKey<String>(_question!.rpcId),
               request: _question!,
               onCancel: () {
                 // 立即收起卡片（内核 resolved 帧可能因本地状态已清而不再转发）
                 final rpc = _question!.rpcId;
                 setState(() => _question = null);
-                widget.store.cancelRespond(rpc);
+                unawaited(_cancelPending(rpc));
               },
               onSubmitted: _submitQuestion,
             ),
@@ -2263,7 +2296,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onCancel: () {
                 final rpc = _approval!.rpcId;
                 setState(() => _approval = null);
-                widget.store.cancelRespond(rpc);
+                unawaited(_cancelPending(rpc));
               },
             ),
           // 快捷动作
@@ -2632,6 +2665,10 @@ class _ChatScreenState extends State<ChatScreen> {
                         width: 76,
                         height: 76,
                         fit: BoxFit.cover,
+                        // v3.1.6（app-audit ①4）：按显示尺寸解码（2x 供 HiDPI）——
+                        // 不给 cacheWidth 时 Flutter 按**原始分辨率**解码，一次选 10-20 张
+                        // 12MP 原图（≈48MB/张）直接顶爆内存（低端机闪退）。
+                        cacheWidth: 160,
                         errorBuilder: (_, _, _) => Container(
                           width: 76,
                           height: 76,
@@ -2841,14 +2878,15 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  String _prettyTimeline(Map<String, dynamic> value) {
-    try {
-      final text = JsonEncoder.withIndent('  ').convert(value);
-      const maxChars = 240000;
-      return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
-    } catch (_) {
-      return value.toString();
-    }
+  /// 原始事件预览缓存（v3.1.6，app-audit ①3）：键含 rawData 的对象身份，避免每次 rebuild
+  /// 都重新 `JsonEncoder.withIndent` 编码 8 MiB 级原始事件；值已由 [timelineDebugPreview]
+  /// 截断到 4000 字符，条目量级可控（卡数 × 4KB）。
+  final Map<String, String> _debugPreviewCache = {};
+
+  String _debugPreviewOf(_MsgItem item) {
+    final key = '${item.kind}:${item.eventType}:${item.toolCallId ?? item.seq ?? item.text}:'
+        '${identityHashCode(item.rawData)}';
+    return _debugPreviewCache.putIfAbsent(key, () => timelineDebugPreview(item.rawData));
   }
 
   String _failureKey(_MsgItem item) => item.kind == _MsgKind.tool
@@ -2858,6 +2896,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _autoLoadFailureDetail(_MsgItem item) {
     // 只有服务端声明了详情指针（detail.available）的类型才自动拉取：allow-list 之外的
     // 协议元数据/未命名事件没有指针，自动拉只会打出 404 与错误码（debug 模式尤甚）。
+    // "自动只拉一次"由卡片自身的 requested 标志承担（见 _ToolActivityCard/_TimelineEventCard）。
     if (!item.detailAvailable) return;
     _loadEventDetail(item);
   }
@@ -2879,6 +2918,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mounted) setState(() => _replaceTimelineItem(item, loading));
     try {
       final detail = await _api.eventDetail(id, detailSeq);
+      // v3.1.6（app-audit ①2）：**成功路径也必须释放登记**——此前只在 catch 里移除，
+      // 于是"成功加载过一次"的 (卡, detailSeq) 键被永久占用：调试模式的「重新加载原始事件」
+      // 点了没有任何反应（不请求、不转圈、不提示），`/compact` 触发的 `_load(reset:true)`
+      // 重建条目后普通模式的「加载完整正文」同样失效。这里只用于**在途去重**。
+      _failureDetailRequests.remove(requestKey);
       final full = detail.event;
       final data = full['data'] is Map ? Map<String, dynamic>.from(full['data'] as Map) : <String, dynamic>{};
       String textOf(Object? value) {
@@ -3120,7 +3164,7 @@ class _ChatScreenState extends State<ChatScreen> {
              if (widget.store.timelineDebug && item.rawData != null)
                Padding(
                  padding: const EdgeInsets.only(left: 4, bottom: 8),
-                 child: SelectableText(_prettyTimeline(item.rawData!), style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                 child: SelectableText(_debugPreviewOf(item), style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
                ),
              _MessageActionsBar(
               item: item,
@@ -3567,16 +3611,19 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     return L10n.t('进行中', 'Running');
   }
 
+  /// schema / 原始事件预览（v3.1.6，app-audit ①3）：上限 4000 字符（见 [timelineDebugPreview]），
+  /// 并按对象身份缓存一次编码结果——此前每次 build 都对 8 MiB 级原始事件重新缩进编码。
+  Object? _prettyFor = _noValue;
+  String _prettyCache = '';
+  static const Object _noValue = Object();
+
   String _pretty(Object? value) {
     if (value == null) return '';
     if (value is String) return value;
-    try {
-      final text = JsonEncoder.withIndent('  ').convert(value);
-       const maxChars = 240000;
-       return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
-    } catch (_) {
-      return value.toString();
-    }
+    if (identical(value, _prettyFor)) return _prettyCache;
+    _prettyFor = value;
+    _prettyCache = timelineDebugPreview(value);
+    return _prettyCache;
   }
 
   bool _looksMarkdown(String value) => value.contains('```') ||
@@ -3721,6 +3768,19 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
   bool requested = false;
   bool userOverride = false;
 
+  /// 原始事件预览缓存（v3.1.6，app-audit ①3）：上限 4000 字符 + 按对象身份缓存编码结果。
+  Object? _rawFor = _noValue;
+  String _rawCache = '';
+  static const Object _noValue = Object();
+
+  String get _rawPreview {
+    final data = widget.item.rawData;
+    if (identical(data, _rawFor)) return _rawCache;
+    _rawFor = data;
+    _rawCache = timelineDebugPreview(data);
+    return _rawCache;
+  }
+
   bool get _defaultExpanded => widget.debug && widget.item.toolError;
 
   @override
@@ -3767,15 +3827,6 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
-    String raw() {
-      try {
-        final text = JsonEncoder.withIndent('  ').convert(item.rawData);
-        const maxChars = 240000;
-        return text.length <= maxChars ? text : '${text.substring(0, maxChars)}\n… (debug preview truncated)';
-      } catch (_) {
-        return item.rawData.toString();
-      }
-    }
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -3823,7 +3874,7 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
                    if (!item.detailAvailable && item.rawData == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(L10n.t('详情不可用', 'Details unavailable'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context)))),
                   if (item.detailErrorCode != null && widget.onLoadDetail != null)
                     TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
-                  if (widget.debug && item.rawData != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(raw(), style: const TextStyle(fontSize: 11, fontFamily: 'monospace'))),
+                  if (widget.debug && item.rawData != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(_rawPreview, style: const TextStyle(fontSize: 11, fontFamily: 'monospace'))),
                 ],
               ),
             ),
@@ -4361,7 +4412,9 @@ class _MsgImageState extends State<_MsgImage> {
                   ? Stack(
                       fit: StackFit.expand,
                       children: [
-                        Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true),
+                        // v3.1.6（app-audit ①4）：按卡片显示宽度（236 逻辑像素）2x 解码，
+                        // 避免每条附图都按原始分辨率（12MP≈48MB）解码。
+                        Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true, cacheWidth: 480),
                         if (bigGif)
                           Positioned(
                             right: 4,
@@ -4868,7 +4921,8 @@ class _QuestionCard extends StatefulWidget {
   final QuestionRequest request;
   final VoidCallback onCancel;
   final Future<void> Function(List<Map<String, dynamic>> answers) onSubmitted;
-  const _QuestionCard({required this.request, required this.onCancel, required this.onSubmitted});
+  // v3.1.6（app-audit ①5）：支持 key——聊天页按 rpcId 传 ValueKey，换问询时强制新建 State
+  const _QuestionCard({super.key, required this.request, required this.onCancel, required this.onSubmitted});
 
   @override
   State<_QuestionCard> createState() => _QuestionCardState();

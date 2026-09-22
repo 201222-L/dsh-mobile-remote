@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'l10n.dart';
 import 'models.dart';
 
@@ -99,6 +101,28 @@ const timelineDetailTextMax = 20000;
 String clampTimelineDetailText(String text, {int max = timelineDetailTextMax}) => text.length <= max
     ? text
     : '${text.substring(0, max)}\n…（详情已截断：共 ${text.length} 字，上方为前 $max 字）';
+
+/// 调试模式「原始事件」JSON 预览上限（v3.1.6，app-audit ①3）。
+///
+/// 详情端点返回的是**原始事件**（服务端上限 8 MiB），调试模式把它缩进美化后塞进
+/// `SelectableText`：此前上限 240000 字符 —— 单段 24 万字符的文本布局足以卡住主线程
+/// （掉帧甚至 ANR），且每次 build 都要重新 `JsonEncoder.withIndent` 编码一次。
+/// 预览是给人肉眼扫一眼的，4000 字符足够；超长时明确标注已截断。
+const timelineDebugPreviewMax = 4000;
+
+/// 原始事件 → 调试预览文本（纯函数，便于单测）。
+/// 缩进美化后按 [max] 截断；非 JSON 可编码的值退化为 `toString()`。
+String timelineDebugPreview(Object? value, {int max = timelineDebugPreviewMax}) {
+  if (value == null) return '';
+  String text;
+  try {
+    text = JsonEncoder.withIndent('  ').convert(value);
+  } catch (_) {
+    text = value.toString();
+  }
+  if (text.length <= max) return text;
+  return '${text.substring(0, max)}\n… (debug preview truncated: ${text.length} chars total)';
+}
 
 /// 已知事件的可读标题；未知类型原样返回类型名（事件保真契约：不静默丢弃）。
 String timelineTitleFor(String type) {

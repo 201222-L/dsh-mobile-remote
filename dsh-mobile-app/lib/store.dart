@@ -23,6 +23,10 @@ class AppStore extends ChangeNotifier {
   final Map<String, String> agentStatusMap = {};
   /// SSE 的 agentId 与 sessionId 不是同一标识时，按 session 维护页面状态。
   final Map<String, String> sessionAgentStatus = {};
+  /// agent/status 帧计数（v3.1.6）：`/bootstrap` 是"某一刻的活跃 agent 全量快照"，
+  /// 若快照请求期间已有更新帧落地，就跳过裁剪（只合并）——否则旧快照会抹掉刚到的 running。
+  /// 下一轮 bootstrap 自然收敛，不必在这里赌时序。
+  int _agentStatusEpoch = 0;
   String agentStatusForSession(String? id) => id == null
       ? agentStatus
       : sessionAgentStatus[id] ?? agentStatusMap[id] ?? (id == sessionId ? agentStatus : 'idle');
@@ -373,16 +377,31 @@ class AppStore extends ChangeNotifier {
   }
 
   /// 取消（跳过）问询/审批：内核收到 cancelled，agent 按 ASK_CANCELLED 继续。
-  Future<void> cancelRespond(String rpcId) async {
+  ///
+  /// v3.1.6（app-audit ①6）：
+  /// - [sessionId]：调用方（聊天页）自带的归属会话。此前只从本地挂起表反查——叠层打开同一
+  ///   会话时，另一端先答/resolved 帧先到会清掉本地条目，反查得到空串；显式传入可避免
+  ///   "归属不明"的取消（PR #11 的严格校验会直接 400）。
+  /// - 返回 null=成功；否则返回可展示的错误说明（此前 `catch (_) {}` 全吞，离线时用户
+  ///   以为已取消、内核其实还在等答案）。
+  Future<String?> cancelRespond(String rpcId, {String? sessionId}) async {
     final question = _questionForRpc(rpcId);
     final approval = _approvalForRpc(rpcId);
-    final sessionId = question?.sessionId ?? approval?.sessionId ?? '';
+    final sid = sessionId ?? question?.sessionId ?? approval?.sessionId ?? '';
+    String? err;
     try {
-      await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: sessionId);
-    } catch (_) {}
+      final r = await api.respond(kind: 'cancel', rpcId: rpcId, sessionId: sid);
+      // accepted 缺省（旧服务端/代理回退路径不一定回该字段）视为成功，只对明确的 false 报错
+      if (r['accepted'] == false) {
+        err = '${r['reason'] ?? '取消未被接受'}（可能电脑端已先处理）';
+      }
+    } catch (e) {
+      err = '取消失败：$e';
+    }
     _clearPendingQuestion(rpcId);
     _clearPendingApproval(rpcId);
     notifyListeners();
+    return err;
   }
 
   /// 会话是否属于某工作区（cwd 等于工作区路径或其子目录，Windows 大小写不敏感）。
@@ -503,13 +522,15 @@ class AppStore extends ChangeNotifier {
   /// 返回是否与电脑连通（供 UI 做失败提示；日常成功静默）。
   Future<bool> refreshAll() async {
     var ok = false;
+    // 快照时序基准：请求发起时记下帧计数，期间若有 agent/status 帧落地则只合并不裁剪
+    final epoch = _agentStatusEpoch;
     try {
       final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       ok = true;
       // v2.7：下拉刷新也收集地址（蒲公英等新地址及时进候选）+ 同步 agent 状态
       api.absorbBootstrap(d);
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
-      _syncAgentStatus(d);
+      _syncAgentStatus(d, snapshotEpoch: epoch);
     } catch (_) {
       // 连接不通：尝试轮换到下一个候选地址（黑洞快速切换）再探测一次
       if (api.rotateBaseUrl()) {
@@ -519,7 +540,7 @@ class AppStore extends ChangeNotifier {
           ok = true;
           api.absorbBootstrap(d);
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
-          _syncAgentStatus(d);
+          _syncAgentStatus(d, snapshotEpoch: epoch);
           // 当前 SSE 大概率也指向旧地址：重建连接
           disposeBridge();
           connect();
@@ -536,20 +557,38 @@ class AppStore extends ChangeNotifier {
   /// 从 bootstrap 响应同步各 agent 状态（连接/重连/下拉刷新时按钮立即反映 PC 真实状态）。
   /// v2.7.1 修复：不再用 agents.first（注册序第一个，与当前会话无关，会把状态串成别的会话的）——
   /// 全量入映射，只按当前 sessionId 取。
-  void _syncAgentStatus(Map<String, dynamic> d) {
+  ///
+  /// v3.1.6（app-audit ①1）：`/bootstrap` 的 `agents` 是宿主 agent 注册表的**全量快照**
+  /// （插件 `agents.list()`：每项 `{id, sessionId, status, hasPending, title}`，dormant 会话
+  /// 根本没有条目）——因此**不在快照里 ≡ 该会话没有 live agent ≡ idle**，可以安全裁剪。
+  /// 此前只做合并写入，陈旧 running 会永久驻留：发送键变"停止"、普通发送被误判成排队
+  /// （`_pageAgentStatus == 'running'`）、甚至点发送实际发出 `/sessions/stop`。
+  /// agentId ≠ sessionId（`session:` 前缀/子代理场景），两个映射各按自己的键裁剪。
+  ///
+  /// 边界：宿主缺 `agents` 服务时 payload 是空数组，届时会全部回落 idle——方向是安全的
+  /// （发送走 followup + 服务端排队），与"陈旧 running 永久误操作"相比是可接受的降级。
+  /// [snapshotEpoch]：请求发起时的帧计数，期间有新帧落地则只合并不裁剪（见 [_agentStatusEpoch]）。
+  void _syncAgentStatus(Map<String, dynamic> d, {int? snapshotEpoch}) {
     final agents = d['agents'] as List? ?? const [];
+    final liveAgents = <String, String>{}; // agentId -> status
+    final liveSessions = <String, String>{}; // sessionId -> status
     for (final a in agents) {
       if (a is Map) {
+        final st = a['status'];
+        final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
         final id = a['id'];
-        if (id is String && id.isNotEmpty) {
-          final st = a['status'];
-          final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
-          agentStatusMap[id] = norm;
-          final sid = a['sessionId'];
-          if (sid is String && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
-        }
+        if (id is String && id.isNotEmpty) liveAgents[id] = norm;
+        final sid = a['sessionId'];
+        if (sid is String && sid.isNotEmpty) liveSessions[sid] = norm;
       }
     }
+    if (snapshotEpoch == null || snapshotEpoch == _agentStatusEpoch) {
+      // 快照权威：先删不在快照里的陈旧键，再写入快照值
+      agentStatusMap.removeWhere((id, _) => !liveAgents.containsKey(id));
+      sessionAgentStatus.removeWhere((sid, _) => !liveSessions.containsKey(sid));
+    }
+    agentStatusMap.addAll(liveAgents);
+    sessionAgentStatus.addAll(liveSessions);
     applyAgentStatusForSession();
   }
 
@@ -767,12 +806,13 @@ class AppStore extends ChangeNotifier {
   /// App 回到前台时调用：探测电脑端在线状态，SSE 断开则立即重连，并刷新数据。
   Future<void> resume() async {
     if (api.baseUrl.isEmpty || api.token.isEmpty) return; // 未配置连接
+    final epoch = _agentStatusEpoch; // 快照时序基准（见 _syncAgentStatus 的 snapshotEpoch）
     try {
       final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
       // 合并服务端返回的全部地址（含 Tailscale IP）+ 记录插件版本
       api.absorbBootstrap(d);
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
-      _syncAgentStatus(d);
+      _syncAgentStatus(d, snapshotEpoch: epoch);
       _setConnState('connected');
       // 关键修复：探针成功 ≠ 旧 SSE 流还活着。App 后台期间 TCP 可能已静默死亡
       // 而流未触发 onDone/onError —— 若不重建，connect() 会被 `_sub != null` 挡住，
@@ -978,6 +1018,7 @@ class AppStore extends ChangeNotifier {
       final sid = frame['sessionId'] as String?;
       final st = frame['status'];
       final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+      _agentStatusEpoch++; // 增量帧落地：期间到达的 bootstrap 快照不再裁剪（见 _syncAgentStatus）
       if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
       if (sid != null && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
       final current = sid != null && sid.isNotEmpty ? sid == sessionId : aid == sessionId;
@@ -1009,9 +1050,10 @@ class AppStore extends ChangeNotifier {
     _setConnState('offline');
     if (_retry >= 3) {
       _retryTimer = Timer(const Duration(seconds: 2), () async {
+        final epoch = _agentStatusEpoch;
         try {
           final d = await api.getJson('/api/bootstrap', timeout: const Duration(seconds: 8));
-          _syncAgentStatus(d);
+          _syncAgentStatus(d, snapshotEpoch: epoch);
           _retry = 0;
           connect();
         } catch (_) {
