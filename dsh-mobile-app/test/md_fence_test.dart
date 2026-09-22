@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dsh_mobile_app/md.dart';
 
-/// 代码围栏解析回归（issue #9）：
+/// 代码围栏解析回归（issue #22）：
 /// 此前围栏判定是「以三反引号开头」的二元翻转、不记录开启长度——4 反引号文档围栏
 /// 包裹 3 反引号代码块时，内层开启行被当成闭合行，导致 Markdown 正文被吞成代码卡片、
 /// 真正的代码被渲染成正文。修复后按「开启反引号数量 N」配对：闭合行必须仅由 ≥N 个
@@ -106,7 +106,7 @@ void main() {
     });
   });
 
-  group('围栏渲染回归（issue #9）', () {
+  group('围栏渲染回归（issue #22）', () {
     testWidgets('4 反引号围栏内全部内容统一在一个代码卡片中（不再半卡半正文）', (tester) async {
       await _pump(tester, _issueSample);
       // 整段（含 Markdown 正文行与内层代码行）都在同一个 monospace 代码卡片内

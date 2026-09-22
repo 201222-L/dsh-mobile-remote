@@ -190,7 +190,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
 
   while (i < lines.length) {
     final raw = lines[i];
-    // v3.1.5（issue #9）：围栏按「开启反引号数量」配对——开启行记录 N，闭合行必须
+    // issue #22：围栏按「开启反引号数量」配对——开启行记录 N，闭合行必须
     // 仅由 ≥N 个反引号组成。修复此前 startsWith('```') 二元翻转导致 4 反引号文档围栏
     // 包裹 3 反引号代码块时「正文被吞成代码、代码被当作正文」的错位。
     if (!inCode) {
