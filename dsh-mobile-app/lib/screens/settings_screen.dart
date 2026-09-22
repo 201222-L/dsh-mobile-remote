@@ -919,6 +919,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           _row(
+            leading: const Icon(Icons.bug_report_outlined),
+            title: L10n.t('对话调试模式', 'Conversation debug mode'),
+            sub: L10n.t('显示工具原始参数、结果、事件序号与未知可见事件（默认关闭）',
+                'Show raw tool IO, event metadata and unknown visible events (off by default)'),
+            trailing: DshSwitch(
+              value: store.timelineDebug,
+              onChanged: (v) => store.setTimelineDebug(v),
+            ),
+          ),
+          _row(
             leading: const Icon(Icons.dark_mode_outlined),
             title: L10n.t('深色模式', 'Dark mode'),
             sub: switch (store.darkMode) {

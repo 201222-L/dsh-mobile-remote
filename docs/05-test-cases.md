@@ -1,6 +1,6 @@
 # 05 测试用例设计文档 — dsh-mobile-remote
 
-> 版本：v3.2.0（用量与额度见 F-24~F-32；v3.1.1 用例见 F-23） · 配套：03-api.md、04-security.md
+> 版本：v3.2.0（用量与额度见 F-24~F-32，对话时间线见 F-33~F-35；v3.1.1 用例见 F-23） · 配套：03-api.md、04-security.md
 > 环境：Windows + DSH Desktop（desktop profile，内核 0.1.1-rc.2；web profile 亦适用） + Android（DSH Remote App）
 > 前置：插件已安装并启用（LAN 桥监听 0.0.0.0:3080）；访问口令为安装时生成的随机串（下文 `<TOKEN>`）。
 ## 1. 测试范围与环境
@@ -187,7 +187,7 @@
 | 变体 B | 旧版 App（≤v3.0.0）+ 新版插件：浏览路径为 `/\home` 形态，服务端归一化后仍可正常进入/选择（`//home` 在 POSIX 与 `/home` 等价） |
 | 单测 | `flutter test test/dirpicker_logic_test.dart`（joinDirPath/dirSepOf）；`node tools/wsl-path-check.mjs`（normalizeServerPath，8/8） |
 
-### F-24 用量与额度投影：DeepSeek
+### F-24 用量与额度投影：DeepSeek（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -195,7 +195,7 @@
 | 步骤 | 带 token 请求 `GET /m/api/account-usage`，打开 App 设置 → 账户 → 用量与额度 |
 | 预期 | 200；`sources` 含 `deepseek` 的 CNY 金额；App 卡片显示金额；key 不出现在响应、日志或页面 |
 
-### F-25 Codex Connect 当前活动账户
+### F-25 Codex Connect 当前活动账户（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -203,7 +203,7 @@
 | 步骤 | 请求 `/m/api/account-usage`，切换 dsh-codex-connect 活动账户后再次刷新 |
 | 预期 | `sources` 含 `codex`；仅显示当前活动账户的 displayName/maskedEmail 与有效主/附加配额窗口、Credits/个人上限（若接口返回）；不返回 OAuth token；活动账户切换后下一次刷新跟随新账户 |
 
-### F-26 OpenCode Go 套餐窗口
+### F-26 OpenCode Go 套餐窗口（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -211,21 +211,21 @@
 | 步骤 | 请求 `/m/api/account-usage`，检查 App 详情卡片 |
 | 预期 | `sources` 含 `opencode-go`；rolling/weekly/monthly 的原始已用百分比转换为剩余百分比；`rate-limited` 窗口保留为 0% 并标记限流；percent=0 的占位重置时间不显示；其它有效重置时间按手机本地时间显示 |
 
-### F-27 部分来源失败与空状态
+### F-27 部分来源失败与空状态（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
 | 步骤 | 让一个已配置来源返回 401/网络失败，另一个来源保持可用；再分别测试所有来源均未配置 |
 | 预期 | 成功来源仍显示；失败来源从 `sources` 隐藏且 `failedCount` 增加，App 显示汇总提示；全部未配置时 `sources=[]`，App 保留入口并显示电脑端配置引导 |
 
-### F-28 缓存、并发与手动刷新
+### F-28 缓存、并发与手动刷新（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
 | 步骤 | 快速连续进入设置和详情页；点击详情页顶部刷新；观察服务端上游请求与 App 显示 |
 | 预期 | 普通进入请求复用 60 秒成功快照且并发请求共享一轮上游查询；手动刷新请求 `?refresh=1` 并发查询全部来源；不产生本地持久化额度文件，不周期轮询上游 |
 
-### F-29 悬浮球面板三来源区块
+### F-29 悬浮球面板三来源区块（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -233,14 +233,14 @@
 | 步骤 | 展开悬浮球面板，等待用量与额度区块渲染 |
 | 预期 | 出现「用量与额度」区块（含「详情 ▸」）；每来源一行：DeepSeek 出金额文字（CNY ¥），Codex / OpenCode Go 配额行每个进度条上方居中显示窗口短标签（Codex：5h / 每周；OpenCode Go：5h / 每周 / 每月），条只出细条与颜色、不出百分比数字；主 bucket 窗口按 5h → 周 → 月排列；金额行在低余额时变红；点击区块或「详情 ▸」打开 App 用量页；底部「去充值」保留 |
 
-### F-30 悬浮球展开时按需获取与节流
+### F-30 悬浮球展开时按需获取与节流（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
 | 步骤 | 反复快速展开/收起悬浮球面板；观察服务端 account-usage 调用次数 |
 | 预期 | 每次展开最多触发一次查询；2 分钟节流窗内重复展开复用在途/缓存结果，不反复打上游；首次展开区块先显示「查询中…」再异步就地更新；App 被杀后展开面板仍能拉到数据 |
 
-### F-31 悬浮球面板降级与陈值
+### F-31 悬浮球面板降级与陈值（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -248,12 +248,45 @@
 | 步骤 | 展开面板，分别观察 A / B / C |
 | 预期 | A/B/C 下区块整体不出现、不显示任何报错，原有单行余额原位显示且点击仍=去充值（A 不退化现有功能）；C 曾成功过 → 区块保留旧值并以小灰字标注相对时间（超过 10 分钟才标注）；C 从未成功过 → 退回单行余额；不产生本地持久化额度文件 |
 
-### F-32 悬浮球面板隐私边界
+### F-32 悬浮球面板隐私边界（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
 | 步骤 | 展开面板，检查区块、球体与操作说明弹窗 |
 | 预期 | 区块不显示 Codex 账户身份（displayName/maskedEmail）；球体自身不常驻金额；配额窗口与来源永不相加、不换算；附加 Codex bucket（服务端命名「名称 · 5h」）不出现在面板；设置 → 悬浮球操作说明的面板内容已包含「用量与额度」 |
+
+### F-33 对话时间线能力与历史/实时一致（PR #24 时间线）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 插件返回 `capabilities.eventTimeline`；准备 user、assistant、tool/call、tool/result、unknown Visible event 与长参数/结果 |
+| 步骤 | App 连接 SSE → 记录实时事件；断线后请求 `/history`；展开工具卡与未知事件详情 |
+| 预期 | 事件顺序和 durable seq 一致；工具按 callId 合并且显示完整生命周期；长详情按需加载；未知事件通用卡可展开；历史分页 `hasMore` 可补齐所有缺口 |
+| 变体 A | 旧插件无 capability / 无详情端点 |
+| 预期 | 保留旧摘要与聊天；详情显示“不可用”，不伪造数据 |
+| 变体 B | 手机离线后展开详情 |
+| 预期 | 已缓存摘要保留；详情显示不可用并可在恢复连接后重试 |
+| 单测 | `node tools/timeline-contract-check.mjs`（未知/内部事件过滤、详情指针、`/event-detail` 鉴权与身份校验、bootstrap agentId→sessionId，58/58）；`flutter test test/timeline_test.dart`（reducer 合并规则：tool/call 替换 delta 参数、锚点/detail seq 收敛、可见性分类）|
+
+### F-34 普通/调试模式与富内容（PR #24 时间线）
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 普通模式查看工具、注入事件、图片/Markdown/附件；切换调试模式逐条展开 |
+| 预期 | 普通模式摘要且隐藏选定 runtime 注入与协议元数据（`session/title`、`model/selection`、`feedback/*` 等）；调试模式显示协议元数据、未知事件、原始工具 IO；图片/Markdown 可预览；**工具与 assistant 产出的文件不展示**（issue #1 需求变更，普通与调试模式都不出现；要看原始载荷走「查看原始事件」）；用户自己的附件只显示文件名/类型/大小、**不提供下载**；系统提示词、请求快照与压缩摘要永不显示 |
+| 变体 | 并行同名工具、失败工具、已解决的审批、todo/Job 状态、压缩前事件、流式工具参数（delta → tool/call）|
+| 预期 | 各自按 callId/事件 seq 保持独立；工具参数以 `tool/call` 的完整实参为准（不得出现 delta 与整串拼接）；审批走 durable `approval/asked`/`approval/decided` 可历史回放，问询只有瞬态帧（重进会话不保证回放）；明确失败卡片普通模式默认收起，调试模式默认展开并自动加载详情；用户手动展开/收起优先于自动规则，覆盖仅在当前会话页面有效 |
+| 变体 | 带思维链的 assistant 消息；详情无正文增量 |
+| 预期 | 正文提取口径与服务端摘要同源（`blocksToText`）：原始事件/详情正文**不得包含 `reasoning` 块文本**（思维链只在折叠块出现一次，不因加载详情而重复）；普通模式仅当 `detail.textChars` 大于当前可见正文长度（确有增量）时才显示加载入口，相等时不显示；调试模式入口文案为「查看原始事件」（不再叫「加载完整正文」）；单测 `flutter test test/timeline_test.dart` 覆盖 `timelineDetailText`（不从 `content` 拼接 reasoning）与 `timelineHasTextIncrement`；契约 `tools/timeline-contract-check.mjs` 覆盖摘要/详情的正文口径与 `textChars` 一致性 |
+
+> 边界说明：问询（`question/requested`）在核心里只有瞬态远程帧、没有 durable 事件，因此**不保证**历史回放；审批有 durable 事件，重进会话仍可见。
+
+### F-35 断线多页 catch-up 与滚动锚点（PR #24 时间线）
+
+| 项目 | 内容 |
+|---|---|
+| 步骤 | 生成超过 100 条未读 Visible event，断开 SSE，恢复连接并向上翻历史 |
+| 预期 | catch-up 持续读取 `hasMore` 直到 durable cursor 收敛；重复帧不重复渲染；加载更早事件不改变当前 viewport 锚点 |
 
 ## 3. 安全测试用例
 

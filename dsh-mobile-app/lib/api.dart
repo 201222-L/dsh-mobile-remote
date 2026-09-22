@@ -39,6 +39,8 @@ final Api api = Api();
 typedef DirListing = ({List<String> dirs, List<String> files, String? sep});
 
 class Api {
+  Api({http.Client? client}) : _client = client ?? http.Client();
+
   String baseUrl = '';
   String token = '';
 
@@ -47,6 +49,9 @@ class Api {
 
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
+
+  /// 对话时间线能力由服务端显式声明，不能只按 package version 猜测。
+  TimelineCapabilities timelineCapabilities = const TimelineCapabilities();
 
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
@@ -60,7 +65,7 @@ class Api {
 
   /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
   /// socket/定时器导致内存耗尽闪退。
-  final http.Client _client = http.Client();
+  final http.Client _client;
 
   /// 地址归一：只保留 scheme://host[:port]（路径剥掉）——挂载路径由 [_pathOf] 单独解析。
   static String _normBase(String s) {
@@ -197,6 +202,12 @@ class Api {
         } catch (_) {}
       }());
     }
+    final capabilities = d['capabilities'];
+    timelineCapabilities = capabilities is Map
+        ? TimelineCapabilities.fromJson(
+            capabilities['eventTimeline'] is Map ? Map<String, dynamic>.from(capabilities['eventTimeline'] as Map) : null,
+          )
+        : const TimelineCapabilities();
   }
 
   /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
@@ -678,24 +689,39 @@ class Api {
     return bytes;
   }
 
-  /// 拉历史。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
+  /// 拉历史页。移动端默认取最近 100 条（服务端 limit 截断取尾部=最近的），
   /// 避免一次解析/渲染数百条事件导致手机卡死。
-  Future<HistoryPage> history(
-    String sessionId, {
-    int? after,
-    int? before,
-    int limit = 100,
-    Duration timeout = const Duration(seconds: 15),
-  }) async {
-    final params =
-        'sessionId=${Uri.encodeQueryComponent(sessionId)}'
+  /// 服务端返回 `hasMore`（durable cursor 分页）与 `degraded`/`historyMode`
+  /// （v3.1.5 休眠会话 current-surface 降级标记：历史可能不完整）。
+  Future<HistoryPage> historyPage(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
+    final params = 'sessionId=${Uri.encodeQueryComponent(sessionId)}'
         '${after != null ? '&after=$after' : ''}${before != null ? '&before=$before' : ''}&limit=$limit';
     final data = await getJson('/api/history?$params', timeout: timeout);
     return HistoryPage(
-      events: (data['events'] as List? ?? []).map((e) => ChatEvent.fromJson(e as Map<String, dynamic>)).toList(),
+      events: (data['events'] as List? ?? []).whereType<Map>().map((e) => ChatEvent.fromJson(Map<String, dynamic>.from(e))).toList(),
+      hasMore: data['hasMore'] == true,
       // v3.1.5：休眠会话降级读取标记（current surface）——历史可能不完整
       degraded: data['degraded'] == true,
       historyMode: data['historyMode'] as String?,
+    );
+  }
+
+  /// 兼容旧调用方的历史列表接口。
+  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
+    return (await historyPage(sessionId, after: after, before: before, limit: limit, timeout: timeout)).events;
+  }
+
+  /// 按 seq 读取一条无损事件详情。详情不可用时由调用方显示明确降级状态。
+  Future<EventDetail> eventDetail(String sessionId, int seq, {Duration timeout = const Duration(seconds: 20)}) async {
+    final data = await getJson('/api/event-detail?sessionId=${Uri.encodeQueryComponent(sessionId)}&seq=$seq', timeout: timeout);
+    final event = data['event'];
+    if (event is! Map || event['type'] is! String) {
+      throw ApiException('event detail unavailable', code: 'event-detail-unavailable');
+    }
+    return EventDetail(
+      event: Map<String, dynamic>.from(event),
+      degraded: data['degraded'] == true,
+      detailMode: data['detailMode'] as String?,
     );
   }
 

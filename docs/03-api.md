@@ -21,7 +21,8 @@
 | GET | `/m/api/queue` | 排队消息列表（对齐 PC 端 Queue Dock；`placement: "queued"` 可插话、`"steering"` 不可，v2.7.2） | 是 |
 | POST | `/m/api/messages` | 排队消息操作：`{ sessionId, itemId, action: { kind: "edit"|"remove"|"steer", content? } }`（转发内核 `session.updateQueue`；错误码如 `queue-item-not-found`/`steer-unavailable` 透传，v2.7.2） | 是 |
 | GET | `/m/api/sessions` | 会话列表 | 是 |
-| GET | `/m/api/history` | 指定会话的事件历史（增量） | 是 |
+| GET | `/m/api/history` | 指定会话的 Conversation timeline 历史（按 seq 分页） | 是 |
+| GET | `/m/api/event-detail` | 单个 Visible event 无损详情（按 seq） | 是 |
 | GET | `/m/api/events` | SSE 事件流（session/event 摘要） | 是 |
 | GET | `/m/api/catalog` | 模型/推理/权限/预设目录 | 是 |
 | GET/POST | `/m/api/session-config` | 会话配置（读写） | 是 |
@@ -68,6 +69,16 @@
   "server": {
     "port": 3080,
     "urls": ["http://192.168.1.5:3080", "http://100.101.102.103:3080", "http://127.0.0.1:3080"]
+  },
+  "capabilities": {
+    "eventTimeline": {
+      "version": 1,
+      "live": true,
+      "history": true,
+      "detail": true,
+      "unknownEvents": true,
+      "callCorrelation": true
+    }
   },
   "agents": [
     { "id": "session-abc", "status": "running", "hasPending": false }
@@ -169,7 +180,9 @@
 - `before`（可选）：**上翻分页**——只返回 `seq < before` 的最近 `limit` 条事件（对话内滚动到顶部加载更早）。
 - 三种模式优先级：`after` > `before` > 初始加载（缺省时返回最近 `limit` 条，即尾部）。
 - `limit`（可选，默认 500，上限 1000）：最多返回条数
-**过滤规则**：只返回会话"表面"事件（`user/message`、`assistant/message`、`tool/call`、`tool/result`、`turn/start`、`turn/end`）。token 级 `assistant/chunk`、`agent/inbox/spliced`、`request/*` 等日志型事件不返回（数量可达十万级，会淹没移动端；完整回复由 `assistant/message` 兜底）。SSE 实时流不受此过滤影响。
+**过滤规则**：返回可进入 Conversation timeline 的事件；`assistant/chunk` / `assistant/live-chunk` 只用于实时草稿，`agent/inbox/spliced` 由队列投影承载，`request/header`（含 system prompt/tool schema）、`request/context`、`session/end-seed`、`step/start`、`step/end`、`system/message`、`assistant/attempt`（重试/中断的原始 stream 记录）与 `compaction/start` / `compaction/summary` / `compaction/prune` / `compaction/end`（压缩生命周期；summary 正文即替换 shadowed 区间后的上下文快照）属于内部/重建/快照元数据，历史、实时与 3.5b 详情三处都不返回。`compaction/end` 作为不落卡片的实时控制帧通知 App 重新加载 durable snapshot。未知 type（即使带 `ignorable: true`）保留 `seq`/`type` 和详情指针，不能因客户端尚未认识类型而静默丢弃。完整原始事件通过 3.5b 按需读取。
+
+> 客户端呈现约定：`session/title`、`model/selection`、`sandbox/mode`、`agent-preset/selected`、`subagent/*`、`team/*`、`feedback/*`、`command/*`、`approval/policy`、`tool/ptc-dispatch*`、`goal/change` 属协议/运行时元数据——仍下发并保留 `seq` 与详情指针，但普通模式不渲染，调试模式可展开审阅（见 05-test-cases F-34）。`approval/asked` / `approval/decided` 是 durable 审批记录，普通模式以可读标题呈现（历史回放的权威源；问询只有瞬态帧，不保证回放）。
 **响应 200**
 
 ```json
@@ -177,8 +190,9 @@
   "ok": true,
   "sessionId": "session-abc",
   "after": 42,
+  "hasMore": false,
   "events": [
-    { "seq": 43, "type": "user/message", "data": { "text": "帮我跑一下测试" } }
+    { "seq": 43, "type": "user/message", "detail": { "available": true, "seq": 43 }, "data": { "text": "帮我跑一下测试" } }
   ]
 }
 ```
@@ -186,26 +200,56 @@
 `events[]` 使用与 SSE 帧相同的摘要格式（见 3.6），保证客户端去重逻辑单一。数据源：`ctx.sessions.get(id).events`（追加式冻结快照，天然按 seq 有序）。
 - `404 { "error": "session-not-found" }`
 
+### 3.5b GET /m/api/event-detail
+
+按会话和 durable `seq` 读取单个 Visible event 的无损详情。该端点需要认证；服务端优先使用 `sessionQuery.readEvent`，旧内核回退到活动会话快照或休眠会话读取。
+
+查询参数：`sessionId`、`seq`。
+
+```json
+{
+  "ok": true,
+  "sessionId": "session-abc",
+  "event": {
+    "seq": 43,
+    "type": "tool/result",
+    "time": 1750000000000,
+    "surfaceOp": "append",
+    "sourceEventSeqs": [42],
+    "data": { "callId": "call-1", "isError": false, "text": "完整结果" }
+  }
+}
+```
+
+当服务端只能从 seeded session 的当前 surface 读取时，成功响应额外包含 `"degraded": true, "detailMode": "current-surface"`；客户端必须保留该元数据并提示详情可能不完整。详情不存在或属于内部/敏感类型返回 `404 event-not-found`；单事件详情超过 8 MiB 返回 `413 event-detail-too-large`。
+
+稳定错误矩阵：`session-not-found`（会话不存在）、`event-not-found`（seq 不存在/不可见）、`session-corrupt`（会话数据损坏）、`event-read-failed`（读取失败）和 `event-detail-too-large`（超过 8 MiB）。错误响应不得泄露主机路径或原始异常；旧服务端未保存详情时客户端显示安全错误并提供重试，不猜测重建。
+
+**规范化正文（`text`）**：`assistant/message` 的详情响应额外附 `data.text`，由服务端用**与事件摘要同一个 `blocksToText`** 提取（只拼 `type == "text"` 的块，跳过 `reasoning` 与内部块），因此与摘要下发的 `text` 同源同规则。客户端必须直接采用该字段作为正文，**不得自行递归拼接 `message.content`**——那会把 `reasoning` 块并进正文，使思维链在折叠块之外重复出现（issue #1 需求变更记录）。`tool/result` 等其它类型的详情仍以原始事件载荷为准；原始 `message` 块原样保留。
+
 ### 3.6 GET /m/api/events（SSE）
 `Content-Type: text/event-stream`。帧格式（`data:` 单行 JSON）：
 
 ```json
-{ "type": "session/event", "sessionId": "session-abc", "seq": 44, "event": { "type": "turn/end", "data": { "reason": { "kind": "complete" } } } }
+{ "type": "session/event", "sessionId": "session-abc", "event": { "seq": 44, "type": "turn/end", "data": { "reason": { "kind": "complete" } }, "detail": { "available": true, "seq": 44 } } }
 ```
 
-**事件摘要 `event` 字段**（服务端裁剪，见 02 §5.2）：
+**事件摘要 `event` 字段**：实时和历史使用同一摘要 envelope；摘要可包含 `detail: { available: true, seq }`，长参数/结果通过 3.5b 按需读取，不在列表中静默截断。只有 `/event-detail` 真能取回的事件才带该指针（token delta 与内部/快照记录不带，避免客户端显示必然 404 的详情按钮）。
+
+`assistant/message` 的指针额外带 **`textChars`**：与摘要同 `blocksToText` 口径的**未截断**正文长度。客户端据此**在加载前**判断「详情是否真有正文增量」（`textChars > 当前可见正文长度`），从而普通模式只在确有增量时显示加载入口；调试模式不受此限，始终提供「查看原始事件」。该字段为纯增量，旧客户端忽略即可。
 
 | event.type | event.data 内容 |
 |---|---|
-| `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符）；v3.0.0 起附图 `images: [{ attachmentId, mediaType, width?, height?, name? }]` |
-| `assistant/message` | `{ text: string, reasoningChars: number, reasoning?: string }`（`reasoning` 为思维链正文，仅当非空时下发，供移动端折叠块；≤20000 字符）；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义） |
-| `assistant/chunk` | `{ text: string }`（仅文本 delta） |
-| `tool/result` | `{ name: string, isError: boolean, text: string }`（≤2000 字符）；v3.0.0 版本二起：文本跨全部 content 块合并、附图 `images: [...]`（嵌套收集，≤20 张） |
+| `user/message` | `{ text: string }`（text blocks 拼接，≤2000 字符）；v3.0.0 起附图 `images: [{ attachmentId, mediaType, width?, height?, name? }]`；文件块可带 `files: [{ attachmentId?, path?, name?, mediaType?, size? }]`（**用户自己的附件，保留**；App 只显示文件名/类型/大小，不提供下载——issue #1 需求变更） |
+| `assistant/message` | `{ text: string, reasoningChars: number, reasoning?: string }`（`reasoning` 为思维链正文，仅当非空时下发，供移动端折叠块；≤20000 字符）；v3.0.0 起附图 `images: [...]`（同上）；**v3.0.0 版本二**：`images` 含嵌套收集——`tool-result.content` 内的图片块（read_image 等工具结果）与顶层图一并带出（对齐 PC 端 contentParts 语义）；**文件块不再下发 `files`**（issue #1 需求变更：时间线不提供产出文件的下载入口） |
+| `assistant/chunk` / `assistant/live-chunk` | `{ text: string }` 文本/reasoning delta；工具参数 delta 的 canonical `chunk.id` 归一为摘要 `callId`（仅实时过程，历史过滤） |
+| `tool/call` | `{ turn, step, callId, name, arguments }`；长参数可通过详情端点获取 |
+| `tool/result` | `{ callId, name, isError, text, images? }`；长结果可通过详情端点获取；**不再下发 `files`**（issue #1 需求变更：工具产出文件不上时间线；图片仍带 `images`） |
 | `turn/start` | `{ turn: number }` |
 | `turn/end` | `{ turn: number, reason: object }` |
-| 其他 | 仅 `type`，无 data（客户端忽略） |
+| 其他 | 保留 `type`、`seq` 和详情指针；调试模式展开无损数据 |
 
-**控制帧**：连接建立后立即 `data: {"type":"hello","serverTime":...}`；每 25s `: ping` 注释行。
+**控制帧**：连接建立后立即 `data: {"type":"hello","serverTime":...,"capabilities":{"eventTimeline":{...}}}`；每 25s `: ping` 注释行。bootstrap 同样返回 `capabilities.eventTimeline`，客户端应按能力协商而不是按版本号猜测。
 **错误语义**：鉴权失败在连接建立阶段以 `401` HTTP 状态返回（EventSource 会触发 error 事件，客户端转登录态）。
 
 ### 3.6b SSE 帧类型汇总（v2.3+ 扩展）
@@ -221,7 +265,7 @@
 | `mobile/frame` | 内核瞬态帧（问询/审批）。`frame` 字段为 `question/requested`（含 `rpcId`、`questions[]`）、`question/resolved`（`questionRpcId`）、`approval/requested`（`rpcId`、`approvalId`、`toolName`、`reason?`）、`approval/resolved`（`approvalId`）。**App 断线重连时服务端补发挂起的待答帧**（`pendingFrames` 回放） |
 | `mobile/queue` | `{ sessionId, rows: [{ id, text, placement }] }`——内核队列快照（`agent/inbox/spliced` 即时镜像，v3.0.2）：认领/删除/编辑实时反映，App 端 dock 以此为权威源（`placement`: `queued` / `steering` / `context`，与 GET /queue 同款形状）；断线重连时 mux 回放当前队列 |
 
-客户端应按 `type` 分派；未知 type 一律忽略（前向兼容）。
+客户端应按 `type` 分派；未知 type 使用通用事件卡保留顺序，并在调试模式通过详情指针展开（前向兼容）。
 ### 3.7 GET /m/qr.png
 
 **查询参数**：`text`（必填，二维码内容，URL 编码）。无 `text` → `400`。 **响应**：`200 image/png`（qrcode 包生成，尺寸 512，纠错级别 M）。
@@ -235,6 +279,8 @@
 | 429 | `rate-limited` | 登录失败超限（v2.6，仅 authToken 启用时；响应带 `Retry-After` 头，默认 60s 后恢复） |
 | 404 | `not-found` | 未知路径 |
 | 404 | `session-not-found` | 会话不存在 |
+| 404 | `event-not-found` | 事件不存在、属于内部/敏感类型，或不在移动端 Visible timeline |
+| 413 | `event-detail-too-large` | 单个无损详情超过 8 MiB 上限 |
 | 405 | `method-not-allowed` | 方法不支持（GET 端点收到 POST 等） |
 | 503 | `no-live-agent` | 无运行中 agent |
 | 503 | `agents-unavailable` | agents 服务不可用 |

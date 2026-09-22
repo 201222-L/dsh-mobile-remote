@@ -41,14 +41,14 @@ Api _apiFor(HttpServer server) =>
       ..token = '';
 
 void main() {
-  test('history 解析 degraded=true + historyMode=current-surface，事件可达', () async {
+  test('historyPage 解析 degraded=true + historyMode=current-surface，事件可达', () async {
     final server = await _spawnServer({
       'degraded': true,
       'historyMode': 'current-surface',
       'events': [_eventJson],
     });
     try {
-      final page = await _apiFor(server).history('s');
+      final page = await _apiFor(server).historyPage('s');
       expect(page.degraded, isTrue);
       expect(page.historyMode, 'current-surface');
       expect(page.events, hasLength(1));
@@ -62,7 +62,7 @@ void main() {
   test('旧服务端不返回 degraded/historyMode 时保持兼容（degraded=false）', () async {
     final server = await _spawnServer({'events': [_eventJson]});
     try {
-      final page = await _apiFor(server).history('s');
+      final page = await _apiFor(server).historyPage('s');
       expect(page.degraded, isFalse);
       expect(page.historyMode, isNull);
       expect(page.events, hasLength(1));
@@ -74,7 +74,7 @@ void main() {
   test('无事件时 events 为空数组且不抛错', () async {
     final server = await _spawnServer({'degraded': true, 'events': []});
     try {
-      final page = await _apiFor(server).history('s');
+      final page = await _apiFor(server).historyPage('s');
       expect(page.degraded, isTrue);
       expect(page.events, isEmpty);
     } finally {

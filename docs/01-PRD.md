@@ -87,7 +87,7 @@
 | 可用性 | 电脑端 DSH 在线即可用；GUI 重启后移动端自动恢复（会话持久化在 DSH 侧） |
 | 并发 | 单用户；SSE 连接数上限 16（超出拒绝并提示） |
 | 兼容性 | 手机：iOS Safari ≥ 15、Android Chrome ≥ 90（现代浏览器，含 Notification/EventSource）；桌面：Chrome/Edge/Firefox |
-| 流量 | 事件摘要截断：tool/result 内容 ≤ 2000 字符下发给移动端，assistant 文本 ≤ 20000 字符 |
+| 流量 | 时间线摘要默认轻量；tool/result 与 assistant 长内容通过认证详情端点按需读取，列表不静默丢失 Visible event |
 | 安全基线 | 见 04-security.md：威胁模型、口令方案、传输安全要求 |
 | 可维护性 | 零构建（无前端打包步骤）；插件为纯 ESM；配置项集中在 Config schema |
 
