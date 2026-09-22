@@ -1454,8 +1454,8 @@ class _ChatScreenState extends State<ChatScreen> {
     for (final ev in events) {
       final data = ev.data ?? const <String, dynamic>{};
       if (ev.type == 'tool/call') {
-        _activeTools[_toolActivityKey(data, ev.seq, _activeTools.length)] =
-            data['name']?.toString() ?? data['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
+        final callId = _toolActivityKey(data, ev.seq, _activeTools.length);
+        _activeTools[callId] = timelineToolNameOf(data, callId: callId, fallback: L10n.t('工具', 'Tool'));
       } else if (ev.type == 'tool/result') {
         _activeTools.remove(_toolActivityKey(data, ev.seq, _activeTools.length));
       } else if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
@@ -1490,7 +1490,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final lifecycle = _timelineReducer.tools[callId] ??
         ToolLifecycle(
           id: callId,
-          name: d['name']?.toString() ?? d['toolCall']?.toString() ?? L10n.t('工具', 'Tool'),
+          name: timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool')),
           seq: ev.seq,
         );
     final item = _MsgItem.tool(
@@ -1644,9 +1644,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _upsertToolItem(out, ev, history: history);
         }
       case 'tool/call':
-        final name = d?['name']?.toString() ?? L10n.t('工具', 'Tool');
+        final callId = _toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length);
+        final name = timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool'));
         if (!history) {
-          _activeTools[_toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length)] = name;
+          _activeTools[callId] = name;
           _scheduleActivityFlush();
         }
         _upsertToolItem(out, ev, history: history);

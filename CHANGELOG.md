@@ -3,7 +3,7 @@
 ## v3.1.5（2026-09-22，issue #12 / #15 / #19 / #22 / #24，PR #11 / #18 / #21）— 对话时间线 + 用量额度 + 复制对话 + 安全加固
 
 > 版本：插件 `3.1.5` / App `3.1.5+22`。
-> 验收门禁：`node --test test/*.mjs`（28）、`node tools/timeline-contract-check.mjs`（75）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（127）。
+> 验收门禁：`node --test test/*.mjs`（28）、`node tools/timeline-contract-check.mjs`（77）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（132）。
 
 ### 对话时间线（工具调用与事件详情）
 
@@ -14,6 +14,7 @@
 - 详情正文在 App 侧统一钳制（默认 20000 字 + 截断标注）：详情返回的是原始事件，不钳制会把超长工具结果直接送进 markdown 解析与文本布局。
 - `/api/history` 的表面过滤由白名单改为 `isTimelineRecord` 黑名单，并新增 `hasMore` durable cursor 分页（`after`/`before`/`limit` 非法值 → 400，与既有参数校验一致）；降级（`historyMode: "current-surface"`）语义与 `configDegraded` 保持不变，降级会话的 `hasMore=false` **不代表历史到底**。
 - 验收门禁：`node tools/timeline-contract-check.mjs`（含「LLM 请求快照不得外泄」「未命名类型详情 404」两条新增断言）。
+- **修复工具卡片标题显示裸 `callId`**：服务端 `tool/result` 摘要在结果事件拿不到工具名时，用 `callId` 兜底写进了 `name`（`callId` 是关联 id，不是工具名）；App 侧合并规则 `data['name'] ?? … ?? current?.name` 因此让结果事件覆盖了 `tool/call` 学到的真名。只有带结果的调用在历史里才有 `tool/result`，所以现象恰好是「历史回放=裸 `call_00_...`、进行中=真名」的分裂。修复为服务端不再下发该兜底（名字未知就省略字段），App 侧把「`name` == `callId`」一律视为未知并保留上一次已知工具名（`timelineToolNameOf` 单一实现，四处调用点统一）；结果事件携带的真实错误名（如 `UserQuestionError`）与显式工具名照常保留。回归：`tool_name_callid_test.dart`（5 例）+ 契约检查 2 条断言。
 
 ### 手机用量与额度
 

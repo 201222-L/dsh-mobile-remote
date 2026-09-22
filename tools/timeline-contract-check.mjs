@@ -118,6 +118,30 @@ check("直接形态工具结果保留 identity/text", directToolResult.data?.cal
 check("直接形态图片只保留 metadata", directToolResult.data?.images?.length === 1 && directToolResult.data.images[0].attachmentId === "att-1" && directToolResult.data.images[0].data === undefined);
 check("tool/result 不再下发文件元数据（issue #1 需求变更）", directToolResult.data?.files === undefined, JSON.stringify(directToolResult.data?.files));
 
+// v3.1.5 修复：结果事件缺工具名时**不得用 callId 兜底**。callId 是关联 id，不是工具名；
+// 旧行为让 App 合并规则把 `tool/call` 学到的真名覆盖成裸 `call_00_...`，历史回放的
+// 工具卡标题因此错成 id（进行中的那张正常）。
+const namelessToolResult = mod.summarizeEvent({
+  seq: 11,
+  type: "tool/result",
+  data: { callId: "call-nameless", text: "result without a tool name", isError: false },
+});
+check(
+  "tool/result 缺工具名时不下发 name（绝不用 callId 兜底）",
+  namelessToolResult.data?.name === undefined && namelessToolResult.data?.callId === "call-nameless",
+  `name=${JSON.stringify(namelessToolResult.data?.name)}`,
+);
+const erroredToolResult = mod.summarizeEvent({
+  seq: 12,
+  type: "tool/result",
+  data: { callId: "call-errored", error: { name: "UserQuestionError", message: "cancelled" }, text: "" },
+});
+check(
+  "tool/result 的错误名仍是有效工具名（不误伤 UserQuestionError）",
+  erroredToolResult.data?.name === "UserQuestionError",
+  `name=${JSON.stringify(erroredToolResult.data?.name)}`,
+);
+
 // issue #1 需求变更：产出文件（tool/result / assistant/message）停发 files；用户自己的附件保留
 const assistantWithFile = mod.summarizeEvent({
   seq: 21,

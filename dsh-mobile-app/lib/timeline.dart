@@ -94,6 +94,27 @@ String timelineCallIdOf(Map<String, dynamic>? data, int? seq, [int fallback = 0]
   return 'unavailable-${seq ?? fallback}';
 }
 
+/// 工具名解析：**调用 id 不是工具名**（v3.1.5 修复）。
+///
+/// 症状：历史回放里已结束的工具卡标题显示裸 `call_00_...`，而进行中的那张正常显示
+/// `pwsh`。根因是服务端 `tool/result` 摘要在拿不到工具名时用 callId 兜底写进 `name`，
+/// 而合并规则 `data['name'] ?? … ?? current?.name` 让结果事件覆盖了 `tool/call` 学到的
+/// 真名——只有成功的调用在历史里才带结果事件，所以恰好「历史=裸 id、实时=真名」。
+///
+/// 服务端已停止该兜底；此处再把「name == callId」一律视为未知，形成双保险：
+/// [fallback] 传上一次已知的工具名，即可让结果事件永不夺走真名。
+String timelineToolNameOf(
+  Map<String, dynamic>? data, {
+  required String callId,
+  required String fallback,
+}) {
+  for (final candidate in <Object?>[data?['name'], data?['toolCall']]) {
+    final text = candidate is String ? candidate : candidate?.toString();
+    if (text != null && text.isNotEmpty && text != callId) return text;
+  }
+  return fallback;
+}
+
 /// 详情正文上限：摘要被服务端 clamp，但**详情返回的是原始事件**（上限 8 MiB），
 /// 直接进 markdown 解析 / 文本布局会造成卡顿与内存尖峰 —— 统一在渲染前截断。
 const timelineDetailTextMax = 20000;
@@ -315,7 +336,7 @@ class TimelineReducer {
     final hasResult = current != null && current.result.isNotEmpty;
     final next = ToolLifecycle(
       id: callId,
-      name: _string(data['name']) ?? _string(data['toolCall']) ?? current?.name ?? L10n.t('工具', 'Tool'),
+      name: timelineToolNameOf(data, callId: callId, fallback: current?.name ?? L10n.t('工具', 'Tool')),
       arguments: replaceArguments ? (_string(data['arguments']) ?? current?.arguments ?? '') : '${current?.arguments ?? ''}$delta',
       result: isResult ? (_string(data['text']) ?? _string(data['result']) ?? '') : (current?.result ?? ''),
       isError: isResult ? data['isError'] == true : (current?.isError ?? false),
