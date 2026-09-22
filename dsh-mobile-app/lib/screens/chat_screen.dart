@@ -2516,8 +2516,13 @@ class _ChatScreenState extends State<ChatScreen> {
               text: item.text,
               sourceKind: item.sourceKind,
               expanded: widget.store.reasoningOverrideOf(_mySessionId ?? '', 'inj:$ikey') ?? false,
-              onToggle: (v) => setState(() =>
-                  widget.store.setReasoningOverride(_mySessionId ?? '', 'inj:$ikey', v)),
+              // setReasoningOverride 是 async（内部同步更新内存映射、再异步落盘）：
+              // 必须放在 setState 之外，否则 setState 的闭包返回 Future → debug/profile
+              // 构建下每次点按都会断言失败且展开状态不生效。
+              onToggle: (v) {
+                widget.store.setReasoningOverride(_mySessionId ?? '', 'inj:$ikey', v);
+                setState(() {});
+              },
             ),
           );
         }
@@ -2579,7 +2584,11 @@ class _ChatScreenState extends State<ChatScreen> {
               reasoning: item.reasoning,
               defaultExpanded: widget.store.reasoningDefaultExpanded,
               expandedOverride: widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
-              onOverride: (v) => setState(() => widget.store.setReasoningOverride(_mySessionId ?? '', rk, v)),
+              // 同上：异步方法不得放进 setState 闭包（否则点按思维链折叠会断言失败）
+              onOverride: (v) {
+                widget.store.setReasoningOverride(_mySessionId ?? '', rk, v);
+                setState(() {});
+              },
             ),
             _MessageActionsBar(
               item: item,
