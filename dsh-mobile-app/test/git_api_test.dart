@@ -23,6 +23,31 @@ void main() {
       if (request.url.path.endsWith('/branches')) {
         return http.Response(jsonEncode({'branches': []}), 200);
       }
+      if (request.url.path.endsWith('/worktree')) {
+        return http.Response(
+          jsonEncode({
+            'repositoryId': 'repo&1',
+            'snapshotId': 'worktree-snap',
+            'staged': [],
+            'unstaged': [],
+            'untracked': [],
+          }),
+          200,
+        );
+      }
+      if (request.url.path.endsWith('/preview')) {
+        return http.Response(
+          jsonEncode({
+            'repositoryId': 'repo&1',
+            'kind': 'unstaged',
+            'path': 'a b.txt',
+            'diff': '-old\n+new\n',
+            'truncated': false,
+            'binary': false,
+          }),
+          200,
+        );
+      }
       if (request.url.path.endsWith('/graph')) {
         return http.Response(
           jsonEncode({'snapshotId': 'snap', 'commits': [], 'tips': []}),
@@ -56,8 +81,18 @@ void main() {
       filesCursor: 'files+1',
       filesLimit: 10,
     );
+    final workspace = await value.worktree('session / one', 'repo&1');
+    final preview = await value.preview(
+      'session / one',
+      'repo&1',
+      kind: 'unstaged',
+      snapshotId: 'worktree-snap',
+      path: 'a b.txt',
+    );
 
-    expect(requests, hasLength(5));
+    expect(workspace.snapshotId, 'worktree-snap');
+    expect(preview.diff, '-old\n+new\n');
+    expect(requests, hasLength(7));
     expect(requests.every((request) => request.method == 'GET'), isTrue);
     expect(requests[0].url.path, '/m/api/git/capabilities');
     expect(requests[0].url.queryParameters['sessionId'], 'session / one');
@@ -71,5 +106,12 @@ void main() {
     expect(requests[4].url.queryParameters['oid'], 'abc/def');
     expect(requests[4].url.queryParameters['filesCursor'], 'files+1');
     expect(requests[4].url.queryParameters['filesLimit'], '10');
+    expect(requests[5].url.path, '/m/api/git/worktree');
+    expect(requests[5].url.queryParameters['sessionId'], 'session / one');
+    expect(requests[5].url.queryParameters['repositoryId'], 'repo&1');
+    expect(requests[6].url.path, '/m/api/git/preview');
+    expect(requests[6].url.queryParameters['kind'], 'unstaged');
+    expect(requests[6].url.queryParameters['snapshotId'], 'worktree-snap');
+    expect(requests[6].url.queryParameters['path'], 'a b.txt');
   });
 }

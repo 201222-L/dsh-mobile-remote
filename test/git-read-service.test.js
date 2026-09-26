@@ -41,7 +41,7 @@ test("capabilities and repository are read-only and authorized only through a se
     const caps = await service.capabilitiesForSession('session-1');
     assert.equal(caps.available, true);
     assert.equal(caps.readOnly, true);
-    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true });
+    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true, worktree: true, preview: true });
     const repository = await service.repositoryForSession("session-1");
     assert.match(repository.repositoryId, /^repo_[A-Za-z0-9_-]+$/);
     assert.equal(repository.name, root.split("/").at(-1));
@@ -180,6 +180,24 @@ test("optional external change subscription failure falls back without breaking 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("provider subscriptions do not require server-side worktree polling", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-subscribed-poll-`);
+  try {
+    fixture(root);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${root}/tracked`, "base"); git(root, "add", "tracked"); git(root, "commit", "-m", "base");
+    const ctx = context(root); const bundled = (await import("../lib/git-read-bundled-provider.js")).createBundledGitReadProvider(ctx);
+    const external = { ...bundled, subscribeChanges: () => () => {} };
+    const get = ctx.get; ctx.get = (name) => name === "gitReadProvider" ? external : get(name);
+    const events = []; const service = createGitReadService(ctx, { pollIntervalMs: 10, onChanged: (...args) => events.push(args) });
+    await service.repositoryForSession("session-1"); await service._pollOnce(); service.start();
+    writeFileSync(`${root}/tracked`, "changed");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.deepEqual(events, []);
+    service.stop();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("branches identify local, remote, current, upstream, ahead and behind", async () => {
   const root = mkdtempSync(`${tmpdir()}/git-read-branches-`);
   try {
@@ -261,7 +279,7 @@ test("old graph snapshots expire and cannot grow without bound", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("poll notifications contain only opaque repository ID and ignore worktree changes", async () => {
+test("server polling detects ref changes but leaves worktree polling to the open client page", async () => {
   const root = mkdtempSync(`${tmpdir()}/git-read-poll-`);
   try {
     fixture(root);
@@ -270,13 +288,110 @@ test("poll notifications contain only opaque repository ID and ignore worktree c
     const events = [];
     const service = createGitReadService(context(root), { onChanged: (...args) => events.push(args) });
     const { repositoryId } = await service.repositoryForSession("session-1");
+    await service._pollOnce();
     writeFileSync(`${root}/a`, "uncommitted");
     await service._pollOnce();
     assert.deepEqual(events, []);
     git(root, "branch", "topic");
     await service._pollOnce();
-    assert.deepEqual(events, [[repositoryId]]);
+    assert.deepEqual(events, [[repositoryId, "refs"]]);
     assert.equal(JSON.stringify(events).includes(root), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("worktree snapshot separates staged, unstaged and untracked; previews revalidate exact members", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-worktree-`);
+  try {
+    fixture(root);
+    const { writeFileSync, symlinkSync } = await import("node:fs");
+    writeFileSync(`${root}/changed.txt`, "base\\n"); git(root, "add", "changed.txt"); git(root, "commit", "-m", "base");
+    writeFileSync(`${root}/changed.txt`, "staged\\n"); git(root, "add", "changed.txt"); writeFileSync(`${root}/changed.txt`, "worktree\\n");
+    writeFileSync(`${root}/untracked[magic].txt`, "new\\n");
+    symlinkSync("/etc/passwd", `${root}/link`);
+    const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
+    const snapshot = await service.worktree("session-1", repositoryId);
+    assert.equal(snapshot.staged[0].path, "changed.txt"); assert.equal(snapshot.unstaged[0].path, "changed.txt");
+    assert.ok(snapshot.untracked.some(({ path }) => path === "untracked[magic].txt"));
+    const preview = await service.preview("session-1", repositoryId, { kind: "staged", snapshotId: snapshot.snapshotId, path: "changed.txt" });
+    assert.match(preview.diff, /staged/); assert.equal(preview.repositoryId, repositoryId);
+    const safe = await service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: "link" });
+    assert.match(safe.notice, /symlink/); assert.doesNotMatch(safe.diff, /root:/);
+    await assert.rejects(() => service.preview("session-1", repositoryId, { kind: "unstaged", snapshotId: snapshot.snapshotId, path: "../etc/passwd" }), (e) => e.status === 400);
+    await assert.rejects(() => service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: ":(glob)**" }), (e) => e.status === 404);
+    writeFileSync(`${root}/changed.txt`, "newer\\n");
+    await assert.rejects(() => service.preview("session-1", repositoryId, { kind: "staged", snapshotId: snapshot.snapshotId, path: "changed.txt" }), (e) => e.code === "graph-stale" && e.status === 409);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("tracked previews retain context for folding; mode-only changes return an explicit notice", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-context-`);
+  try {
+    fixture(root);
+    const { writeFileSync, chmodSync } = await import("node:fs");
+    const original = Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\n") + "\n";
+    writeFileSync(`${root}/context.txt`, original); git(root, "add", "context.txt"); git(root, "commit", "-m", "base");
+    const changed = original.replace("line-10", "changed-10"); writeFileSync(`${root}/context.txt`, changed);
+    const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
+    const snapshot = await service.worktree("session-1", repositoryId);
+    const preview = await service.preview("session-1", repositoryId, { kind: "unstaged", snapshotId: snapshot.snapshotId, path: "context.txt" });
+    assert.match(preview.diff, /line-0/); assert.match(preview.diff, /line-19/);
+
+    git(root, "checkout", "--", "context.txt");
+    chmodSync(`${root}/context.txt`, 0o755);
+    const modeSnapshot = await service.worktree("session-1", repositoryId);
+    const modeOnly = await service.preview("session-1", repositoryId, { kind: "unstaged", snapshotId: modeSnapshot.snapshotId, path: "context.txt" });
+    assert.match(modeOnly.notice, /mode changed/); assert.equal(modeOnly.diff, "");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("untracked preview is bounded and accurately marks large-file truncation", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-large-`);
+  try {
+    fixture(root);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${root}/large.txt`, "x".repeat(1024 * 1024));
+    const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
+    const snapshot = await service.worktree("session-1", repositoryId);
+    const result = await service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: "large.txt" });
+    assert.equal(Buffer.byteLength(result.diff), 512 * 1024); assert.equal(result.truncated, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("porcelain NUL parsing preserves rename names and reports merge conflicts", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-status-`);
+  try {
+    fixture(root);
+    const { writeFileSync, renameSync } = await import("node:fs");
+    const unusual = "tab\\tand\\nline.txt";
+    writeFileSync(`${root}/${unusual}`, "base\\n"); git(root, "add", "--", unusual); git(root, "commit", "-m", "base");
+    renameSync(`${root}/${unusual}`, `${root}/renamed\\tfile.txt`); git(root, "add", "-A");
+    const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
+    const renamed = await service.worktree("session-1", repositoryId);
+    assert.ok(renamed.staged.some((file) => file.path === "renamed\\tfile.txt" && file.oldPath === unusual));
+    git(root, "checkout", "-b", "side"); writeFileSync(`${root}/conflict.txt`, "side\\n"); git(root, "add", "conflict.txt"); git(root, "commit", "-m", "side");
+    git(root, "checkout", "main"); writeFileSync(`${root}/conflict.txt`, "main\\n"); git(root, "add", "conflict.txt"); git(root, "commit", "-m", "main");
+    const merge = spawnSync("git", ["-C", root, "merge", "side"], { encoding: "utf8" }); assert.notEqual(merge.status, 0);
+    const conflicted = await service.worktree("session-1", repositoryId);
+    assert.ok([...conflicted.staged, ...conflicted.unstaged].some((file) => file.path === "conflict.txt" && file.conflicted));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("commit preview supports root and merge commits against first parent", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-read-preview-`);
+  try {
+    fixture(root);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${root}/root.txt`, "root body\\n"); git(root, "add", "root.txt"); git(root, "commit", "-m", "root");
+    const rootOid = git(root, "rev-parse", "HEAD");
+    const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
+    const rootPreview = await service.preview("session-1", repositoryId, { kind: "commit", oid: rootOid, path: "root.txt" });
+    assert.match(rootPreview.diff, /root body/);
+    git(root, "checkout", "-b", "side"); writeFileSync(`${root}/side.txt`, "side change\\n"); git(root, "add", "side.txt"); git(root, "commit", "-m", "side");
+    git(root, "checkout", "main"); writeFileSync(`${root}/main.txt`, "main change\\n"); git(root, "add", "main.txt"); git(root, "commit", "-m", "main");
+    git(root, "merge", "--no-ff", "side", "-m", "merge");
+    const mergeOid = git(root, "rev-parse", "HEAD");
+    const mergePreview = await service.preview("session-1", repositoryId, { kind: "commit", oid: mergeOid, path: "side.txt" });
+    assert.match(mergePreview.diff, /side change/); assert.match(mergePreview.diff, /diff --git a\/side.txt b\/side.txt/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

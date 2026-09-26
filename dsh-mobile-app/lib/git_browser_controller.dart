@@ -16,7 +16,15 @@ class GitBrowserState {
   final String? snapshotId;
   final String? graphNextCursor;
   final GitCommitDetails? commit;
+  final GitWorktreeSnapshot? worktree;
+  final bool loadingWorktree;
+  final bool worktreeStale;
+  final String? worktreeError;
+  final GitFilePreview? preview;
+  final bool loadingPreview;
+  final String? previewError;
   final bool loading;
+  final bool loadingGraph;
   final bool loadingGraphPage;
   final bool loadingFilesPage;
   final bool stale;
@@ -33,7 +41,15 @@ class GitBrowserState {
     this.snapshotId,
     this.graphNextCursor,
     this.commit,
+    this.worktree,
+    this.loadingWorktree = false,
+    this.worktreeStale = false,
+    this.worktreeError,
+    this.preview,
+    this.loadingPreview = false,
+    this.previewError,
     this.loading = false,
+    this.loadingGraph = false,
     this.loadingGraphPage = false,
     this.loadingFilesPage = false,
     this.stale = false,
@@ -61,7 +77,15 @@ class GitBrowserState {
     Object? snapshotId = _keep,
     Object? graphNextCursor = _keep,
     Object? commit = _keep,
+    Object? worktree = _keep,
+    bool? loadingWorktree,
+    bool? worktreeStale,
+    Object? worktreeError = _keep,
+    Object? preview = _keep,
+    bool? loadingPreview,
+    Object? previewError = _keep,
     bool? loading,
+    bool? loadingGraph,
     bool? loadingGraphPage,
     bool? loadingFilesPage,
     bool? stale,
@@ -91,7 +115,23 @@ class GitBrowserState {
     commit: identical(commit, _keep)
         ? this.commit
         : commit as GitCommitDetails?,
+    worktree: identical(worktree, _keep)
+        ? this.worktree
+        : worktree as GitWorktreeSnapshot?,
+    loadingWorktree: loadingWorktree ?? this.loadingWorktree,
+    worktreeStale: worktreeStale ?? this.worktreeStale,
+    worktreeError: identical(worktreeError, _keep)
+        ? this.worktreeError
+        : worktreeError as String?,
+    preview: identical(preview, _keep)
+        ? this.preview
+        : preview as GitFilePreview?,
+    loadingPreview: loadingPreview ?? this.loadingPreview,
+    previewError: identical(previewError, _keep)
+        ? this.previewError
+        : previewError as String?,
     loading: loading ?? this.loading,
+    loadingGraph: loadingGraph ?? this.loadingGraph,
     loadingGraphPage: loadingGraphPage ?? this.loadingGraphPage,
     loadingFilesPage: loadingFilesPage ?? this.loadingFilesPage,
     stale: stale ?? this.stale,
@@ -115,6 +155,9 @@ class GitBrowserController extends ChangeNotifier {
   int _generation = 0;
   int _graphGeneration = 0;
   int _commitGeneration = 0;
+  int _worktreeGeneration = 0;
+  int _worktreeCheckGeneration = 0;
+  int _previewGeneration = 0;
   Future<void>? _graphPageRequest;
   Future<void>? _filesPageRequest;
   bool _disposed = false;
@@ -127,6 +170,9 @@ class GitBrowserController extends ChangeNotifier {
     _generation++;
     _graphGeneration++;
     _commitGeneration++;
+    _worktreeGeneration++;
+    _worktreeCheckGeneration++;
+    _previewGeneration++;
     super.dispose();
   }
 
@@ -140,6 +186,9 @@ class GitBrowserController extends ChangeNotifier {
     final generation = ++_generation;
     _graphGeneration++;
     _commitGeneration++;
+    _worktreeGeneration++;
+    _worktreeCheckGeneration++;
+    _previewGeneration++;
     _graphPageRequest = null;
     _filesPageRequest = null;
     _emit(GitBrowserState(sessionId: sessionId, loading: true));
@@ -152,9 +201,22 @@ class GitBrowserController extends ChangeNotifier {
     final generation = ++_generation;
     _graphGeneration++;
     _commitGeneration++;
+    _worktreeGeneration++;
+    _worktreeCheckGeneration++;
+    _previewGeneration++;
     _graphPageRequest = null;
     _filesPageRequest = null;
-    _emit(_state.copyWith(loading: true, loadingGraphPage: false, loadingFilesPage: false, error: null));
+    _emit(
+      _state.copyWith(
+        loading: true,
+        loadingGraph: false,
+        loadingGraphPage: false,
+        loadingFilesPage: false,
+        loadingWorktree: false,
+        loadingPreview: false,
+        error: null,
+      ),
+    );
     await _loadSession(sessionId, generation, preserveSelection: true);
   }
 
@@ -217,6 +279,7 @@ class GitBrowserController extends ChangeNotifier {
           graphNextCursor: selectionMissing ? null : _keep,
           commit: selectionMissing ? null : _keep,
           loading: false,
+          loadingGraph: preserveSelection && selected.isNotEmpty,
           stale: selectionMissing ? false : _state.stale,
           error: selectionMissing ? 'git-ref-not-found' : null,
         ),
@@ -286,6 +349,7 @@ class GitBrowserController extends ChangeNotifier {
         snapshotId: null,
         graphNextCursor: null,
         commit: null,
+        loadingGraph: true,
         stale: false,
         error: null,
       ),
@@ -318,6 +382,7 @@ class GitBrowserController extends ChangeNotifier {
         snapshotId: null,
         graphNextCursor: null,
         commit: null,
+        loadingGraph: true,
         stale: false,
         error: null,
       ),
@@ -363,6 +428,7 @@ class GitBrowserController extends ChangeNotifier {
           commits: commits,
           snapshotId: page.snapshotId,
           graphNextCursor: page.nextCursor,
+          loadingGraph: false,
           loadingGraphPage: false,
           stale: false,
           error: null,
@@ -375,6 +441,7 @@ class GitBrowserController extends ChangeNotifier {
       final graphStale = error is ApiException && error.code == 'graph-stale';
       _emit(
         _state.copyWith(
+          loadingGraph: false,
           loadingGraphPage: false,
           stale: graphStale ? true : _state.stale,
           error: graphStale ? 'graph-stale' : error.toString(),
@@ -385,24 +452,28 @@ class GitBrowserController extends ChangeNotifier {
 
   Future<void> loadNextGraphPage() {
     if (_graphPageRequest != null) return _graphPageRequest!;
-    if (_state.stale || _state.graphNextCursor == null || _state.loadingGraphPage) {
+    if (_state.stale ||
+        _state.graphNextCursor == null ||
+        _state.loadingGraphPage) {
       return Future.value();
     }
     final generation = _generation;
     final graphGeneration = _graphGeneration;
     _emit(_state.copyWith(loadingGraphPage: true));
     late final Future<void> request;
-    request = _loadGraph(
-      generation: generation,
-      graphGeneration: graphGeneration,
-      append: true,
-    ).whenComplete(() {
-      if (identical(_graphPageRequest, request)) _graphPageRequest = null;
-      if (generation == _generation && graphGeneration == _graphGeneration &&
-          _state.loadingGraphPage) {
-        _emit(_state.copyWith(loadingGraphPage: false));
-      }
-    });
+    request =
+        _loadGraph(
+          generation: generation,
+          graphGeneration: graphGeneration,
+          append: true,
+        ).whenComplete(() {
+          if (identical(_graphPageRequest, request)) _graphPageRequest = null;
+          if (generation == _generation &&
+              graphGeneration == _graphGeneration &&
+              _state.loadingGraphPage) {
+            _emit(_state.copyWith(loadingGraphPage: false));
+          }
+        });
     _graphPageRequest = request;
     return request;
   }
@@ -431,6 +502,143 @@ class GitBrowserController extends ChangeNotifier {
       }
       _emit(_state.copyWith(error: error.toString()));
     }
+  }
+
+  Future<void> loadWorktree({bool refresh = false}) async {
+    final sessionId = _state.sessionId;
+    final repository = _state.repository;
+    if (sessionId == null || repository == null || _state.loadingWorktree) {
+      return;
+    }
+    if (!refresh && _state.worktree != null) return;
+    if (refresh) {
+      _worktreeCheckGeneration++;
+      _previewGeneration++;
+    }
+    final generation = ++_worktreeGeneration;
+    _emit(
+      _state.copyWith(
+        loadingWorktree: true,
+        worktreeError: null,
+        loadingPreview: refresh ? false : null,
+        previewError: refresh ? null : _keep,
+      ),
+    );
+    try {
+      final snapshot = await _api.worktree(sessionId, repository.repositoryId);
+      if (generation != _worktreeGeneration ||
+          _state.repository?.repositoryId != snapshot.repositoryId) {
+        return;
+      }
+      _emit(
+        _state.copyWith(
+          worktree: snapshot,
+          loadingWorktree: false,
+          worktreeStale: false,
+          worktreeError: null,
+        ),
+      );
+    } catch (error) {
+      if (generation != _worktreeGeneration) return;
+      final isStale = error is ApiException && error.code == 'graph-stale';
+      _emit(
+        _state.copyWith(
+          loadingWorktree: false,
+          worktreeStale: isStale ? true : _state.worktreeStale,
+          worktreeError: error.toString(),
+        ),
+      );
+    }
+  }
+
+  Future<void> checkWorktreeFreshness() async {
+    final sessionId = _state.sessionId;
+    final repository = _state.repository;
+    final current = _state.worktree;
+    if (sessionId == null ||
+        repository == null ||
+        current == null ||
+        _state.worktreeStale) {
+      return;
+    }
+    final generation = ++_worktreeCheckGeneration;
+    try {
+      final latest = await _api.worktree(sessionId, repository.repositoryId);
+      if (generation != _worktreeCheckGeneration ||
+          _state.repository?.repositoryId != latest.repositoryId) {
+        return;
+      }
+      if (latest.snapshotId != current.snapshotId) markWorktreeStale();
+    } catch (error) {
+      if (generation == _worktreeCheckGeneration) {
+        _emit(_state.copyWith(worktreeError: error.toString()));
+      }
+    }
+  }
+
+  Future<void> openPreview({
+    required String kind,
+    required String path,
+    String? oid,
+  }) async {
+    final sessionId = _state.sessionId;
+    final repository = _state.repository;
+    if (sessionId == null || repository == null) return;
+    final worktreeKind = kind != 'commit';
+    final snapshot = _state.worktree;
+    if (worktreeKind && (snapshot == null || _state.worktreeStale)) return;
+    final generation = ++_previewGeneration;
+    _emit(
+      _state.copyWith(loadingPreview: true, preview: null, previewError: null),
+    );
+    try {
+      final preview = await _api.preview(
+        sessionId,
+        repository.repositoryId,
+        kind: kind,
+        path: path,
+        snapshotId: worktreeKind ? snapshot!.snapshotId : null,
+        oid: oid,
+      );
+      if (generation != _previewGeneration) return;
+      _emit(
+        _state.copyWith(
+          preview: preview,
+          loadingPreview: false,
+          previewError: null,
+        ),
+      );
+    } catch (error) {
+      if (generation != _previewGeneration) return;
+      final isStale = error is ApiException && error.code == 'graph-stale';
+      _emit(
+        _state.copyWith(
+          loadingPreview: false,
+          previewError: error.toString(),
+          worktreeStale: worktreeKind && isStale ? true : _state.worktreeStale,
+        ),
+      );
+    }
+  }
+
+  void closePreview() {
+    _previewGeneration++;
+    _emit(
+      _state.copyWith(preview: null, loadingPreview: false, previewError: null),
+    );
+  }
+
+  void markWorktreeStale() {
+    if (_state.worktreeStale) return;
+    _worktreeCheckGeneration++;
+    if (_state.loadingPreview) _previewGeneration++;
+    _emit(
+      _state.copyWith(
+        worktreeStale: true,
+        loadingPreview: _state.loadingPreview ? false : null,
+        previewError: _state.loadingPreview ? 'graph-stale' : null,
+      ),
+    );
   }
 
   Future<void> loadNextFilesPage() {
@@ -508,6 +716,12 @@ class GitBrowserController extends ChangeNotifier {
     if (_state.stale) return;
     // A response already in flight belongs to the old tip-bound snapshot.
     _graphGeneration++;
-    _emit(_state.copyWith(stale: true, loadingGraphPage: false));
+    _emit(
+      _state.copyWith(
+        stale: true,
+        loadingGraph: false,
+        loadingGraphPage: false,
+      ),
+    );
   }
 }

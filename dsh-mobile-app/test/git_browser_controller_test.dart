@@ -47,6 +47,17 @@ class FakeGitReadApi implements GitReadApi {
     int filesLimit,
   )?
   onCommit;
+  Future<GitWorktreeSnapshot> Function(String sessionId, String repositoryId)?
+  onWorktree;
+  Future<GitFilePreview> Function(
+    String sessionId,
+    String repositoryId,
+    String kind,
+    String path,
+    String? snapshotId,
+    String? oid,
+  )?
+  onPreview;
 
   int graphCalls = 0;
   int commitCalls = 0;
@@ -118,6 +129,35 @@ class FakeGitReadApi implements GitReadApi {
         ) ??
         Future.value(GitCommitDetails(oid: oid));
   }
+
+  @override
+  Future<GitWorktreeSnapshot> worktree(String sessionId, String repositoryId) =>
+      onWorktree?.call(sessionId, repositoryId) ??
+      Future.value(
+        const GitWorktreeSnapshot(
+          repositoryId: 'repo',
+          snapshotId: 'worktree-1',
+        ),
+      );
+
+  @override
+  Future<GitFilePreview> preview(
+    String sessionId,
+    String repositoryId, {
+    required String kind,
+    required String path,
+    String? snapshotId,
+    String? oid,
+  }) =>
+      onPreview?.call(sessionId, repositoryId, kind, path, snapshotId, oid) ??
+      Future.value(
+        GitFilePreview(
+          repositoryId: repositoryId,
+          kind: kind,
+          path: path,
+          diff: '-old\n+new\n',
+        ),
+      );
 }
 
 void main() {
@@ -138,6 +178,90 @@ void main() {
       expect(controller.state.filteredBranches, [remoteMain]);
     },
   );
+
+  test(
+    'an older freshness poll cannot stale a newer explicit refresh',
+    () async {
+      final api = FakeGitReadApi();
+      final latePoll = Completer<GitWorktreeSnapshot>();
+      var calls = 0;
+      api.onWorktree = (_, _) {
+        calls++;
+        if (calls == 2) return latePoll.future;
+        return Future.value(
+          GitWorktreeSnapshot(
+            repositoryId: 'repo',
+            snapshotId: 'snapshot-$calls',
+          ),
+        );
+      };
+      final controller = GitBrowserController(api);
+      await controller.open('session-a');
+      await controller.loadWorktree();
+      final polling = controller.checkWorktreeFreshness();
+      await controller.loadWorktree(refresh: true);
+      latePoll.complete(
+        const GitWorktreeSnapshot(
+          repositoryId: 'repo',
+          snapshotId: 'older-poll-result',
+        ),
+      );
+      await polling;
+
+      expect(controller.state.worktree!.snapshotId, 'snapshot-3');
+      expect(controller.state.worktreeStale, isFalse);
+    },
+  );
+
+  test('opening a branch exposes the pending graph load until its snapshot arrives', () async {
+    final api = FakeGitReadApi();
+    final page = Completer<GitGraphPage>();
+    api.onGraph = (_, _, _, _, _, _) => page.future;
+    final controller = GitBrowserController(api);
+    await controller.open('session-a');
+
+    final pending = controller.openBranch(localMain);
+    expect(controller.state.loadingGraph, isTrue);
+    page.complete(
+      GitGraphPage(
+        snapshotId: 'graph-snapshot',
+        tips: const [GitGraphTip(name: 'refs/heads/main', tipOid: 'main-oid')],
+      ),
+    );
+    await pending;
+    expect(controller.state.loadingGraph, isFalse);
+    expect(controller.state.snapshotId, 'graph-snapshot');
+  });
+
+  test('worktree refresh detects changes but retains the visible snapshot and preview', () async {
+    final api = FakeGitReadApi();
+    var worktreeCalls = 0;
+    api.onWorktree = (_, _) async {
+      worktreeCalls++;
+      return GitWorktreeSnapshot(
+        repositoryId: 'repo',
+        snapshotId: 'snapshot-$worktreeCalls',
+        staged: const [GitWorktreeFile(path: 'a.txt', status: 'modified')],
+      );
+    };
+    final controller = GitBrowserController(api);
+    await controller.open('session-a');
+    await controller.loadWorktree();
+    await controller.openPreview(kind: 'staged', path: 'a.txt');
+    final previousSnapshot = controller.state.worktree;
+    final previousPreview = controller.state.preview;
+
+    await controller.checkWorktreeFreshness();
+
+    expect(controller.state.worktreeStale, isTrue);
+    expect(controller.state.worktree, same(previousSnapshot));
+    expect(controller.state.preview, same(previousPreview));
+    await controller.checkWorktreeFreshness();
+    expect(worktreeCalls, 2, reason: 'stale state waits for explicit refresh');
+    await controller.loadWorktree(refresh: true);
+    expect(controller.state.worktreeStale, isFalse);
+    expect(controller.state.worktree!.snapshotId, 'snapshot-3');
+  });
 
   test('openBranch replaces selection and graph selection stays between one and three', () async {
     final fourth = GitBranch(
@@ -304,7 +428,9 @@ void main() {
     final opening = controller.open('session-a');
     await Future<void>.delayed(Duration.zero);
     controller.dispose();
-    pending.complete(const GitRepository(repositoryId: 'repo', name: 'project'));
+    pending.complete(
+      const GitRepository(repositoryId: 'repo', name: 'project'),
+    );
     await opening;
     expect(controller.state.repository, isNull);
   });
@@ -312,18 +438,27 @@ void main() {
   test('stale change during graph request keeps loaded content until explicit refresh', () async {
     final pending = Completer<GitGraphPage>();
     final api = FakeGitReadApi()
-      ..onGraph = (_, _, tips, snapshot, cursor, limit) =>
-          cursor == null
-              ? Future.value(GitGraphPage(
-                  snapshotId: 'snap', nextCursor: 'next', tips: tips,
-                  commits: const [GitCommitSummary(oid: 'first')]))
-              : pending.future;
+      ..onGraph = (_, _, tips, snapshot, cursor, limit) => cursor == null
+          ? Future.value(
+              GitGraphPage(
+                snapshotId: 'snap',
+                nextCursor: 'next',
+                tips: tips,
+                commits: const [GitCommitSummary(oid: 'first')],
+              ),
+            )
+          : pending.future;
     final controller = GitBrowserController(api);
     await controller.open('session-a');
     await controller.openBranch(localMain);
     final loading = controller.loadNextGraphPage();
     controller.markStale();
-    pending.complete(const GitGraphPage(snapshotId: 'snap', commits: [GitCommitSummary(oid: 'second')]));
+    pending.complete(
+      const GitGraphPage(
+        snapshotId: 'snap',
+        commits: [GitCommitSummary(oid: 'second')],
+      ),
+    );
     await loading;
     expect(controller.state.stale, isTrue);
     expect(controller.state.commits.map((c) => c.oid), ['first']);
@@ -334,9 +469,11 @@ void main() {
 
   test('refresh failure keeps stale graph and successful refresh replaces snapshot', () async {
     final api = FakeGitReadApi()
-      ..onGraph = (_, _, tips, snapshot, cursor, limit) async =>
-          GitGraphPage(snapshotId: 'old', tips: tips,
-              commits: const [GitCommitSummary(oid: 'old')] );
+      ..onGraph = (_, _, tips, snapshot, cursor, limit) async => GitGraphPage(
+        snapshotId: 'old',
+        tips: tips,
+        commits: const [GitCommitSummary(oid: 'old')],
+      );
     final controller = GitBrowserController(api);
     await controller.open('session-a');
     await controller.openBranch(localMain);
@@ -347,9 +484,11 @@ void main() {
     expect(controller.state.stale, isTrue);
     expect(controller.state.commits.single.oid, 'old');
     expect(controller.state.snapshotId, 'old');
-    api.onGraph = (_, _, tips, snapshot, cursor, limit) async =>
-        GitGraphPage(snapshotId: 'new', tips: tips,
-            commits: const [GitCommitSummary(oid: 'new')]);
+    api.onGraph = (_, _, tips, snapshot, cursor, limit) async => GitGraphPage(
+      snapshotId: 'new',
+      tips: tips,
+      commits: const [GitCommitSummary(oid: 'new')],
+    );
     await controller.refresh();
     expect(controller.state.stale, isFalse);
     expect(controller.state.snapshotId, 'new');

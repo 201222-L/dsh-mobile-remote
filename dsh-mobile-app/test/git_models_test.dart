@@ -79,6 +79,43 @@ void main() {
     },
   );
 
+  test('worktree and per-file preview DTOs preserve read-only facts', () {
+    final workspace = GitWorktreeSnapshot.fromJson({
+      'repositoryId': 'repo-1',
+      'snapshotId': 'worktree-1',
+      'staged': [
+        {'path': 'file.txt', 'oldPath': 'old.txt', 'status': 'renamed'},
+      ],
+      'unstaged': [
+        {'path': 'file.txt', 'status': 'modified'},
+      ],
+      'untracked': [
+        {'path': 'new.txt', 'status': 'untracked'},
+      ],
+      'truncated': true,
+    });
+    final preview = GitFilePreview.fromJson({
+      'repositoryId': 'repo-1',
+      'kind': 'untracked',
+      'path': 'new.txt',
+      'diff': 'hello\n',
+      'truncated': true,
+      'binary': false,
+      'additions': null,
+      'deletions': null,
+      'notice': 'content limit reached',
+    });
+
+    expect(workspace.snapshotId, 'worktree-1');
+    expect(workspace.staged.single.oldPath, 'old.txt');
+    expect(workspace.staged.single.path, workspace.unstaged.single.path);
+    expect(workspace.untracked.single.status, 'untracked');
+    expect(workspace.truncated, isTrue);
+    expect(preview.diff, 'hello\n');
+    expect(preview.truncated, isTrue);
+    expect(preview.notice, 'content limit reached');
+  });
+
   test(
     'capabilities retain stable unavailable reason without write fields',
     () {

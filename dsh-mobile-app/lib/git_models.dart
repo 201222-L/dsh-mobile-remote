@@ -216,6 +216,101 @@ class GitCommitFile {
   );
 }
 
+class GitWorktreeFile {
+  final String path;
+  final String? oldPath;
+  final String status;
+  final bool conflicted;
+
+  const GitWorktreeFile({
+    required this.path,
+    this.oldPath,
+    this.status = 'modified',
+    this.conflicted = false,
+  });
+
+  factory GitWorktreeFile.fromJson(Map<String, dynamic> json) =>
+      GitWorktreeFile(
+        path: json['path']?.toString() ?? '',
+        oldPath: json['oldPath']?.toString(),
+        status: json['status']?.toString() ?? 'modified',
+        conflicted: json['conflicted'] == true,
+      );
+}
+
+class GitWorktreeSnapshot {
+  final String repositoryId;
+  final String snapshotId;
+  final List<GitWorktreeFile> staged;
+  final List<GitWorktreeFile> unstaged;
+  final List<GitWorktreeFile> untracked;
+  final bool truncated;
+
+  const GitWorktreeSnapshot({
+    required this.repositoryId,
+    required this.snapshotId,
+    this.staged = const [],
+    this.unstaged = const [],
+    this.untracked = const [],
+    this.truncated = false,
+  });
+
+  factory GitWorktreeSnapshot.fromJson(Map<String, dynamic> json) {
+    List<GitWorktreeFile> files(String key) => List.unmodifiable(
+      (json[key] as List? ?? const []).whereType<Map>().map(
+        (item) => GitWorktreeFile.fromJson(Map<String, dynamic>.from(item)),
+      ),
+    );
+    return GitWorktreeSnapshot(
+      repositoryId: json['repositoryId']?.toString() ?? '',
+      snapshotId: json['snapshotId']?.toString() ?? '',
+      staged: files('staged'),
+      unstaged: files('unstaged'),
+      untracked: files('untracked'),
+      truncated: json['truncated'] == true,
+    );
+  }
+}
+
+class GitFilePreview {
+  final String repositoryId;
+  final String kind;
+  final String path;
+  final String? oldPath;
+  final String diff;
+  final bool truncated;
+  final bool binary;
+  final int? additions;
+  final int? deletions;
+  final String? notice;
+
+  const GitFilePreview({
+    required this.repositoryId,
+    required this.kind,
+    required this.path,
+    this.oldPath,
+    this.diff = '',
+    this.truncated = false,
+    this.binary = false,
+    this.additions,
+    this.deletions,
+    this.notice,
+  });
+
+  factory GitFilePreview.fromJson(Map<String, dynamic> json) => GitFilePreview(
+    repositoryId: json['repositoryId']?.toString() ?? '',
+    kind: json['kind']?.toString() ?? '',
+    path: json['path']?.toString() ?? '',
+    oldPath: json['oldPath']?.toString(),
+    diff: json['diff']?.toString() ?? '',
+    truncated: json['truncated'] == true,
+    binary: json['binary'] == true,
+    additions: (json['additions'] as num?)?.toInt(),
+    deletions: (json['deletions'] as num?)?.toInt(),
+    notice: json['notice']?.toString(),
+  );
+}
+
 class GitCommitDetails {
   final String oid;
   final List<String> parents;

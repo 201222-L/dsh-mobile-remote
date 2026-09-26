@@ -217,6 +217,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  String _gitTabName(String id) => switch (id) {
+    'branches' => L10n.t('分支', 'Branches'),
+    'graph' => L10n.t('图谱', 'Graph'),
+    'worktree' => L10n.t('工作区', 'Worktree'),
+    _ => id,
+  };
+
+  String get _gitTabsSummary =>
+      widget.store.gitTabs.map(_gitTabName).join(' · ');
+
+  Future<void> _pickGitTabs() async {
+    var selected = List<String>.of(widget.store.gitTabs);
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(L10n.t('Git 标签页', 'Git tabs')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                L10n.t(
+                  '选择 1–3 项并调整顺序；第一项为默认页。',
+                  'Choose 1–3 tabs and reorder them; the first is the default.',
+                ),
+              ),
+              const SizedBox(height: 8),
+              for (final id in AppStore.gitTabIds)
+                Builder(
+                  builder: (context) {
+                    final isSelected = selected.contains(id);
+                    final index = selected.indexOf(id);
+                    return Semantics(
+                      label: _gitTabName(id),
+                      child: CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(_gitTabName(id)),
+                        value: isSelected,
+                        onChanged:
+                            (isSelected && selected.length == 1) ||
+                                (!isSelected && selected.length == 3)
+                            ? null
+                            : (value) {
+                                if (value == true && selected.length < 3) {
+                                  setDialogState(() => selected.add(id));
+                                } else if (value == false &&
+                                    selected.length > 1) {
+                                  setDialogState(() => selected.remove(id));
+                                }
+                              },
+                        secondary: isSelected
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: L10n.t(
+                                      '上移 ${_gitTabName(id)}',
+                                      'Move ${_gitTabName(id)} up',
+                                    ),
+                                    onPressed: index > 0
+                                        ? () => setDialogState(() {
+                                            selected.removeAt(index);
+                                            selected.insert(index - 1, id);
+                                          })
+                                        : null,
+                                    icon: const Icon(Icons.arrow_upward),
+                                  ),
+                                  IconButton(
+                                    tooltip: L10n.t(
+                                      '下移 ${_gitTabName(id)}',
+                                      'Move ${_gitTabName(id)} down',
+                                    ),
+                                    onPressed: index < selected.length - 1
+                                        ? () => setDialogState(() {
+                                            selected.removeAt(index);
+                                            selected.insert(index + 1, id);
+                                          })
+                                        : null,
+                                    icon: const Icon(Icons.arrow_downward),
+                                  ),
+                                ],
+                              )
+                            : null,
+                      ),
+                    );
+                  },
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(L10n.t('取消', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, selected),
+              child: Text(L10n.t('保存', 'Save')),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result != null) await widget.store.setGitTabs(result);
+  }
+
   Future<void> _refreshUsage() async {
     if (_usageBusy) return;
     setState(() {
@@ -394,15 +499,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  bool get _deepSeekLow => widget.store.balanceAlert &&
-      ((_usage?.sourceOf('deepseek')?.amountNumber ?? double.infinity) < widget.store.balanceThreshold);
+  bool get _deepSeekLow =>
+      widget.store.balanceAlert &&
+      ((_usage?.sourceOf('deepseek')?.amountNumber ?? double.infinity) <
+          widget.store.balanceThreshold);
 
   String? get _usageErrorText => switch (_usageError) {
-        'partial' => L10n.t('部分额度来源刷新失败', 'Some usage sources failed to refresh'),
-        'outdated' => L10n.t('电脑端插件版本过旧', 'Desktop plugin is outdated'),
-        'failed' => L10n.t('额度查询失败', 'Usage query failed'),
-        _ => null,
-      };
+    'partial' => L10n.t('部分额度来源刷新失败', 'Some usage sources failed to refresh'),
+    'outdated' => L10n.t('电脑端插件版本过旧', 'Desktop plugin is outdated'),
+    'failed' => L10n.t('额度查询失败', 'Usage query failed'),
+    _ => null,
+  };
 
   /// 用量与额度摘要（build 时求值：语言切换后即时换语言）。
   String get _usageLabel {
@@ -895,6 +1002,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ]),
         _card(L10n.t('显示', 'Display'), [
           _row(
+            leading: const Icon(Icons.tab_outlined),
+            title: L10n.t('Git 标签页', 'Git tabs'),
+            sub: _gitTabsSummary,
+            onTap: _pickGitTabs,
+          ),
+          _row(
             leading: const Icon(Icons.psychology_outlined),
             title: L10n.t('思考内容', 'Thinking content'),
             sub: L10n.t(
@@ -921,8 +1034,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _row(
             leading: const Icon(Icons.bug_report_outlined),
             title: L10n.t('对话调试模式', 'Conversation debug mode'),
-            sub: L10n.t('显示工具原始参数、结果、事件序号与未知可见事件（默认关闭）',
-                'Show raw tool IO, event metadata and unknown visible events (off by default)'),
+            sub: L10n.t(
+              '显示工具原始参数、结果、事件序号与未知可见事件（默认关闭）',
+              'Show raw tool IO, event metadata and unknown visible events (off by default)',
+            ),
             trailing: DshSwitch(
               value: store.timelineDebug,
               onChanged: (v) => store.setTimelineDebug(v),

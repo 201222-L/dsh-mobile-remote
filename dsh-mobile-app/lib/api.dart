@@ -58,6 +58,15 @@ abstract interface class GitReadApi {
     String? filesCursor,
     int filesLimit,
   });
+  Future<GitWorktreeSnapshot> worktree(String sessionId, String repositoryId);
+  Future<GitFilePreview> preview(
+    String sessionId,
+    String repositoryId, {
+    required String kind,
+    required String path,
+    String? snapshotId,
+    String? oid,
+  });
 }
 
 class Api implements GitReadApi {
@@ -228,7 +237,11 @@ class Api implements GitReadApi {
     final capabilities = d['capabilities'];
     timelineCapabilities = capabilities is Map
         ? TimelineCapabilities.fromJson(
-            capabilities['eventTimeline'] is Map ? Map<String, dynamic>.from(capabilities['eventTimeline'] as Map) : null,
+            capabilities['eventTimeline'] is Map
+                ? Map<String, dynamic>.from(
+                    capabilities['eventTimeline'] as Map,
+                  )
+                : null,
           )
         : const TimelineCapabilities();
   }
@@ -621,6 +634,7 @@ class Api implements GitReadApi {
       'action': action,
     });
   }
+
   /// v3.0.0：返回 (messageId, note, configDegraded)。note=held-until-idle 表示消息被插件持存
   /// （运行中排队，任务结束才释放）——排队消息不进对话窗口，只进 dock（与 PC 端一致）。
   /// v3.1.5：configDegraded=true 表示休眠会话（seeded 降级）的模型/权限/预设折叠失败、
@@ -638,7 +652,11 @@ class Api implements GitReadApi {
       if (mode == 'steer') 'mode': 'steer',
       'requestId': ?requestId,
     });
-    return (r['messageId'] as String? ?? '', r['note'] as String?, r['configDegraded'] == true);
+    return (
+      r['messageId'] as String? ?? '',
+      r['note'] as String?,
+      r['configDegraded'] == true,
+    );
   }
 
   /// v3.0.0 图像链路：发送文本+图片（原始文件字节 base64，与 PC 端 wire 同形；不压缩）。
@@ -657,7 +675,11 @@ class Api implements GitReadApi {
       if (mode == 'steer') 'mode': 'steer',
       'requestId': ?requestId,
     }, timeout: const Duration(seconds: 90));
-    return (r['accepted'] == true, r['note'] as String?, r['configDegraded'] == true);
+    return (
+      r['accepted'] == true,
+      r['note'] as String?,
+      r['configDegraded'] == true,
+    );
   }
 
   /// v3.0.0(热修 05)：发送回执查询——网络层错误（reset/超时）后据此判断是否已送达。
@@ -716,12 +738,22 @@ class Api implements GitReadApi {
   /// 避免一次解析/渲染数百条事件导致手机卡死。
   /// 服务端返回 `hasMore`（durable cursor 分页）与 `degraded`/`historyMode`
   /// （v3.1.5 休眠会话 current-surface 降级标记：历史可能不完整）。
-  Future<HistoryPage> historyPage(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
-    final params = 'sessionId=${Uri.encodeQueryComponent(sessionId)}'
+  Future<HistoryPage> historyPage(
+    String sessionId, {
+    int? after,
+    int? before,
+    int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final params =
+        'sessionId=${Uri.encodeQueryComponent(sessionId)}'
         '${after != null ? '&after=$after' : ''}${before != null ? '&before=$before' : ''}&limit=$limit';
     final data = await getJson('/api/history?$params', timeout: timeout);
     return HistoryPage(
-      events: (data['events'] as List? ?? []).whereType<Map>().map((e) => ChatEvent.fromJson(Map<String, dynamic>.from(e))).toList(),
+      events: (data['events'] as List? ?? [])
+          .whereType<Map>()
+          .map((e) => ChatEvent.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
       hasMore: data['hasMore'] == true,
       // v3.1.5：休眠会话降级读取标记（current surface）——历史可能不完整
       degraded: data['degraded'] == true,
@@ -730,16 +762,38 @@ class Api implements GitReadApi {
   }
 
   /// 兼容旧调用方的历史列表接口。
-  Future<List<ChatEvent>> history(String sessionId, {int? after, int? before, int limit = 100, Duration timeout = const Duration(seconds: 15)}) async {
-    return (await historyPage(sessionId, after: after, before: before, limit: limit, timeout: timeout)).events;
+  Future<List<ChatEvent>> history(
+    String sessionId, {
+    int? after,
+    int? before,
+    int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    return (await historyPage(
+      sessionId,
+      after: after,
+      before: before,
+      limit: limit,
+      timeout: timeout,
+    )).events;
   }
 
   /// 按 seq 读取一条无损事件详情。详情不可用时由调用方显示明确降级状态。
-  Future<EventDetail> eventDetail(String sessionId, int seq, {Duration timeout = const Duration(seconds: 20)}) async {
-    final data = await getJson('/api/event-detail?sessionId=${Uri.encodeQueryComponent(sessionId)}&seq=$seq', timeout: timeout);
+  Future<EventDetail> eventDetail(
+    String sessionId,
+    int seq, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final data = await getJson(
+      '/api/event-detail?sessionId=${Uri.encodeQueryComponent(sessionId)}&seq=$seq',
+      timeout: timeout,
+    );
     final event = data['event'];
     if (event is! Map || event['type'] is! String) {
-      throw ApiException('event detail unavailable', code: 'event-detail-unavailable');
+      throw ApiException(
+        'event detail unavailable',
+        code: 'event-detail-unavailable',
+      );
     }
     return EventDetail(
       event: Map<String, dynamic>.from(event),
@@ -908,27 +962,42 @@ class Api implements GitReadApi {
 
   @override
   Future<GitReadCapabilities> capabilities(String sessionId) async {
-    final data = await getJson(_gitQuery('/api/git/capabilities', {'sessionId': sessionId}));
+    final data = await getJson(
+      _gitQuery('/api/git/capabilities', {'sessionId': sessionId}),
+    );
     final value = data['git'];
-    return GitReadCapabilities.fromJson(value is Map ? Map<String, dynamic>.from(value) : data);
+    return GitReadCapabilities.fromJson(
+      value is Map ? Map<String, dynamic>.from(value) : data,
+    );
   }
 
   @override
   Future<GitRepository> repository(String sessionId) async {
-    final data = await getJson(_gitQuery('/api/git/repository', {'sessionId': sessionId}));
+    final data = await getJson(
+      _gitQuery('/api/git/repository', {'sessionId': sessionId}),
+    );
     final value = data['repository'];
-    return GitRepository.fromJson(value is Map ? Map<String, dynamic>.from(value) : data);
+    return GitRepository.fromJson(
+      value is Map ? Map<String, dynamic>.from(value) : data,
+    );
   }
 
   @override
-  Future<List<GitBranch>> branches(String sessionId, String repositoryId) async {
-    final data = await getJson(_gitQuery('/api/git/branches', {
-      'sessionId': sessionId,
-      'repositoryId': repositoryId,
-    }));
-    return List.unmodifiable((data['branches'] as List? ?? const [])
-        .whereType<Map>()
-        .map((item) => GitBranch.fromJson(Map<String, dynamic>.from(item))));
+  Future<List<GitBranch>> branches(
+    String sessionId,
+    String repositoryId,
+  ) async {
+    final data = await getJson(
+      _gitQuery('/api/git/branches', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+      }),
+    );
+    return List.unmodifiable(
+      (data['branches'] as List? ?? const []).whereType<Map>().map(
+        (item) => GitBranch.fromJson(Map<String, dynamic>.from(item)),
+      ),
+    );
   }
 
   @override
@@ -939,14 +1008,18 @@ class Api implements GitReadApi {
     String? snapshotId,
     String? cursor,
     int limit = 100,
-  }) async => GitGraphPage.fromJson(await getJson(_gitQuery('/api/git/graph', {
+  }) async => GitGraphPage.fromJson(
+    await getJson(
+      _gitQuery('/api/git/graph', {
         'sessionId': sessionId,
         'repositoryId': repositoryId,
         'tips': jsonEncode(tips.map((tip) => tip.toJson()).toList()),
         'snapshotId': ?snapshotId,
         'cursor': ?cursor,
         'limit': '$limit',
-      })));
+      }),
+    ),
+  );
 
   @override
   Future<GitCommitDetails> commitDetails(
@@ -955,13 +1028,51 @@ class Api implements GitReadApi {
     String oid, {
     String? filesCursor,
     int filesLimit = 100,
-  }) async => GitCommitDetails.fromJson(await getJson(_gitQuery('/api/git/commit', {
+  }) async => GitCommitDetails.fromJson(
+    await getJson(
+      _gitQuery('/api/git/commit', {
         'sessionId': sessionId,
         'repositoryId': repositoryId,
         'oid': oid,
         'filesCursor': ?filesCursor,
         'filesLimit': '$filesLimit',
-      })));
+      }),
+    ),
+  );
+
+  @override
+  Future<GitWorktreeSnapshot> worktree(
+    String sessionId,
+    String repositoryId,
+  ) async => GitWorktreeSnapshot.fromJson(
+    await getJson(
+      _gitQuery('/api/git/worktree', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+      }),
+    ),
+  );
+
+  @override
+  Future<GitFilePreview> preview(
+    String sessionId,
+    String repositoryId, {
+    required String kind,
+    required String path,
+    String? snapshotId,
+    String? oid,
+  }) async => GitFilePreview.fromJson(
+    await getJson(
+      _gitQuery('/api/git/preview', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'kind': kind,
+        'path': path,
+        'snapshotId': ?snapshotId,
+        'oid': ?oid,
+      }),
+    ),
+  );
 
   Future<Map<String, dynamic>?> diagnostics() async {
     try {

@@ -27,7 +27,7 @@ class Request extends EventEmitter {
   }
 }
 
-test("HTTP Git browser exposes only five session-bound read GETs, no write route", async () => {
+test("HTTP Git browser exposes read-only worktree and preview GETs and enforces auth", async () => {
   const routes = [];
   const oid = "a".repeat(40);
   const workspace = mkdtempSync(`${tmpdir()}/git-api-`);
@@ -40,6 +40,7 @@ test("HTTP Git browser exposes only five session-bound read GETs, no write route
     resolveTip: async () => oid,
     graph: async () => [{ oid, parents: [], author: "Alice", timestamp: 1, subject: "first" }],
     commit: async () => ({ oid, parents: [], author: "Alice", timestamp: 1, message: "first", files: [] }),
+    worktree: async () => ({ signature: "stable", entries: [{ path: "tracked.txt", status: "modified", index: true, worktree: true, conflicted: false }] }),
   };
   const services = new Map([["sessions", { get: (id) => id === session.id ? session : undefined }], ["workspaceRegistry", { list: () => [{ path: workspace }] }], ["gitReadProvider", provider]]);
   const ctx = {
@@ -51,10 +52,12 @@ test("HTTP Git browser exposes only five session-bound read GETs, no write route
   const cleanup = apply(ctx, config);
   const route = routes.find((item) => item.path === "/m/api")?.handler;
   assert.equal(typeof route, "function");
-  async function request(path) {
+  async function request(path, authenticated = true) {
     const response = new Response();
     const finished = new Promise((resolve) => response.once("finish", resolve));
-    route(new Request(`/m/api${path}`), response);
+    const req = new Request(`/m/api${path}`);
+    if (!authenticated) delete req.headers["x-mobile-token"];
+    route(req, response);
     await finished;
     return { status: response.statusCode, body: JSON.parse(response.chunks.join("") || "{}") };
   }
@@ -70,6 +73,12 @@ test("HTTP Git browser exposes only five session-bound read GETs, no write route
     assert.equal(graph.status, 200); assert.equal(graph.body.commits[0].oid, oid);
     const commit = await request(`/git/commit?${query}&oid=${oid}`);
     assert.equal(commit.status, 200); assert.equal(commit.body.oid, oid);
+    const worktree = await request(`/git/worktree?${query}`);
+    assert.equal(worktree.status, 200); assert.equal(worktree.body.repositoryId, repo.body.repositoryId); assert.equal(worktree.body.staged[0].path, "tracked.txt");
+    const invalidPreview = await request(`/git/preview?${query}&kind=bogus&path=tracked.txt`);
+    assert.equal(invalidPreview.status, 400);
+    assert.equal((await request(`/git/worktree?${query}`, false)).status, 401);
+    assert.equal((await request(`/git/preview?${query}&kind=unstaged&snapshotId=x&path=tracked.txt`, false)).status, 401);
     assert.equal((await request(`/git/write?${query}`)).status, 404);
     assert.equal((await request(`/git/branches?sessionId=missing&repositoryId=${repo.body.repositoryId}`)).status, 403);
     session.header.cwd = "/different";

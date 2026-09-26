@@ -2,10 +2,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+
 import '../toast.dart';
 import '../api.dart';
 import '../chat_copy.dart';
@@ -19,6 +21,7 @@ import '../md.dart';
 import '../fmt.dart';
 import '../git_browser_controller.dart';
 import 'git_browser_sheet.dart';
+import '../widgets/git_logo.dart';
 import 'sheets.dart';
 import 'session_tools_sheet.dart';
 
@@ -27,24 +30,23 @@ import 'session_tools_sheet.dart';
 /// 对账——因为服务端可能已接收（响应在回程被切断时，桥把它翻译成 502 `bridge-unavailable` 返回，
 /// 此时消息已投递，须靠回执确认送达，不能误报失败）。
 bool isDefinitiveSendRejection(String? code) => switch (code) {
-      'empty-text' ||
-      'payload-too-large' ||
-      'invalid-requestId' ||
-      'session-not-found' ||
-      'no-live-agent' ||
-      'agents-unavailable' ||
-      'attachment-error' ||
-      'send-failed' ||
-      'bad-request' ||
-      'not-found' ||
-      'auth-required' ||
-      'rate-limited' ||
-      'host-not-allowed' ||
-      'loopback-only' ||
-      'method-not-allowed' =>
-        true,
-      _ => false,
-    };
+  'empty-text' ||
+  'payload-too-large' ||
+  'invalid-requestId' ||
+  'session-not-found' ||
+  'no-live-agent' ||
+  'agents-unavailable' ||
+  'attachment-error' ||
+  'send-failed' ||
+  'bad-request' ||
+  'not-found' ||
+  'auth-required' ||
+  'rate-limited' ||
+  'host-not-allowed' ||
+  'loopback-only' ||
+  'method-not-allowed' => true,
+  _ => false,
+};
 
 /// v3.0.0(热修 07)：发送异常后的草稿恢复决策——仅当输入框仍为空（本次发送清空后的预期
 /// 状态）才回填旧草稿；发送期间用户输入的新内容一律保留（绝不覆盖，见 Codex review）。
@@ -53,25 +55,34 @@ String draftAfterFailure(String current, String fallback) =>
 
 /// v3.0.0(热修 07)：草稿签名——会话 + 最终生效模式 + 文本 + 图片路径；任一变化即换新
 /// requestId（例：排队发送结果未知后改用插队 → 新 requestId → 插队真正执行而非回放旧结果）。
-String composerSignature(String sessionId, String mode, String text, List<String> imagePaths) =>
-    '$sessionId|$mode|$text|${imagePaths.join(',')}';
+String composerSignature(
+  String sessionId,
+  String mode,
+  String text,
+  List<String> imagePaths,
+) => '$sessionId|$mode|$text|${imagePaths.join(',')}';
 
 /// v3.1.4（issue #13 排查建议 3）：轮次结束时是否需要**兜底补拉**——
 /// 本轮出现过真人提问（lastUserSeq 非空），但没有渲染出更晚的回复条目
 /// （lastAssistantSeq 为空或早于提问）→ 判定内容被静默吞掉，补拉一次历史。
 /// 纯函数便于单测：见 test/issue13_logic_test.dart。
 bool needsTurnEndResync({int? lastUserSeq, int? lastAssistantSeq}) =>
-    lastUserSeq != null && (lastAssistantSeq == null || lastAssistantSeq <= lastUserSeq);
+    lastUserSeq != null &&
+    (lastAssistantSeq == null || lastAssistantSeq <= lastUserSeq);
 
 /// 是否应由本次滚动通知触发“加载更早”。抽出为纯判定，避免 ScrollStart/ScrollEnd
 /// 在列表已位于顶部时重复触发异步分页。
-bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool infiniteMode}) {
+bool shouldLoadOlderFromScroll(
+  ScrollNotification notification, {
+  required bool infiniteMode,
+}) {
   if (!infiniteMode || !notification.metrics.hasContentDimensions) return false;
   if (notification.depth != 0) return false;
   if (notification.metrics.axis != Axis.vertical) return false;
   // ScrollStart/ScrollEnd/UserScroll 在 pixels=0 时也会冒泡；异步分页若在 start 时
   // 启动、在 end 前完成，end 会立刻再触发一页。只响应真正向顶部发生的位移更新。
-  final distanceToLeadingEdge = notification.metrics.pixels - notification.metrics.minScrollExtent;
+  final distanceToLeadingEdge =
+      notification.metrics.pixels - notification.metrics.minScrollExtent;
   if (notification is ScrollUpdateNotification) {
     final delta = notification.scrollDelta;
     return delta != null && delta < 0 && distanceToLeadingEdge < 80;
@@ -87,20 +98,32 @@ bool shouldLoadOlderFromScroll(ScrollNotification notification, {required bool i
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
 /// [apiClient] 仅供测试注入（与 `ChatScreen.apiClient` 同款）；生产路径传 null 即用全局 `api`。
-Future<void> openChat(BuildContext context, AppStore store, String sessionId,
-    {VoidCallback? onTitleChanged, Future<void> Function()? onReturn, Api? apiClient}) async {
+Future<void> openChat(
+  BuildContext context,
+  AppStore store,
+  String sessionId, {
+  VoidCallback? onTitleChanged,
+  Future<void> Function()? onReturn,
+  Api? apiClient,
+}) async {
   await store.setSession(sessionId);
   store.refreshSessionConfig();
   if (!context.mounted) return;
   await Navigator.of(context).push(
     MaterialPageRoute(
-      builder: (_) => ChatScreen(store: store, onTitleChanged: onTitleChanged ?? () {}, apiClient: apiClient),
+      builder: (_) => ChatScreen(
+        store: store,
+        onTitleChanged: onTitleChanged ?? () {},
+        apiClient: apiClient,
+      ),
     ),
   );
   if (onReturn != null) await onReturn();
 }
 
-typedef GitBrowserControllerFactory = GitBrowserController Function(GitReadApi api);
+typedef GitBrowserControllerFactory = GitBrowserController Function(
+  GitReadApi api,
+);
 
 class ChatScreen extends StatefulWidget {
   final AppStore store;
@@ -154,7 +177,8 @@ class _ChatScreenState extends State<ChatScreen> {
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
   Api get _api => widget.apiClient ?? api;
-  String get _pageAgentStatus => widget.store.agentStatusForSession(_mySessionId);
+  String get _pageAgentStatus =>
+      widget.store.agentStatusForSession(_mySessionId);
   // v2.7.2：排队消息停靠区（对齐 PC 端 Queue Dock）——可见、自解释，无需操作手册
   List<Map<String, dynamic>> _queue = [];
   bool _queueCollapsed = true; // 多条时折叠成计数头
@@ -178,7 +202,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
   QuestionRequest? _question; // 内核问询弹窗（当前会话，思考中途需要拍板）
   ApprovalRequest? _approval; // 内核权限审批弹窗（当前会话）
-  final Set<String> _transientFrameKeys = {}; // mobile/frame 无 durable seq，按业务 id 去重
+  final Set<String> _transientFrameKeys =
+      {}; // mobile/frame 无 durable seq，按业务 id 去重
   bool _sending = false;
   String? _title;
   Map<String, dynamic> _usage = {};
@@ -226,7 +251,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _question = widget.store.questionForSession(_mySessionId);
     _approval = widget.store.approvalForSession(_mySessionId);
     _queue = widget.store.queueOf(_mySessionId ?? ''); // v3.0.0：初始即取镜像快照（帧/缓存）
-    widget.store.addChatListener(_handleEvent); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
+    widget.store.addChatListener(
+      _handleEvent,
+    ); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
     _scrollCtrl.addListener(_onScrollTick);
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
@@ -237,7 +264,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _inputCtrl.addListener(_onDraftChanged);
     if (widget.initialSend != null && widget.initialSend!.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _send(widget.initialSend!));
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _send(widget.initialSend!),
+      );
     }
   }
 
@@ -287,11 +316,17 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!_scrollCtrl.hasClients) return;
     final pos = _scrollCtrl.position;
     final target = pos.maxScrollExtent;
-    AppLog.instance.log('Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}');
+    AppLog.instance.log(
+      'Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}',
+    );
     if ((pos.pixels - target).abs() > 4000) {
       _scrollCtrl.jumpTo(target);
     } else {
-      _scrollCtrl.animateTo(target, duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
+      _scrollCtrl.animateTo(
+        target,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
     }
   }
 
@@ -300,7 +335,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final q = _question;
     if (q == null) return;
     AppLog.instance.log('Chat: 回答问询 ${q.rpcId}（${answers.length} 问）');
-    final err = await widget.store.answerQuestion(q.rpcId, q.sessionId, answers);
+    final err = await widget.store.answerQuestion(
+      q.rpcId,
+      q.sessionId,
+      answers,
+    );
     if (!mounted) return;
     if (err != null) {
       showToast(context, err);
@@ -314,7 +353,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final a = _approval;
     if (a == null) return;
     AppLog.instance.log('Chat: 审批 ${a.toolName} → $outcome');
-    final err = await widget.store.answerApproval(a.rpcId, a.sessionId, a.approvalId, outcome);
+    final err = await widget.store.answerApproval(
+      a.rpcId,
+      a.sessionId,
+      a.approvalId,
+      outcome,
+    );
     if (!mounted) return;
     if (err != null) {
       showToast(context, err);
@@ -327,7 +371,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// v3.1.6（app-audit ①6）：显式带本页会话 id（本地挂起表可能已被对端先答清空），
   /// 失败不再静默——离线时明确告诉用户"取消失败"，而不是让他以为已经取消。
   Future<void> _cancelPending(String rpcId) async {
-    final err = await widget.store.cancelRespond(rpcId, sessionId: _mySessionId);
+    final err = await widget.store.cancelRespond(
+      rpcId,
+      sessionId: _mySessionId,
+    );
     if (!mounted || err == null) return;
     showToast(context, err);
   }
@@ -342,7 +389,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final target = pos.maxScrollExtent;
       if (force || !_scrolledLogged) {
         _scrolledLogged = true;
-        AppLog.instance.log('Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}');
+        AppLog.instance.log(
+          'Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}',
+        );
       }
       // force（加载完成/发送/回到底部）；或用户停留在底部（钉住）——流式输出期间
       // 持续跟随到最新。按「钉住」状态判断而非与新 maxScrollExtent 比距离，
@@ -383,10 +432,13 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, limit: _liveMax);
       final events = page.events;
-      AppLog.instance.log('Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}');
+      AppLog.instance.log(
+        'Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}',
+      );
       // v3.1.6（app-audit ②）：守卫之后才写降级标记——过期响应（会话切换/重同步重叠）此前
       // 也会改写横幅状态：`_historyDegraded` 是赋值语义，过期页能把已置位的提示抹回 false。
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       setState(() {
         // 打开/重同步会话时以本次响应为准（赋值，而非 |=）：避免上一条会话的「仅部分历史」
         // 横幅残留到正常会话。后续增量分页（after/before）仍用 |=：任一页降级即持续提示。
@@ -438,7 +490,9 @@ class _ChatScreenState extends State<ChatScreen> {
           if (ev.type == 'turn/start') {
             foldedTodos = [];
           } else if (ev.type == 'todo/write') {
-            foldedTodos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
+            foldedTodos = ((ev.data?['todos'] as List?) ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .toList();
           }
         }
         _todos = foldedTodos;
@@ -460,15 +514,22 @@ class _ChatScreenState extends State<ChatScreen> {
           if (ev.type == 'user/message') {
             final kind = ev.data?['sourceKind'] as String?;
             if (kind == null || kind == 'user') _lastUserSeq = ev.seq;
-          } else if (ev.type == 'assistant/message' && ((ev.data?['text'] as String?) ?? '').trim().isNotEmpty) {
+          } else if (ev.type == 'assistant/message' &&
+              ((ev.data?['text'] as String?) ?? '').trim().isNotEmpty) {
             _lastAssistantSeq = ev.seq;
           }
         }
-        final durableUsers = _items.where((m) => m.kind == _MsgKind.user).toList();
+        final durableUsers = _items
+            .where((m) => m.kind == _MsgKind.user)
+            .toList();
         final keepWithoutEcho = keep.where((m) {
           final duplicate = durableUsers.any((d) {
-            if (m.messageId != null && d.messageId != null) return m.messageId == d.messageId;
-            return m.messageId == null && d.messageId == null && m.text.trim().isNotEmpty && m.text == d.text;
+            if (m.messageId != null && d.messageId != null)
+              return m.messageId == d.messageId;
+            return m.messageId == null &&
+                d.messageId == null &&
+                m.text.trim().isNotEmpty &&
+                m.text == d.text;
           });
           return !duplicate;
         }).toList();
@@ -484,18 +545,30 @@ class _ChatScreenState extends State<ChatScreen> {
       // v3.1.4：任务清单权威读法（内核投影同源）——历史折叠只在最近窗口内有效，
       // 这里再对一次，保证打开会话即看到当前清单（休眠/旧内核返回 null 则保持历史折叠结果）
       _refreshTodos();
-      AppLog.instance.log('Chat: 已入列 ${_items.length} 条（历史 ${events.length} 条）lastSeq=$_lastSeq firstSeq=$_earliestSeq');
+      AppLog.instance.log(
+        'Chat: 已入列 ${_items.length} 条（历史 ${events.length} 条）lastSeq=$_lastSeq firstSeq=$_earliestSeq',
+      );
       _scrollToBottom(force: true); // 初始定位到最新消息
       _refreshUsage();
       widget.store.refreshSessionConfig();
     } catch (e) {
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
         if (_items.isNotEmpty || _olderItems.isNotEmpty) {
-          showToast(context, L10n.t('连接不可用，已保留当前时间线；稍后可重试详情', 'Connection unavailable; cached timeline kept, retry details later'));
+          showToast(
+            context,
+            L10n.t(
+              '连接不可用，已保留当前时间线；稍后可重试详情',
+              'Connection unavailable; cached timeline kept, retry details later',
+            ),
+          );
         } else {
-          showToast(context, '${L10n.t('该会话暂不可用：', 'This session is unavailable: ')}$e');
+          showToast(
+            context,
+            '${L10n.t('该会话暂不可用：', 'This session is unavailable: ')}$e',
+          );
           Navigator.of(context).pop();
         }
       }
@@ -507,19 +580,33 @@ class _ChatScreenState extends State<ChatScreen> {
   /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
   Future<void> _loadMoreInfinite() async {
     final id = _mySessionId ?? widget.store.sessionId;
-    if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) return;
+    if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory)
+      return;
     _loadingMore = true;
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
     try {
-      final page = await _api.historyPage(id, before: _earliestSeq, limit: _histPageSize);
+      final page = await _api.historyPage(
+        id,
+        before: _earliestSeq,
+        limit: _histPageSize,
+      );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         _noMoreHistory = true;
-        showToast(context, L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息了', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages'));
+        showToast(
+          context,
+          L10n.t(
+            _historyDegraded ? '更早历史不可恢复' : '没有更早的消息了',
+            _historyDegraded
+                ? 'Earlier history unavailable'
+                : 'No earlier messages',
+          ),
+        );
         return; // 已到最顶：不再查询，_earliestSeq 保持不动
       }
       final pageItems = <_MsgItem>[];
@@ -532,7 +619,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _olderItems.addAll(pageItems.reversed);
         _earliestSeq = events.first.seq ?? _earliestSeq;
       });
-      AppLog.instance.log('Chat: 无限上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq');
+      AppLog.instance.log(
+        'Chat: 无限上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq',
+      );
     } catch (e) {
       AppLog.instance.log('Chat: 无限上翻失败 $e');
     } finally {
@@ -559,13 +648,26 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 查看更早 before=$_earliestSeq');
     try {
-      final page = await _api.historyPage(id, before: _earliestSeq, limit: _histPageSize);
+      final page = await _api.historyPage(
+        id,
+        before: _earliestSeq,
+        limit: _histPageSize,
+      );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
-        showToast(context, L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息了', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages'));
+        showToast(
+          context,
+          L10n.t(
+            _historyDegraded ? '更早历史不可恢复' : '没有更早的消息了',
+            _historyDegraded
+                ? 'Earlier history unavailable'
+                : 'No earlier messages',
+          ),
+        );
         return;
       }
       setState(() {
@@ -593,9 +695,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更早 before=$_histOldestSeq');
     try {
-      final page = await _api.historyPage(id, before: _histOldestSeq, limit: _histPageSize);
+      final page = await _api.historyPage(
+        id,
+        before: _histOldestSeq,
+        limit: _histPageSize,
+      );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -625,9 +732,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 历史更新 after=$_histNewestSeq');
     try {
-      final page = await _api.historyPage(id, after: _histNewestSeq, limit: _histPageSize);
+      final page = await _api.historyPage(
+        id,
+        after: _histNewestSeq,
+        limit: _histPageSize,
+      );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        return;
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -682,11 +794,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
     final loadingTail = _infiniteMode && _loadingMore && _earliestSeq > 0;
-    final currentExtra = (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
+    final currentExtra =
+        (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
     final itemCount = _olderItems.length + _items.length + currentExtra;
     if (itemCount != _lastLoggedCount) {
       _lastLoggedCount = itemCount;
-      AppLog.instance.log('Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length + _olderItems.length}');
+      AppLog.instance.log(
+        'Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length + _olderItems.length}',
+      );
     }
     // v3.1.5（issue #15）：整条消息流包一层 SelectionArea —— 普通 Text 也能长按选中复制，
     // 且不引入 SelectableText（后者在部分 Android 设备上长文本换行/重叠渲染异常，见 md.dart 注释）。
@@ -706,27 +821,39 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-            const SliverToBoxAdapter(key: _liveCenterKey, child: SizedBox.shrink()),
+            const SliverToBoxAdapter(
+              key: _liveCenterKey,
+              child: SizedBox.shrink(),
+            ),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
-                    if ((topButton || loadingTail) && index == 0) {
-                      if (topButton) return _OlderButton(busy: _loadingMore, onTap: _openHistory);
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 10),
-                        child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),),
+                delegate: SliverChildBuilderDelegate((context, index) {
+                  // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
+                  if ((topButton || loadingTail) && index == 0) {
+                    if (topButton)
+                      return _OlderButton(
+                        busy: _loadingMore,
+                        onTap: _openHistory,
                       );
-                    }
-                    final dataIndex = index - (topButton || loadingTail ? 1 : 0);
-                    if (dataIndex < _items.length) return _buildItem(_items[_items.length - 1 - dataIndex]);
-                    if (hasDraft) return _AssistantBubble(text: _draft, streaming: true);
-                    return const SizedBox.shrink();
-                  },
-                  childCount: _items.length + currentExtra,
-                ),
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 10),
+                      child: Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    );
+                  }
+                  final dataIndex = index - (topButton || loadingTail ? 1 : 0);
+                  if (dataIndex < _items.length)
+                    return _buildItem(_items[_items.length - 1 - dataIndex]);
+                  if (hasDraft)
+                    return _AssistantBubble(text: _draft, streaming: true);
+                  return const SizedBox.shrink();
+                }, childCount: _items.length + currentExtra),
               ),
             ),
           ],
@@ -751,12 +878,18 @@ class _ChatScreenState extends State<ChatScreen> {
               TextButton.icon(
                 onPressed: _histHasOlder && !_loadingMore ? _histOlder : null,
                 icon: const Icon(Icons.arrow_upward, size: 15),
-                label: Text(L10n.t('更早', 'Older'), style: TextStyle(fontSize: 12)),
+                label: Text(
+                  L10n.t('更早', 'Older'),
+                  style: TextStyle(fontSize: 12),
+                ),
               ),
               TextButton.icon(
                 onPressed: _histHasNewer && !_loadingMore ? _histNewer : null,
                 icon: const Icon(Icons.arrow_downward, size: 15),
-                label: Text(L10n.t('更新', 'Newer'), style: TextStyle(fontSize: 12)),
+                label: Text(
+                  L10n.t('更新', 'Newer'),
+                  style: TextStyle(fontSize: 12),
+                ),
               ),
               const Spacer(),
               TextButton.icon(
@@ -766,7 +899,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   _pendingNew
                       ? L10n.t('回到最新 · 有新消息', 'Back to latest · New messages')
                       : L10n.t('回到最新', 'Back to latest'),
-                  style: TextStyle(fontSize: 12, color: _pendingNew ? DshColors.brand(context) : ink2),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _pendingNew ? DshColors.brand(context) : ink2,
+                  ),
                 ),
               ),
             ],
@@ -774,13 +910,23 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         Expanded(
           child: _histItems.isEmpty
-              ? Center(child: Text(L10n.t(_historyDegraded ? '更早历史不可恢复' : '没有更早的消息', _historyDegraded ? 'Earlier history unavailable' : 'No earlier messages')))
+              ? Center(
+                  child: Text(
+                    L10n.t(
+                      _historyDegraded ? '更早历史不可恢复' : '没有更早的消息',
+                      _historyDegraded
+                          ? 'Earlier history unavailable'
+                          : 'No earlier messages',
+                    ),
+                  ),
+                )
               : SelectionArea(
                   child: ListView.builder(
                     controller: _scrollCtrl,
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                     itemCount: _histItems.length,
-                    itemBuilder: (context, index) => _buildItem(_histItems[index]),
+                    itemBuilder: (context, index) =>
+                        _buildItem(_histItems[index]),
                   ),
                 ),
         ),
@@ -803,7 +949,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final debug = widget.store.timelineDebug;
     return conversationText([
       for (final m in ordered)
-        if (m.kind != _MsgKind.divider && !_isNoiseText(m.text) && !(m.injected && !debug))
+        if (m.kind != _MsgKind.divider &&
+            !_isNoiseText(m.text) &&
+            !(m.injected && !debug))
           switch (m.kind) {
             _MsgKind.user => (m.injected ? '系统注入' : '你', m.text),
             _MsgKind.assistant => ('助手', m.text),
@@ -835,7 +983,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     try {
       final u = await _api.usage(id);
-      if (mounted && request == _usageRequest && version == _usageVersion && generation == _loadGeneration && id == _mySessionId) {
+      if (mounted &&
+          request == _usageRequest &&
+          version == _usageVersion &&
+          generation == _loadGeneration &&
+          id == _mySessionId) {
         setState(() {
           _usage = u;
           _usageLoaded = true;
@@ -856,7 +1008,11 @@ class _ChatScreenState extends State<ChatScreen> {
         final changedRepository = ev.data?['repositoryId']?.toString();
         final openRepository = controller.state.repository?.repositoryId;
         if (changedRepository == null || changedRepository == openRepository) {
-          controller.markStale();
+          if (ev.data?['changeKind']?.toString() == 'worktree') {
+            controller.markWorktreeStale();
+          } else {
+            controller.markStale();
+          }
         }
       }
       return;
@@ -937,7 +1093,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final window = (ev.data?['contextWindow'] as num?)?.toInt();
       if (window != null && window > 0) {
         _usageVersion++;
-         _usage['contextWindow'] = window;
+        _usage['contextWindow'] = window;
         setState(() {});
       }
       return;
@@ -955,7 +1111,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // （历史事件是倒序入列的，顺序折叠会得到旧状态）。
     if (ev.type == 'todo/write') {
       _todoProjectionVersion++;
-      _todos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
+      _todos = ((ev.data?['todos'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
       // 任务面板与时间线同时更新；不要把 todo/write 静默成只有当前投影。
     }
     if (ev.type == 'turn/start') {
@@ -974,7 +1132,10 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     // 关键事件日志（排除高频 chunk，便于排障）
-    if (ev.type != 'assistant/chunk' && ev.type != 'assistant/live-chunk' && ev.type != 'tool/call' && ev.type != 'tool/result') {
+    if (ev.type != 'assistant/chunk' &&
+        ev.type != 'assistant/live-chunk' &&
+        ev.type != 'tool/call' &&
+        ev.type != 'tool/result') {
       AppLog.instance.log('Chat: SSE 事件 ${ev.type} seq=${ev.seq}');
     }
     if (ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') {
@@ -985,13 +1146,15 @@ class _ChatScreenState extends State<ChatScreen> {
         _scheduleDraftFlush();
       } else if (text.isNotEmpty && reasoning) {
         // 思考内容实时累积（活动条面板，可展开）
-        if (_reasoning.isEmpty) AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+        if (_reasoning.isEmpty)
+          AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
         _reasoning += text;
         _scheduleActivityFlush();
       }
       if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
         final data = ev.data ?? const <String, dynamic>{};
-        _activeTools[_toolActivityKey(data, ev.seq, _items.length)] = ev.data?['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
+        _activeTools[_toolActivityKey(data, ev.seq, _items.length)] =
+            ev.data?['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
         // 参数 delta 可达数百上千条：只更新模型，交给 80ms 节流统一重建
         // （与正文草稿 _scheduleDraftFlush 同口径），避免每个 delta 触发一次全量 setState。
         _appendEvent(ev);
@@ -1011,7 +1174,8 @@ class _ChatScreenState extends State<ChatScreen> {
       } else {
         // 轮次结束：清空活动条与思考草稿
         _activeTools.clear();
-        if (_reasoning.isNotEmpty) AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
+        if (_reasoning.isNotEmpty)
+          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
         _reasoning = '';
         _reasoningExpanded = false;
       }
@@ -1021,11 +1185,17 @@ class _ChatScreenState extends State<ChatScreen> {
       final u = ev.data?['usage'] as Map<String, dynamic>?;
       if (u != null) {
         _usageVersion++;
-         final input = (u['inputTokens'] as num?) ?? 0;
+        final input = (u['inputTokens'] as num?) ?? 0;
         final read = (u['cacheReadTokens'] as num?) ?? 0;
         final write = (u['cacheWriteTokens'] as num?) ?? 0;
         _usage['pressureTokens'] = input + read + write;
-        for (final key in ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens']) {
+        for (final key in [
+          'inputTokens',
+          'outputTokens',
+          'cacheReadTokens',
+          'cacheWriteTokens',
+          'reasoningTokens',
+        ]) {
           _usage[key] = ((_usage[key] as num?) ?? 0) + ((u[key] as num?) ?? 0);
         }
         _usageLoaded = true;
@@ -1052,11 +1222,19 @@ class _ChatScreenState extends State<ChatScreen> {
   /// v3.1.4（issue #13 排查建议 3）：本轮出现过真人提问、但没有渲染出更晚的回复条目
   /// → 说明有内容被静默吞掉，补拉一次历史（10s 节流，避免抖动时反复拉取）。
   void _maybeResyncAfterTurn() {
-    if (!needsTurnEndResync(lastUserSeq: _lastUserSeq, lastAssistantSeq: _lastAssistantSeq)) return;
+    if (!needsTurnEndResync(
+      lastUserSeq: _lastUserSeq,
+      lastAssistantSeq: _lastAssistantSeq,
+    ))
+      return;
     final now = DateTime.now();
-    if (_lastResyncAt != null && now.difference(_lastResyncAt!) < const Duration(seconds: 10)) return;
+    if (_lastResyncAt != null &&
+        now.difference(_lastResyncAt!) < const Duration(seconds: 10))
+      return;
     _lastResyncAt = now;
-    AppLog.instance.log('Chat: 轮次结束但无回复条目（lastUser=$_lastUserSeq lastAssistant=$_lastAssistantSeq）→ 兜底补拉');
+    AppLog.instance.log(
+      'Chat: 轮次结束但无回复条目（lastUser=$_lastUserSeq lastAssistant=$_lastAssistantSeq）→ 兜底补拉',
+    );
     _load(reset: true);
   }
 
@@ -1070,7 +1248,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _loadGeneration;
     try {
       final list = await _api.todos(id);
-      if (!mounted || request != _todoRefreshRequest || version != _todoProjectionVersion || generation != _loadGeneration || id != _mySessionId || list == null) return;
+      if (!mounted ||
+          request != _todoRefreshRequest ||
+          version != _todoProjectionVersion ||
+          generation != _loadGeneration ||
+          id != _mySessionId ||
+          list == null)
+        return;
       setState(() => _todos = list);
     } catch (e) {
       AppLog.instance.log('Chat: 任务清单拉取失败 $id → $e');
@@ -1091,7 +1275,8 @@ class _ChatScreenState extends State<ChatScreen> {
       while (pageNo < _catchupMaxPages) {
         pageNo++;
         final page = await _api.historyPage(id, after: cursor, limit: 100);
-        if (!mounted || generation != _loadGeneration || id != _mySessionId) return;
+        if (!mounted || generation != _loadGeneration || id != _mySessionId)
+          return;
         // v3.1.6（app-audit ②）：守卫之后才写降级标记（过期响应不得改写横幅）
         if (page.degraded) _historyDegraded = true;
         final fresh = <ChatEvent>[];
@@ -1114,7 +1299,9 @@ class _ChatScreenState extends State<ChatScreen> {
               _todos = [];
             } else if (ev.type == 'todo/write') {
               _todoProjectionVersion++;
-              _todos = ((ev.data?['todos'] as List?) ?? const []).whereType<Map<String, dynamic>>().toList();
+              _todos = ((ev.data?['todos'] as List?) ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
             }
             _appendEvent(ev);
           }
@@ -1122,7 +1309,10 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!page.hasMore) break;
         truncated = pageNo >= _catchupMaxPages;
       }
-      if (truncated) AppLog.instance.log('Chat: catch-up 截断于 $_catchupMaxPages 页（cursor=$cursor），剩余由下次补拉收敛');
+      if (truncated)
+        AppLog.instance.log(
+          'Chat: catch-up 截断于 $_catchupMaxPages 页（cursor=$cursor），剩余由下次补拉收敛',
+        );
     } catch (e) {
       AppLog.instance.log('Chat: catch-up failed $e');
     }
@@ -1166,7 +1356,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// v2.7.2 review：认领类事件且 dock 非空时前置立即刷新——
   /// 避免"消息已被 agent 取走但 dock 在整段流式期间一直显示"。
   void _onQueueAffectingEvent(String type) {
-    final affects = type == 'turn/start' || type == 'tool/call' || type == 'user/message' || type == 'assistant/message';
+    final affects =
+        type == 'turn/start' ||
+        type == 'tool/call' ||
+        type == 'user/message' ||
+        type == 'assistant/message';
     if (affects && _queue.isNotEmpty) {
       _queueRefreshTimer?.cancel();
       _queueRefreshTimer = null;
@@ -1192,7 +1386,7 @@ class _ChatScreenState extends State<ChatScreen> {
       await _api.updateQueueMessage(id, itemId, {
         'kind': 'edit',
         'content': [
-          {'type': 'text', 'text': text}
+          {'type': 'text', 'text': text},
         ],
       });
       if (mounted) setState(() => _editingQueueId = null);
@@ -1202,7 +1396,13 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _editingQueueId = null);
       if (e is ApiException && e.code == 'queue-item-not-found') {
         // v3.0.0：已被 agent 认领（正在执行）——语义化提示，行由帧/REST 刷新移除
-        showToast(context, L10n.t('该消息已被 agent 处理，无法编辑', 'The agent already picked it up — cannot edit'));
+        showToast(
+          context,
+          L10n.t(
+            '该消息已被 agent 处理，无法编辑',
+            'The agent already picked it up — cannot edit',
+          ),
+        );
       } else {
         showToast(context, '${L10n.t('编辑失败：', 'Edit failed: ')}$e');
       }
@@ -1222,8 +1422,14 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (ctx) => AlertDialog(
         title: Text(L10n.t('删除这条排队消息？', 'Remove this queued message?')),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(L10n.t('取消', 'Cancel'))),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(L10n.t('删除', 'Remove'))),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(L10n.t('取消', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(L10n.t('删除', 'Remove')),
+          ),
         ],
       ),
     );
@@ -1235,7 +1441,13 @@ class _ChatScreenState extends State<ChatScreen> {
       // 仍返回 accepted:true 但实际没删掉。删除后立即复查队列，还在则明确提示。
       final q = await _api.queue(id);
       if (mounted && q.any((r) => r['id'] == itemId)) {
-        showToast(context, L10n.t('该消息已被 agent 开始处理，未能删除', 'The agent already picked it up — could not remove'));
+        showToast(
+          context,
+          L10n.t(
+            '该消息已被 agent 开始处理，未能删除',
+            'The agent already picked it up — could not remove',
+          ),
+        );
       }
       _refreshQueue();
     } catch (e) {
@@ -1243,7 +1455,13 @@ class _ChatScreenState extends State<ChatScreen> {
         if (e is ApiException && e.code == 'queue-item-not-found') {
           // v3.0.0：已被 agent 认领（正在执行）——内核返回 queue-item-not-found，
           // 语义化提示 + 即时刷新（帧/REST 会移除该行，不再残留陈旧行）
-          showToast(context, L10n.t('该消息已被 agent 开始处理，未能删除', 'The agent already picked it up — could not remove'));
+          showToast(
+            context,
+            L10n.t(
+              '该消息已被 agent 开始处理，未能删除',
+              'The agent already picked it up — could not remove',
+            ),
+          );
         } else {
           showToast(context, '${L10n.t('删除失败：', 'Remove failed: ')}$e');
         }
@@ -1265,9 +1483,17 @@ class _ChatScreenState extends State<ChatScreen> {
       _refreshQueue();
     } catch (e) {
       if (mounted) {
-        if (e is ApiException && (e.code == 'queue-item-not-found' || e.code == 'steer-unavailable')) {
+        if (e is ApiException &&
+            (e.code == 'queue-item-not-found' ||
+                e.code == 'steer-unavailable')) {
           // v3.0.0：已被处理/当前轮不再接受插话——语义化提示
-          showToast(context, L10n.t('该消息已被 agent 处理，无法插话', 'The agent already picked it up — cannot steer'));
+          showToast(
+            context,
+            L10n.t(
+              '该消息已被 agent 处理，无法插话',
+              'The agent already picked it up — cannot steer',
+            ),
+          );
         } else {
           showToast(context, '${L10n.t('插话失败：', 'Steer failed: ')}$e');
         }
@@ -1339,10 +1565,20 @@ class _ChatScreenState extends State<ChatScreen> {
                     const SizedBox(width: 5),
                     Text(
                       L10n.t('${rows.length} 条排队消息', '${rows.length} queued'),
-                      style: TextStyle(fontSize: 11.5, color: ink3, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: ink3,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     const SizedBox(width: 3),
-                    Icon(_queueCollapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 15, color: ink3),
+                    Icon(
+                      _queueCollapsed
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_up,
+                      size: 15,
+                      color: ink3,
+                    ),
                   ],
                 ),
               ),
@@ -1380,7 +1616,10 @@ class _ChatScreenState extends State<ChatScreen> {
               child: TextField(
                 controller: _queueEditCtrl,
                 style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(isDense: true, border: InputBorder.none),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                ),
                 onSubmitted: (_) => _queueEdit(id),
               ),
             ),
@@ -1412,7 +1651,11 @@ class _ChatScreenState extends State<ChatScreen> {
               text,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, fontStyle: hasText ? FontStyle.normal : FontStyle.italic, color: hasText ? null : ink3),
+              style: TextStyle(
+                fontSize: 12,
+                fontStyle: hasText ? FontStyle.normal : FontStyle.italic,
+                color: hasText ? null : ink3,
+              ),
             ),
           ),
           if (hasText)
@@ -1483,9 +1726,15 @@ class _ChatScreenState extends State<ChatScreen> {
       final data = ev.data ?? const <String, dynamic>{};
       if (ev.type == 'tool/call') {
         final callId = _toolActivityKey(data, ev.seq, _activeTools.length);
-        _activeTools[callId] = timelineToolNameOf(data, callId: callId, fallback: L10n.t('工具', 'Tool'));
+        _activeTools[callId] = timelineToolNameOf(
+          data,
+          callId: callId,
+          fallback: L10n.t('工具', 'Tool'),
+        );
       } else if (ev.type == 'tool/result') {
-        _activeTools.remove(_toolActivityKey(data, ev.seq, _activeTools.length));
+        _activeTools.remove(
+          _toolActivityKey(data, ev.seq, _activeTools.length),
+        );
       } else if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
         _activeTools.clear();
       }
@@ -1496,16 +1745,28 @@ class _ChatScreenState extends State<ChatScreen> {
   /// （参数替换/追加、status、anchor/detail seq、关联 id、images/files），
   /// 这里只负责放置位置与携带 UI 专属状态（rawData / detailLoading）。
   /// 曾经在此复刻合并规则，导致 tool/call 的整串参数被拼在 delta 之后（参数重复）。
-  void _upsertToolItem(List<_MsgItem> out, ChatEvent ev, {required bool history}) {
+  void _upsertToolItem(
+    List<_MsgItem> out,
+    ChatEvent ev, {
+    required bool history,
+  }) {
     final d = ev.data ?? const <String, dynamic>{};
     final callId = timelineCallIdOf(d, ev.seq, out.length);
     final isResult = ev.type == 'tool/result';
     var owner = out;
-    var index = out.indexWhere((m) => m.kind == _MsgKind.tool && m.toolCallId == callId);
+    var index = out.indexWhere(
+      (m) => m.kind == _MsgKind.tool && m.toolCallId == callId,
+    );
     if (index < 0) {
-      for (final candidate in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+      for (final candidate in <List<_MsgItem>>[
+        _items,
+        _olderItems,
+        _histItems,
+      ]) {
         if (identical(candidate, out)) continue;
-        final found = candidate.indexWhere((m) => m.kind == _MsgKind.tool && m.toolCallId == callId);
+        final found = candidate.indexWhere(
+          (m) => m.kind == _MsgKind.tool && m.toolCallId == callId,
+        );
         if (found >= 0) {
           owner = candidate;
           index = found;
@@ -1515,10 +1776,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final old = index >= 0 ? owner[index] : null;
     // apply() 已在 _buildInto 入口执行，故 tools[callId] 已是合并后的权威生命周期。
-    final lifecycle = _timelineReducer.tools[callId] ??
+    final lifecycle =
+        _timelineReducer.tools[callId] ??
         ToolLifecycle(
           id: callId,
-          name: timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool')),
+          name: timelineToolNameOf(
+            d,
+            callId: callId,
+            fallback: L10n.t('工具', 'Tool'),
+          ),
           seq: ev.seq,
         );
     final item = _MsgItem.tool(
@@ -1538,7 +1804,8 @@ class _ChatScreenState extends State<ChatScreen> {
       detailLoading: isResult ? false : (old?.detailLoading ?? false),
     );
     if (index >= 0) {
-      final settled = old?.toolStatus == 'success' || old?.toolStatus == 'failed';
+      final settled =
+          old?.toolStatus == 'success' || old?.toolStatus == 'failed';
       if (history && !isResult && settled) {
         owner.removeAt(index);
         owner.add(item);
@@ -1552,7 +1819,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _appendVisibleEvent(List<_MsgItem> out, ChatEvent ev, {required bool history}) {
+  void _appendVisibleEvent(
+    List<_MsgItem> out,
+    ChatEvent ev, {
+    required bool history,
+  }) {
     final d = ev.data ?? const <String, dynamic>{};
     // 标题映射与模型侧共用（timeline.dart）：未知类型原样显示类型名，不静默丢弃。
     final title = timelineTitleFor(ev.type);
@@ -1563,7 +1834,8 @@ class _ChatScreenState extends State<ChatScreen> {
       seq: ev.seq,
       rawData: ev.detailAvailable ? d : null,
       detailAvailable: ev.detailAvailable,
-      toolError: d['isError'] == true || d['error'] == true || d['status'] == 'failed',
+      toolError:
+          d['isError'] == true || d['error'] == true || d['status'] == 'failed',
     );
     if (history) {
       out.add(item);
@@ -1576,8 +1848,12 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 历史分段：旧→新顺序，追加到末尾）。
   /// [tail] 见 [_appendEvent]：历史页（history=true, tail=false）跳过 chunk、
   /// 不重置 [_draft]/[_streaming]，避免污染正在进行的流式回复。
-  void _buildInto(List<_MsgItem> out, ChatEvent ev,
-      {bool history = false, bool tail = false}) {
+  void _buildInto(
+    List<_MsgItem> out,
+    ChatEvent ev, {
+    bool history = false,
+    bool tail = false,
+  }) {
     final d = ev.data;
     if (hiddenTimelineTypes.contains(ev.type)) return;
     // Historical reconstruction must still render a record even when the same seq
@@ -1594,12 +1870,15 @@ class _ChatScreenState extends State<ChatScreen> {
         final sourceKind = d?['sourceKind'] as String?;
         // v3.1.4（issue #13）：只有**真人提问**参与"本轮是否缺回复"的兜底判定
         // （注入消息不是提问，不该因它触发补拉）
-        if ((!history || tail) && (sourceKind == null || sourceKind == 'user')) {
+        if ((!history || tail) &&
+            (sourceKind == null || sourceKind == 'user')) {
           if (ev.seq != null) _lastUserSeq = ev.seq;
         }
         // 去重（SSE 回显 vs 本地乐观添加）：
         // 1) 已有同 messageId 的消息 → 直接跳过（回显已完成渲染，同文本连发也不误并）
-        if (mid != null && out.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) return;
+        if (mid != null &&
+            out.any((m) => m.kind == _MsgKind.user && m.messageId == mid))
+          return;
         // 2) 列表中已存在本地乐观添加（messageId 尚未赋值）且文本一致的消息 → 合并。
         //    全列表查找而非只看 out.first：turn/start 等事件可能先于回显插入，
         //    把乐观消息挤到非首位（否则会出现"同一条消息显示两次"）。
@@ -1608,17 +1887,40 @@ class _ChatScreenState extends State<ChatScreen> {
           // 同文本连发时回显按发送顺序到达，合并顺序必须与发送顺序一致；
           // 此前 indexWhere 从头部（最新）找，先到的回显会合并到最新一条，
           // 造成 seq 与视觉顺序错配（后续重建时可能乱序）。
-          final idx = out.lastIndexWhere((m) =>
-              m.kind == _MsgKind.user && m.messageId == null && m.text.trim() == text.trim());
+          final idx = out.lastIndexWhere(
+            (m) =>
+                m.kind == _MsgKind.user &&
+                m.messageId == null &&
+                m.text.trim() == text.trim(),
+          );
           if (idx != -1) {
             out[idx] = out[idx].copyWith(seq: ev.seq, messageId: mid);
             return;
           }
         }
         if (history) {
-          out.add(_MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), files: _filesOf(d), sourceKind: sourceKind));
+          out.add(
+            _MsgItem.user(
+              text,
+              seq: ev.seq,
+              messageId: mid,
+              images: _imagesOf(d),
+              files: _filesOf(d),
+              sourceKind: sourceKind,
+            ),
+          );
         } else {
-          out.insert(0, _MsgItem.user(text, seq: ev.seq, messageId: mid, images: _imagesOf(d), files: _filesOf(d), sourceKind: sourceKind));
+          out.insert(
+            0,
+            _MsgItem.user(
+              text,
+              seq: ev.seq,
+              messageId: mid,
+              images: _imagesOf(d),
+              files: _filesOf(d),
+              sourceKind: sourceKind,
+            ),
+          );
         }
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
@@ -1637,19 +1939,29 @@ class _ChatScreenState extends State<ChatScreen> {
         // 无正文（旧数据）时回退旧占位。
         final prefix = reasoningText.isNotEmpty
             ? ''
-            : (reasoningChars > 0 ? L10n.t('（思考 $reasoningChars 字）\n', '(Thought: $reasoningChars chars)\n') : '');
-        final item = _MsgItem.assistant(prefix + body,
-            usage: d?['usage'] as Map<String, dynamic>?,
-            seq: ev.seq,
-            messageId: d?['messageId'] as String?,
-            images: _imagesOf(d),
-            files: _filesOf(d),
-            reasoning: reasoningText.isEmpty ? null : reasoningText,
-            detailAvailable: ev.detailAvailable,
-            detailTextChars: ev.detailTextChars);
+            : (reasoningChars > 0
+                  ? L10n.t(
+                      '（思考 $reasoningChars 字）\n',
+                      '(Thought: $reasoningChars chars)\n',
+                    )
+                  : '');
+        final item = _MsgItem.assistant(
+          prefix + body,
+          usage: d?['usage'] as Map<String, dynamic>?,
+          seq: ev.seq,
+          messageId: d?['messageId'] as String?,
+          images: _imagesOf(d),
+          files: _filesOf(d),
+          reasoning: reasoningText.isEmpty ? null : reasoningText,
+          detailAvailable: ev.detailAvailable,
+          detailTextChars: ev.detailTextChars,
+        );
         // v3.1.4（issue #13）：记录最近一条**会渲染出来**的回复，供轮次兜底判定
         // （注入的上下文快照虽然进模型但界面隐藏，不能算作本轮已有回复）。
-        if ((!history || tail) && ev.seq != null && !timelineIsInjectedNoise(body)) _lastAssistantSeq = ev.seq;
+        if ((!history || tail) &&
+            ev.seq != null &&
+            !timelineIsInjectedNoise(body))
+          _lastAssistantSeq = ev.seq;
         if (history) {
           out.add(item);
         } else {
@@ -1681,7 +1993,13 @@ class _ChatScreenState extends State<ChatScreen> {
         _upsertToolItem(out, ev, history: history);
       case 'tool/result':
         if (!history) {
-          _activeTools.remove(_toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length));
+          _activeTools.remove(
+            _toolActivityKey(
+              d ?? const <String, dynamic>{},
+              ev.seq,
+              out.length,
+            ),
+          );
           _scheduleActivityFlush();
         }
         _upsertToolItem(out, ev, history: history);
@@ -1689,9 +2007,20 @@ class _ChatScreenState extends State<ChatScreen> {
         _appendVisibleEvent(out, ev, history: history);
       case 'turn/start':
         if (history) {
-          out.add(_MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'), seq: ev.seq));
+          out.add(
+            _MsgItem.divider(
+              L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'),
+              seq: ev.seq,
+            ),
+          );
         } else {
-          out.insert(0, _MsgItem.divider(L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'), seq: ev.seq));
+          out.insert(
+            0,
+            _MsgItem.divider(
+              L10n.t('轮次 ${d?['turn']} 开始', 'Turn ${d?['turn']} started'),
+              seq: ev.seq,
+            ),
+          );
         }
       case 'turn/end':
         if (!history || tail) {
@@ -1700,9 +2029,12 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         final reason = (d?['reason'] as Map<String, dynamic>?)?['kind'];
         final item = _MsgItem.divider(
-            L10n.t('轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}',
-                'Turn ${d?['turn']} ended${reason != null ? ' ($reason)' : ''}'),
-            seq: ev.seq);
+          L10n.t(
+            '轮次 ${d?['turn']} 结束${reason != null ? '（$reason）' : ''}',
+            'Turn ${d?['turn']} ended${reason != null ? ' ($reason)' : ''}',
+          ),
+          seq: ev.seq,
+        );
         if (history) {
           out.add(item);
         } else {
@@ -1727,10 +2059,17 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 返回 null＝未确认（保守）；非 null＝服务端回执 { status: done|error, result }。
   /// 「已送达」的判据改为服务端 requestId 回执（幂等），替代热修 04 的启发式对账
   /// （后者会把空文本图片/同文本旧消息误判为已送达 → 静默丢草稿）。
-  Future<Map<String, dynamic>?> _resolveUnknownSend(String sessionId, String requestId) async {
+  Future<Map<String, dynamic>?> _resolveUnknownSend(
+    String sessionId,
+    String requestId,
+  ) async {
     for (var i = 0; i < 4; i++) {
       try {
-        final receipt = await _api.sendReceipt(sessionId, requestId, timeout: const Duration(seconds: 3));
+        final receipt = await _api.sendReceipt(
+          sessionId,
+          requestId,
+          timeout: const Duration(seconds: 3),
+        );
         final status = receipt['status'] as String?;
         if (status == 'done' || status == 'error') return receipt;
         // in-progress：稍后再查
@@ -1747,10 +2086,17 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = (preset ?? _inputCtrl.text).trim();
     // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
     final id = _mySessionId ?? widget.store.sessionId;
-    if ((text.isEmpty && _pendingImages.isEmpty) || id == null || _sending || preset != null && _pendingImages.isNotEmpty) return;
+    if ((text.isEmpty && _pendingImages.isEmpty) ||
+        id == null ||
+        _sending ||
+        preset != null && _pendingImages.isNotEmpty)
+      return;
     // v3.0.0 图像链路：有待发图片 → 走图片通路（原始字节不压缩；成功/失败处理独立）
     if (mode == 'steer' && _pageAgentStatus != 'running') {
-      showToast(context, L10n.t('agent 空闲，已按普通消息发送', 'Agent idle — sent as a normal message'));
+      showToast(
+        context,
+        L10n.t('agent 空闲，已按普通消息发送', 'Agent idle — sent as a normal message'),
+      );
       mode = 'followup';
     }
     // v3.0.0(热修 07)：降级提前到分流之前——最终生效模式参与 requestId 签名
@@ -1758,13 +2104,20 @@ class _ChatScreenState extends State<ChatScreen> {
       await _sendImages(id, text, mode);
       return;
     }
-    AppLog.instance.log('Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}');
+    AppLog.instance.log(
+      'Chat: 发送 → $id : ${text.length > 20 ? '${text.substring(0, 20)}…' : text}${mode == 'steer' ? '（插队）' : ''}',
+    );
     // v3.0.0：运行中排队（followup）→ 消息**不进对话窗口**（与 PC 端一致：仅进 Queue Dock，
     // 被 agent 认领执行时 user/message 回显才上屏）——乐观气泡只保留给「立即生效」的发送
     final queued = mode != 'steer' && _pageAgentStatus == 'running';
     // v3.0.0(热修 05)：requestId 与草稿内容绑定——内容未变的重试复用同一 id
     // （服务端幂等，重复投递最多一次）；内容变化（文本/图片改动）则换新 id。
-    final signature = composerSignature(id, mode, text, _pendingImages.map((f) => f.path).toList());
+    final signature = composerSignature(
+      id,
+      mode,
+      text,
+      _pendingImages.map((f) => f.path).toList(),
+    );
     if (_pendingRequestId == null || _pendingSignature != signature) {
       _pendingRequestId = genRequestId();
       _pendingSignature = signature;
@@ -1774,7 +2127,13 @@ class _ChatScreenState extends State<ChatScreen> {
     FocusScope.of(context).unfocus();
     // agent 忙时提示（避免用户以为没反应而重复发送）；插队时不提示排队
     if (_pageAgentStatus == 'running' && preset == null && mode != 'steer') {
-      showToast(context, L10n.t('agent 正在处理上一轮，消息会排队等待', 'The agent is still processing the last turn — your message will be queued'));
+      showToast(
+        context,
+        L10n.t(
+          'agent 正在处理上一轮，消息会排队等待',
+          'The agent is still processing the last turn — your message will be queued',
+        ),
+      );
     }
     setState(() {
       _sending = true;
@@ -1783,26 +2142,48 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.clear();
     _scrollToBottom(force: true);
     try {
-      final (mid, note, configDegraded) = await _api.send(id, text, mode: mode, requestId: requestId);
+      final (mid, note, configDegraded) = await _api.send(
+        id,
+        text,
+        mode: mode,
+        requestId: requestId,
+      );
       _pendingRequestId = null;
       _pendingSignature = null;
-      AppLog.instance.log('Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}${configDegraded ? ' configDegraded' : ''}');
+      AppLog.instance.log(
+        'Chat: 发送成功 mid=$mid${note != null ? ' note=$note' : ''}${configDegraded ? ' configDegraded' : ''}',
+      );
       if (!mounted) return;
       // v3.1.5：休眠会话配置折叠失败 → 服务端已用默认模型/权限恢复该会话。必须让用户知道，
       // 否则配置被静默改写（issue #20 验收里「configDegraded 显式标记」在 App 侧的兑现）：
       // 置常驻横幅标记，并首次即时 toast（后续 toast 可能覆盖，横幅仍在）。
       if (configDegraded && !_configDegraded) {
         setState(() => _configDegraded = true);
-        showToast(context, L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'));
+        showToast(
+          context,
+          L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'),
+        );
       }
       // v2.7.2 review：mounted 检查之后才刷新队列（发送成功=新消息入队）
       _scheduleQueueRefresh();
       if (queued) {
         // 排队：无乐观气泡；插件持存（任务结束才释放）时明确提示
         if (note == 'held-until-idle') {
-          showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+          showToast(
+            context,
+            L10n.t(
+              '已排队：当前任务结束后自动发送',
+              'Queued: will send after the current task finishes',
+            ),
+          );
         } else if (note == 'steer-degraded-held') {
-          showToast(context, L10n.t('已排队（插队不可用）：任务结束后自动发送', 'Queued (steer unavailable): will send after the task finishes'));
+          showToast(
+            context,
+            L10n.t(
+              '已排队（插队不可用）：任务结束后自动发送',
+              'Queued (steer unavailable): will send after the task finishes',
+            ),
+          );
         }
         return;
       }
@@ -1810,21 +2191,40 @@ class _ChatScreenState extends State<ChatScreen> {
       // 撤回乐观气泡，保持"排队消息不进对话窗口"一致
       if (note == 'held-until-idle' || note == 'steer-degraded-held') {
         setState(() {
-          _items.removeWhere((m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
+          _items.removeWhere(
+            (m) =>
+                m.kind == _MsgKind.user &&
+                m.messageId == null &&
+                m.text == text,
+          );
         });
-        showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+        showToast(
+          context,
+          L10n.t(
+            '已排队：当前任务结束后自动发送',
+            'Queued: will send after the current task finishes',
+          ),
+        );
         return;
       }
       // v2.7.2：插队成功明确提示（否则和普通发送看起来一样，用户会困惑）
       if (mode == 'steer') {
-        showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
+        showToast(
+          context,
+          L10n.t(
+            '已插队：消息将插到 agent 下一步执行',
+            'Steered: will run at the agent\'s next step',
+          ),
+        );
       }
       setState(() {
         // 按文本定位乐观消息补 messageId（可能已被 SSE 回显合并，此时已是同 id，幂等）。
         // v2.7.2 review：与回显合并对称用 lastIndexWhere（合并到最旧未回显）——
         // 同文本多条时 mid 不会挂错条目
         final idx = _items.lastIndexWhere(
-            (m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
+          (m) =>
+              m.kind == _MsgKind.user && m.messageId == null && m.text == text,
+        );
         if (idx != -1) _items[idx] = _items[idx].copyWith(messageId: mid);
       });
     } catch (e) {
@@ -1838,8 +2238,16 @@ class _ChatScreenState extends State<ChatScreen> {
         _pendingSignature = null;
         setState(() {
           if (!queued) {
-            _items.removeWhere((m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
-            _items.insert(0, _MsgItem.divider('⚠ ${L10n.t('发送失败：', 'Send failed: ')}$e'));
+            _items.removeWhere(
+              (m) =>
+                  m.kind == _MsgKind.user &&
+                  m.messageId == null &&
+                  m.text == text,
+            );
+            _items.insert(
+              0,
+              _MsgItem.divider('⚠ ${L10n.t('发送失败：', 'Send failed: ')}$e'),
+            );
           }
         });
         _restoreDraftIfUntouched(text);
@@ -1854,17 +2262,31 @@ class _ChatScreenState extends State<ChatScreen> {
         _pendingRequestId = null;
         _pendingSignature = null;
         _scheduleQueueRefresh();
-        showToast(context, L10n.t('已送达：刚才网络波动，请勿重复发送', 'Delivered despite a network hiccup — do not resend'));
+        showToast(
+          context,
+          L10n.t(
+            '已送达：刚才网络波动，请勿重复发送',
+            'Delivered despite a network hiccup — do not resend',
+          ),
+        );
         return;
       }
       if (receipt != null && receipt['status'] == 'error') {
         _pendingRequestId = null;
         _pendingSignature = null;
-        final rmap = receipt['result'] is Map ? receipt['result'] as Map : const {};
-        final msg = '${L10n.t('发送失败：', 'Send failed: ')}${rmap['detail'] ?? ''}';
+        final rmap = receipt['result'] is Map
+            ? receipt['result'] as Map
+            : const {};
+        final msg =
+            '${L10n.t('发送失败：', 'Send failed: ')}${rmap['detail'] ?? ''}';
         setState(() {
           if (!queued) {
-            _items.removeWhere((m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
+            _items.removeWhere(
+              (m) =>
+                  m.kind == _MsgKind.user &&
+                  m.messageId == null &&
+                  m.text == text,
+            );
             _items.insert(0, _MsgItem.divider('⚠ $msg'));
           }
         });
@@ -1875,12 +2297,26 @@ class _ChatScreenState extends State<ChatScreen> {
       // 未确认：保留 requestId 供幂等重试；撤回乐观气泡、恢复草稿
       setState(() {
         if (!queued) {
-          _items.removeWhere((m) => m.kind == _MsgKind.user && m.messageId == null && m.text == text);
-          _items.insert(0, _MsgItem.divider('⚠ ${L10n.t('发送结果未知：', 'Outcome unknown: ')}$e'));
+          _items.removeWhere(
+            (m) =>
+                m.kind == _MsgKind.user &&
+                m.messageId == null &&
+                m.text == text,
+          );
+          _items.insert(
+            0,
+            _MsgItem.divider('⚠ ${L10n.t('发送结果未知：', 'Outcome unknown: ')}$e'),
+          );
         }
       });
       _restoreDraftIfUntouched(text);
-      showToast(context, L10n.t('发送结果未知：请稍后点重试，重试不会重复发送', 'Outcome unknown — retry later; retries will not duplicate'));
+      showToast(
+        context,
+        L10n.t(
+          '发送结果未知：请稍后点重试，重试不会重复发送',
+          'Outcome unknown — retry later; retries will not duplicate',
+        ),
+      );
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -1897,20 +2333,32 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       // 限额（与 PC 端同源数字：内核 imageLimits）
       final limits = widget.store.catalog?.imageLimits ?? const {};
-      final maxBytes = ((limits['maxImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
+      final maxBytes =
+          ((limits['maxImageBytes'] as num?)?.toInt() ?? 20 * 1024 * 1024);
       // v3.0.0：兜底对齐内核默认（DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200MB；此前误写 20MB，
       // catalog 缺失时总大小被错误限制在单张额度）
-      final catalogMax = ((limits['maxMessageImageBytes'] as num?)?.toInt() ?? 200 * 1024 * 1024);
+      final catalogMax =
+          ((limits['maxMessageImageBytes'] as num?)?.toInt() ??
+          200 * 1024 * 1024);
       // v3.0.0(热修 05)：客户端传输天花板 40MB——服务端 HTTP body 上限 64MB，
       // base64 膨胀（×4/3）加 JSON 开销后仍有富余；超限在客户端明确提示，
       // 不再落到服务端 413。内核侧 200MB 能力不受影响（PC 端同源）。
       const transportCeiling = 40 * 1024 * 1024;
-      final maxTotal = catalogMax > transportCeiling ? transportCeiling : catalogMax;
-      final mediaTypes = (limits['mediaTypes'] as List?)?.map((e) => e.toString()).toSet() ??
+      final maxTotal = catalogMax > transportCeiling
+          ? transportCeiling
+          : catalogMax;
+      final mediaTypes =
+          (limits['mediaTypes'] as List?)?.map((e) => e.toString()).toSet() ??
           {'image/png', 'image/jpeg', 'image/webp', 'image/gif'};
       // 模型能力（服务端也会校验，此处前置拦截给用户明确提示）
       if (!_currentModelSupportsImages()) {
-        showToast(context, L10n.t('当前模型不支持图片输入，请先切换模型', 'The current model does not support images — switch models first'));
+        showToast(
+          context,
+          L10n.t(
+            '当前模型不支持图片输入，请先切换模型',
+            'The current model does not support images — switch models first',
+          ),
+        );
         return;
       }
       final images = <Map<String, dynamic>>[];
@@ -1926,19 +2374,43 @@ class _ChatScreenState extends State<ChatScreen> {
         final mediaType = real ?? _mediaTypeOf(f.name);
         if (!mediaTypes.contains(mediaType)) {
           if (real != null) {
-            showToast(context, L10n.t('不支持的图片格式：$mediaType', 'Unsupported image format: $mediaType'));
+            showToast(
+              context,
+              L10n.t(
+                '不支持的图片格式：$mediaType',
+                'Unsupported image format: $mediaType',
+              ),
+            );
           } else {
-            showToast(context, L10n.t('仅支持 PNG/JPEG/WebP/GIF 图片', 'Only PNG/JPEG/WebP/GIF images are supported'));
+            showToast(
+              context,
+              L10n.t(
+                '仅支持 PNG/JPEG/WebP/GIF 图片',
+                'Only PNG/JPEG/WebP/GIF images are supported',
+              ),
+            );
           }
           return;
         }
         if (b.length > maxBytes) {
-          showToast(context, L10n.t('单张图片超过 ${_mbOf(maxBytes)}MB 上限', 'One image exceeds the ${_mbOf(maxBytes)}MB limit'));
+          showToast(
+            context,
+            L10n.t(
+              '单张图片超过 ${_mbOf(maxBytes)}MB 上限',
+              'One image exceeds the ${_mbOf(maxBytes)}MB limit',
+            ),
+          );
           return;
         }
         total += b.length;
         if (total > maxTotal) {
-          showToast(context, L10n.t('图片总大小超过 ${_mbOf(maxTotal)}MB 上限', 'Images exceed the ${_mbOf(maxTotal)}MB total limit'));
+          showToast(
+            context,
+            L10n.t(
+              '图片总大小超过 ${_mbOf(maxTotal)}MB 上限',
+              'Images exceed the ${_mbOf(maxTotal)}MB total limit',
+            ),
+          );
           return;
         }
         images.add({
@@ -1951,21 +2423,37 @@ class _ChatScreenState extends State<ChatScreen> {
         showToast(context, L10n.t('没有可发送的图片', 'No image to send'));
         return;
       }
-      final signature = composerSignature(id, mode, text, _pendingImages.map((f) => f.path).toList());
+      final signature = composerSignature(
+        id,
+        mode,
+        text,
+        _pendingImages.map((f) => f.path).toList(),
+      );
       if (_pendingRequestId == null || _pendingSignature != signature) {
         _pendingRequestId = genRequestId();
         _pendingSignature = signature;
       }
       requestId = _pendingRequestId!;
-      AppLog.instance.log('Chat: 发送(图) → $id : ${images.length} 张, 共 $total 字节${mode == 'steer' ? '（插队）' : ''}');
-      final (accepted, note, configDegraded) = await _api.sendImages(id, text, images, mode: mode, requestId: requestId);
+      AppLog.instance.log(
+        'Chat: 发送(图) → $id : ${images.length} 张, 共 $total 字节${mode == 'steer' ? '（插队）' : ''}',
+      );
+      final (accepted, note, configDegraded) = await _api.sendImages(
+        id,
+        text,
+        images,
+        mode: mode,
+        requestId: requestId,
+      );
       _pendingRequestId = null;
       _pendingSignature = null;
       if (!mounted) return;
       // v3.1.5：语义同文本发送——配置回退默认必须显式提示（常驻横幅 + 首次 toast）
       if (configDegraded && !_configDegraded) {
         setState(() => _configDegraded = true);
-        showToast(context, L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'));
+        showToast(
+          context,
+          L10n.t('该会话配置已回退默认（模型/权限）', 'Session settings reverted to defaults'),
+        );
       }
       _scheduleQueueRefresh();
       if (!accepted) {
@@ -1974,11 +2462,29 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       if (note == 'held-until-idle') {
-        showToast(context, L10n.t('已排队：当前任务结束后自动发送', 'Queued: will send after the current task finishes'));
+        showToast(
+          context,
+          L10n.t(
+            '已排队：当前任务结束后自动发送',
+            'Queued: will send after the current task finishes',
+          ),
+        );
       } else if (note == 'steer-degraded-held') {
-        showToast(context, L10n.t('已排队（插队不可用）：任务结束后自动发送', 'Queued (steer unavailable): will send after the task finishes'));
+        showToast(
+          context,
+          L10n.t(
+            '已排队（插队不可用）：任务结束后自动发送',
+            'Queued (steer unavailable): will send after the task finishes',
+          ),
+        );
       } else if (mode == 'steer') {
-        showToast(context, L10n.t('已插队：消息将插到 agent 下一步执行', 'Steered: will run at the agent\'s next step'));
+        showToast(
+          context,
+          L10n.t(
+            '已插队：消息将插到 agent 下一步执行',
+            'Steered: will run at the agent\'s next step',
+          ),
+        );
       }
       setState(() => _pendingImages.clear());
       // v3.0.0：发送成功（含排队持存）即清空输入框——此前文字残留，用户误以为没发出而重复发送
@@ -2007,18 +2513,35 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _pendingImages.clear());
         if (_inputCtrl.text == text) _inputCtrl.clear();
         _scheduleQueueRefresh();
-        showToast(context, L10n.t('已送达：刚才网络波动，请勿重复发送', 'Delivered despite a network hiccup — do not resend'));
+        showToast(
+          context,
+          L10n.t(
+            '已送达：刚才网络波动，请勿重复发送',
+            'Delivered despite a network hiccup — do not resend',
+          ),
+        );
         return;
       }
       if (receipt != null && receipt['status'] == 'error') {
         _pendingRequestId = null;
         _pendingSignature = null;
-        final rmap = receipt['result'] is Map ? receipt['result'] as Map : const {};
-        showToast(context, '${L10n.t('发送失败：', 'Send failed: ')}${rmap['detail'] ?? ''}');
+        final rmap = receipt['result'] is Map
+            ? receipt['result'] as Map
+            : const {};
+        showToast(
+          context,
+          '${L10n.t('发送失败：', 'Send failed: ')}${rmap['detail'] ?? ''}',
+        );
         return;
       }
       // 未确认：保留 requestId 与草稿供幂等重试
-      showToast(context, L10n.t('发送结果未知：请稍后点重试，重试不会重复发送', 'Outcome unknown — retry later; retries will not duplicate'));
+      showToast(
+        context,
+        L10n.t(
+          '发送结果未知：请稍后点重试，重试不会重复发送',
+          'Outcome unknown — retry later; retries will not duplicate',
+        ),
+      );
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -2055,13 +2578,17 @@ class _ChatScreenState extends State<ChatScreen> {
       return true;
     }
 
-    if (startsWith(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) return 'image/png';
+    if (startsWith(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+      return 'image/png';
     if (startsWith(const [0xFF, 0xD8, 0xFF])) return 'image/jpeg';
     if (startsWith(const [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
-    if (startsWith(const [0x52, 0x49, 0x46, 0x46]) && startsWith(const [0x57, 0x45, 0x42, 0x50], 8)) return 'image/webp';
+    if (startsWith(const [0x52, 0x49, 0x46, 0x46]) &&
+        startsWith(const [0x57, 0x45, 0x42, 0x50], 8))
+      return 'image/webp';
     if (startsWith(const [0x66, 0x74, 0x79, 0x70], 4)) {
       final brand = String.fromCharCodes(b.sublist(8, 12));
-      if (const ['heic', 'heix', 'hevc', 'mif1'].contains(brand)) return 'image/heic';
+      if (const ['heic', 'heix', 'hevc', 'mif1'].contains(brand))
+        return 'image/heic';
     }
     return null;
   }
@@ -2077,11 +2604,20 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await _api.stopSession(id);
       if (mounted) {
-        showToast(context, L10n.t('已请求停止，agent 当前轮次结束后停下', 'Stop requested — the agent will halt after its current turn'));
+        showToast(
+          context,
+          L10n.t(
+            '已请求停止，agent 当前轮次结束后停下',
+            'Stop requested — the agent will halt after its current turn',
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        showToast(context, '${L10n.t('停止失败：', 'Stop failed: ')}$e${L10n.t('（桌面端插件需重启生效）', ' (the desktop plugin may need a restart)')}');
+        showToast(
+          context,
+          '${L10n.t('停止失败：', 'Stop failed: ')}$e${L10n.t('（桌面端插件需重启生效）', ' (the desktop plugin may need a restart)')}',
+        );
       }
     }
   }
@@ -2095,7 +2631,8 @@ class _ChatScreenState extends State<ChatScreen> {
       await _api.jobKill(sid, jobId);
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
     } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
+      if (mounted)
+        showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
     }
   }
 
@@ -2111,27 +2648,24 @@ class _ChatScreenState extends State<ChatScreen> {
     if (sid == null || _gitController != null) return;
     final readApi = widget.gitReadApi ?? _api;
     final controller =
-        widget.gitControllerFactory?.call(readApi) ?? GitBrowserController(readApi);
+        widget.gitControllerFactory?.call(readApi) ??
+        GitBrowserController(readApi);
     _gitController = controller;
     unawaited(controller.open(sid));
+    final graphScrollController = ScrollController();
     try {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        useSafeArea: true,
-        backgroundColor: Colors.transparent,
-        builder: (context) => DraggableScrollableSheet(
-          initialChildSize: 0.92,
-          minChildSize: 0.65,
-          maxChildSize: 0.98,
-          expand: false,
-          builder: (context, scrollController) => GitBrowserSheet(
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => GitBrowserSheet(
             controller: controller,
-            scrollController: scrollController,
+            scrollController: graphScrollController,
+            tabs: widget.store.gitTabs,
           ),
         ),
       );
     } finally {
+      graphScrollController.dispose();
       if (identical(_gitController, controller)) _gitController = null;
       controller.dispose();
     }
@@ -2152,7 +2686,13 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'negative':
         final mid = item.messageId;
         if (mid == null) {
-          showToast(context, L10n.t('该消息暂不支持反馈（旧消息无 messageId）', 'Feedback is not available for this message (older messages lack a message ID)'));
+          showToast(
+            context,
+            L10n.t(
+              '该消息暂不支持反馈（旧消息无 messageId）',
+              'Feedback is not available for this message (older messages lack a message ID)',
+            ),
+          );
           return;
         }
         // v2.8.0 review(P2-2)：同消息反馈提交中则忽略连点（防 toggle 竞态：服务端与本地状态错乱）
@@ -2168,18 +2708,31 @@ class _ChatScreenState extends State<ChatScreen> {
           // live 列表 _items 与历史段 _histItems 都同步更新（review P2-1：历史页图标也要变）
           final newRating = target == 'none' ? null : target;
           void updRating(List<_MsgItem> list) {
-            final i = list.indexWhere((m) => m.kind == _MsgKind.assistant && m.messageId == mid);
+            final i = list.indexWhere(
+              (m) => m.kind == _MsgKind.assistant && m.messageId == mid,
+            );
             if (i == -1) return;
             final old = list[i];
             // v3.1.6（app-audit ②）：重建条目必须**带上全部详情字段**——此前漏了
             // detailTextChars/detailDegraded/detailMode/detailErrorCode，点一次 👍/👎
             // 就把「加载完整正文」入口、降级提示与错误重试一起抹掉。
-            list[i] = _MsgItem.assistant(old.text,
-                usage: old.usage, seq: old.seq, messageId: old.messageId, rating: newRating,
-                images: old.images, files: old.files, reasoning: old.reasoning,
-                detailAvailable: old.detailAvailable, rawData: old.rawData, detailLoading: old.detailLoading,
-                detailDegraded: old.detailDegraded, detailMode: old.detailMode,
-                detailErrorCode: old.detailErrorCode, detailTextChars: old.detailTextChars);
+            list[i] = _MsgItem.assistant(
+              old.text,
+              usage: old.usage,
+              seq: old.seq,
+              messageId: old.messageId,
+              rating: newRating,
+              images: old.images,
+              files: old.files,
+              reasoning: old.reasoning,
+              detailAvailable: old.detailAvailable,
+              rawData: old.rawData,
+              detailLoading: old.detailLoading,
+              detailDegraded: old.detailDegraded,
+              detailMode: old.detailMode,
+              detailErrorCode: old.detailErrorCode,
+              detailTextChars: old.detailTextChars,
+            );
           }
 
           setState(() {
@@ -2200,23 +2753,33 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'fork':
         final seq = item.seq;
         if (seq == null) {
-          showToast(context, L10n.t('该消息暂不支持分支', 'Forking is not available for this message'));
+          showToast(
+            context,
+            L10n.t('该消息暂不支持分支', 'Forking is not available for this message'),
+          );
           return;
         }
         try {
           final childId = await _api.forkSession(id, atSeq: seq);
           if (!mounted) return;
-          showToast(context, L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'));
+          showToast(
+            context,
+            L10n.t('已分支，正在打开新对话…', 'Forked — opening the new chat…'),
+          );
           final prevId = _mySessionId;
           widget.store.refreshSessions();
           // Phase 2(A4)：统一打开会话流程；返回后恢复原会话（分支页不改变主会话）
-          await openChat(context, widget.store, childId,
-              onTitleChanged: widget.onTitleChanged,
-              onReturn: () async {
-            if (mounted && prevId != null && prevId != childId) {
-              await widget.store.setSession(prevId);
-            }
-          });
+          await openChat(
+            context,
+            widget.store,
+            childId,
+            onTitleChanged: widget.onTitleChanged,
+            onReturn: () async {
+              if (mounted && prevId != null && prevId != childId) {
+                await widget.store.setSession(prevId);
+              }
+            },
+          );
         } catch (e) {
           if (!mounted) return;
           showToast(context, '${L10n.t('分支失败：', 'Fork failed: ')}$e');
@@ -2242,15 +2805,27 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Row(
           children: [
             Flexible(
-              child: Text(_title ?? L10n.t('会话', 'Session'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+              child: Text(
+                _title ?? L10n.t('会话', 'Session'),
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
             const SizedBox(width: 8),
-            _StatusDot(status: store.connState == 'connected' ? _pageAgentStatus : 'offline'),
+            _StatusDot(
+              status: store.connState == 'connected'
+                  ? _pageAgentStatus
+                  : 'offline',
+            ),
           ],
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.source_outlined, size: 20),
+            icon: const GitLogo(size: 22),
             tooltip: 'Git',
             onPressed: _openGit,
           ),
@@ -2260,7 +2835,14 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
             onPressed: () {
               final sid = _mySessionId;
-              if (sid != null) showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
+              if (sid != null) {
+                showSessionToolsSheet(
+                  context,
+                  widget.store,
+                  sid,
+                  onTitleChanged: widget.onTitleChanged,
+                );
+              }
             },
           ),
           // v3.1.5（issue #15）：会话级复制入口（范围=当前已加载的消息，见 _conversationText）
@@ -2300,14 +2882,25 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   if (_historyDegraded)
                     Text(
-                      L10n.t('当前仅能恢复部分历史，更早内容可能不可用', 'Only partial history available'),
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      L10n.t(
+                        '当前仅能恢复部分历史，更早内容可能不可用',
+                        'Only partial history available',
+                      ),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   if (_configDegraded)
                     Text(
-                      L10n.t('该会话配置已回退默认（模型/权限/预设）',
-                          'Session settings reverted to defaults (model/permissions)'),
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      L10n.t(
+                        '该会话配置已回退默认（模型/权限/预设）',
+                        'Session settings reverted to defaults (model/permissions)',
+                      ),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                 ],
               ),
@@ -2317,12 +2910,17 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Stack(
               children: [
-                Positioned.fill(child: _inHistory ? _buildHistoryView() : _buildLiveView()),
+                Positioned.fill(
+                  child: _inHistory ? _buildHistoryView() : _buildLiveView(),
+                ),
                 if (!_inHistory)
                   Positioned(
                     bottom: 12,
                     right: 14,
-                    child: _JumpToLatestButton(visible: _showJumpToLatest, onTap: _jumpToLatest),
+                    child: _JumpToLatestButton(
+                      visible: _showJumpToLatest,
+                      onTap: _jumpToLatest,
+                    ),
                   ),
               ],
             ),
@@ -2335,7 +2933,8 @@ class _ChatScreenState extends State<ChatScreen> {
               textStreaming: _streaming,
               showContent: widget.store.showReasoning,
               tools: _activeTools.values.toList(),
-              onToggleReasoning: () => setState(() => _reasoningExpanded = !_reasoningExpanded),
+              onToggleReasoning: () =>
+                  setState(() => _reasoningExpanded = !_reasoningExpanded),
             ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
@@ -2375,7 +2974,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   for (final a in store.actions)
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
-                      child: _ActionChip(action: a, onTap: () => showActionSheet(context, a)),
+                      child: _ActionChip(
+                        action: a,
+                        onTap: () => showActionSheet(context, a),
+                      ),
                     ),
                 ],
               ),
@@ -2397,7 +2999,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 decoration: BoxDecoration(
                   color: surface,
                   borderRadius: BorderRadius.circular(20),
-                  boxShadow: Theme.of(context).brightness == Brightness.dark ? DshTheme.shadowDark : DshTheme.shadow,
+                  boxShadow: Theme.of(context).brightness == Brightness.dark
+                      ? DshTheme.shadowDark
+                      : DshTheme.shadow,
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -2418,7 +3022,9 @@ class _ChatScreenState extends State<ChatScreen> {
                               border: InputBorder.none,
                               enabledBorder: InputBorder.none,
                               focusedBorder: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                              contentPadding: const EdgeInsets.symmetric(
+                                vertical: 8,
+                              ),
                             ),
                             onSubmitted: (_) => _send(),
                           ),
@@ -2442,7 +3048,11 @@ class _ChatScreenState extends State<ChatScreen> {
                               shape: BoxShape.circle,
                             ),
                             // v2.8.0 review(P2-3)：图标用 ink3 主题自适应（深色下不再黑压黑）
-                            child: Icon(Icons.add, size: 17, color: DshColors.ink3(context)),
+                            child: Icon(
+                              Icons.add,
+                              size: 17,
+                              color: DshColors.ink3(context),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -2462,13 +3072,18 @@ class _ChatScreenState extends State<ChatScreen> {
                               // 权限胶囊：同上
                               Flexible(
                                 child: _Pill(
-                                  label: _shortPerm(_permName(store.sessionConfig.permissionPreset)),
+                                  label: _shortPerm(
+                                    _permName(
+                                      store.sessionConfig.permissionPreset,
+                                    ),
+                                  ),
                                   onTap: () => showPermSheet(context, store),
                                 ),
                               ),
                               // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）；
                               // 固定宽度（不参与收缩，始终完整显示）
-                              if (_pageAgentStatus == 'running' && _inputCtrl.text.trim().isNotEmpty) ...[
+                              if (_pageAgentStatus == 'running' &&
+                                  _inputCtrl.text.trim().isNotEmpty) ...[
                                 const SizedBox(width: 6),
                                 _Pill(
                                   label: L10n.t('排队发送', 'Queue send'),
@@ -2496,7 +3111,10 @@ class _ChatScreenState extends State<ChatScreen> {
                           child: Container(
                             width: 32,
                             height: 32,
-                            decoration: BoxDecoration(color: brand, borderRadius: BorderRadius.circular(9)),
+                            decoration: BoxDecoration(
+                              color: brand,
+                              borderRadius: BorderRadius.circular(9),
+                            ),
                             child: _pageAgentStatus == 'running'
                                 ? Center(
                                     child: Container(
@@ -2509,12 +3127,19 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ),
                                   )
                                 : _sending
-                                    ? const SizedBox(
-                                        width: 15,
-                                        height: 15,
-                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                      )
-                                    : const Icon(Icons.arrow_upward, size: 17, color: Colors.white),
+                                ? const SizedBox(
+                                    width: 15,
+                                    height: 15,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.arrow_upward,
+                                    size: 17,
+                                    color: Colors.white,
+                                  ),
                           ),
                         ),
                       ],
@@ -2548,7 +3173,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// v2.8.0：权限名省略显示（"Danger Full Access" → "Danger Full…"）。
-  String _shortPerm(String perm) => perm.length > 14 ? '${perm.substring(0, 13)}…' : perm;
+  String _shortPerm(String perm) =>
+      perm.length > 14 ? '${perm.substring(0, 13)}…' : perm;
 
   /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令，点选填入输入框。
   /// v3.0.0 图像链路：⊕ = 更多菜单（拍照 / 从相册选择 / 命令）。
@@ -2557,7 +3183,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2566,41 +3194,63 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
               child: Row(
                 children: [
-                  const Icon(Icons.add_circle_outline, size: 16, color: Color(0xFF426EFE)),
+                  const Icon(
+                    Icons.add_circle_outline,
+                    size: 16,
+                    color: Color(0xFF426EFE),
+                  ),
                   const SizedBox(width: 6),
-                  Text(L10n.t('更多', 'More'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  Text(
+                    L10n.t('更多', 'More'),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
                 ],
               ),
             ),
             ListTile(
               dense: true,
               leading: const Icon(Icons.photo_camera_outlined, size: 20),
-              title: Text(L10n.t('拍照', 'Take a photo'), style: const TextStyle(fontSize: 14)),
+              title: Text(
+                L10n.t('拍照', 'Take a photo'),
+                style: const TextStyle(fontSize: 14),
+              ),
               onTap: () => Navigator.of(ctx).pop('camera'),
             ),
             ListTile(
               dense: true,
               leading: const Icon(Icons.photo_library_outlined, size: 20),
-              title: Text(L10n.t('从相册选择', 'Choose from gallery'), style: const TextStyle(fontSize: 14)),
+              title: Text(
+                L10n.t('从相册选择', 'Choose from gallery'),
+                style: const TextStyle(fontSize: 14),
+              ),
               onTap: () => Navigator.of(ctx).pop('gallery'),
             ),
             // v3.1.2（csborbbnc 反馈）：文件传输入口（系统选择器/下载保存）
             ListTile(
               dense: true,
               leading: const Icon(Icons.upload_file_outlined, size: 20),
-              title: Text(L10n.t('上传文件', 'Upload file'), style: const TextStyle(fontSize: 14)),
+              title: Text(
+                L10n.t('上传文件', 'Upload file'),
+                style: const TextStyle(fontSize: 14),
+              ),
               onTap: () => Navigator.of(ctx).pop('upload-file'),
             ),
             ListTile(
               dense: true,
               leading: const Icon(Icons.download_outlined, size: 20),
-              title: Text(L10n.t('下载文件', 'Download file'), style: const TextStyle(fontSize: 14)),
+              title: Text(
+                L10n.t('下载文件', 'Download file'),
+                style: const TextStyle(fontSize: 14),
+              ),
               onTap: () => Navigator.of(ctx).pop('download-file'),
             ),
             ListTile(
               dense: true,
               leading: const Icon(Icons.code, size: 20),
-              title: Text(L10n.t('命令', 'Commands'), style: const TextStyle(fontSize: 14)),
+              title: Text(
+                L10n.t('命令', 'Commands'),
+                style: const TextStyle(fontSize: 14),
+              ),
               onTap: () => Navigator.of(ctx).pop('commands'),
             ),
             const SizedBox(height: 6),
@@ -2638,21 +3288,27 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     try {
-      final picked = await _filesChannel.invokeMapMethod<String, dynamic>('pickFile');
+      final picked = await _filesChannel.invokeMapMethod<String, dynamic>(
+        'pickFile',
+      );
       if (picked == null) return; // 取消
       final name = picked['name'] as String? ?? 'file';
       final bytes = picked['bytes'] as Uint8List?;
       if (bytes == null || bytes.isEmpty) {
-        if (mounted) showToast(context, L10n.t('读取文件失败', 'Failed to read the file'));
+        if (mounted)
+          showToast(context, L10n.t('读取文件失败', 'Failed to read the file'));
         return;
       }
       final r = await _api.uploadFile(sid, name, bytes);
       if (mounted) {
-        showToast(context,
-            '${L10n.t('已上传到电脑工作目录：', 'Uploaded to PC workspace: ')}${r['path'] ?? name}');
+        showToast(
+          context,
+          '${L10n.t('已上传到电脑工作目录：', 'Uploaded to PC workspace: ')}${r['path'] ?? name}',
+        );
       }
     } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('上传失败：', 'Upload failed: ')}$e');
+      if (mounted)
+        showToast(context, '${L10n.t('上传失败：', 'Upload failed: ')}$e');
     }
   }
 
@@ -2663,14 +3319,22 @@ class _ChatScreenState extends State<ChatScreen> {
     if (path == null || path.isEmpty || !mounted) return;
     try {
       final bytes = await _api.downloadFile(path);
-      final name = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ?? 'file';
-      final saved = await _filesChannel
-          .invokeMethod<String>('saveToDownloads', {'name': name, 'bytes': bytes});
+      final name =
+          path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ??
+          'file';
+      final saved = await _filesChannel.invokeMethod<String>(
+        'saveToDownloads',
+        {'name': name, 'bytes': bytes},
+      );
       if (mounted) {
-        showToast(context, '${L10n.t('已保存到手机：', 'Saved on phone: ')}${saved ?? name}');
+        showToast(
+          context,
+          '${L10n.t('已保存到手机：', 'Saved on phone: ')}${saved ?? name}',
+        );
       }
     } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
+      if (mounted)
+        showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
     }
   }
 
@@ -2680,7 +3344,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _pickingImages = true;
     try {
       final limits = widget.store.catalog?.imageLimits ?? const {};
-      final maxCount = ((limits['maxImagesPerMessage'] as num?)?.toInt() ?? 20).clamp(1, 20).toInt();
+      final maxCount = ((limits['maxImagesPerMessage'] as num?)?.toInt() ?? 20)
+          .clamp(1, 20)
+          .toInt();
       final picker = ImagePicker();
       final picked = fromCamera
           ? [await picker.pickImage(source: ImageSource.camera)]
@@ -2689,11 +3355,17 @@ class _ChatScreenState extends State<ChatScreen> {
       if (files.isEmpty || !mounted) return;
       final room = maxCount - _pendingImages.length;
       if (room <= 0) {
-        showToast(context, L10n.t('已达单条消息的图片数量上限', 'Reached the image count limit per message'));
+        showToast(
+          context,
+          L10n.t('已达单条消息的图片数量上限', 'Reached the image count limit per message'),
+        );
         return;
       }
       if (files.length > room) {
-        showToast(context, L10n.t('最多还能添加 $room 张图片', 'You can add up to $room more image(s)'));
+        showToast(
+          context,
+          L10n.t('最多还能添加 $room 张图片', 'You can add up to $room more image(s)'),
+        );
       }
       setState(() => _pendingImages.addAll(files.take(room)));
       _scrollToBottom();
@@ -2738,7 +3410,10 @@ class _ChatScreenState extends State<ChatScreen> {
                           width: 76,
                           height: 76,
                           color: line,
-                          child: const Icon(Icons.image_outlined, color: Colors.white54),
+                          child: const Icon(
+                            Icons.image_outlined,
+                            color: Colors.white54,
+                          ),
                         ),
                       ),
                     ),
@@ -2748,9 +3423,16 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: InkWell(
                         onTap: () => setState(() => _pendingImages.removeAt(i)),
                         child: Container(
-                          decoration: BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
                           padding: const EdgeInsets.all(2),
-                          child: const Icon(Icons.close, size: 13, color: Colors.white),
+                          child: const Icon(
+                            Icons.close,
+                            size: 13,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -2758,8 +3440,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             IconButton(
-              onPressed: _pickingImages ? null : () => _pickImages(fromCamera: false),
-              icon: Icon(Icons.add_photo_alternate_outlined, size: 22, color: ink3),
+              onPressed: _pickingImages
+                  ? null
+                  : () => _pickImages(fromCamera: false),
+              icon: Icon(
+                Icons.add_photo_alternate_outlined,
+                size: 22,
+                color: ink3,
+              ),
               tooltip: L10n.t('继续添加', 'Add more'),
             ),
           ],
@@ -2778,23 +3466,34 @@ class _ChatScreenState extends State<ChatScreen> {
       (cmds, unavailable) = await _api.commands(id);
     } catch (e) {
       if (!mounted) return;
-      showToast(context, '${L10n.t('命令列表加载失败：', 'Failed to load commands: ')}$e');
+      showToast(
+        context,
+        '${L10n.t('命令列表加载失败：', 'Failed to load commands: ')}$e',
+      );
       return;
     }
     if (!mounted) return;
     // v2.9.0 review(LOW#13)：区分"命令服务不可用"与"会话无命令"
     if (unavailable) {
-      showToast(context, L10n.t('当前 DSH 未提供命令服务', 'Command service is unavailable in this DSH'));
+      showToast(
+        context,
+        L10n.t('当前 DSH 未提供命令服务', 'Command service is unavailable in this DSH'),
+      );
       return;
     }
     if (cmds.isEmpty) {
-      showToast(context, L10n.t('当前会话没有可用命令', 'No commands available for this session'));
+      showToast(
+        context,
+        L10n.t('当前会话没有可用命令', 'No commands available for this session'),
+      );
       return;
     }
     final picked = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2805,18 +3504,34 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   const Icon(Icons.code, size: 15, color: Color(0xFF426EFE)),
                   const SizedBox(width: 6),
-                  Text(L10n.t('命令', 'Commands'), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  Text(
+                    L10n.t('命令', 'Commands'),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
                 ],
               ),
             ),
             // v2.8.0 review(P3-6)：过滤无名命令，避免填入 '/null'
-            for (final c in cmds.where((c) => c['name'] is String && (c['name'] as String).isNotEmpty))
+            for (final c in cmds.where(
+              (c) => c['name'] is String && (c['name'] as String).isNotEmpty,
+            ))
               ListTile(
                 dense: true,
                 leading: const Icon(Icons.tag, size: 18),
-                title: Text('/${c['name']}', style: const TextStyle(fontSize: 14)),
-                subtitle: c['description'] is String && (c['description'] as String).isNotEmpty
-                    ? Text(c['description'] as String, style: TextStyle(fontSize: 12, color: DshColors.ink3(ctx)))
+                title: Text(
+                  '/${c['name']}',
+                  style: const TextStyle(fontSize: 14),
+                ),
+                subtitle:
+                    c['description'] is String &&
+                        (c['description'] as String).isNotEmpty
+                    ? Text(
+                        c['description'] as String,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: DshColors.ink3(ctx),
+                        ),
+                      )
                     : null,
                 onTap: () => Navigator.of(ctx).pop('/${c['name']}'),
               ),
@@ -2828,7 +3543,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (picked == null || !mounted) return;
     // 对齐 PC 端 leadingInput：命令名填入输入框，用户可补参数后发送
     _inputCtrl.text = '$picked ';
-    _inputCtrl.selection = TextSelection.collapsed(offset: _inputCtrl.text.length);
+    _inputCtrl.selection = TextSelection.collapsed(
+      offset: _inputCtrl.text.length,
+    );
     _onDraftChanged();
   }
 
@@ -2840,7 +3557,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_usage.isEmpty) return null;
     final window = (_usage['contextWindow'] as num?)?.toInt();
     if (window == null || window <= 0) return null;
-    final used = (_usage['pressureTokens'] as num?)?.toDouble() ??
+    final used =
+        (_usage['pressureTokens'] as num?)?.toDouble() ??
         ((_usage['inputTokens'] as num?)?.toDouble() ?? 0) +
             ((_usage['cacheReadTokens'] as num?)?.toDouble() ?? 0) +
             ((_usage['cacheWriteTokens'] as num?)?.toDouble() ?? 0);
@@ -2861,23 +3579,38 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       if (value is! Map) return;
-      final attachment = value['type'] == 'image' && value['attachment'] is Map ? value['attachment'] : value;
-      final attachmentId = attachment is Map ? attachment['attachmentId']?.toString() : null;
-       final mediaType = attachment is Map ? attachment['mediaType']?.toString() ?? '' : '';
-       final isImage = imageContext || value['type'] == 'image' || mediaType.startsWith('image/');
-      if (isImage && attachmentId != null && attachmentId.isNotEmpty && seen.add(attachmentId)) {
+      final attachment = value['type'] == 'image' && value['attachment'] is Map
+          ? value['attachment']
+          : value;
+      final attachmentId = attachment is Map
+          ? attachment['attachmentId']?.toString()
+          : null;
+      final mediaType = attachment is Map
+          ? attachment['mediaType']?.toString() ?? ''
+          : '';
+      final isImage =
+          imageContext ||
+          value['type'] == 'image' ||
+          mediaType.startsWith('image/');
+      if (isImage &&
+          attachmentId != null &&
+          attachmentId.isNotEmpty &&
+          seen.add(attachmentId)) {
         out.add({
           'attachmentId': attachmentId,
           'mediaType': attachment['mediaType']?.toString() ?? 'image/jpeg',
           if (attachment['width'] is num) 'width': attachment['width'],
           if (attachment['height'] is num) 'height': attachment['height'],
-          if (attachment['name'] is String && (attachment['name'] as String).isNotEmpty) 'name': attachment['name'],
+          if (attachment['name'] is String &&
+              (attachment['name'] as String).isNotEmpty)
+            'name': attachment['name'],
         });
       }
       visit(value['images'], true);
       visit(value['content'], imageContext);
       visit(value['message'], imageContext);
     }
+
     visit(d?['images'], true);
     visit(d?['message']);
     return out;
@@ -2894,13 +3627,22 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       if (value is! Map) return;
-      final attachment = value['attachment'] is Map ? value['attachment'] as Map : value;
+      final attachment = value['attachment'] is Map
+          ? value['attachment'] as Map
+          : value;
       final id = (attachment['attachmentId'] ?? attachment['id'])?.toString();
-      final mediaType = attachment['mediaType']?.toString() ?? attachment['mimeType']?.toString() ?? '';
-      final isImage = value['type'] == 'image' || mediaType.startsWith('image/');
+      final mediaType =
+          attachment['mediaType']?.toString() ??
+          attachment['mimeType']?.toString() ??
+          '';
+      final isImage =
+          value['type'] == 'image' || mediaType.startsWith('image/');
       final path = (attachment['path'] ?? attachment['filePath'])?.toString();
-      final name = attachment['name']?.toString() ?? path?.split(RegExp(r'[/\\]')).last;
-      if (!isImage && (id != null && id.isNotEmpty || path != null && path.isNotEmpty) && seen.add(id ?? path!)) {
+      final name =
+          attachment['name']?.toString() ?? path?.split(RegExp(r'[/\\]')).last;
+      if (!isImage &&
+          (id != null && id.isNotEmpty || path != null && path.isNotEmpty) &&
+          seen.add(id ?? path!)) {
         out.add({
           if (id != null && id.isNotEmpty) 'attachmentId': id,
           if (path != null && path.isNotEmpty) 'path': path,
@@ -2916,6 +3658,7 @@ class _ChatScreenState extends State<ChatScreen> {
       visit(value['result']);
       visit(value['message']);
     }
+
     visit(d);
     return out;
   }
@@ -2949,9 +3692,13 @@ class _ChatScreenState extends State<ChatScreen> {
   final Map<String, String> _debugPreviewCache = {};
 
   String _debugPreviewOf(_MsgItem item) {
-    final key = '${item.kind}:${item.eventType}:${item.toolCallId ?? item.seq ?? item.text}:'
+    final key =
+        '${item.kind}:${item.eventType}:${item.toolCallId ?? item.seq ?? item.text}:'
         '${identityHashCode(item.rawData)}';
-    return _debugPreviewCache.putIfAbsent(key, () => timelineDebugPreview(item.rawData));
+    return _debugPreviewCache.putIfAbsent(
+      key,
+      () => timelineDebugPreview(item.rawData),
+    );
   }
 
   String _failureKey(_MsgItem item) => item.kind == _MsgKind.tool
@@ -2969,7 +3716,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _loadEventDetail(_MsgItem item) async {
     final id = _mySessionId ?? widget.store.sessionId;
     final detailSeq = item.detailSeq ?? item.seq;
-    if (id == null || detailSeq == null || item.detailLoading || !_api.timelineCapabilities.detail) return;
+    if (id == null ||
+        detailSeq == null ||
+        item.detailLoading ||
+        !_api.timelineCapabilities.detail)
+      return;
     // 去重登记下沉到唯一入口：手动展开此前不登记，卡片重锚重建后会对同一 (卡, detailSeq)
     // 再发一次 HTTP；失败时移除登记，保证「重试」按钮仍能重新请求。
     final requestKey = '${_failureKey(item)}:$detailSeq';
@@ -2978,8 +3729,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final loading = item.kind == _MsgKind.tool
         ? item.copyTool(detailLoading: true, clearDetailError: true)
         : item.kind == _MsgKind.assistant
-            ? item.copyAssistant(detailLoading: true, clearDetailError: true)
-            : item.copyEvent(detailLoading: true, clearDetailError: true);
+        ? item.copyAssistant(detailLoading: true, clearDetailError: true)
+        : item.copyEvent(detailLoading: true, clearDetailError: true);
     if (mounted) setState(() => _replaceTimelineItem(item, loading));
     try {
       final detail = await _api.eventDetail(id, detailSeq);
@@ -2989,23 +3740,32 @@ class _ChatScreenState extends State<ChatScreen> {
       // 重建条目后普通模式的「加载完整正文」同样失效。这里只用于**在途去重**。
       _failureDetailRequests.remove(requestKey);
       final full = detail.event;
-      final data = full['data'] is Map ? Map<String, dynamic>.from(full['data'] as Map) : <String, dynamic>{};
+      final data = full['data'] is Map
+          ? Map<String, dynamic>.from(full['data'] as Map)
+          : <String, dynamic>{};
       String textOf(Object? value) {
         if (value is String) return value;
-        if (value is List) return value.map(textOf).where((text) => text.isNotEmpty).join();
+        if (value is List)
+          return value.map(textOf).where((text) => text.isNotEmpty).join();
         if (value is Map) {
           if (value['text'] is String) return value['text'] as String;
           return textOf(value['content']);
         }
         return '';
       }
+
       if (!mounted || generation != _loadGeneration) return;
       final current = _currentTimelineItem(item);
       if (current == null) return;
       if (current.kind == _MsgKind.tool && current.detailSeq != detailSeq) {
         // A newer result superseded this request; never let an older call
         // response overwrite the result detail. Only clear its spinner.
-        setState(() => _replaceTimelineItem(item, current.copyTool(detailLoading: false)));
+        setState(
+          () => _replaceTimelineItem(
+            item,
+            current.copyTool(detailLoading: false),
+          ),
+        );
         return;
       }
       if (current.kind == _MsgKind.tool) {
@@ -3013,63 +3773,93 @@ class _ChatScreenState extends State<ChatScreen> {
         final rawArgs = data['arguments'] is String
             ? data['arguments'] as String
             : (data['arguments'] == null
-                ? current.toolArguments
-                : JsonEncoder.withIndent('  ').convert(data['arguments']));
+                  ? current.toolArguments
+                  : JsonEncoder.withIndent('  ').convert(data['arguments']));
         final args = clampTimelineDetailText(rawArgs);
         final directResult = textOf(data['text']);
-        final nestedResult = textOf(data['result']).isNotEmpty ? textOf(data['result']) : textOf(data['message']);
+        final nestedResult = textOf(data['result']).isNotEmpty
+            ? textOf(data['result'])
+            : textOf(data['message']);
         final result = clampTimelineDetailText(
-            directResult.isNotEmpty ? directResult : (nestedResult.isNotEmpty ? nestedResult : current.toolResult));
-        setState(() => _replaceTimelineItem(item, current.copyTool(
-          arguments: args,
-          result: result,
-          error: data['isError'] == true || current.toolError,
-          images: _imagesOf(data).isNotEmpty ? _imagesOf(data) : current.images,
-          rawData: full,
-          files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
-          detailAvailable: true,
-          detailLoading: false,
-          detailDegraded: detail.degraded,
-          detailMode: detail.detailMode,
-          clearDetailError: true,
-        )));
+          directResult.isNotEmpty
+              ? directResult
+              : (nestedResult.isNotEmpty ? nestedResult : current.toolResult),
+        );
+        setState(
+          () => _replaceTimelineItem(
+            item,
+            current.copyTool(
+              arguments: args,
+              result: result,
+              error: data['isError'] == true || current.toolError,
+              images: _imagesOf(data).isNotEmpty
+                  ? _imagesOf(data)
+                  : current.images,
+              rawData: full,
+              files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
+              detailAvailable: true,
+              detailLoading: false,
+              detailDegraded: detail.degraded,
+              detailMode: detail.detailMode,
+              clearDetailError: true,
+            ),
+          ),
+        );
       } else if (current.kind == _MsgKind.assistant) {
         // 正文口径（issue #1 需求变更）：只认服务端给出的规范化 text（与摘要同一
         // blocksToText 口径，已跳过 reasoning/内部块）。**不得**递归拼接 message.content
         // ——那会把 reasoning 并进正文，使思维链在折叠块之外重复出现。
         final canonical = timelineDetailText(data);
         final fullText = clampTimelineDetailText(canonical ?? '');
-        setState(() => _replaceTimelineItem(item, current.copyAssistant(
-          text: fullText.isNotEmpty ? fullText : current.text,
-          rawData: full,
-          files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
-          detailAvailable: true,
-          detailLoading: false,
-          detailDegraded: detail.degraded,
-          detailMode: detail.detailMode,
-          clearDetailError: true,
-          detailTextChars: fullText.isNotEmpty ? fullText.length : current.detailTextChars,
-        )));
+        setState(
+          () => _replaceTimelineItem(
+            item,
+            current.copyAssistant(
+              text: fullText.isNotEmpty ? fullText : current.text,
+              rawData: full,
+              files: _filesOf(data).isNotEmpty ? _filesOf(data) : current.files,
+              detailAvailable: true,
+              detailLoading: false,
+              detailDegraded: detail.degraded,
+              detailMode: detail.detailMode,
+              clearDetailError: true,
+              detailTextChars: fullText.isNotEmpty
+                  ? fullText.length
+                  : current.detailTextChars,
+            ),
+          ),
+        );
       } else {
-        setState(() => _replaceTimelineItem(item, current.copyEvent(
-          rawData: full,
-          detailLoading: false,
-          detailDegraded: detail.degraded,
-          detailMode: detail.detailMode,
-          clearDetailError: true,
-        )));
+        setState(
+          () => _replaceTimelineItem(
+            item,
+            current.copyEvent(
+              rawData: full,
+              detailLoading: false,
+              detailDegraded: detail.degraded,
+              detailMode: detail.detailMode,
+              clearDetailError: true,
+            ),
+          ),
+        );
       }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       _failureDetailRequests.remove(requestKey); // 允许用户点「重试」重新请求
       final current = _currentTimelineItem(item);
-      if (current == null || ((current.kind == _MsgKind.tool || current.kind == _MsgKind.assistant) && current.detailSeq != detailSeq)) return;
-      final code = e is ApiException ? (e.code ?? 'event-detail-unavailable') : 'event-detail-unavailable';
+      if (current == null ||
+          ((current.kind == _MsgKind.tool ||
+                  current.kind == _MsgKind.assistant) &&
+              current.detailSeq != detailSeq))
+        return;
+      final code = e is ApiException
+          ? (e.code ?? 'event-detail-unavailable')
+          : 'event-detail-unavailable';
       final fallback = current.kind == _MsgKind.tool
           ? current.copyTool(detailErrorCode: code, detailLoading: false)
           : current.kind == _MsgKind.assistant
-              ? current.copyAssistant(detailErrorCode: code, detailLoading: false)
-              : current.copyEvent(detailErrorCode: code, detailLoading: false);
+          ? current.copyAssistant(detailErrorCode: code, detailLoading: false)
+          : current.copyEvent(detailErrorCode: code, detailLoading: false);
       setState(() => _replaceTimelineItem(item, fallback));
     }
   }
@@ -3080,10 +3870,16 @@ class _ChatScreenState extends State<ChatScreen> {
         // v3.1.4（issue #12）：系统注入消息（内核 source.kind ≠ "user"）不当普通气泡铺屏，
         // 改为可折叠块——默认收起、点按展开，展开状态按 messageId 持久化（同思维链机制）。
         if (_isNoiseText(item.text)) return const SizedBox.shrink();
-        if (item.injected && !widget.store.timelineDebug) return const SizedBox.shrink();
+        if (item.injected && !widget.store.timelineDebug)
+          return const SizedBox.shrink();
         if (item.injected) {
           final ikey = item.messageId ?? 's${item.seq}';
-          final expanded = widget.store.reasoningOverrideOf(_mySessionId ?? '', 'inj:$ikey') ?? false;
+          final expanded =
+              widget.store.reasoningOverrideOf(
+                _mySessionId ?? '',
+                'inj:$ikey',
+              ) ??
+              false;
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Column(
@@ -3097,18 +3893,27 @@ class _ChatScreenState extends State<ChatScreen> {
                   // 必须放在 setState 之外，否则 setState 的闭包返回 Future → debug/profile
                   // 构建下每次点按都会断言失败且展开状态不生效。
                   onToggle: (v) {
-                    widget.store.setReasoningOverride(_mySessionId ?? '', 'inj:$ikey', v);
+                    widget.store.setReasoningOverride(
+                      _mySessionId ?? '',
+                      'inj:$ikey',
+                      v,
+                    );
                     setState(() {});
                   },
                 ),
-                if (expanded && (item.images.isNotEmpty || item.files.isNotEmpty))
+                if (expanded &&
+                    (item.images.isNotEmpty || item.files.isNotEmpty))
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _ImagesGrid(images: item.images, sessionId: _mySessionId ?? ''),
-                        if (item.files.isNotEmpty) _FileResults(files: item.files),
+                        _ImagesGrid(
+                          images: item.images,
+                          sessionId: _mySessionId ?? '',
+                        ),
+                        if (item.files.isNotEmpty)
+                          _FileResults(files: item.files),
                       ],
                     ),
                   ),
@@ -3123,27 +3928,31 @@ class _ChatScreenState extends State<ChatScreen> {
         // （blocksToText imagePlaceholder:false），客户端保留用户原文，不误删手打内容。
         final text = item.text;
         Widget userBubble(Widget child) => Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 4),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                constraints: const BoxConstraints(maxWidth: 320),
-                decoration: BoxDecoration(
-                  color: DshColors.line(context),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: child,
-              ),
-            );
+          alignment: Alignment.centerRight,
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            constraints: const BoxConstraints(maxWidth: 320),
+            decoration: BoxDecoration(
+              color: DshColors.line(context),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: child,
+          ),
+        );
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (images.isNotEmpty)
-              userBubble(_ImagesGrid(images: images, sessionId: _mySessionId ?? '')),
-             if (item.files.isNotEmpty)
-               userBubble(_FileResults(files: item.files)),
+              userBubble(
+                _ImagesGrid(images: images, sessionId: _mySessionId ?? ''),
+              ),
+            if (item.files.isNotEmpty)
+              userBubble(_FileResults(files: item.files)),
             if (text.isNotEmpty)
-              userBubble(Text(text, style: const TextStyle(fontSize: 15, height: 1.5))),
+              userBubble(
+                Text(text, style: const TextStyle(fontSize: 15, height: 1.5)),
+              ),
             // v3.1.5（issue #15）：用户消息此前没有任何复制入口（只有助手消息有操作栏）——
             // 这里右对齐补一个「复制」，复用 _runMessageAction('copy')：复制正文 + 「已复制」提示，
             // 与助手消息行为一致。整段选择另由 SelectionArea 承担（长按选词）。
@@ -3176,7 +3985,10 @@ class _ChatScreenState extends State<ChatScreen> {
               streaming: false,
               reasoning: item.reasoning,
               defaultExpanded: widget.store.reasoningDefaultExpanded,
-              expandedOverride: widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
+              expandedOverride: widget.store.reasoningOverrideOf(
+                _mySessionId ?? '',
+                rk,
+              ),
               // 同上：异步方法不得放进 setState 闭包（否则点按思维链折叠会断言失败）
               onOverride: (v) {
                 widget.store.setReasoningOverride(_mySessionId ?? '', rk, v);
@@ -3184,54 +3996,102 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             if (item.detailDegraded)
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 4),
-                 child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
-               ),
-             if (item.detailErrorCode != null)
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 4),
-                 child: Row(
-                   mainAxisSize: MainAxisSize.min,
-                   children: [
-                     Text(_detailErrorLabel(item.detailErrorCode!), style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
-                     TextButton(onPressed: _api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null, child: Text(L10n.t('重试', 'Retry'))),
-                   ],
-                 ),
-               ),
-             // 需求变更（issue #1）：assistant 产出文件不再展示（时间线不提供该下载入口）。
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Text(
+                  L10n.t(
+                    '详情来自当前界面，可能不完整',
+                    'Details came from the current surface and may be incomplete',
+                  ),
+                  style: TextStyle(fontSize: 11, color: Colors.orange),
+                ),
+              ),
+            if (item.detailErrorCode != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _detailErrorLabel(item.detailErrorCode!),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _api.timelineCapabilities.detail
+                          ? () => _loadEventDetail(item)
+                          : null,
+                      child: Text(L10n.t('重试', 'Retry')),
+                    ),
+                  ],
+                ),
+              ),
+            // 需求变更（issue #1）：assistant 产出文件不再展示（时间线不提供该下载入口）。
             // 详情入口（issue #1 需求变更）：普通模式只在**确有正文增量**时出现
-             // （服务端 detail.textChars 大于当前可见正文长度）；调试模式提供原始事件入口。
-             // 两者都不再默认出现“看着像能加载更多、实际只会多出一份思维链”的按钮。
-             if (item.detailAvailable && item.seq != null && (widget.store.timelineDebug || timelineHasTextIncrement(item.detailTextChars, item.text.length)))
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 4),
-                 child: Row(
-                   mainAxisSize: MainAxisSize.min,
-                   children: [
-  if (item.detailLoading) const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                     TextButton(
-                       onPressed: _api.timelineCapabilities.detail ? () => _loadEventDetail(item) : null,
-                       child: Text(
-                         widget.store.timelineDebug
-                             ? (item.rawData == null ? L10n.t('查看原始事件', 'View raw event') : L10n.t('重新加载原始事件', 'Reload raw event'))
-                             : (item.rawData == null ? L10n.t('加载完整正文', 'Load full response') : L10n.t('重新加载正文', 'Reload full response')),
-                       ),
-                     ),
-                   ],
-                 ),
-               )
-             else if (widget.store.timelineDebug && item.rawData == null && !item.detailAvailable)
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 4),
-                 child: Text(L10n.t('详情不可用（旧服务端未保存）', 'Detail unavailable (not retained by server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
-               ),
-             if (widget.store.timelineDebug && item.rawData != null)
-               Padding(
-                 padding: const EdgeInsets.only(left: 4, bottom: 8),
-                 child: SelectableText(_debugPreviewOf(item), style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
-               ),
-             _MessageActionsBar(
+            // （服务端 detail.textChars 大于当前可见正文长度）；调试模式提供原始事件入口。
+            // 两者都不再默认出现“看着像能加载更多、实际只会多出一份思维链”的按钮。
+            if (item.detailAvailable &&
+                item.seq != null &&
+                (widget.store.timelineDebug ||
+                    timelineHasTextIncrement(
+                      item.detailTextChars,
+                      item.text.length,
+                    )))
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (item.detailLoading)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    TextButton(
+                      onPressed: _api.timelineCapabilities.detail
+                          ? () => _loadEventDetail(item)
+                          : null,
+                      child: Text(
+                        widget.store.timelineDebug
+                            ? (item.rawData == null
+                                  ? L10n.t('查看原始事件', 'View raw event')
+                                  : L10n.t('重新加载原始事件', 'Reload raw event'))
+                            : (item.rawData == null
+                                  ? L10n.t('加载完整正文', 'Load full response')
+                                  : L10n.t('重新加载正文', 'Reload full response')),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (widget.store.timelineDebug &&
+                item.rawData == null &&
+                !item.detailAvailable)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 4),
+                child: Text(
+                  L10n.t(
+                    '详情不可用（旧服务端未保存）',
+                    'Detail unavailable (not retained by server)',
+                  ),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: DshColors.ink3(context),
+                  ),
+                ),
+              ),
+            if (widget.store.timelineDebug && item.rawData != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 8),
+                child: SelectableText(
+                  _debugPreviewOf(item),
+                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                ),
+              ),
+            _MessageActionsBar(
               item: item,
               onAction: (a) => _runMessageAction(item, a),
             ),
@@ -3241,40 +4101,71 @@ class _ChatScreenState extends State<ChatScreen> {
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: _ToolActivityCard(
-            key: ValueKey<String>('tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}'),
-             expandedOverride: _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'],
-             onExpandedOverride: (value) => setState(() => _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'] = value),
-             onAutoLoadDetail: () => _autoLoadFailureDetail(item),
+            key: ValueKey<String>(
+              'tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}',
+            ),
+            expandedOverride:
+                _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'],
+            onExpandedOverride: (value) => setState(
+              () =>
+                  _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'] =
+                      value,
+            ),
+            onAutoLoadDetail: () => _autoLoadFailureDetail(item),
             item: item,
             debug: widget.store.timelineDebug,
             sessionId: _mySessionId ?? '',
-            onLoadDetail: _api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+            onLoadDetail:
+                _api.timelineCapabilities.detail &&
+                    item.detailAvailable &&
+                    item.detailSeq != null
+                ? () => _loadEventDetail(item)
+                : null,
           ),
         );
       case _MsgKind.event:
         // 协议/运行时元数据在普通模式不渲染（模型里仍保留 seq 与详情指针）；
         // 调试模式完整呈现。可见性判据与模型侧共用同一实现。
         if (!timelineTypeVisibleIn(
-            widget.store.timelineDebug ? TimelineMode.debug : TimelineMode.ordinary, item.eventType ?? '')) {
+          widget.store.timelineDebug
+              ? TimelineMode.debug
+              : TimelineMode.ordinary,
+          item.eventType ?? '',
+        )) {
           return const SizedBox.shrink();
         }
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: _TimelineEventCard(
-            key: ValueKey<String>('event:${item.eventType}:${item.seq ?? item.text}'),
-             expandedOverride: _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'],
-             onExpandedOverride: (value) => setState(() => _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'] = value),
-             onAutoLoadDetail: () => _autoLoadFailureDetail(item),
+            key: ValueKey<String>(
+              'event:${item.eventType}:${item.seq ?? item.text}',
+            ),
+            expandedOverride:
+                _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'],
+            onExpandedOverride: (value) => setState(
+              () =>
+                  _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'] =
+                      value,
+            ),
+            onAutoLoadDetail: () => _autoLoadFailureDetail(item),
             item: item,
             debug: widget.store.timelineDebug,
-            onLoadDetail: _api.timelineCapabilities.detail && item.detailAvailable && item.detailSeq != null ? () => _loadEventDetail(item) : null,
+            onLoadDetail:
+                _api.timelineCapabilities.detail &&
+                    item.detailAvailable &&
+                    item.detailSeq != null
+                ? () => _loadEventDetail(item)
+                : null,
           ),
         );
       case _MsgKind.divider:
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Center(
-            child: Text(item.text, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+            child: Text(
+              item.text,
+              style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+            ),
           ),
         );
     }
@@ -3288,6 +4179,7 @@ class _MsgItem {
   final _MsgKind kind;
   final String text;
   final Map<String, dynamic>? usage;
+
   /// Anchor used for grouping/render order; tool cards may receive later result seqs.
   final int? seq;
   final int? latestSeq;
@@ -3300,6 +4192,7 @@ class _MsgItem {
   final List<Map<String, dynamic>> files;
   // 思维链正文（可折叠；assistant 消息专用，null/空 = 无思维链）
   final String? reasoning;
+
   /// v3.1.4（issue #12）：内核对 user 消息的来源标记（createUserMessage({source}).kind）——
   /// "user" = 真人发言；"plugin" / "agent-instructions" / "tool" 等 = 系统注入；
   /// null = 旧内核未下发（客户端退回启发式判断）。
@@ -3318,65 +4211,88 @@ class _MsgItem {
   final bool detailDegraded;
   final String? detailMode;
   final String? detailErrorCode;
+
   /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
   final int? detailTextChars;
-  _MsgItem.user(this.text, {this.seq, this.messageId, this.images = const [], this.files = const [], this.sourceKind, this.detailTextChars})
-      : kind = _MsgKind.user,
-        latestSeq = seq,
-        detailSeq = seq,
-        usage = null,
-        rating = null,
-        reasoning = null,
-        toolCallId = null,
-        toolName = null,
-        toolArguments = '',
-        toolResult = '',
-        toolStatus = 'complete',
-        toolError = false,
-        detailAvailable = false,
-        rawData = null,
-        eventType = null,
-        detailLoading = false,
-        detailDegraded = false,
-        detailMode = null,
-        detailErrorCode = null;
-  _MsgItem.assistant(this.text, {this.usage, this.seq, this.messageId, this.rating, this.images = const [], this.files = const [], this.reasoning, this.detailAvailable = false, this.rawData, this.detailLoading = false, this.detailDegraded = false, this.detailMode, this.detailErrorCode, this.detailTextChars})
-      : kind = _MsgKind.assistant,
-        latestSeq = seq,
-        detailSeq = seq,
-        sourceKind = null,
-        toolCallId = null,
-        toolName = null,
-        toolArguments = '',
-        toolResult = '',
-        toolStatus = 'complete',
-        toolError = false,
-        eventType = null;
+  _MsgItem.user(
+    this.text, {
+    this.seq,
+    this.messageId,
+    this.images = const [],
+    this.files = const [],
+    this.sourceKind,
+    this.detailTextChars,
+  }) : kind = _MsgKind.user,
+       latestSeq = seq,
+       detailSeq = seq,
+       usage = null,
+       rating = null,
+       reasoning = null,
+       toolCallId = null,
+       toolName = null,
+       toolArguments = '',
+       toolResult = '',
+       toolStatus = 'complete',
+       toolError = false,
+       detailAvailable = false,
+       rawData = null,
+       eventType = null,
+       detailLoading = false,
+       detailDegraded = false,
+       detailMode = null,
+       detailErrorCode = null;
+  _MsgItem.assistant(
+    this.text, {
+    this.usage,
+    this.seq,
+    this.messageId,
+    this.rating,
+    this.images = const [],
+    this.files = const [],
+    this.reasoning,
+    this.detailAvailable = false,
+    this.rawData,
+    this.detailLoading = false,
+    this.detailDegraded = false,
+    this.detailMode,
+    this.detailErrorCode,
+    this.detailTextChars,
+  }) : kind = _MsgKind.assistant,
+       latestSeq = seq,
+       detailSeq = seq,
+       sourceKind = null,
+       toolCallId = null,
+       toolName = null,
+       toolArguments = '',
+       toolResult = '',
+       toolStatus = 'complete',
+       toolError = false,
+       eventType = null;
   _MsgItem.divider(this.text, {this.seq})
-      : kind = _MsgKind.divider,
-        latestSeq = seq,
-        detailSeq = seq,
-        detailTextChars = null,
-        usage = null,
-        messageId = null,
-        rating = null,
-        images = const [],
-         files = const [],
-        reasoning = null,
-        sourceKind = null,
-        toolCallId = null,
-        toolName = null,
-        toolArguments = '',
-        toolResult = '',
-        toolStatus = 'complete',
-        toolError = false,
-        detailAvailable = false,
-        rawData = null,
-        eventType = null,
-        detailLoading = false,
-        detailDegraded = false,
-        detailMode = null,
-        detailErrorCode = null;
+    : kind = _MsgKind.divider,
+      latestSeq = seq,
+      detailSeq = seq,
+      detailTextChars = null,
+      usage = null,
+      messageId = null,
+      rating = null,
+      images = const [],
+      files = const [],
+      reasoning = null,
+      sourceKind = null,
+      toolCallId = null,
+      toolName = null,
+      toolArguments = '',
+      toolResult = '',
+      toolStatus = 'complete',
+      toolError = false,
+      detailAvailable = false,
+      rawData = null,
+      eventType = null,
+      detailLoading = false,
+      detailDegraded = false,
+      detailMode = null,
+      detailErrorCode = null;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -3387,7 +4303,7 @@ class _MsgItem {
     this.seq,
     this.latestSeq,
     this.detailSeq,
-     this.files = const [],
+    this.files = const [],
     this.images = const [],
     this.detailAvailable = false,
     this.rawData,
@@ -3396,14 +4312,14 @@ class _MsgItem {
     this.detailMode,
     this.detailErrorCode,
     this.detailTextChars,
-  })  : kind = _MsgKind.tool,
-        text = toolResult.isNotEmpty ? toolResult : toolArguments,
-        usage = null,
-        messageId = null,
-        rating = null,
-        reasoning = null,
-        sourceKind = null,
-        eventType = 'tool/activity';
+  }) : kind = _MsgKind.tool,
+       text = toolResult.isNotEmpty ? toolResult : toolArguments,
+       usage = null,
+       messageId = null,
+       rating = null,
+       reasoning = null,
+       sourceKind = null,
+       eventType = 'tool/activity';
   _MsgItem.event({
     required this.eventType,
     required this.text,
@@ -3419,39 +4335,47 @@ class _MsgItem {
     this.detailErrorCode,
     this.toolError = false,
     this.detailTextChars,
-  })  : kind = _MsgKind.event,
-        latestSeq = latestSeq ?? seq,
-        detailSeq = detailSeq ?? seq,
-        usage = null,
-        messageId = null,
-        rating = null,
-        images = const [],
-         files = const [],
-        reasoning = null,
-        sourceKind = null,
-        toolCallId = null,
-        toolName = null,
-        toolArguments = '',
-        toolResult = '',
-        toolStatus = 'complete';
+  }) : kind = _MsgKind.event,
+       latestSeq = latestSeq ?? seq,
+       detailSeq = detailSeq ?? seq,
+       usage = null,
+       messageId = null,
+       rating = null,
+       images = const [],
+       files = const [],
+       reasoning = null,
+       sourceKind = null,
+       toolCallId = null,
+       toolName = null,
+       toolArguments = '',
+       toolResult = '',
+       toolStatus = 'complete';
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
 
   _MsgItem copyWith({int? seq, String? messageId}) {
     assert(kind == _MsgKind.user, 'copyWith only supports user items');
-    return _MsgItem.user(text, seq: seq ?? this.seq, messageId: messageId ?? this.messageId, images: images, files: files, sourceKind: sourceKind, detailTextChars: detailTextChars);
+    return _MsgItem.user(
+      text,
+      seq: seq ?? this.seq,
+      messageId: messageId ?? this.messageId,
+      images: images,
+      files: files,
+      sourceKind: sourceKind,
+      detailTextChars: detailTextChars,
+    );
   }
 
   _MsgItem copyTool({
     String? name,
-     int? anchorSeq,
+    int? anchorSeq,
     String? arguments,
     String? result,
     String? status,
     bool? error,
     List<Map<String, dynamic>>? images,
-     List<Map<String, dynamic>>? files,
+    List<Map<String, dynamic>>? files,
     bool? detailAvailable,
     int? latestSeq,
 
@@ -3463,59 +4387,83 @@ class _MsgItem {
     String? detailErrorCode,
     bool clearDetailError = false,
   }) => _MsgItem.tool(
-        toolCallId: toolCallId,
-        toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
-        toolArguments: arguments ?? toolArguments,
-        toolResult: result ?? toolResult,
-        toolStatus: status ?? toolStatus,
-        toolError: error ?? toolError,
-        seq: anchorSeq ?? seq,
-        latestSeq: latestSeq ?? this.latestSeq ?? seq,
-        detailSeq: detailSeq ?? this.detailSeq ?? seq,
-        images: images ?? this.images,
-         files: files ?? this.files,
-        detailAvailable: detailAvailable ?? this.detailAvailable,
-        rawData: rawData ?? this.rawData,
-        detailLoading: detailLoading ?? this.detailLoading,
-        detailDegraded: detailDegraded ?? this.detailDegraded,
-        detailMode: detailMode ?? this.detailMode,
-        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
-        detailTextChars: detailTextChars,
-      );
+    toolCallId: toolCallId,
+    toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
+    toolArguments: arguments ?? toolArguments,
+    toolResult: result ?? toolResult,
+    toolStatus: status ?? toolStatus,
+    toolError: error ?? toolError,
+    seq: anchorSeq ?? seq,
+    latestSeq: latestSeq ?? this.latestSeq ?? seq,
+    detailSeq: detailSeq ?? this.detailSeq ?? seq,
+    images: images ?? this.images,
+    files: files ?? this.files,
+    detailAvailable: detailAvailable ?? this.detailAvailable,
+    rawData: rawData ?? this.rawData,
+    detailLoading: detailLoading ?? this.detailLoading,
+    detailDegraded: detailDegraded ?? this.detailDegraded,
+    detailMode: detailMode ?? this.detailMode,
+    detailErrorCode: clearDetailError
+        ? null
+        : (detailErrorCode ?? this.detailErrorCode),
+    detailTextChars: detailTextChars,
+  );
 
-  _MsgItem copyAssistant({String? text, List<Map<String, dynamic>>? files, Map<String, dynamic>? rawData, bool? detailAvailable, bool? detailLoading, bool? detailDegraded, String? detailMode, String? detailErrorCode, bool clearDetailError = false, int? detailTextChars}) => _MsgItem.assistant(
-        text ?? this.text,
-        usage: usage,
-        seq: seq,
-        messageId: messageId,
-        rating: rating,
-        images: images,
-        files: files ?? this.files,
-        reasoning: reasoning,
-        detailAvailable: detailAvailable ?? this.detailAvailable,
-        rawData: rawData ?? this.rawData,
-        detailLoading: detailLoading ?? this.detailLoading,
-        detailDegraded: detailDegraded ?? this.detailDegraded,
-        detailMode: detailMode ?? this.detailMode,
-        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
-        detailTextChars: detailTextChars ?? this.detailTextChars,
-      );
+  _MsgItem copyAssistant({
+    String? text,
+    List<Map<String, dynamic>>? files,
+    Map<String, dynamic>? rawData,
+    bool? detailAvailable,
+    bool? detailLoading,
+    bool? detailDegraded,
+    String? detailMode,
+    String? detailErrorCode,
+    bool clearDetailError = false,
+    int? detailTextChars,
+  }) => _MsgItem.assistant(
+    text ?? this.text,
+    usage: usage,
+    seq: seq,
+    messageId: messageId,
+    rating: rating,
+    images: images,
+    files: files ?? this.files,
+    reasoning: reasoning,
+    detailAvailable: detailAvailable ?? this.detailAvailable,
+    rawData: rawData ?? this.rawData,
+    detailLoading: detailLoading ?? this.detailLoading,
+    detailDegraded: detailDegraded ?? this.detailDegraded,
+    detailMode: detailMode ?? this.detailMode,
+    detailErrorCode: clearDetailError
+        ? null
+        : (detailErrorCode ?? this.detailErrorCode),
+    detailTextChars: detailTextChars ?? this.detailTextChars,
+  );
 
-  _MsgItem copyEvent({Map<String, dynamic>? rawData, bool? detailLoading, bool? detailDegraded, String? detailMode, String? detailErrorCode, bool clearDetailError = false}) => _MsgItem.event(
-        eventType: eventType ?? 'unknown',
-        text: text,
-        seq: seq,
-        latestSeq: latestSeq,
-        detailSeq: detailSeq,
-        rawData: rawData ?? this.rawData,
-        detailAvailable: detailAvailable,
-        detailLoading: detailLoading ?? this.detailLoading,
-        detailDegraded: detailDegraded ?? this.detailDegraded,
-        detailMode: detailMode ?? this.detailMode,
-        detailErrorCode: clearDetailError ? null : (detailErrorCode ?? this.detailErrorCode),
-        toolError: toolError,
-        detailTextChars: detailTextChars,
-      );
+  _MsgItem copyEvent({
+    Map<String, dynamic>? rawData,
+    bool? detailLoading,
+    bool? detailDegraded,
+    String? detailMode,
+    String? detailErrorCode,
+    bool clearDetailError = false,
+  }) => _MsgItem.event(
+    eventType: eventType ?? 'unknown',
+    text: text,
+    seq: seq,
+    latestSeq: latestSeq,
+    detailSeq: detailSeq,
+    rawData: rawData ?? this.rawData,
+    detailAvailable: detailAvailable,
+    detailLoading: detailLoading ?? this.detailLoading,
+    detailDegraded: detailDegraded ?? this.detailDegraded,
+    detailMode: detailMode ?? this.detailMode,
+    detailErrorCode: clearDetailError
+        ? null
+        : (detailErrorCode ?? this.detailErrorCode),
+    toolError: toolError,
+    detailTextChars: detailTextChars,
+  );
 }
 
 // ── 气泡组件 ──
@@ -3571,11 +4519,21 @@ class _InjectedBubble extends StatelessWidget {
                   Expanded(
                     child: Text(
                       '$_label · ${text.length} ${L10n.t('字', 'chars')}',
-                      style: TextStyle(fontSize: 11.5, color: ink3, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: ink3,
+                        fontWeight: FontWeight.w600,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  Icon(expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 16, color: ink3),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 16,
+                    color: ink3,
+                  ),
                 ],
               ),
             ),
@@ -3585,7 +4543,10 @@ class _InjectedBubble extends StatelessWidget {
               constraints: const BoxConstraints(maxHeight: 260),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                child: Text(text, style: TextStyle(fontSize: 12.5, height: 1.45, color: ink3)),
+                child: Text(
+                  text,
+                  style: TextStyle(fontSize: 12.5, height: 1.45, color: ink3),
+                ),
               ),
             ),
         ],
@@ -3596,12 +4557,18 @@ class _InjectedBubble extends StatelessWidget {
 
 String _detailErrorLabel(String code) {
   switch (code) {
-    case 'session-not-found': return L10n.t('会话不存在', 'Session not found');
-    case 'event-not-found': return L10n.t('事件不存在', 'Event not found');
-    case 'session-corrupt': return L10n.t('会话数据损坏', 'Session data is corrupt');
-    case 'event-detail-too-large': return L10n.t('事件详情过大', 'Event details are too large');
-    case 'event-read-failed': return L10n.t('事件详情读取失败', 'Could not read event details');
-    default: return L10n.t('详情暂时不可用', 'Details are temporarily unavailable');
+    case 'session-not-found':
+      return L10n.t('会话不存在', 'Session not found');
+    case 'event-not-found':
+      return L10n.t('事件不存在', 'Event not found');
+    case 'session-corrupt':
+      return L10n.t('会话数据损坏', 'Session data is corrupt');
+    case 'event-detail-too-large':
+      return L10n.t('事件详情过大', 'Event details are too large');
+    case 'event-read-failed':
+      return L10n.t('事件详情读取失败', 'Could not read event details');
+    default:
+      return L10n.t('详情暂时不可用', 'Details are temporarily unavailable');
   }
 }
 
@@ -3613,7 +4580,16 @@ class _ToolActivityCard extends StatefulWidget {
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
   final VoidCallback? onAutoLoadDetail;
-  const _ToolActivityCard({super.key, required this.item, required this.debug, required this.sessionId, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail, this.onAutoLoadDetail});
+  const _ToolActivityCard({
+    super.key,
+    required this.item,
+    required this.debug,
+    required this.sessionId,
+    this.expandedOverride,
+    this.onExpandedOverride,
+    this.onLoadDetail,
+    this.onAutoLoadDetail,
+  });
 
   @override
   State<_ToolActivityCard> createState() => _ToolActivityCardState();
@@ -3624,11 +4600,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool requested = false;
   bool userOverride = false;
 
-  bool get _failed => widget.item.toolError || widget.item.toolStatus == 'failed';
+  bool get _failed =>
+      widget.item.toolError || widget.item.toolStatus == 'failed';
   bool get _defaultExpanded => widget.debug && _failed;
 
   void _requestDetailIfNeeded() {
-    if (expanded && !requested && widget.item.detailSeq != null && widget.onAutoLoadDetail != null && !widget.item.detailLoading) {
+    if (expanded &&
+        !requested &&
+        widget.item.detailSeq != null &&
+        widget.onAutoLoadDetail != null &&
+        !widget.item.detailLoading) {
       requested = true;
       widget.onAutoLoadDetail!();
     }
@@ -3649,9 +4630,12 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     super.didUpdateWidget(oldWidget);
     final override = widget.expandedOverride;
     userOverride = override != null;
-    if (!userOverride && (_failed || oldWidget.debug != widget.debug)) expanded = _defaultExpanded;
+    if (!userOverride && (_failed || oldWidget.debug != widget.debug))
+      expanded = _defaultExpanded;
     if (override != null && override != expanded) expanded = override;
-    if (oldWidget.item.toolCallId != widget.item.toolCallId || oldWidget.item.detailSeq != widget.item.detailSeq || oldWidget.debug != widget.debug) {
+    if (oldWidget.item.toolCallId != widget.item.toolCallId ||
+        oldWidget.item.detailSeq != widget.item.detailSeq ||
+        oldWidget.debug != widget.debug) {
       requested = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _requestDetailIfNeeded();
@@ -3671,7 +4655,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
 
   String _status() {
     if (widget.item.detailLoading) return L10n.t('加载详情…', 'Loading details…');
-    if (widget.item.toolStatus == 'failed' || widget.item.toolError) return L10n.t('失败', 'Failed');
+    if (widget.item.toolStatus == 'failed' || widget.item.toolError)
+      return L10n.t('失败', 'Failed');
     if (widget.item.toolStatus == 'success') return L10n.t('成功', 'Succeeded');
     return L10n.t('进行中', 'Running');
   }
@@ -3691,37 +4676,64 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     return _prettyCache;
   }
 
-  bool _looksMarkdown(String value) => value.contains('```') ||
-       RegExp(r'(^|\n)\s{0,3}(#{1,6} |[-*] |\d+\. )').hasMatch(value) ||
-       value.contains('**') || value.contains('`');
+  bool _looksMarkdown(String value) =>
+      value.contains('```') ||
+      RegExp(r'(^|\n)\s{0,3}(#{1,6} |[-*] |\d+\. )').hasMatch(value) ||
+      value.contains('**') ||
+      value.contains('`');
 
-   Widget _markdownResult(String value) => Padding(
-         padding: const EdgeInsets.only(top: 8),
-         child: Container(
-           width: double.infinity,
-           padding: const EdgeInsets.all(8),
-           decoration: BoxDecoration(color: DshColors.surface(context), borderRadius: BorderRadius.circular(6)),
-           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: renderMarkdownBlocks(value, context)),
-         ),
-       );
+  Widget _markdownResult(String value) => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: renderMarkdownBlocks(value, context),
+      ),
+    ),
+  );
 
-   Widget _code(String label, String value) => Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: DshColors.ink3(context))),
-            const SizedBox(height: 3),
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(maxHeight: 260),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(color: DshColors.surface(context), borderRadius: BorderRadius.circular(6)),
-              child: SingleChildScrollView(child: SelectableText(value, style: const TextStyle(fontSize: 11, height: 1.35, fontFamily: 'monospace'))),
-            ),
-          ],
+  Widget _code(String label, String value) => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: DshColors.ink3(context),
+          ),
         ),
-      );
+        const SizedBox(height: 3),
+        Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(maxHeight: 260),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: DshColors.surface(context),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              value,
+              style: const TextStyle(
+                fontSize: 11,
+                height: 1.35,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -3731,7 +4743,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     // 因此这里读不到就不显示，不做任何猜测重建。
     final raw = item.rawData;
     final rawData = raw?['data'] is Map ? raw!['data'] as Map : const {};
-    final schema = raw?['toolSchema'] ??
+    final schema =
+        raw?['toolSchema'] ??
         raw?['schema'] ??
         raw?['inputSchema'] ??
         rawData['toolSchema'] ??
@@ -3743,7 +4756,11 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
       decoration: BoxDecoration(
         color: DshColors.surface(context),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: item.toolError ? Colors.redAccent.withValues(alpha: .5) : DshColors.line(context)),
+        border: Border.all(
+          color: item.toolError
+              ? Colors.redAccent.withValues(alpha: .5)
+              : DshColors.line(context),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3754,14 +4771,39 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
-                  Icon(item.toolError ? Icons.error_outline : Icons.build_outlined, size: 16, color: accent),
+                  Icon(
+                    item.toolError ? Icons.error_outline : Icons.build_outlined,
+                    size: 16,
+                    color: accent,
+                  ),
                   const SizedBox(width: 7),
                   Expanded(
-                    child: Text(item.toolName ?? L10n.t('工具', 'Tool'), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                    child: Text(
+                      item.toolName ?? L10n.t('工具', 'Tool'),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  Text(_status(), style: TextStyle(fontSize: 11, color: item.toolError ? Colors.redAccent : DshColors.ink3(context))),
+                  Text(
+                    _status(),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: item.toolError
+                          ? Colors.redAccent
+                          : DshColors.ink3(context),
+                    ),
+                  ),
                   const SizedBox(width: 4),
-                  Icon(expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 18, color: DshColors.ink3(context)),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 18,
+                    color: DshColors.ink3(context),
+                  ),
                 ],
               ),
             ),
@@ -3772,40 +4814,86 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (item.toolCallId != null) Text('callId: ${item.toolCallId}', style: TextStyle(fontSize: 10, color: DshColors.ink3(context))),
-                  if (item.toolArguments.isNotEmpty) _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                  if (item.toolCallId != null)
+                    Text(
+                      'callId: ${item.toolCallId}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: DshColors.ink3(context),
+                      ),
+                    ),
+                  if (item.toolArguments.isNotEmpty)
+                    _code(L10n.t('参数', 'Arguments'), item.toolArguments),
                   if (item.toolResult.isNotEmpty)
-                     _looksMarkdown(item.toolResult) && !widget.debug
-                         ? _markdownResult(item.toolResult)
-                         : _code(L10n.t('结果', 'Result'), item.toolResult),
-                  if (item.images.isNotEmpty) Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: _ImagesGrid(images: item.images, sessionId: widget.sessionId),
-                   ),
-                  // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
-                  if (item.detailLoading) const Padding(
-                    padding: EdgeInsets.only(top: 8),
-                    child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
-                  ),
-                  if (item.detailDegraded)
-                     Padding(
-                       padding: const EdgeInsets.only(top: 8),
-                       child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
-                     ),
-                   if (item.detailErrorCode != null)
-                     Padding(
-                       padding: const EdgeInsets.only(top: 8),
-                       child: Text(_detailErrorLabel(item.detailErrorCode!), style: TextStyle(fontSize: 11, color: Colors.redAccent)),
-                     ),
-                   if (!item.detailAvailable && item.rawData == null)
+                    _looksMarkdown(item.toolResult) && !widget.debug
+                        ? _markdownResult(item.toolResult)
+                        : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  if (item.images.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text(L10n.t('详情不可用（旧服务端未保存）', 'Details unavailable (not retained by the server)'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
+                      child: _ImagesGrid(
+                        images: item.images,
+                        sessionId: widget.sessionId,
+                      ),
                     ),
-                  if (item.detailErrorCode != null && widget.onLoadDetail != null)
-                    TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
-                  if (widget.debug && schema != null) _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
-                   if (widget.debug && item.rawData != null) _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
+                  // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
+                  if (item.detailLoading)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    ),
+                  if (item.detailDegraded)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        L10n.t(
+                          '详情来自当前界面，可能不完整',
+                          'Details came from the current surface and may be incomplete',
+                        ),
+                        style: TextStyle(fontSize: 11, color: Colors.orange),
+                      ),
+                    ),
+                  if (item.detailErrorCode != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        _detailErrorLabel(item.detailErrorCode!),
+                        style: TextStyle(fontSize: 11, color: Colors.redAccent),
+                      ),
+                    ),
+                  if (!item.detailAvailable && item.rawData == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        L10n.t(
+                          '详情不可用（旧服务端未保存）',
+                          'Details unavailable (not retained by the server)',
+                        ),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: DshColors.ink3(context),
+                        ),
+                      ),
+                    ),
+                  if (item.detailErrorCode != null &&
+                      widget.onLoadDetail != null)
+                    TextButton(
+                      onPressed: () {
+                        requested = false;
+                        widget.onLoadDetail!();
+                      },
+                      child: Text(L10n.t('重试', 'Retry')),
+                    ),
+                  if (widget.debug && schema != null)
+                    _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
+                  if (widget.debug && item.rawData != null)
+                    _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
                 ],
               ),
             ),
@@ -3822,7 +4910,15 @@ class _TimelineEventCard extends StatefulWidget {
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
   final VoidCallback? onAutoLoadDetail;
-  const _TimelineEventCard({super.key, required this.item, required this.debug, this.expandedOverride, this.onExpandedOverride, this.onLoadDetail, this.onAutoLoadDetail});
+  const _TimelineEventCard({
+    super.key,
+    required this.item,
+    required this.debug,
+    this.expandedOverride,
+    this.onExpandedOverride,
+    this.onLoadDetail,
+    this.onAutoLoadDetail,
+  });
 
   @override
   State<_TimelineEventCard> createState() => _TimelineEventCardState();
@@ -3854,7 +4950,10 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
     expanded = widget.expandedOverride ?? _defaultExpanded;
     userOverride = widget.expandedOverride != null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && expanded && !requested && widget.onAutoLoadDetail != null) {
+      if (mounted &&
+          expanded &&
+          !requested &&
+          widget.onAutoLoadDetail != null) {
         requested = true;
         widget.onAutoLoadDetail!();
       }
@@ -3866,12 +4965,18 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
     super.didUpdateWidget(oldWidget);
     final override = widget.expandedOverride;
     userOverride = override != null;
-    if (!userOverride && (oldWidget.debug != widget.debug || widget.item.toolError)) expanded = _defaultExpanded;
+    if (!userOverride &&
+        (oldWidget.debug != widget.debug || widget.item.toolError))
+      expanded = _defaultExpanded;
     if (override != null && override != expanded) expanded = override;
-    if (oldWidget.item.seq != widget.item.seq || oldWidget.debug != widget.debug) {
+    if (oldWidget.item.seq != widget.item.seq ||
+        oldWidget.debug != widget.debug) {
       requested = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && expanded && widget.onAutoLoadDetail != null && !widget.item.detailLoading) {
+        if (mounted &&
+            expanded &&
+            widget.onAutoLoadDetail != null &&
+            !widget.item.detailLoading) {
           requested = true;
           widget.onAutoLoadDetail!();
         }
@@ -3897,7 +5002,11 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
       decoration: BoxDecoration(
         color: DshColors.surface(context),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: item.toolError ? Colors.redAccent.withValues(alpha: .5) : DshColors.line(context)),
+        border: Border.all(
+          color: item.toolError
+              ? Colors.redAccent.withValues(alpha: .5)
+              : DshColors.line(context),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3908,12 +5017,38 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
-                  Icon(item.toolError ? Icons.error_outline : Icons.bolt_outlined, size: 15, color: DshColors.ink3(context)),
+                  Icon(
+                    item.toolError ? Icons.error_outline : Icons.bolt_outlined,
+                    size: 15,
+                    color: DshColors.ink3(context),
+                  ),
                   const SizedBox(width: 7),
-                  Expanded(child: Text(item.text.split('\n').first, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
-                  if (item.seq != null) Text('#${item.seq}', style: TextStyle(fontSize: 10, color: DshColors.ink3(context))),
+                  Expanded(
+                    child: Text(
+                      item.text.split('\n').first,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (item.seq != null)
+                    Text(
+                      '#${item.seq}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: DshColors.ink3(context),
+                      ),
+                    ),
                   const SizedBox(width: 4),
-                  Icon(expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, size: 17, color: DshColors.ink3(context)),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 17,
+                    color: DshColors.ink3(context),
+                  ),
                 ],
               ),
             ),
@@ -3924,22 +5059,75 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (item.text.contains('\n')) Padding(padding: const EdgeInsets.only(top: 6), child: Text(item.text.substring(item.text.indexOf('\n') + 1), style: const TextStyle(fontSize: 12, height: 1.4))),
-                  if (item.detailLoading) const Padding(padding: EdgeInsets.only(top: 8), child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))),
+                  if (item.text.contains('\n'))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        item.text.substring(item.text.indexOf('\n') + 1),
+                        style: const TextStyle(fontSize: 12, height: 1.4),
+                      ),
+                    ),
+                  if (item.detailLoading)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    ),
                   if (item.detailDegraded)
-                     Padding(
-                       padding: const EdgeInsets.only(top: 8),
-                       child: Text(L10n.t('详情来自当前界面，可能不完整', 'Details came from the current surface and may be incomplete'), style: TextStyle(fontSize: 11, color: Colors.orange)),
-                     ),
-                   if (item.detailErrorCode != null)
-                     Padding(
-                       padding: const EdgeInsets.only(top: 8),
-                       child: Text(_detailErrorLabel(item.detailErrorCode!), style: TextStyle(fontSize: 11, color: Colors.redAccent)),
-                     ),
-                   if (!item.detailAvailable && item.rawData == null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(L10n.t('详情不可用', 'Details unavailable'), style: TextStyle(fontSize: 11, color: DshColors.ink3(context)))),
-                  if (item.detailErrorCode != null && widget.onLoadDetail != null)
-                    TextButton(onPressed: () { requested = false; widget.onLoadDetail!(); }, child: Text(L10n.t('重试', 'Retry'))),
-                  if (widget.debug && item.rawData != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(_rawPreview, style: const TextStyle(fontSize: 11, fontFamily: 'monospace'))),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        L10n.t(
+                          '详情来自当前界面，可能不完整',
+                          'Details came from the current surface and may be incomplete',
+                        ),
+                        style: TextStyle(fontSize: 11, color: Colors.orange),
+                      ),
+                    ),
+                  if (item.detailErrorCode != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        _detailErrorLabel(item.detailErrorCode!),
+                        style: TextStyle(fontSize: 11, color: Colors.redAccent),
+                      ),
+                    ),
+                  if (!item.detailAvailable && item.rawData == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        L10n.t('详情不可用', 'Details unavailable'),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: DshColors.ink3(context),
+                        ),
+                      ),
+                    ),
+                  if (item.detailErrorCode != null &&
+                      widget.onLoadDetail != null)
+                    TextButton(
+                      onPressed: () {
+                        requested = false;
+                        widget.onLoadDetail!();
+                      },
+                      child: Text(L10n.t('重试', 'Retry')),
+                    ),
+                  if (widget.debug && item.rawData != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: SelectableText(
+                        _rawPreview,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -4005,7 +5193,11 @@ class _TodoPanel extends StatelessWidget {
                   const SizedBox(width: 5),
                   Text(
                     L10n.t('任务', 'Tasks'),
-                    style: TextStyle(fontSize: 11.5, color: ink3, fontWeight: FontWeight.w600),
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: ink3,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(width: 6),
                   Flexible(
@@ -4016,7 +5208,13 @@ class _TodoPanel extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 3),
-                  Icon(collapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up, size: 15, color: ink3),
+                  Icon(
+                    collapsed
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_up,
+                    size: 15,
+                    color: ink3,
+                  ),
                 ],
               ),
             ),
@@ -4040,7 +5238,9 @@ class _TodoPanel extends StatelessWidget {
                               child: Icon(
                                 _statusIcon(todo['status']),
                                 size: 13,
-                                color: todo['status'] == 'completed' ? ink3 : brand,
+                                color: todo['status'] == 'completed'
+                                    ? ink3
+                                    : brand,
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -4050,7 +5250,9 @@ class _TodoPanel extends StatelessWidget {
                                 style: TextStyle(
                                   fontSize: 12,
                                   height: 1.35,
-                                  color: todo['status'] == 'completed' ? ink3 : ink2,
+                                  color: todo['status'] == 'completed'
+                                      ? ink3
+                                      : ink2,
                                 ),
                               ),
                             ),
@@ -4111,10 +5313,15 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
     final cacheKey = '${widget.text}\u0000${Theme.of(context).brightness}';
     if (cacheKey != _parsedFor) {
       _parsedFor = cacheKey;
-      _blocks = renderMarkdownBlocks(widget.text.isEmpty ? '…' : widget.text, context);
+      _blocks = renderMarkdownBlocks(
+        widget.text.isEmpty ? '…' : widget.text,
+        context,
+      );
       if (_parseLogs < 3) {
         _parseLogs++;
-        AppLog.instance.log('Chat: bubble 解析 len=${widget.text.length} blocks=${_blocks!.length}');
+        AppLog.instance.log(
+          'Chat: bubble 解析 len=${widget.text.length} blocks=${_blocks!.length}',
+        );
       }
     }
     final ink3 = DshColors.ink3(context);
@@ -4130,11 +5337,21 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
           children: [
             Row(
               children: [
-                Text('✦ Agent',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: DshColors.ink2(context))),
+                Text(
+                  '✦ Agent',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: DshColors.ink2(context),
+                  ),
+                ),
                 const SizedBox(width: 7),
                 if (widget.streaming)
-                  const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
               ],
             ),
             const SizedBox(height: 3),
@@ -4146,7 +5363,8 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
               _ImagesGrid(images: widget.images, sessionId: widget.sessionId),
             ],
             if (widget.usage != null &&
-                ((widget.usage!['inputTokens'] as num? ?? 0) > 0 || (widget.usage!['outputTokens'] as num? ?? 0) > 0))
+                ((widget.usage!['inputTokens'] as num? ?? 0) > 0 ||
+                    (widget.usage!['outputTokens'] as num? ?? 0) > 0))
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
@@ -4191,13 +5409,22 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      L10n.t('思维链 ${reasoning.length} 字', 'Thinking chain · ${reasoning.length} chars'),
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: ink2),
+                      L10n.t(
+                        '思维链 ${reasoning.length} 字',
+                        'Thinking chain · ${reasoning.length} chars',
+                      ),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: ink2,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Icon(
-                    expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
                     size: 16,
                     color: ink3,
                   ),
@@ -4210,7 +5437,12 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
               child: SelectableText(
                 reasoning,
-                style: TextStyle(fontSize: 12, height: 1.6, color: ink3, fontStyle: FontStyle.italic),
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.6,
+                  color: ink3,
+                  fontStyle: FontStyle.italic,
+                ),
               ),
             ),
         ],
@@ -4255,11 +5487,9 @@ class _FileResults extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (final file in files) _FileResultTile(file: file),
-        ],
-      );
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [for (final file in files) _FileResultTile(file: file)],
+  );
 }
 
 class _FileResultTile extends StatelessWidget {
@@ -4270,7 +5500,8 @@ class _FileResultTile extends StatelessWidget {
     final name = file['name']?.toString();
     if (name != null && name.isNotEmpty) return name;
     final path = file['path']?.toString();
-    if (path != null && path.isNotEmpty) return path.split(RegExp(r'[/\\]')).last;
+    if (path != null && path.isNotEmpty)
+      return path.split(RegExp(r'[/\\]')).last;
     return L10n.t('附件', 'Attachment');
   }
 
@@ -4296,14 +5527,26 @@ class _FileResultTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  Text(
+                    _label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   if (mediaType != null || size != null)
                     Text(
                       [
-                        if (mediaType != null && mediaType.isNotEmpty) mediaType,
+                        if (mediaType != null && mediaType.isNotEmpty)
+                          mediaType,
                         if (size != null) '${(size / 1024).ceil()} KB',
                       ].join(' · '),
-                      style: TextStyle(fontSize: 10, color: DshColors.ink3(context)),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: DshColors.ink3(context),
+                      ),
                     ),
                 ],
               ),
@@ -4383,13 +5626,21 @@ class _MsgImageState extends State<_MsgImage> {
     }
     try {
       final bytes = await api.attachmentBytes(sessionId, id);
-      if (!mounted || token != _loadToken || sessionId != widget.sessionId || id != _attachmentId) return;
+      if (!mounted ||
+          token != _loadToken ||
+          sessionId != widget.sessionId ||
+          id != _attachmentId)
+        return;
       setState(() {
         _bytes = bytes;
         _loading = false;
       });
     } catch (_) {
-      if (!mounted || token != _loadToken || sessionId != widget.sessionId || id != _attachmentId) return;
+      if (!mounted ||
+          token != _loadToken ||
+          sessionId != widget.sessionId ||
+          id != _attachmentId)
+        return;
       setState(() => _loading = false);
     }
   }
@@ -4400,10 +5651,16 @@ class _MsgImageState extends State<_MsgImage> {
     try {
       final dir = await _appSaveDirectory();
       final media = widget.image['mediaType']?.toString() ?? 'image/jpeg';
-      final ext = media.split('/').last.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '');
-      final target = File('${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}');
+      final ext = media
+          .split('/')
+          .last
+          .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '');
+      final target = File(
+        '${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}',
+      );
       await target.writeAsBytes(b, flush: true);
-      if (mounted) showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
+      if (mounted)
+        showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
     }
@@ -4422,7 +5679,11 @@ class _MsgImageState extends State<_MsgImage> {
             InteractiveViewer(
               minScale: 0.5,
               maxScale: 4,
-              child: Image.memory(b, fit: BoxFit.contain, width: double.infinity),
+              child: Image.memory(
+                b,
+                fit: BoxFit.contain,
+                width: double.infinity,
+              ),
             ),
             Positioned(
               top: 8,
@@ -4433,7 +5694,10 @@ class _MsgImageState extends State<_MsgImage> {
                   IconButton(
                     onPressed: _saveImage,
                     tooltip: L10n.t('保存图片', 'Save image'),
-                    icon: const Icon(Icons.download_outlined, color: Colors.white),
+                    icon: const Icon(
+                      Icons.download_outlined,
+                      color: Colors.white,
+                    ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(ctx).pop(),
@@ -4461,8 +5725,10 @@ class _MsgImageState extends State<_MsgImage> {
     // v3.0.0(版本二)：GIF 动图 Flutter 原生支持（MultiFrameImageStreamCompleter 逐帧播放），
     // 无需第三方包；超大 GIF（长边>4096 或 >16MB）解码耗 CPU/首帧慢，加"GIF·原图较大"角标提醒
     final isGif = widget.image['mediaType'] == 'image/gif';
-    final bigGif = isGif &&
-        ((w > 0 && h > 0 && (w > 4096 || h > 4096)) || (_bytes?.length ?? 0) > 16 * 1024 * 1024);
+    final bigGif =
+        isGif &&
+        ((w > 0 && h > 0 && (w > 4096 || h > 4096)) ||
+            (_bytes?.length ?? 0) > 16 * 1024 * 1024);
     return GestureDetector(
       onTap: _bytes != null ? _openFull : null,
       child: ClipRRect(
@@ -4472,44 +5738,72 @@ class _MsgImageState extends State<_MsgImage> {
           height: boxH,
           color: line,
           child: _loading
-              ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+              ? const Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
               : _bytes != null
-                  ? Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        // v3.1.6（app-audit ①4）：按卡片显示宽度（236 逻辑像素）2x 解码，
-                        // 避免每条附图都按原始分辨率（12MP≈48MB）解码。
-                        Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true, cacheWidth: 480),
-                        if (bigGif)
-                          Positioned(
-                            right: 4,
-                            bottom: 4,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.55),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(L10n.t('GIF·原图较大', 'GIF · large file'),
-                                  style: const TextStyle(fontSize: 9.5, color: Colors.white)),
+              ? Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // v3.1.6（app-audit ①4）：按卡片显示宽度（236 逻辑像素）2x 解码，
+                    // 避免每条附图都按原始分辨率（12MP≈48MB）解码。
+                    Image.memory(
+                      _bytes!,
+                      fit: BoxFit.contain,
+                      gaplessPlayback: true,
+                      cacheWidth: 480,
+                    ),
+                    if (bigGif)
+                      Positioned(
+                        right: 4,
+                        bottom: 4,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            L10n.t('GIF·原图较大', 'GIF · large file'),
+                            style: const TextStyle(
+                              fontSize: 9.5,
+                              color: Colors.white,
                             ),
                           ),
-                      ],
-                    )
-                  : InkWell(
-                      onTap: _load,
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.broken_image_outlined, size: 24, color: DshColors.ink3(context)),
-                            const SizedBox(height: 4),
-                            Text(L10n.t('加载失败，点按重试', 'Failed to load — tap to retry'),
-                                style: TextStyle(fontSize: 10.5, color: DshColors.ink3(context))),
-                          ],
                         ),
                       ),
+                  ],
+                )
+              : InkWell(
+                  onTap: _load,
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.broken_image_outlined,
+                          size: 24,
+                          color: DshColors.ink3(context),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          L10n.t('加载失败，点按重试', 'Failed to load — tap to retry'),
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: DshColors.ink3(context),
+                          ),
+                        ),
+                      ],
                     ),
+                  ),
+                ),
         ),
       ),
     );
@@ -4541,7 +5835,10 @@ class _MessageActionsBar extends StatelessWidget {
             icon: Icons.thumb_up_alt_outlined,
             active: rating == 'positive',
             tooltip: rating == 'positive'
-                ? L10n.t('好的回答（已选，点此取消）', 'Good answer (selected, tap to clear)')
+                ? L10n.t(
+                    '好的回答（已选，点此取消）',
+                    'Good answer (selected, tap to clear)',
+                  )
                 : L10n.t('好的回答', 'Good answer'),
             onTap: () => onAction('positive'),
           ),
@@ -4549,7 +5846,10 @@ class _MessageActionsBar extends StatelessWidget {
             icon: Icons.thumb_down_alt_outlined,
             active: rating == 'negative',
             tooltip: rating == 'negative'
-                ? L10n.t('有问题的回答（已选，点此取消）', 'Bad answer (selected, tap to clear)')
+                ? L10n.t(
+                    '有问题的回答（已选，点此取消）',
+                    'Bad answer (selected, tap to clear)',
+                  )
                 : L10n.t('有问题的回答', 'Bad answer'),
             onTap: () => onAction('negative'),
           ),
@@ -4570,7 +5870,12 @@ class _ActionIcon extends StatelessWidget {
   final VoidCallback onTap;
   // v2.8.0：选中态（对齐 PC 端 data-active）= 品牌蓝图标 + 浅蓝圆底
   final bool active;
-  const _ActionIcon({required this.icon, required this.tooltip, required this.onTap, this.active = false});
+  const _ActionIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.active = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -4588,7 +5893,11 @@ class _ActionIcon extends StatelessWidget {
             color: active ? brandSoft : Colors.transparent,
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, size: 15, color: active ? brand : DshColors.ink3(context)),
+          child: Icon(
+            icon,
+            size: 15,
+            color: active ? brand : DshColors.ink3(context),
+          ),
         ),
       ),
     );
@@ -4623,17 +5932,25 @@ class _ActivityBar extends StatelessWidget {
     final toolLabel = tools.isEmpty
         ? ''
         : (tools.length > 1
-            ? L10n.t('正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）',
-                'Running ${tools.length} tools (${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''})')
-            : '${L10n.t('正在调用 ', 'Calling ')}${tools.first}…');
+              ? L10n.t(
+                  '正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）',
+                  'Running ${tools.length} tools (${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''})',
+                )
+              : '${L10n.t('正在调用 ', 'Calling ')}${tools.first}…');
     final thinking = !textStreaming;
     final header = expanded
         ? (thinking
-            ? L10n.t('思考中，点此收起', 'Thinking — tap to collapse')
-            : L10n.t('思考内容，点此收起', 'Thinking content — tap to collapse'))
+              ? L10n.t('思考中，点此收起', 'Thinking — tap to collapse')
+              : L10n.t('思考内容，点此收起', 'Thinking content — tap to collapse'))
         : (thinking
-            ? L10n.t('思考中…（${reasoning.length} 字）', 'Thinking… (${reasoning.length} chars)')
-            : L10n.t('已思考 ${reasoning.length} 字', 'Thought: ${reasoning.length} chars'));
+              ? L10n.t(
+                  '思考中…（${reasoning.length} 字）',
+                  'Thinking… (${reasoning.length} chars)',
+                )
+              : L10n.t(
+                  '已思考 ${reasoning.length} 字',
+                  'Thought: ${reasoning.length} chars',
+                ));
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
@@ -4660,12 +5977,20 @@ class _ActivityBar extends StatelessWidget {
                     Expanded(
                       child: Text(
                         header,
-                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: ink2,
+                        ),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     if (showContent)
-                      Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 16, color: ink3),
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 16,
+                        color: ink3,
+                      ),
                   ],
                 ),
               ),
@@ -4676,7 +6001,12 @@ class _ActivityBar extends StatelessWidget {
               child: SingleChildScrollView(
                 child: SelectableText(
                   reasoning,
-                  style: TextStyle(fontSize: 12, height: 1.55, color: ink3, fontStyle: FontStyle.italic),
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.55,
+                    color: ink3,
+                    fontStyle: FontStyle.italic,
+                  ),
                 ),
               ),
             ),
@@ -4688,7 +6018,11 @@ class _ActivityBar extends StatelessWidget {
                   Icon(Icons.handyman_outlined, size: 15, color: ink2),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(toolLabel, style: TextStyle(fontSize: 12.5, color: ink2), overflow: TextOverflow.ellipsis),
+                    child: Text(
+                      toolLabel,
+                      style: TextStyle(fontSize: 12.5, color: ink2),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
@@ -4706,7 +6040,11 @@ class _JobCard extends StatefulWidget {
   final List<Map<String, dynamic>> jobs;
   final VoidCallback onOpen;
   final void Function(String jobId) onKill;
-  const _JobCard({required this.jobs, required this.onOpen, required this.onKill});
+  const _JobCard({
+    required this.jobs,
+    required this.onOpen,
+    required this.onKill,
+  });
 
   @override
   State<_JobCard> createState() => _JobCardState();
@@ -4722,7 +6060,9 @@ class _JobCardState extends State<_JobCard> {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final surface = DshColors.surface(context);
-    final running = widget.jobs.where((j) => j['status'] == 'running' || j['status'] == 'stopping').toList();
+    final running = widget.jobs
+        .where((j) => j['status'] == 'running' || j['status'] == 'stopping')
+        .toList();
     final extra = running.length - 1;
     return Container(
       width: double.infinity,
@@ -4749,13 +6089,25 @@ class _JobCardState extends State<_JobCard> {
                   Expanded(
                     child: Text(
                       running.length > 1
-                          ? L10n.t('后台任务 ${running.length} 个进行中', '${running.length} background tasks running')
+                          ? L10n.t(
+                              '后台任务 ${running.length} 个进行中',
+                              '${running.length} background tasks running',
+                            )
                           : L10n.t('后台任务进行中', 'Background task running'),
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: ink2),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: ink2,
+                      ),
                     ),
                   ),
-                  Icon(_expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                      size: 16, color: ink3),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 16,
+                    color: ink3,
+                  ),
                 ],
               ),
             ),
@@ -4770,13 +6122,18 @@ class _JobCardState extends State<_JobCard> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        (j['label'] as String? ?? j['id'] as String? ?? L10n.t('任务', 'Task')).toString(),
+                        (j['label'] as String? ??
+                                j['id'] as String? ??
+                                L10n.t('任务', 'Task'))
+                            .toString(),
                         style: const TextStyle(fontSize: 11.5),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     TextButton(
-                      onPressed: j['status'] == 'stopping' ? null : () => widget.onKill(j['id'] as String? ?? ''),
+                      onPressed: j['status'] == 'stopping'
+                          ? null
+                          : () => widget.onKill(j['id'] as String? ?? ''),
                       style: TextButton.styleFrom(
                         minimumSize: const Size(0, 24),
                         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -4786,7 +6143,12 @@ class _JobCardState extends State<_JobCard> {
                         j['status'] == 'stopping'
                             ? L10n.t('停止中', 'Stopping')
                             : L10n.t('取消', 'Cancel'),
-                        style: TextStyle(fontSize: 11, color: j['status'] == 'stopping' ? ink3 : DshColors.danger(context)),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: j['status'] == 'stopping'
+                              ? ink3
+                              : DshColors.danger(context),
+                        ),
                       ),
                     ),
                   ],
@@ -4848,7 +6210,10 @@ class _OlderButton extends StatelessWidget {
             : TextButton.icon(
                 onPressed: onTap,
                 icon: const Icon(Icons.history, size: 16),
-                label: Text(L10n.t('查看更早的消息', 'View earlier messages'), style: TextStyle(fontSize: 12.5)),
+                label: Text(
+                  L10n.t('查看更早的消息', 'View earlier messages'),
+                  style: TextStyle(fontSize: 12.5),
+                ),
               ),
       ),
     );
@@ -4865,7 +6230,9 @@ class _JumpToLatestButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? Colors.white.withValues(alpha: 0.10) : Colors.white.withValues(alpha: 0.88);
+    final bg = isDark
+        ? Colors.white.withValues(alpha: 0.10)
+        : Colors.white.withValues(alpha: 0.88);
     return AnimatedOpacity(
       opacity: visible ? 1 : 0,
       duration: const Duration(milliseconds: 160),
@@ -4873,7 +6240,9 @@ class _JumpToLatestButton extends StatelessWidget {
         ignoring: !visible,
         child: Material(
           color: bg,
-          shape: CircleBorder(side: BorderSide(color: DshColors.line(context), width: 0.8)),
+          shape: CircleBorder(
+            side: BorderSide(color: DshColors.line(context), width: 0.8),
+          ),
           elevation: 2,
           shadowColor: Colors.black26,
           child: InkWell(
@@ -4882,7 +6251,11 @@ class _JumpToLatestButton extends StatelessWidget {
             child: SizedBox(
               width: 38,
               height: 38,
-              child: Icon(Icons.keyboard_arrow_down, size: 24, color: DshColors.ink2(context)),
+              child: Icon(
+                Icons.keyboard_arrow_down,
+                size: 24,
+                color: DshColors.ink2(context),
+              ),
             ),
           ),
         ),
@@ -4901,8 +6274,8 @@ class _ContextRing extends StatelessWidget {
     final color = ratio < 0.7
         ? DshColors.ok(context)
         : ratio < 0.9
-            ? DshColors.warn(context)
-            : DshColors.danger(context);
+        ? DshColors.warn(context)
+        : DshColors.danger(context);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -4919,7 +6292,11 @@ class _ContextRing extends StatelessWidget {
         const SizedBox(width: 4),
         Text(
           '${(ratio * 100).round()}%',
-          style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 10,
+            color: color,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ],
     );
@@ -4939,13 +6316,20 @@ class _Pill extends StatelessWidget {
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-        decoration: BoxDecoration(color: line, borderRadius: BorderRadius.circular(999)),
+        decoration: BoxDecoration(
+          color: line,
+          borderRadius: BorderRadius.circular(999),
+        ),
         // v2.8.0 review(P1-2)：单行 + 省略号，避免长模型名撑爆胶囊行（旧 ListView 可滚、Row 不可）
         child: Text(
           label,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: ink2),
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: ink2,
+          ),
         ),
       ),
     );
@@ -4987,7 +6371,12 @@ class _QuestionCard extends StatefulWidget {
   final VoidCallback onCancel;
   final Future<void> Function(List<Map<String, dynamic>> answers) onSubmitted;
   // v3.1.6（app-audit ①5）：支持 key——聊天页按 rpcId 传 ValueKey，换问询时强制新建 State
-  const _QuestionCard({super.key, required this.request, required this.onCancel, required this.onSubmitted});
+  const _QuestionCard({
+    super.key,
+    required this.request,
+    required this.onCancel,
+    required this.onSubmitted,
+  });
 
   @override
   State<_QuestionCard> createState() => _QuestionCardState();
@@ -5056,7 +6445,12 @@ class _QuestionCardState extends State<_QuestionCard> {
       final sel = _selected[q.id] ?? const <String>{};
       final custom = (_custom[q.id] ?? '').trim();
       if (custom.isEmpty && sel.isEmpty) {
-        setState(() => _hint = L10n.t('请选择选项，或输入其他答案', 'Choose an option or type another answer'));
+        setState(
+          () => _hint = L10n.t(
+            '请选择选项，或输入其他答案',
+            'Choose an option or type another answer',
+          ),
+        );
         return;
       }
       answers.add({
@@ -5080,7 +6474,9 @@ class _QuestionCardState extends State<_QuestionCard> {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final brandSoft = DshColors.brandSoft(context);
-    final header = widget.request.questions.isEmpty ? null : widget.request.questions.first.header;
+    final header = widget.request.questions.isEmpty
+        ? null
+        : widget.request.questions.first.header;
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
@@ -5091,102 +6487,136 @@ class _QuestionCardState extends State<_QuestionCard> {
       ),
       child: ConstrainedBox(
         // 问询卡片封顶 40% 屏高：问题说明长/选项多时卡片内滚动，不把输入框挤出屏幕
-        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.4),
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.4,
+        ),
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(
-              children: [
-                Icon(Icons.live_help_outlined, size: 18, color: brand),
-                const SizedBox(width: 6),
-                Expanded(
+                children: [
+                  Icon(Icons.live_help_outlined, size: 18, color: brand),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      header ?? L10n.t('需要你决定', 'Your input needed'),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: brand,
+                      ),
+                    ),
+                  ),
+                  InkWell(
+                    onTap: _submitting ? null : widget.onCancel,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 16, color: ink3),
+                    ),
+                  ),
+                ],
+              ),
+              for (final q in widget.request.questions) ...[
+                if (q.detail != null && q.detail!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 2),
+                    child: Text(
+                      q.detail!,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: ink3,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6, bottom: 4),
                   child: Text(
-                    header ?? L10n.t('需要你决定', 'Your input needed'),
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: brand),
+                    q.question,
+                    style: const TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-                InkWell(
-                  onTap: _submitting ? null : widget.onCancel,
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(Icons.close, size: 16, color: ink3),
+                for (final o in q.options)
+                  _OptionTile(
+                    label: o.label,
+                    description: o.description,
+                    multi: q.multiSelect,
+                    selected: _selected[q.id]!.contains(o.label),
+                    onTap: () => _toggle(q, o.label),
+                  ),
+                const SizedBox(height: 2),
+                TextField(
+                  controller: _ctrls[q.id],
+                  onChanged: (v) => _onCustom(q, v),
+                  style: const TextStyle(fontSize: 13.5),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: q.multiSelect
+                        ? L10n.t('补充说明（可选）…', 'Add details (optional)…')
+                        : L10n.t('或输入其他答案…', 'Or type another answer…'),
+                    hintStyle: TextStyle(fontSize: 13, color: ink3),
+                    filled: true,
+                    fillColor: DshColors.surface(context),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 9,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: line),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: line),
+                    ),
                   ),
                 ),
               ],
-            ),
-            for (final q in widget.request.questions) ...[
-              if (q.detail != null && q.detail!.isNotEmpty)
+              if (_hint != null)
                 Padding(
-                  padding: const EdgeInsets.only(top: 4, bottom: 2),
-                  child: Text(q.detail!, style: TextStyle(fontSize: 11.5, color: ink3, height: 1.4)),
-                ),
-              Padding(
-                padding: const EdgeInsets.only(top: 6, bottom: 4),
-                child: Text(q.question, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
-              ),
-              for (final o in q.options)
-                _OptionTile(
-                  label: o.label,
-                  description: o.description,
-                  multi: q.multiSelect,
-                  selected: _selected[q.id]!.contains(o.label),
-                  onTap: () => _toggle(q, o.label),
-                ),
-              const SizedBox(height: 2),
-              TextField(
-                controller: _ctrls[q.id],
-                onChanged: (v) => _onCustom(q, v),
-                style: const TextStyle(fontSize: 13.5),
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: q.multiSelect
-                      ? L10n.t('补充说明（可选）…', 'Add details (optional)…')
-                      : L10n.t('或输入其他答案…', 'Or type another answer…'),
-                  hintStyle: TextStyle(fontSize: 13, color: ink3),
-                  filled: true,
-                  fillColor: DshColors.surface(context),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: line),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: line),
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    _hint!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: DshColors.danger(context),
+                    ),
                   ),
                 ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _submitting ? null : widget.onCancel,
+                    child: Text(
+                      L10n.t('取消', 'Cancel'),
+                      style: TextStyle(fontSize: 13.5, color: ink2),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 22),
+                      backgroundColor: brand,
+                    ),
+                    onPressed: _submitting ? null : _submit,
+                    child: Text(
+                      _submitting
+                          ? L10n.t('提交中…', 'Submitting…')
+                          : L10n.t('提交', 'Submit'),
+                      style: const TextStyle(fontSize: 13.5),
+                    ),
+                  ),
+                ],
               ),
             ],
-            if (_hint != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(_hint!, style: TextStyle(fontSize: 12, color: DshColors.danger(context))),
-              ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: _submitting ? null : widget.onCancel,
-                  child: Text(L10n.t('取消', 'Cancel'), style: TextStyle(fontSize: 13.5, color: ink2)),
-                ),
-                const SizedBox(width: 4),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 22),
-                    backgroundColor: brand,
-                  ),
-                  onPressed: _submitting ? null : _submit,
-                  child: Text(
-                      _submitting ? L10n.t('提交中…', 'Submitting…') : L10n.t('提交', 'Submit'),
-                      style: const TextStyle(fontSize: 13.5)),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -5221,7 +6651,9 @@ class _OptionTile extends StatelessWidget {
             Icon(
               multi
                   ? (selected ? Icons.check_box : Icons.check_box_outline_blank)
-                  : (selected ? Icons.radio_button_checked : Icons.radio_button_unchecked),
+                  : (selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked),
               size: 18,
               color: brand,
             ),
@@ -5232,12 +6664,22 @@ class _OptionTile extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: TextStyle(fontSize: 13.5, fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
                   if (description != null && description!.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 1),
-                      child: Text(description!, style: TextStyle(fontSize: 11.5, color: ink3, height: 1.35)),
+                      child: Text(
+                        description!,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: ink3,
+                          height: 1.35,
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -5254,7 +6696,11 @@ class _ApprovalCard extends StatefulWidget {
   final ApprovalRequest request;
   final Future<void> Function(String outcome) onDecide;
   final VoidCallback onCancel;
-  const _ApprovalCard({required this.request, required this.onDecide, required this.onCancel});
+  const _ApprovalCard({
+    required this.request,
+    required this.onDecide,
+    required this.onCancel,
+  });
 
   @override
   State<_ApprovalCard> createState() => _ApprovalCardState();
@@ -5295,8 +6741,14 @@ class _ApprovalCardState extends State<_ApprovalCard> {
               Icon(Icons.admin_panel_settings_outlined, size: 18, color: warn),
               const SizedBox(width: 6),
               Expanded(
-                child: Text(L10n.t('权限请求', 'Permission request'),
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: warn)),
+                child: Text(
+                  L10n.t('权限请求', 'Permission request'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: warn,
+                  ),
+                ),
               ),
               InkWell(
                 onTap: _busy ? null : widget.onCancel,
@@ -5310,12 +6762,18 @@ class _ApprovalCardState extends State<_ApprovalCard> {
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              L10n.t('工具「${widget.request.toolName}」需要你的授权',
-                  'Tool “${widget.request.toolName}” needs your authorization'),
-              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+              L10n.t(
+                '工具「${widget.request.toolName}」需要你的授权',
+                'Tool “${widget.request.toolName}” needs your authorization',
+              ),
+              style: const TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-          if (widget.request.reason != null && widget.request.reason!.isNotEmpty)
+          if (widget.request.reason != null &&
+              widget.request.reason!.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
@@ -5330,7 +6788,10 @@ class _ApprovalCardState extends State<_ApprovalCard> {
             children: [
               TextButton(
                 onPressed: _busy ? null : () => _decide('rejected'),
-                child: Text(L10n.t('拒绝', 'Deny'), style: TextStyle(fontSize: 13.5, color: danger)),
+                child: Text(
+                  L10n.t('拒绝', 'Deny'),
+                  style: TextStyle(fontSize: 13.5, color: danger),
+                ),
               ),
               const SizedBox(width: 4),
               FilledButton(
@@ -5340,8 +6801,11 @@ class _ApprovalCardState extends State<_ApprovalCard> {
                 ),
                 onPressed: _busy ? null : () => _decide('allowed-once'),
                 child: Text(
-                    _busy ? L10n.t('处理中…', 'Processing…') : L10n.t('允许一次', 'Allow once'),
-                    style: const TextStyle(fontSize: 13.5)),
+                  _busy
+                      ? L10n.t('处理中…', 'Processing…')
+                      : L10n.t('允许一次', 'Allow once'),
+                  style: const TextStyle(fontSize: 13.5),
+                ),
               ),
             ],
           ),
@@ -5350,6 +6814,3 @@ class _ApprovalCardState extends State<_ApprovalCard> {
     );
   }
 }
-
-
-

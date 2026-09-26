@@ -46,6 +46,15 @@ class WidgetGitApi implements GitReadApi {
   bool available;
   int graphCalls = 0;
   int commitCalls = 0;
+  int worktreeCalls = 0;
+  int previewCalls = 0;
+  GitWorktreeSnapshot worktreeSnapshot = const GitWorktreeSnapshot(
+    repositoryId: 'repo-1',
+    snapshotId: 'worktree-1',
+    staged: [GitWorktreeFile(path: 'staged.txt', status: 'modified')],
+    unstaged: [GitWorktreeFile(path: 'both.txt', status: 'modified')],
+    untracked: [GitWorktreeFile(path: 'new.txt', status: 'untracked')],
+  );
   final graphRequests = <List<String>>[];
   final graphCursors = <String?>[];
   final filesCursors = <String?>[];
@@ -149,6 +158,35 @@ class WidgetGitApi implements GitReadApi {
       ],
     );
   }
+
+  @override
+  Future<GitWorktreeSnapshot> worktree(
+    String sessionId,
+    String repositoryId,
+  ) async {
+    worktreeCalls++;
+    return worktreeSnapshot;
+  }
+
+  @override
+  Future<GitFilePreview> preview(
+    String sessionId,
+    String repositoryId, {
+    required String kind,
+    required String path,
+    String? snapshotId,
+    String? oid,
+  }) async {
+    previewCalls++;
+    return GitFilePreview(
+      repositoryId: repositoryId,
+      kind: kind,
+      path: path,
+      diff: kind == 'untracked'
+          ? 'line one\n\nindex literal\ndiff --git literal\nBinary files are source text\n'
+          : 'diff --git a/$path b/$path\n@@ -1,10 +1,10 @@\n keep 1\n keep 2\n keep 3\n-old line\n+new line\n--- source -- marker\n+++ source ++ marker\n keep 4\n keep 5\n keep 6\n keep 7\n keep 8\n keep 9\n keep 10\n',
+    );
+  }
 }
 
 AppStore makeStore() {
@@ -160,9 +198,12 @@ AppStore makeStore() {
 
 Future<GitBrowserController> mountSheet(
   WidgetTester tester,
-  WidgetGitApi api,
-) async {
+  WidgetGitApi api, {
+  List<String> tabs = const ['branches', 'graph', 'worktree'],
+}) async {
   final controller = GitBrowserController(api);
+  final graphScrollController = ScrollController();
+  addTearDown(graphScrollController.dispose);
   await controller.open('session-1');
   await tester.pumpWidget(
     MaterialApp(
@@ -171,7 +212,8 @@ Future<GitBrowserController> mountSheet(
           height: 700,
           child: GitBrowserSheet(
             controller: controller,
-            scrollController: ScrollController(),
+            scrollController: graphScrollController,
+            tabs: tabs,
           ),
         ),
       ),
@@ -185,40 +227,47 @@ void main() {
   setUp(() => L10n.lang = 'en');
   tearDown(() => L10n.lang = 'zh');
 
-  testWidgets('Git IconButton precedes tools and opens unavailable sheet', (
-    tester,
-  ) async {
-    L10n.lang = 'zh';
-    final gitApi = WidgetGitApi(available: false);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: ChatScreen(
-          store: makeStore(),
-          onTitleChanged: () {},
-          gitReadApi: gitApi,
+  testWidgets(
+    'Git brand button precedes tools and opens the full-screen browser',
+    (tester) async {
+      L10n.lang = 'zh';
+      final gitApi = WidgetGitApi(available: false);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ChatScreen(
+            store: makeStore(),
+            onTitleChanged: () {},
+            gitReadApi: gitApi,
+          ),
         ),
-      ),
-    );
+      );
 
-    final git = find.ancestor(
-      of: find.byTooltip('Git'),
-      matching: find.byType(IconButton),
-    );
-    final tools = find.ancestor(
-      of: find.byTooltip('任务 / 子代理 / 目标'),
-      matching: find.byType(IconButton),
-    );
-    expect(git, findsOneWidget);
-    expect(tools, findsOneWidget);
-    expect(tester.getTopLeft(git).dx, lessThan(tester.getTopLeft(tools).dx));
+      final git = find.ancestor(
+        of: find.byTooltip('Git'),
+        matching: find.byType(IconButton),
+      );
+      final tools = find.ancestor(
+        of: find.byTooltip('任务 / 子代理 / 目标'),
+        matching: find.byType(IconButton),
+      );
+      expect(git, findsOneWidget);
+      expect(tools, findsOneWidget);
+      expect(tester.getTopLeft(git).dx, lessThan(tester.getTopLeft(tools).dx));
 
-    // ChatScreen's background history request can replace this test route;
-    // invoke the located IconButton before that unrelated request completes.
-    tester.widget<IconButton>(git).onPressed!();
-    await tester.pumpAndSettle();
-    expect(find.text('Git is unavailable here'), findsOneWidget);
-    expect(find.byType(DraggableScrollableSheet), findsOneWidget);
-  });
+      // ChatScreen's background history request can replace this test route;
+      // invoke the located IconButton before that unrelated request completes.
+      tester.widget<IconButton>(git).onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.text('Git is unavailable here'), findsOneWidget);
+      expect(find.byType(DraggableScrollableSheet), findsNothing);
+      expect(find.byType(TabBar), findsOneWidget);
+      expect(find.byTooltip('返回聊天'), findsOneWidget);
+      await tester.tap(find.byTooltip('返回聊天'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TabBar), findsNothing);
+      expect(find.byTooltip('返回聊天'), findsNothing);
+    },
+  );
 
   testWidgets(
     'grouped branches search and display current tracking divergence',
@@ -247,6 +296,105 @@ void main() {
       expect(find.text('Main subject'), findsOneWidget);
     },
   );
+
+  testWidgets('untracked preview preserves blank and diff-like source lines', (
+    tester,
+  ) async {
+    final api = WidgetGitApi();
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-worktree-untracked-new.txt')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('line one'), findsOneWidget);
+    expect(find.byKey(const Key('git-diff-line-1')), findsOneWidget);
+    expect(find.text('index literal'), findsOneWidget);
+    expect(find.text('diff --git literal'), findsOneWidget);
+    expect(find.text('Binary files are source text'), findsOneWidget);
+  });
+
+  testWidgets(
+    'graph-first preference with multiple tabs opens the default branch',
+    (tester) async {
+      final api = WidgetGitApi();
+      final controller = await mountSheet(
+        tester,
+        api,
+        tabs: const ['graph', 'worktree'],
+      );
+      addTearDown(controller.dispose);
+
+      await tester.pumpAndSettle();
+      expect(api.graphRequests.first, ['refs/heads/main']);
+      expect(find.text('main'), findsWidgets);
+      expect(find.byType(TabBar), findsOneWidget);
+      await tester.tap(find.text('Worktree'));
+      await tester.pumpAndSettle();
+      expect(api.worktreeCalls, 1);
+      expect(find.text('Staged (1)'), findsOneWidget);
+    },
+  );
+
+  testWidgets('hidden graph opens temporarily and returns to the branch tab', (
+    tester,
+  ) async {
+    final api = WidgetGitApi();
+    final controller = await mountSheet(
+      tester,
+      api,
+      tabs: const ['branches', 'worktree'],
+    );
+    addTearDown(controller.dispose);
+
+    await tester.tap(find.text('feature/search'));
+    await tester.pumpAndSettle();
+    expect(find.text('Main subject'), findsOneWidget);
+    expect(find.byType(TabBar), findsNothing);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('Local branches'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
+  });
+
+  testWidgets('worktree tab lists changes and opens a foldable line preview', (
+    tester,
+  ) async {
+    final api = WidgetGitApi();
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    expect(api.worktreeCalls, 1);
+    expect(find.text('Staged (1)'), findsOneWidget);
+    expect(find.text('Unstaged (1)'), findsOneWidget);
+    expect(find.text('Untracked (1)'), findsOneWidget);
+    expect(
+      find.byKey(const Key('git-worktree-staged-staged.txt')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('git-worktree-untracked-new.txt')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('git-worktree-staged-staged.txt')));
+    await tester.pumpAndSettle();
+    expect(api.previewCalls, 1);
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+    expect(find.text('new line'), findsOneWidget);
+    expect(find.text('-- source -- marker'), findsOneWidget);
+    expect(find.text('++ source ++ marker'), findsOneWidget);
+    expect(find.text('-'), findsNWidgets(2));
+    expect(find.text('+'), findsNWidgets(2));
+    expect(find.byKey(const Key('git-context-fold-0')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-context-fold-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('keep 7'), findsOneWidget);
+  });
 
   testWidgets(
     'graph branch picker searches and limits selection to one through three',

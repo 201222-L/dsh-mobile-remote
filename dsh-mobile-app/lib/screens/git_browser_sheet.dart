@@ -1,35 +1,55 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../git_browser_controller.dart';
 import '../git_graph_logic.dart';
+import '../git_graph_presentation.dart';
 import '../git_models.dart';
 import '../l10n.dart';
+import '../theme.dart';
+import '../widgets/git_logo.dart';
 
-/// Read-only content for the host's DraggableScrollableSheet.
+/// Full-screen, read-only Git browser route.
 class GitBrowserSheet extends StatefulWidget {
   const GitBrowserSheet({
     super.key,
     required this.controller,
     required this.scrollController,
+    this.tabs = const ['branches', 'graph', 'worktree'],
   });
 
   final GitBrowserController controller;
   final ScrollController scrollController;
+  final List<String> tabs;
 
   @override
   State<GitBrowserSheet> createState() => _GitBrowserSheetState();
 }
 
-enum _View { branches, graph, commit }
+enum _View { tab, commit, preview }
 
-class _GitBrowserSheetState extends State<GitBrowserSheet> {
-  _View _view = _View.branches;
+class _GitBrowserSheetState extends State<GitBrowserSheet>
+    with TickerProviderStateMixin {
+  _View _view = _View.tab;
+  bool _temporaryGraph = false;
+  bool _previewFromCommit = false;
+  String _previewKind = 'unstaged';
+  String _previewPath = '';
+  String? _previewOid;
   bool _choosingBranches = false;
   String _graphQuery = '';
   String? _openingOid;
+  late final TabController _tabs;
+  final ScrollController _branchScroll = ScrollController();
+  final ScrollController _worktreeScroll = ScrollController();
+  final ScrollController _commitScroll = ScrollController();
+  final ScrollController _previewScroll = ScrollController();
   final ScrollController _horizontal = ScrollController();
+  Timer? _freshnessTimer;
+  final Set<int> _expandedContextRuns = {};
+  bool _defaultGraphRequested = false;
   GraphLayout? _layout;
   String? _layoutSnapshot;
   String? _layoutTips;
@@ -69,19 +89,38 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
     return _layout!;
   }
 
+  List<String> get _tabIds => widget.tabs.isEmpty
+      ? const ['branches', 'graph', 'worktree']
+      : widget.tabs;
+
+  String get _activeTab => _temporaryGraph ? 'graph' : _tabIds[_tabs.index];
+
+  int get _graphTabIndex => _tabIds.indexOf('graph');
+
   @override
   void initState() {
     super.initState();
-    widget.scrollController.addListener(_onScroll);
+    _tabs = TabController(length: _tabIds.length, vsync: this);
+    widget.scrollController.addListener(_onGraphScroll);
+    _commitScroll.addListener(_onCommitScroll);
     widget.controller.addListener(_onState);
+    _freshnessTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      widget.controller.checkWorktreeFreshness();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeOpenDefaultGraph();
+      if (mounted && _tabIds.first == 'worktree') {
+        widget.controller.loadWorktree();
+      }
+    });
   }
 
   @override
   void didUpdateWidget(GitBrowserSheet oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.scrollController != widget.scrollController) {
-      oldWidget.scrollController.removeListener(_onScroll);
-      widget.scrollController.addListener(_onScroll);
+      oldWidget.scrollController.removeListener(_onGraphScroll);
+      widget.scrollController.addListener(_onGraphScroll);
     }
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_onState);
@@ -93,42 +132,103 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
 
   @override
   void dispose() {
-    widget.scrollController.removeListener(_onScroll);
+    _freshnessTimer?.cancel();
+    widget.scrollController.removeListener(_onGraphScroll);
+    _commitScroll.removeListener(_onCommitScroll);
     widget.controller.removeListener(_onState);
+    _tabs.dispose();
+    _branchScroll.dispose();
+    _worktreeScroll.dispose();
+    _commitScroll.dispose();
+    _previewScroll.dispose();
     _horizontal.dispose();
     super.dispose();
   }
 
   void _onState() {
     if (!mounted) return;
+    final state = widget.controller.state;
+    if (_activeTab == 'worktree' &&
+        state.repository != null &&
+        state.worktree == null &&
+        !state.loadingWorktree &&
+        state.worktreeError == null) {
+      widget.controller.loadWorktree();
+    }
     setState(() {});
+    _maybeOpenDefaultGraph();
     // A short first page may not generate a scroll event at all.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _onScroll());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _onScroll(
+        widget.controller.state.commit != null && _view == _View.commit
+            ? _commitScroll
+            : widget.scrollController,
+      );
+    });
   }
 
-  void _onScroll() {
-    if (!mounted || !widget.scrollController.hasClients) return;
-    final position = widget.scrollController.position;
-    if (position.extentAfter > 240) return;
+  void _onGraphScroll() => _onScroll(widget.scrollController);
+  void _onCommitScroll() => _onScroll(_commitScroll);
+
+  void _onScroll(ScrollController source) {
+    if (!mounted || !source.hasClients) return;
     final state = widget.controller.state;
     if (state.stale || state.loading || state.error != null) return;
-    if (_view == _View.graph &&
+    if ((_view == _View.tab && _activeTab == 'graph' || _temporaryGraph) &&
+        identical(source, widget.scrollController) &&
         state.graphNextCursor != null &&
-        !state.loadingGraphPage) {
+        !state.loadingGraphPage &&
+        source.position.extentAfter <= 240) {
       widget.controller.loadNextGraphPage();
     } else if (_view == _View.commit &&
+        identical(source, _commitScroll) &&
         state.commit?.filesNextCursor != null &&
-        !state.loadingFilesPage) {
+        !state.loadingFilesPage &&
+        source.position.extentAfter <= 240) {
       widget.controller.loadNextFilesPage();
+    }
+  }
+
+  void _maybeOpenDefaultGraph() {
+    if (!mounted || _defaultGraphRequested || _activeTab != 'graph') return;
+    final state = widget.controller.state;
+    if (state.loading ||
+        state.loadingGraph ||
+        state.repository == null ||
+        state.selectedBranches.isEmpty ||
+        state.snapshotId != null ||
+        state.capabilities?.available != true) {
+      return;
+    }
+    _defaultGraphRequested = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.openBranch(state.selectedBranches.first);
+    });
+  }
+
+  void _selectTab(int index) {
+    if (index < 0 || index >= _tabIds.length) return;
+    setState(() => _temporaryGraph = false);
+    final id = _tabIds[index];
+    if (id == 'graph') _maybeOpenDefaultGraph();
+    if (id == 'worktree') {
+      if (widget.controller.state.worktree == null) {
+        widget.controller.loadWorktree();
+      } else if (!widget.controller.state.worktreeStale) {
+        widget.controller.checkWorktreeFreshness();
+      }
     }
   }
 
   void _showGraph(GitBranch branch) {
     setState(() {
-      _view = _View.graph;
+      _view = _View.tab;
+      _temporaryGraph = _graphTabIndex < 0;
       _choosingBranches = false;
       _graphQuery = '';
+      if (_graphTabIndex >= 0) _tabs.animateTo(_graphTabIndex);
     });
+    _defaultGraphRequested = true;
     widget.controller.openBranch(branch);
   }
 
@@ -142,127 +242,207 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
     });
   }
 
+  Future<void> _showPreview({
+    required String kind,
+    required String path,
+    String? oid,
+    required bool fromCommit,
+  }) async {
+    setState(() {
+      _previewFromCommit = fromCommit;
+      _previewKind = kind;
+      _previewPath = path;
+      _previewOid = oid;
+      _expandedContextRuns.clear();
+      _view = _View.preview;
+    });
+    await widget.controller.openPreview(kind: kind, path: path, oid: oid);
+  }
+
+  void _back() {
+    if (_view == _View.preview) {
+      widget.controller.closePreview();
+      setState(() => _view = _previewFromCommit ? _View.commit : _View.tab);
+    } else if (_view == _View.commit) {
+      setState(() => _view = _View.tab);
+    } else if (_temporaryGraph) {
+      setState(() => _temporaryGraph = false);
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _refresh() async {
+    final activeTab = _activeTab;
+    if (activeTab == 'worktree' ||
+        (_view == _View.preview && !_previewFromCommit)) {
+      final reloadingPreview = _view == _View.preview && !_previewFromCommit;
+      await widget.controller.loadWorktree(refresh: true);
+      if (reloadingPreview &&
+          mounted &&
+          !widget.controller.state.worktreeStale) {
+        await widget.controller.openPreview(
+          kind: _previewKind,
+          path: _previewPath,
+        );
+      }
+    } else {
+      await widget.controller.refresh();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.controller.state;
-    return Material(
-      color: Theme.of(context).colorScheme.surface,
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          const SizedBox(height: 10),
-          Container(
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.outlineVariant,
-              borderRadius: BorderRadius.circular(2),
-            ),
+    final baseView = _view == _View.tab && !_temporaryGraph;
+    return PopScope(
+      canPop: baseView,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && mounted) _back();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            tooltip: _view == _View.tab && !_temporaryGraph
+                ? L10n.t('返回聊天', 'Back to chat')
+                : L10n.t('返回', 'Back'),
+            onPressed: _back,
+            icon: const Icon(Icons.arrow_back),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-            child: Row(
-              children: [
-                if (_view != _View.branches)
-                  IconButton(
-                    tooltip: L10n.t('返回', 'Back'),
-                    onPressed: () => setState(() {
-                      if (_view == _View.commit) {
-                        _view = _View.graph;
-                      } else {
-                        _view = _View.branches;
-                        _choosingBranches = false;
-                      }
-                    }),
-                    icon: const Icon(Icons.arrow_back),
-                  )
-                else
-                  const SizedBox(width: 8),
-                const Icon(Icons.source_outlined, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    state.repository?.name ?? 'Git',
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
+          titleSpacing: 0,
+          title: Row(
+            children: [
+              const GitLogo(size: 23),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _view == _View.preview
+                      ? (state.preview?.path ?? L10n.t('文件预览', 'File preview'))
+                      : _view == _View.commit
+                      ? L10n.t('提交详情', 'Commit details')
+                      : _temporaryGraph
+                      ? L10n.t('分支图', 'Branch graph')
+                      : state.repository?.name ?? 'Git',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              tooltip: L10n.t('刷新', 'Refresh'),
+              onPressed: state.loading || state.loadingWorktree
+                  ? null
+                  : _refresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+          bottom: baseView
+              ? TabBar(
+                  controller: _tabs,
+                  onTap: _selectTab,
+                  tabs: [for (final id in _tabIds) Tab(text: _tabLabel(id))],
+                )
+              : null,
+        ),
+        body: Column(
+          children: [
+            if (state.stale && (_activeTab == 'graph' || _view == _View.commit))
+              MaterialBanner(
+                content: Text(
+                  L10n.t('提交图已过期，刷新以更新', 'Graph is stale. Refresh to update.'),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: _refresh,
+                    child: Text(L10n.t('刷新', 'Refresh')),
+                  ),
+                ],
+              ),
+            if (state.worktreeStale &&
+                (_activeTab == 'worktree' ||
+                    (_view == _View.preview && !_previewFromCommit)))
+              MaterialBanner(
+                content: Text(
+                  L10n.t(
+                    '工作区已变化，当前内容保持不变',
+                    'Worktree changed; keeping the current view.',
                   ),
                 ),
-                IconButton(
-                  tooltip: L10n.t('刷新', 'Refresh'),
-                  onPressed: state.loading ? null : widget.controller.refresh,
-                  icon: const Icon(Icons.refresh),
-                ),
-                IconButton(
-                  tooltip: L10n.t('关闭', 'Close'),
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-          ),
-          if (state.stale)
-            MaterialBanner(
-              content: Text(
-                L10n.t('提交图已过期，刷新以更新', 'Graph is stale. Refresh to update.'),
+                actions: [
+                  TextButton(
+                    onPressed: _refresh,
+                    child: Text(L10n.t('刷新', 'Refresh')),
+                  ),
+                ],
               ),
-              actions: [
-                TextButton(
-                  onPressed: state.loading ? null : widget.controller.refresh,
-                  child: Text(L10n.t('刷新', 'Refresh')),
-                ),
-              ],
+            if (state.error != null &&
+                !state.stale &&
+                state.branches.isNotEmpty &&
+                _view == _View.tab)
+              MaterialBanner(
+                content: Text(state.error!),
+                actions: [
+                  TextButton(
+                    onPressed: _refresh,
+                    child: Text(L10n.t('重试', 'Retry')),
+                  ),
+                ],
+              ),
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Offstage(
+                    offstage: !baseView,
+                    child: IndexedStack(
+                      index: _tabs.index,
+                      children: [for (final id in _tabIds) _tabBody(id, state)],
+                    ),
+                  ),
+                  if (_temporaryGraph && _view == _View.tab)
+                    _tabBody('graph', state),
+                  if (_view == _View.commit) _detail(state),
+                  if (_view == _View.preview) _preview(state),
+                ],
+              ),
             ),
-          if (state.error != null &&
-              !state.stale &&
-              (state.branches.isNotEmpty || state.commit != null))
-            MaterialBanner(
-              content: Text(state.error!),
-              actions: [
-                TextButton(
-                  onPressed: widget.controller.refresh,
-                  child: Text(L10n.t('重试', 'Retry')),
-                ),
-              ],
-            ),
-          Expanded(child: _body(state)),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _body(GitBrowserState state) {
+  String _tabLabel(String id) => switch (id) {
+    'branches' => L10n.t('分支列表', 'Branches'),
+    'graph' => L10n.t('分支图', 'Graph'),
+    'worktree' => L10n.t('工作区', 'Worktree'),
+    _ => id,
+  };
+
+  Widget _tabBody(String id, GitBrowserState state) {
     if (state.loading && state.capabilities == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (state.capabilities?.available == false && state.branches.isEmpty) {
+    if (state.capabilities?.available == false) {
       return _MessageState(
         message:
             state.capabilities?.reason ??
             L10n.t('此会话无法使用 Git', 'Git is unavailable for this session'),
-        onRetry: widget.controller.refresh,
+        onRetry: _refresh,
       );
     }
+    if (id == 'worktree') return _worktree(state);
     if (state.error != null && state.branches.isEmpty && !state.stale) {
-      return _MessageState(
-        message: state.error!,
-        onRetry: widget.controller.refresh,
-      );
+      return _MessageState(message: state.error!, onRetry: _refresh);
     }
     if (state.repository?.empty == true || state.branches.isEmpty) {
       return _MessageState(
         message: L10n.t('没有分支', 'No branches'),
-        onRetry: widget.controller.refresh,
+        onRetry: _refresh,
       );
     }
-    switch (_view) {
-      case _View.branches:
-        return _branches(state);
-      case _View.graph:
-        return _graph(state);
-      case _View.commit:
-        return _detail(state);
-    }
+    return id == 'graph' ? _graph(state) : _branches(state);
   }
 
   Widget _branches(GitBrowserState state) {
@@ -289,7 +469,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
         ),
         Expanded(
           child: ListView(
-            controller: widget.scrollController,
+            controller: _branchScroll,
             children: [
               _branchGroup(L10n.t('本地分支', 'Local branches'), locals),
               _branchGroup(L10n.t('远程分支', 'Remote branches'), remotes),
@@ -303,6 +483,352 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _worktree(GitBrowserState state) {
+    final snapshot = state.worktree;
+    if (snapshot == null && state.loadingWorktree) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (snapshot == null) {
+      return _MessageState(
+        message:
+            state.worktreeError ?? L10n.t('无法读取工作区', 'Could not read worktree'),
+        onRetry: () => widget.controller.loadWorktree(refresh: true),
+      );
+    }
+    final total =
+        snapshot.staged.length +
+        snapshot.unstaged.length +
+        snapshot.untracked.length;
+    return ListView(
+      key: const Key('git-worktree-list'),
+      controller: _worktreeScroll,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Text(
+            L10n.t('当前工作区 · $total 个改动项', 'Current worktree · $total changes'),
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ),
+        _worktreeGroup(L10n.t('已暂存', 'Staged'), 'staged', snapshot.staged),
+        _worktreeGroup(
+          L10n.t('未暂存', 'Unstaged'),
+          'unstaged',
+          snapshot.unstaged,
+        ),
+        _worktreeGroup(
+          L10n.t('未跟踪', 'Untracked'),
+          'untracked',
+          snapshot.untracked,
+        ),
+        if (snapshot.truncated)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              L10n.t(
+                '文件清单过多，已截取显示',
+                'File list is large; entries are truncated.',
+              ),
+            ),
+          ),
+        if (total == 0)
+          Padding(
+            padding: const EdgeInsets.all(28),
+            child: Center(child: Text(L10n.t('工作区干净', 'Working tree clean'))),
+          ),
+        if (state.worktreeError != null)
+          ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: Text(state.worktreeError!),
+            trailing: TextButton(
+              onPressed: () => widget.controller.loadWorktree(refresh: true),
+              child: Text(L10n.t('重试', 'Retry')),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _worktreeGroup(
+    String title,
+    String kind,
+    List<GitWorktreeFile> files,
+  ) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+        child: Text(
+          '$title (${files.length})',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+      ),
+      if (files.isEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Text(
+            L10n.t('无', 'None'),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      for (final file in files)
+        ListTile(
+          key: Key('git-worktree-$kind-${file.path}'),
+          dense: true,
+          title: Text(file.path, maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle: file.oldPath == null
+              ? null
+              : Text('${file.oldPath} → ${file.path}'),
+          leading: file.conflicted
+              ? Icon(
+                  Icons.warning_amber_rounded,
+                  color: DshColors.danger(context),
+                )
+              : const Icon(Icons.insert_drive_file_outlined),
+          trailing: Text(
+            file.conflicted
+                ? L10n.t('冲突', 'Conflict')
+                : _statusLabel(file.status),
+          ),
+          onTap: file.conflicted || widget.controller.state.worktreeStale
+              ? null
+              : () => _showPreview(
+                  kind: kind,
+                  path: file.path,
+                  fromCommit: false,
+                ),
+        ),
+    ],
+  );
+
+  String _statusLabel(String status) => switch (status) {
+    'added' => L10n.t('新增', 'Added'),
+    'deleted' => L10n.t('删除', 'Deleted'),
+    'renamed' => L10n.t('重命名', 'Renamed'),
+    'untracked' => L10n.t('未跟踪', 'Untracked'),
+    'conflicted' => L10n.t('冲突', 'Conflict'),
+    _ => L10n.t('修改', 'Modified'),
+  };
+
+  Widget _preview(GitBrowserState state) {
+    final preview = state.preview;
+    if (state.loadingPreview) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (preview == null) {
+      final error = state.previewError;
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(error ?? L10n.t('无法读取文件差异', 'Could not load file changes')),
+              const SizedBox(height: 12),
+              if (error != null && !state.worktreeStale)
+                FilledButton.tonalIcon(
+                  onPressed: () => widget.controller.openPreview(
+                    kind: _previewKind,
+                    path: _previewPath,
+                    oid: _previewOid,
+                  ),
+                  icon: const Icon(Icons.refresh),
+                  label: Text(L10n.t('重试', 'Retry')),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (preview.binary || preview.notice != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            preview.notice ??
+                L10n.t('二进制文件不提供行级预览', 'Binary files have no line preview'),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    return ListView(
+      key: const Key('git-file-preview'),
+      controller: _previewScroll,
+      children: [
+        if (preview.truncated)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            color: Theme.of(context).colorScheme.tertiaryContainer,
+            child: Text(
+              L10n.t(
+                '差异已截断，仅显示安全上限内的内容',
+                'Diff truncated at the safety limit.',
+              ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(
+            '${preview.oldPath == null ? '' : '${preview.oldPath} → '}${preview.path}',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ),
+        ..._diffWidgets(preview),
+        if (preview.diff.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(L10n.t('没有可显示的行级差异', 'No line changes to display')),
+          ),
+      ],
+    );
+  }
+
+  List<Widget> _diffWidgets(GitFilePreview preview) {
+    if (preview.diff.isEmpty) return const [];
+    final rawLines = preview.diff.split('\n');
+    final lines = <({String marker, String text})>[];
+    var inHunk = false;
+    for (var rawIndex = 0; rawIndex < rawLines.length; rawIndex++) {
+      final line = rawLines[rawIndex];
+      if (preview.kind == 'untracked') {
+        // This endpoint returns file bytes, not a unified patch: keep blank lines
+        // and source text that happens to resemble diff metadata. Ignore only
+        // the terminal split sentinel after a final newline.
+        if (rawIndex == rawLines.length - 1 &&
+            line.isEmpty &&
+            preview.diff.endsWith('\n')) {
+          continue;
+        }
+        lines.add((marker: '+', text: line));
+        continue;
+      }
+      if (line.isEmpty ||
+          line.startsWith('diff --git ') ||
+          line.startsWith('index ') ||
+          line.startsWith('Binary files ')) {
+        continue;
+      }
+      if (line.startsWith('@@')) {
+        inHunk = true;
+        lines.add((marker: '@', text: line));
+        continue;
+      }
+      if (line.startsWith('\\')) continue;
+      if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
+        continue;
+      }
+      if (line.startsWith('+') || line.startsWith('-')) {
+        lines.add((marker: line[0], text: line.substring(1)));
+      } else if (line.startsWith(' ')) {
+        lines.add((marker: ' ', text: line.substring(1)));
+      }
+    }
+    final result = <Widget>[];
+    var index = 0;
+    var runId = 0;
+    while (index < lines.length) {
+      if (lines[index].marker != ' ') {
+        result.add(_diffLine(lines[index], lineIndex: index));
+        index++;
+        continue;
+      }
+      final start = index;
+      while (index < lines.length && lines[index].marker == ' ') {
+        index++;
+      }
+      final length = index - start;
+      if (length <= 6) {
+        for (var i = start; i < index; i++) {
+          result.add(_diffLine(lines[i], lineIndex: i));
+        }
+        continue;
+      }
+      final id = runId++;
+      final expanded = _expandedContextRuns.contains(id);
+      final visible = expanded
+          ? List.generate(length, (offset) => start + offset)
+          : [
+              ...List.generate(3, (offset) => start + offset),
+              ...List.generate(3, (offset) => index - 3 + offset),
+            ];
+      for (final lineIndex in visible.where((lineIndex) => lineIndex < index)) {
+        result.add(_diffLine(lines[lineIndex], lineIndex: lineIndex));
+      }
+      result.add(
+        TextButton.icon(
+          key: Key('git-context-fold-$id'),
+          onPressed: () => setState(() {
+            if (expanded) {
+              _expandedContextRuns.remove(id);
+            } else {
+              _expandedContextRuns.add(id);
+            }
+          }),
+          icon: Icon(
+            expanded ? Icons.unfold_less : Icons.unfold_more,
+            size: 18,
+          ),
+          label: Text(
+            expanded
+                ? L10n.t('折叠未改动行', 'Fold unchanged lines')
+                : L10n.t(
+                    '展开 ${length - 6} 行未改动',
+                    'Expand ${length - 6} unchanged lines',
+                  ),
+          ),
+        ),
+      );
+    }
+    return result;
+  }
+
+  Widget _diffLine(({String marker, String text}) line, {int? lineIndex}) {
+    final color = switch (line.marker) {
+      '+' => DshColors.ok(context),
+      '-' => DshColors.danger(context),
+      '@' => DshColors.ink3(context),
+      _ => DshColors.ink(context),
+    };
+    final background = switch (line.marker) {
+      '+' => DshColors.ok(context).withValues(alpha: .10),
+      '-' => DshColors.danger(context).withValues(alpha: .10),
+      _ => Colors.transparent,
+    };
+    return Container(
+      key: lineIndex == null ? null : Key('git-diff-line-$lineIndex'),
+      color: background,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 20,
+            child: Text(
+              line.marker == ' ' ? ' ' : line.marker,
+              style: TextStyle(color: color, fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Text(
+                line.text,
+                softWrap: false,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  color: color,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -351,14 +877,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
     );
     final layout = _graphLayout(state);
     final graphWidth = math.max(80.0, layout.laneCount * 30.0 + 32);
-    final labelWidth = state.commits.fold<double>(320.0, (width, commit) {
-      final labels = [...commit.refs, ...commit.tags];
-      return math.max(
-        width,
-        220.0 +
-            labels.fold<int>(0, (sum, label) => sum + label.length * 8 + 24),
-      );
-    });
+    // Compact decorations keep long ref/tag lists from expanding the graph lane viewport.
+    const labelWidth = 560.0;
     return Column(
       children: [
         Padding(
@@ -416,7 +936,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
             ),
           ),
         ],
-        if (state.loadingGraphPage) const LinearProgressIndicator(),
+        if (state.loadingGraph || state.loadingGraphPage)
+          const LinearProgressIndicator(),
         Expanded(
           child: SingleChildScrollView(
             key: const Key('git-graph-horizontal'),
@@ -452,7 +973,13 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
                         children: [
                           CustomPaint(
                             size: Size(graphWidth, 86),
-                            painter: _GraphRowPainter(row),
+                            painter: _GraphRowPainter(
+                              row,
+                              selected,
+                              isHead: commit.oid == state.repository?.headOid,
+                              brightness: Theme.of(context).brightness,
+                              surface: Theme.of(context).colorScheme.surface,
+                            ),
                           ),
                           Expanded(
                             child: Column(
@@ -472,10 +999,18 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
                                     commit.tags.isNotEmpty)
                                   Row(
                                     children: [
-                                      for (final ref in commit.refs)
-                                        _graphLabel(ref, false),
-                                      for (final tag in commit.tags)
-                                        _graphLabel(tag, true),
+                                      for (final label in compactGitGraphLabels(
+                                        refs: commit.refs,
+                                        tags: commit.tags,
+                                        selected: selected,
+                                        currentBranch:
+                                            state.repository?.currentBranch,
+                                      ))
+                                        _graphLabel(
+                                          label.text,
+                                          label.tag,
+                                          overflow: label.overflow,
+                                        ),
                                     ],
                                   ),
                               ],
@@ -501,24 +1036,36 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
     );
   }
 
-  Widget _graphLabel(String label, bool tag) => Container(
-    margin: const EdgeInsets.only(right: 5, top: 3),
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: tag
-          ? Theme.of(context).colorScheme.tertiaryContainer
-          : Theme.of(context).colorScheme.secondaryContainer,
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(label, style: Theme.of(context).textTheme.labelSmall),
-  );
+  Widget _graphLabel(String label, bool tag, {bool overflow = false}) =>
+      Container(
+        constraints: const BoxConstraints(maxWidth: 112),
+        margin: const EdgeInsets.only(right: 5, top: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: overflow
+              ? Theme.of(context).colorScheme.surfaceContainerHighest
+              : tag
+              ? Theme.of(context).colorScheme.tertiaryContainer
+              : gitBranchColor(
+                  label,
+                  Theme.of(context).brightness,
+                ).withValues(alpha: .15),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+      );
 
   Widget _detail(GitBrowserState state) {
     final commit = state.commit;
     if (commit == null) return const Center(child: CircularProgressIndicator());
     return ListView(
       key: const Key('git-detail-list'),
-      controller: widget.scrollController,
+      controller: _commitScroll,
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
@@ -556,6 +1103,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
             trailing: Text(
               '+${file.additions} −${file.deletions}${file.binary ? ' · binary' : ''}',
             ),
+            onTap: () => _showPreview(
+              kind: 'commit',
+              path: file.path,
+              oid: commit.oid,
+              fromCommit: true,
+            ),
           ),
         if (state.loadingFilesPage)
           const Center(child: CircularProgressIndicator()),
@@ -579,68 +1132,106 @@ class _GitBrowserSheetState extends State<GitBrowserSheet> {
 }
 
 class _GraphRowPainter extends CustomPainter {
-  const _GraphRowPainter(this.row);
-  final GraphRow row;
+  const _GraphRowPainter(
+    this.row,
+    this.selected, {
+    required this.isHead,
+    required this.brightness,
+    required this.surface,
+  });
 
-  static const _colors = [
-    Colors.blue,
-    Colors.orange,
-    Colors.green,
-    Colors.purple,
-    Colors.teal,
-  ];
-  Color _color(int slot) => _colors[slot % _colors.length];
+  final GraphRow row;
+  final List<GitBranch> selected;
+  final bool isHead;
+  final Brightness brightness;
+  final Color surface;
+
+  Color _color(int slot) => gitLaneColor(slot, selected, brightness);
   double _x(int lane) => 24.0 + lane * 30;
 
   @override
   void paint(Canvas canvas, Size size) {
-    void line(double x1, double y1, double x2, double y2, int color) {
-      canvas.drawLine(
-        Offset(x1, y1),
-        Offset(x2, y2),
-        Paint()
-          ..color = _color(color)
-          ..strokeWidth = 2.5,
-      );
+    final nodeY = size.height / 2;
+    final linePaint = Paint()
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    void edge(double x1, double y1, double x2, double y2, int color) {
+      linePaint.color = _color(color);
+      final path = Path()..moveTo(x1, y1);
+      if (x1 == x2) {
+        path.lineTo(x2, y2);
+      } else {
+        final dy = y2 - y1;
+        path.cubicTo(x1, y1 + dy * .38, x2, y2 - dy * .38, x2, y2);
+      }
+      canvas.drawPath(path, linePaint);
     }
 
-    for (final edge in row.continuations) {
-      line(_x(edge.from), 0, _x(edge.to), size.height, edge.colorSlot);
+    for (final continuation in row.continuations) {
+      edge(
+        _x(continuation.from),
+        0,
+        _x(continuation.to),
+        size.height,
+        continuation.colorSlot,
+      );
     }
-    line(_x(row.lane), 0, _x(row.lane), 32, row.incomingColorSlot);
+    edge(_x(row.lane), 0, _x(row.lane), nodeY, row.incomingColorSlot);
     for (var i = 0; i < row.parentLanes.length; i++) {
-      line(
+      edge(
         _x(row.lane),
-        32,
+        nodeY,
         _x(row.parentLanes[i]),
         size.height,
         row.parentColorSlots[i],
       );
     }
-    final slots = row.tipColorSlots.isEmpty
-        ? [row.colorSlot]
-        : row.tipColorSlots;
-    for (var i = 0; i < slots.length; i++) {
-      canvas.drawArc(
-        Rect.fromCircle(center: Offset(_x(row.lane), 32), radius: 6),
-        -math.pi / 2 + i * 2 * math.pi / slots.length,
-        2 * math.pi / slots.length,
-        false,
+
+    final center = Offset(_x(row.lane), nodeY);
+    if (row.tipColorSlots.length > 1) {
+      for (var i = 0; i < row.tipColorSlots.length; i++) {
+        canvas.drawArc(
+          Rect.fromCircle(center: center, radius: 6),
+          -math.pi / 2 + i * 2 * math.pi / row.tipColorSlots.length,
+          2 * math.pi / row.tipColorSlots.length,
+          false,
+          Paint()
+            ..color = _color(row.tipColorSlots[i])
+            ..strokeWidth = 5
+            ..style = PaintingStyle.stroke,
+        );
+      }
+    } else {
+      final slot = row.tipColorSlots.isEmpty
+          ? row.colorSlot
+          : row.tipColorSlots.single;
+      canvas.drawCircle(center, 5, Paint()..color = _color(slot));
+    }
+    canvas.drawCircle(center, 2, Paint()..color = surface);
+    if (row.merge || isHead) {
+      canvas.drawCircle(
+        center,
+        isHead ? 9 : 7.5,
         Paint()
-          ..color = _color(slots[i])
-          ..strokeWidth = 5
-          ..style = PaintingStyle.stroke,
+          ..color = isHead
+              ? gitBranchColor('HEAD', brightness)
+              : _color(row.colorSlot)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = isHead ? 1.8 : 1.2,
       );
     }
-    canvas.drawCircle(
-      Offset(_x(row.lane), 32),
-      2,
-      Paint()..color = Colors.white,
-    );
   }
 
   @override
-  bool shouldRepaint(_GraphRowPainter oldDelegate) => oldDelegate.row != row;
+  bool shouldRepaint(_GraphRowPainter oldDelegate) =>
+      oldDelegate.row != row ||
+      oldDelegate.selected != selected ||
+      oldDelegate.isHead != isHead ||
+      oldDelegate.brightness != brightness ||
+      oldDelegate.surface != surface;
 }
 
 class _MessageState extends StatelessWidget {
