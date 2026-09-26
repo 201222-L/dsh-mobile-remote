@@ -17,6 +17,8 @@ import '../timeline.dart';
 import '../theme.dart';
 import '../md.dart';
 import '../fmt.dart';
+import '../git_browser_controller.dart';
+import 'git_browser_sheet.dart';
 import 'sheets.dart';
 import 'session_tools_sheet.dart';
 
@@ -98,12 +100,24 @@ Future<void> openChat(BuildContext context, AppStore store, String sessionId,
   if (onReturn != null) await onReturn();
 }
 
+typedef GitBrowserControllerFactory = GitBrowserController Function(GitReadApi api);
+
 class ChatScreen extends StatefulWidget {
   final AppStore store;
   final String? initialSend; // 首页直达发送
   final VoidCallback onTitleChanged;
   final Api? apiClient;
-  const ChatScreen({super.key, required this.store, this.initialSend, required this.onTitleChanged, this.apiClient});
+  final GitReadApi? gitReadApi;
+  final GitBrowserControllerFactory? gitControllerFactory;
+  const ChatScreen({
+    super.key,
+    required this.store,
+    this.initialSend,
+    required this.onTitleChanged,
+    this.apiClient,
+    this.gitReadApi,
+    this.gitControllerFactory,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -183,6 +197,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _pendingRequestId;
   String? _pendingSignature;
   bool _pickingImages = false; // 选图在途锁（相册多选期间防重复触发）
+  GitBrowserController? _gitController;
 
   // ── 分段历史浏览（超长会话的安全阀，仅当无限模式不可用时启用） ──
   static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
@@ -244,6 +259,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.removeChatListener(_handleEvent); // v2.7.2 review(M1)
+    // The modal future owns and disposes its Git controller in _openGit.
+    _gitController = null;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -830,10 +847,20 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── 事件处理（对齐网页端 handleEvent） ──
   void _handleEvent(ChatEvent ev) {
     if (!mounted) return;
-    // v2.7.2 review(M1)：只处理本页会话的事件（store 全量广播，叠层页面各收各的）。
     // bridge 事件兼容旧 store：若 sessionId 只存在 data 中也必须按页面绑定过滤。
     final eventSessionId = ev.sessionId ?? ev.data?['sessionId']?.toString();
     if (eventSessionId != null && eventSessionId != _mySessionId) return;
+    if (ev.type == 'git/changed') {
+      final controller = _gitController;
+      if (controller != null) {
+        final changedRepository = ev.data?['repositoryId']?.toString();
+        final openRepository = controller.state.repository?.repositoryId;
+        if (changedRepository == null || changedRepository == openRepository) {
+          controller.markStale();
+        }
+      }
+      return;
+    }
     // 所有带 durable seq 的事件先去重，再更新任何投影（todo/jobs/tool card）。
     // 否则 SSE 重复帧与 catch-up 会各自追加一张 timeline card。
     if (ev.seq != null) {
@@ -2079,6 +2106,37 @@ class _ChatScreenState extends State<ChatScreen> {
     showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
   }
 
+  Future<void> _openGit() async {
+    final sid = _mySessionId ?? widget.store.sessionId;
+    if (sid == null || _gitController != null) return;
+    final readApi = widget.gitReadApi ?? _api;
+    final controller =
+        widget.gitControllerFactory?.call(readApi) ?? GitBrowserController(readApi);
+    _gitController = controller;
+    unawaited(controller.open(sid));
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        backgroundColor: Colors.transparent,
+        builder: (context) => DraggableScrollableSheet(
+          initialChildSize: 0.92,
+          minChildSize: 0.65,
+          maxChildSize: 0.98,
+          expand: false,
+          builder: (context, scrollController) => GitBrowserSheet(
+            controller: controller,
+            scrollController: scrollController,
+          ),
+        ),
+      );
+    } finally {
+      if (identical(_gitController, controller)) _gitController = null;
+      controller.dispose();
+    }
+  }
+
   /// 执行消息操作（v2.8.0：常驻操作栏入口）：copy / positive / negative / fork。
   /// 反馈支持 toggle：再点已选的评级 = 取消（rating=none，与 PC 端一致），本地图标同步高亮。
   Future<void> _runMessageAction(_MsgItem item, String action) async {
@@ -2191,6 +2249,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.source_outlined, size: 20),
+            tooltip: 'Git',
+            onPressed: _openGit,
+          ),
           // v2.7：会话工具（任务 / 子代理 / 目标）
           IconButton(
             icon: const Icon(Icons.assignment_outlined, size: 20),

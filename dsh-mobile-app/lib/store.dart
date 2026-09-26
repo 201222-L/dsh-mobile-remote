@@ -883,6 +883,13 @@ class AppStore extends ChangeNotifier {
       unawaited(refreshWorkspaces());
       return;
     }
+    if (type == 'git/changed') {
+      final repositoryId = frame['repositoryId'];
+      if (repositoryId is String && repositoryId.isNotEmpty) {
+        _emitChatEvent(ChatEvent(type: 'git/changed', data: {'repositoryId': repositoryId}));
+      }
+      return;
+    }
     if (type == 'notifications/changed') {
       // 通知被增删（如移动端删除记录）：刷新列表与未读角标
       refreshNotifs();

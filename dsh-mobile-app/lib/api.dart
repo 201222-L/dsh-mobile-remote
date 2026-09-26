@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'logger.dart';
 import 'models.dart';
+import 'git_models.dart';
 
 class ApiException implements Exception {
   final String message;
@@ -38,7 +39,30 @@ final Api api = Api();
 /// （null = 旧版插件未返回，由调用方按根视图推断，见 sheets.dart dirSepOf）。
 typedef DirListing = ({List<String> dirs, List<String> files, String? sep});
 
-class Api {
+abstract interface class GitReadApi {
+  Future<GitReadCapabilities> capabilities(String sessionId);
+  Future<GitRepository> repository(String sessionId);
+  Future<List<GitBranch>> branches(String sessionId, String repositoryId);
+  Future<GitGraphPage> graph(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit,
+  });
+  Future<GitCommitDetails> commitDetails(
+    String sessionId,
+    String repositoryId,
+    String oid, {
+    String? filesCursor,
+    int filesLimit,
+  });
+}
+
+class Api implements GitReadApi {
+  final http.Client _client;
+
   Api({http.Client? client}) : _client = client ?? http.Client();
 
   String baseUrl = '';
@@ -64,8 +88,7 @@ class Api {
   static const _maxUrls = 8;
 
   /// 共享 HTTP 客户端：SSE 重连复用同一连接池，避免每次 new Client 泄漏
-  /// socket/定时器导致内存耗尽闪退。
-  final http.Client _client;
+  /// socket/定时器导致内存耗尽闪退。构造注入仅用于契约测试。
 
   /// 地址归一：只保留 scheme://host[:port]（路径剥掉）——挂载路径由 [_pathOf] 单独解析。
   static String _normBase(String s) {
@@ -879,6 +902,66 @@ class Api {
   Future<void> createDirectory({String? path, required String name}) async {
     await postJson('/api/directories', {'path': path, 'name': name});
   }
+
+  String _gitQuery(String route, Map<String, String> parameters) =>
+      '$route?${Uri(queryParameters: parameters).query}';
+
+  @override
+  Future<GitReadCapabilities> capabilities(String sessionId) async {
+    final data = await getJson(_gitQuery('/api/git/capabilities', {'sessionId': sessionId}));
+    final value = data['git'];
+    return GitReadCapabilities.fromJson(value is Map ? Map<String, dynamic>.from(value) : data);
+  }
+
+  @override
+  Future<GitRepository> repository(String sessionId) async {
+    final data = await getJson(_gitQuery('/api/git/repository', {'sessionId': sessionId}));
+    final value = data['repository'];
+    return GitRepository.fromJson(value is Map ? Map<String, dynamic>.from(value) : data);
+  }
+
+  @override
+  Future<List<GitBranch>> branches(String sessionId, String repositoryId) async {
+    final data = await getJson(_gitQuery('/api/git/branches', {
+      'sessionId': sessionId,
+      'repositoryId': repositoryId,
+    }));
+    return List.unmodifiable((data['branches'] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => GitBranch.fromJson(Map<String, dynamic>.from(item))));
+  }
+
+  @override
+  Future<GitGraphPage> graph(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit = 100,
+  }) async => GitGraphPage.fromJson(await getJson(_gitQuery('/api/git/graph', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'tips': jsonEncode(tips.map((tip) => tip.toJson()).toList()),
+        'snapshotId': ?snapshotId,
+        'cursor': ?cursor,
+        'limit': '$limit',
+      })));
+
+  @override
+  Future<GitCommitDetails> commitDetails(
+    String sessionId,
+    String repositoryId,
+    String oid, {
+    String? filesCursor,
+    int filesLimit = 100,
+  }) async => GitCommitDetails.fromJson(await getJson(_gitQuery('/api/git/commit', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'oid': oid,
+        'filesCursor': ?filesCursor,
+        'filesLimit': '$filesLimit',
+      })));
 
   Future<Map<String, dynamic>?> diagnostics() async {
     try {
