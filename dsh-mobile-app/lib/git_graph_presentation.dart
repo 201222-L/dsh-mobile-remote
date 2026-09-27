@@ -11,24 +11,24 @@ class GitGraphLabel {
 }
 
 const _lightBranchColors = <Color>[
-  Color(0xffcf3b2e),
-  Color(0xff147d64),
-  Color(0xff235db4),
-  Color(0xff9a5d00),
-  Color(0xff7543a5),
-  Color(0xff087e9b),
-  Color(0xffb02e70),
-  Color(0xff596b18),
+  Color(0xffd9261c),
+  Color(0xff00875a),
+  Color(0xff1a5fcc),
+  Color(0xffa85c00),
+  Color(0xff6a12c4),
+  Color(0xff0088a8),
+  Color(0xffc21868),
+  Color(0xff627d00),
 ];
 const _darkBranchColors = <Color>[
-  Color(0xffff806e),
-  Color(0xff57d6a2),
-  Color(0xff82b4ff),
-  Color(0xffffc266),
-  Color(0xffc79aff),
-  Color(0xff55d6ef),
-  Color(0xffff8cc7),
-  Color(0xffc6df68),
+  Color(0xfff0523f),
+  Color(0xff19c77e),
+  Color(0xff4b8dff),
+  Color(0xffffab18),
+  Color(0xffb768ff),
+  Color(0xff18c4e6),
+  Color(0xfff64fa3),
+  Color(0xffa9d91d),
 ];
 
 int stableGitColorSlot(String ref) {

@@ -15,6 +15,34 @@ void main() {
     );
   });
 
+  test('branch palette is vivid with readable contrast', () {
+    for (final brightness in Brightness.values) {
+      final refsBySlot = <int, String>{};
+      for (var i = 0; i < 512 && refsBySlot.length < 8; i++) {
+        final ref = 'refs/heads/color-check-$i';
+        refsBySlot.putIfAbsent(stableGitColorSlot(ref), () => ref);
+      }
+      expect(refsBySlot, hasLength(8));
+
+      final background = brightness == Brightness.light
+          ? Colors.white
+          : const Color(0xff161b22);
+      final backgroundLuminance = background.computeLuminance();
+      for (final ref in refsBySlot.values) {
+        final color = gitBranchColor(ref, brightness);
+        expect(HSLColor.fromColor(color).saturation, greaterThanOrEqualTo(.75));
+        final foregroundLuminance = color.computeLuminance();
+        final lighter = foregroundLuminance > backgroundLuminance
+            ? foregroundLuminance
+            : backgroundLuminance;
+        final darker = foregroundLuminance > backgroundLuminance
+            ? backgroundLuminance
+            : foregroundLuminance;
+        expect((lighter + .05) / (darker + .05), greaterThanOrEqualTo(3));
+      }
+    }
+  });
+
   test('graph decorations prioritize current ref and compact overflow', () {
     const current = GitBranch(
       name: 'refs/heads/main',
