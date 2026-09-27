@@ -221,7 +221,7 @@ test("branches identify local, remote, current, upstream, ahead and behind", asy
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("graph uses opaque session-bound snapshots, explicit cursors, and revalidates at most three tips", async () => {
+test("graph uses opaque session-bound snapshots, explicit cursors, and revalidates at most five tips", async () => {
   const root = mkdtempSync(`${tmpdir()}/git-read-graph-`);
   try {
     fixture(root);
@@ -238,7 +238,15 @@ test("graph uses opaque session-bound snapshots, explicit cursors, and revalidat
     await assert.rejects(() => service.graph("session-1", repository.repositoryId, { cursor: first.nextCursor }), (e) => e.code === "graph-stale" && e.status === 409);
     const second = await service.graph("session-1", repository.repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 10 });
     assert.equal(new Set([...first.commits, ...second.commits].map((row) => row.oid)).size, 2);
-    await assert.rejects(() => service.graph("session-1", repository.repositoryId, { tips: [...tips, ...tips, ...tips, ...tips] }), (e) => e.code === "graph-too-many-tips" && e.status === 400);
+    const extraNames = ["topic-1", "topic-2", "topic-3", "topic-4"];
+    for (const name of extraNames) git(root, "branch", name);
+    const fiveTips = [
+      ...tips,
+      ...extraNames.map((name) => ({ name: `refs/heads/${name}`, tipOid })),
+    ];
+    const five = await service.graph("session-1", repository.repositoryId, { tips: fiveTips, limit: 10 });
+    assert.equal(five.tips.length, 5);
+    await assert.rejects(() => service.graph("session-1", repository.repositoryId, { tips: [...fiveTips, { name: "refs/heads/sixth" }] }), (e) => e.code === "graph-too-many-tips" && e.status === 400);
     appendFileSync(`${root}/a.txt`, "three\n"); git(root, "commit", "-am", "three");
     await assert.rejects(() => service.graph("session-1", repository.repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor }), (e) => e.code === "graph-stale" && e.status === 409);
     const deletion = await service.graph("session-1", repository.repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });

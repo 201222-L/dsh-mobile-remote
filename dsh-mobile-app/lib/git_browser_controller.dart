@@ -368,7 +368,7 @@ class GitBrowserController extends ChangeNotifier {
       if (selected.length == 1) return false;
       selected.removeAt(index);
     } else {
-      if (selected.length == 3) return false;
+      if (selected.length >= maxSelectedGraphBranches) return false;
       selected.add(branch);
     }
     final graphGeneration = ++_graphGeneration;

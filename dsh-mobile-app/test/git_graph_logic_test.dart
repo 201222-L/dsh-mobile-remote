@@ -140,13 +140,16 @@ void main() {
   );
 
   test(
-    'only three selected tips influence node segments and initial anchors',
+    'only five selected tips influence node segments and initial anchors',
     () {
+      expect(maxNodeColorSegments, 5);
       const selected = [
         GitBranch(kind: 'local', name: 'a', displayName: 'a', oid: 'a'),
         GitBranch(kind: 'local', name: 'b', displayName: 'b', oid: 'b'),
         GitBranch(kind: 'local', name: 'c', displayName: 'c', oid: 'c'),
         GitBranch(kind: 'local', name: 'd', displayName: 'd', oid: 'd'),
+        GitBranch(kind: 'local', name: 'e', displayName: 'e', oid: 'e'),
+        GitBranch(kind: 'local', name: 'f', displayName: 'f', oid: 'f'),
       ];
       final shared = layoutGraph(
         [commit('a')],
@@ -155,6 +158,8 @@ void main() {
           GitBranch(kind: 'local', name: 'a2', displayName: 'a2', oid: 'a'),
           GitBranch(kind: 'local', name: 'a3', displayName: 'a3', oid: 'a'),
           GitBranch(kind: 'local', name: 'a4', displayName: 'a4', oid: 'a'),
+          GitBranch(kind: 'local', name: 'a5', displayName: 'a5', oid: 'a'),
+          GitBranch(kind: 'local', name: 'a6', displayName: 'a6', oid: 'a'),
         ],
       );
       final separate = layoutGraph([
@@ -162,11 +167,19 @@ void main() {
         commit('b'),
         commit('c'),
         commit('d'),
+        commit('e'),
+        commit('f'),
       ], selected);
 
-      expect(shared.rows.single.tipColorSlots, [0, 1, 2]);
-      expect(separate.rows.take(3).map((row) => row.colorSlot), [0, 1, 2]);
-      expect(separate.rows[3].colorSlot, greaterThanOrEqualTo(3));
+      expect(shared.rows.single.tipColorSlots, [0, 1, 2, 3, 4]);
+      expect(separate.rows.take(5).map((row) => row.colorSlot), [
+        0,
+        1,
+        2,
+        3,
+        4,
+      ]);
+      expect(separate.rows[5].colorSlot, greaterThanOrEqualTo(5));
     },
   );
 

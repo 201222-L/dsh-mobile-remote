@@ -39,6 +39,18 @@ const _fourth = GitBranch(
   oid: 'fourth-oid',
   kind: 'local',
 );
+const _fifth = GitBranch(
+  name: 'refs/remotes/origin/fifth',
+  displayName: 'origin/fifth',
+  oid: 'fifth-oid',
+  kind: 'remote',
+);
+const _sixth = GitBranch(
+  name: 'refs/heads/sixth',
+  displayName: 'sixth',
+  oid: 'sixth-oid',
+  kind: 'local',
+);
 
 class WidgetGitApi implements GitReadApi {
   WidgetGitApi({this.available = true});
@@ -82,7 +94,7 @@ class WidgetGitApi implements GitReadApi {
   Future<List<GitBranch>> branches(
     String sessionId,
     String repositoryId,
-  ) async => const [_main, _feature, _remote, _fourth];
+  ) async => const [_main, _feature, _remote, _fourth, _fifth, _sixth];
 
   @override
   Future<GitGraphPage> graph(
@@ -396,46 +408,60 @@ void main() {
     expect(find.text('keep 7'), findsOneWidget);
   });
 
-  testWidgets(
-    'graph branch picker searches and limits selection to one through three',
-    (tester) async {
-      final api = WidgetGitApi();
-      final controller = await mountSheet(tester, api);
-      addTearDown(controller.dispose);
-      await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('git-graph-filter')));
-      await tester.pumpAndSettle();
-      final main = find.byKey(const Key('git-filter-refs/heads/main'));
-      await tester.tap(main);
-      await tester.pumpAndSettle();
-      expect(controller.state.selectedBranches.length, 1);
-      await tester.enterText(
-        find.byKey(const Key('git-graph-search')),
-        'origin',
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('git-filter-refs/heads/feature/search')),
-        findsNothing,
-      );
-      await tester.tap(
-        find.byKey(const Key('git-filter-refs/remotes/origin/main')),
-      );
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byKey(const Key('git-graph-search')), '');
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const Key('git-filter-refs/heads/feature/search')),
-      );
-      await tester.pumpAndSettle();
-      expect(controller.state.selectedBranches.length, 3);
-      await tester.tap(find.byKey(const Key('git-filter-refs/heads/fourth')));
-      await tester.pumpAndSettle();
-      expect(controller.state.selectedBranches.length, 3);
-      expect(api.graphRequests.last.length, 3);
-    },
-  );
+  testWidgets('graph branch picker permits five refs and explains the limit', (
+    tester,
+  ) async {
+    final api = WidgetGitApi();
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-graph-filter')));
+    await tester.pumpAndSettle();
+    final main = find.byKey(const Key('git-filter-refs/heads/main'));
+    await tester.tap(main);
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedBranches.length, 1);
+    await tester.enterText(find.byKey(const Key('git-graph-search')), 'origin');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('git-filter-refs/heads/feature/search')),
+      findsNothing,
+    );
+    await tester.tap(
+      find.byKey(const Key('git-filter-refs/remotes/origin/main')),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('git-graph-search')), '');
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('git-filter-refs/heads/feature/search')),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedBranches.length, 3);
+
+    final pickerScroll = find.descendant(
+      of: find.byKey(const Key('git-graph-branch-list')),
+      matching: find.byType(Scrollable),
+    );
+    final fourth = find.byKey(const Key('git-filter-refs/heads/fourth'));
+    await tester.scrollUntilVisible(fourth, 80, scrollable: pickerScroll);
+    await tester.tap(fourth);
+    await tester.pumpAndSettle();
+    final fifth = find.byKey(const Key('git-filter-refs/remotes/origin/fifth'));
+    await tester.scrollUntilVisible(fifth, 80, scrollable: pickerScroll);
+    await tester.tap(fifth);
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedBranches.length, 5);
+
+    final sixth = find.byKey(const Key('git-filter-refs/heads/sixth'));
+    await tester.scrollUntilVisible(sixth, 80, scrollable: pickerScroll);
+    await tester.tap(sixth);
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedBranches.length, 5);
+    expect(api.graphRequests.last.length, 5);
+    expect(find.text('Select up to 5 branches'), findsOneWidget);
+  });
 
   testWidgets(
     'one horizontal graph viewport isolates swipes; vertical scroll paginates',

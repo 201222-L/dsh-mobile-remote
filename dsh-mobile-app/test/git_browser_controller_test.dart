@@ -263,11 +263,23 @@ void main() {
     expect(controller.state.worktree!.snapshotId, 'snapshot-3');
   });
 
-  test('openBranch replaces selection and graph selection stays between one and three', () async {
+  test('openBranch replaces selection and graph selection stays between one and five', () async {
     final fourth = GitBranch(
       name: 'refs/heads/fourth',
       displayName: 'fourth',
       oid: 'fourth-oid',
+      kind: 'local',
+    );
+    final fifth = GitBranch(
+      name: 'refs/remotes/origin/fifth',
+      displayName: 'origin/fifth',
+      oid: 'fifth-oid',
+      kind: 'remote',
+    );
+    final sixth = GitBranch(
+      name: 'refs/heads/sixth',
+      displayName: 'sixth',
+      oid: 'sixth-oid',
       kind: 'local',
     );
     final api = FakeGitReadApi()
@@ -276,6 +288,8 @@ void main() {
         localFeature,
         remoteMain,
         fourth,
+        fifth,
+        sixth,
       ];
     final controller = GitBrowserController(api);
     await controller.open('session-a');
@@ -284,16 +298,22 @@ void main() {
     expect(controller.state.selectedBranches, [localFeature]);
     expect(await controller.toggleGraphBranch(remoteMain), isTrue);
     expect(await controller.toggleGraphBranch(localMain), isTrue);
-    expect(await controller.toggleGraphBranch(fourth), isFalse);
+    expect(await controller.toggleGraphBranch(fourth), isTrue);
+    expect(await controller.toggleGraphBranch(fifth), isTrue);
+    expect(await controller.toggleGraphBranch(sixth), isFalse);
     expect(controller.state.selectedBranches, [
       localFeature,
       remoteMain,
       localMain,
+      fourth,
+      fifth,
     ]);
     expect(await controller.toggleGraphBranch(localFeature), isTrue);
     expect(await controller.toggleGraphBranch(remoteMain), isTrue);
-    expect(await controller.toggleGraphBranch(localMain), isFalse);
-    expect(controller.state.selectedBranches, [localMain]);
+    expect(await controller.toggleGraphBranch(localMain), isTrue);
+    expect(await controller.toggleGraphBranch(fourth), isTrue);
+    expect(await controller.toggleGraphBranch(fifth), isFalse);
+    expect(controller.state.selectedBranches, [fifth]);
   });
 
   test(

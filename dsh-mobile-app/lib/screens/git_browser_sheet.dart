@@ -897,7 +897,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 onPressed: () =>
                     setState(() => _choosingBranches = !_choosingBranches),
                 icon: const Icon(Icons.filter_alt_outlined),
-                label: Text(L10n.t('分支 (1–3)', 'Branches (1–3)')),
+                label: Text(L10n.t('分支 (1–5)', 'Branches (1–5)')),
               ),
             ],
           ),
@@ -917,6 +917,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
           SizedBox(
             height: 176,
             child: ListView(
+              key: const Key('git-graph-branch-list'),
               children: [
                 for (final branch in matches)
                   CheckboxListTile(
@@ -925,10 +926,21 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     title: Text(branch.displayName),
                     value: selected.any((item) => item.name == branch.name),
                     onChanged: (value) {
-                      if ((value == true && selected.length >= 3) ||
-                          (value == false && selected.length <= 1)) {
+                      if (value == true &&
+                          selected.length >= maxSelectedGraphBranches) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              L10n.t(
+                                '最多选择 $maxSelectedGraphBranches 个分支',
+                                'Select up to $maxSelectedGraphBranches branches',
+                              ),
+                            ),
+                          ),
+                        );
                         return;
                       }
+                      if (value == false && selected.length <= 1) return;
                       widget.controller.toggleGraphBranch(branch);
                     },
                   ),

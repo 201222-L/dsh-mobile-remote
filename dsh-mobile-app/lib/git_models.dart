@@ -1,5 +1,7 @@
 import 'dart:collection';
 
+const maxSelectedGraphBranches = 5;
+
 List<String> _strings(Object? value) => (value as List? ?? const [])
     .map((item) => item.toString())
     .toList(growable: false);

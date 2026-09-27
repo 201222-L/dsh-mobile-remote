@@ -1,7 +1,7 @@
 import 'git_models.dart';
 
 /// The renderer shows at most this many selected-tip colors in a commit node.
-const maxNodeColorSegments = 3;
+const maxNodeColorSegments = maxSelectedGraphBranches;
 
 class GraphContinuation {
   final int from;
