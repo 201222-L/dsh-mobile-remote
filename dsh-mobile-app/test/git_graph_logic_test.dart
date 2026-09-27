@@ -68,6 +68,24 @@ void main() {
     expect(layout.laneCount, 3);
   });
 
+  test(
+    'inserting later parents preserves distinct lanes for active parents',
+    () {
+      final layout = layoutGraph([
+        commit('c0', ['c2']),
+        commit('c1', ['c3', 'c4']),
+        commit('c2', ['c4', 'c5']),
+        commit('c3'),
+        commit('c4'),
+        commit('c5'),
+      ], const []);
+
+      expect(layout.rows[2].parentLanes, [2, 1]);
+      expect(layout.rows[2].parentLanes.toSet(), hasLength(2));
+      expect(layout.rows[2].parentColorSlots, hasLength(2));
+    },
+  );
+
   test('criss-crossing active lines retain their continuations', () {
     final layout = layoutGraph([
       commit('merge', ['left', 'right']),
@@ -277,6 +295,11 @@ void main() {
         );
         for (var i = 0; i < commits.length; i++) {
           expect(paged[i].parentLanes, hasLength(commits[i].parents.length));
+          expect(
+            paged[i].parentLanes.toSet().length,
+            commits[i].parents.toSet().length,
+            reason: 'sample $sample row $i must use distinct parent lanes',
+          );
           expect(
             paged[i].parentColorSlots,
             hasLength(commits[i].parents.length),

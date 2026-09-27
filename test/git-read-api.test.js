@@ -32,13 +32,17 @@ test("HTTP Git browser exposes read-only worktree and preview GETs and enforces 
   const oid = "a".repeat(40);
   const workspace = mkdtempSync(`${tmpdir()}/git-api-`);
   const session = { id: "s1", header: { cwd: workspace } };
+  let graphFailure;
   const provider = {
     contractVersion: "1.0.0", capabilities: () => ({ available: true }),
     repositoryRoot: async (cwd) => cwd,
     repositoryInfo: async () => ({ headOid: oid, currentBranch: "refs/heads/main", empty: false }),
     branches: async () => [{ name: "refs/heads/main", displayName: "main", oid, kind: "local", current: true }],
     resolveTip: async () => oid,
-    graph: async () => [{ oid, parents: [], author: "Alice", timestamp: 1, subject: "first" }],
+    graph: async () => {
+      if (graphFailure) throw graphFailure;
+      return [{ oid, parents: [], author: "Alice", timestamp: 1, subject: "first" }];
+    },
     commit: async () => ({ oid, parents: [], author: "Alice", timestamp: 1, message: "first", files: [] }),
     worktree: async () => ({ signature: "stable", entries: [{ path: "tracked.txt", status: "modified", index: true, worktree: true, conflicted: false }] }),
   };
@@ -71,6 +75,14 @@ test("HTTP Git browser exposes read-only worktree and preview GETs and enforces 
     assert.equal(branches.status, 200); assert.equal(branches.body.branches[0].name, "refs/heads/main");
     const graph = await request(`/git/graph?${query}`);
     assert.equal(graph.status, 200); assert.equal(graph.body.commits[0].oid, oid);
+    graphFailure = Object.assign(new Error("oversized output must not leak details"), {
+      code: "git-output-too-large",
+      status: 413,
+    });
+    const oversizedGraph = await request(`/git/graph?${query}`);
+    assert.equal(oversizedGraph.status, 413);
+    assert.deepEqual(oversizedGraph.body, { error: "git-output-too-large" });
+    graphFailure = undefined;
     const commit = await request(`/git/commit?${query}&oid=${oid}`);
     assert.equal(commit.status, 200); assert.equal(commit.body.oid, oid);
     const worktree = await request(`/git/worktree?${query}`);

@@ -154,12 +154,16 @@ GraphLayout layoutGraph(
 
     for (var i = 0; i < commit.parents.length; i++) {
       final parent = commit.parents[i];
-      var parentLane = afterLanes.indexOf(parent);
-      if (parentLane < 0) {
-        parentLane = (lane + i).clamp(0, afterLanes.length);
+      if (!afterLanes.contains(parent)) {
+        final parentLane = (lane + i).clamp(0, afterLanes.length);
         afterLanes.insert(parentLane, parent);
         afterColors.insert(parentLane, i == 0 ? outgoing : nextColor++);
       }
+    }
+    // Resolve indices only after every insertion: a later parent inserted
+    // before an existing lane shifts its index in afterLanes.
+    for (final parent in commit.parents) {
+      final parentLane = afterLanes.indexOf(parent);
       parentLanes.add(parentLane);
       parentColors.add(afterColors[parentLane]);
     }
