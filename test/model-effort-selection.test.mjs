@@ -10,7 +10,7 @@ const config = {
   rateLimit: {}, lanBridge: { enabled: false }, approvalMode: 'desktop',
 };
 
-function harness({ next, lastUsed, defaultSelection, selectError, models } = {}) {
+function harness({ next, lastUsed, defaultSelection, selectError, models, withoutSessionRegistry = false, sessionNotFound = false } = {}) {
   const routes = [];
   const calls = [];
   const created = [];
@@ -31,6 +31,7 @@ function harness({ next, lastUsed, defaultSelection, selectError, models } = {})
   const gateway = {
     async invokeRpc(endpoint, payload) {
       calls.push({ endpoint, args: payload.args });
+      if (endpoint === 'session/selectModel' && sessionNotFound) return { ok: false, error: { code: 'session/not-found', message: 'session not found' } };
       if (endpoint === 'session/selectModel' && selectError) return { ok: false, error: { code: 'session/model-unavailable', message: 'invalid model or effort' } };
       if (endpoint === 'session/modelCatalog') return { ok: true, value: { groups: entries, default: defaultSelection } };
       return { ok: true, value: {} };
@@ -42,7 +43,7 @@ function harness({ next, lastUsed, defaultSelection, selectError, models } = {})
     },
   };
   const services = new Map([
-    ['agents', agents], ['sessions', { get: id => id === 'existing' ? session : undefined }],
+    ['agents', agents], ['sessions', { get: id => !withoutSessionRegistry && id === 'existing' ? session : undefined }],
     ['llm', { listProviders: async () => [], listConfigurableProviders: async () => [], resolveModelInfo: async () => ({ inputModalities: [] }) }],
     ['typertGateway', gateway],
   ]);
@@ -90,6 +91,38 @@ test('只改 effort 保持当前待生效的 Codex 模型，不退回 DeepSeek �
     assert.deepEqual(h.calls.find(c => c.endpoint === 'session/selectModel')?.args.request, {
       sessionId: 'existing', provider: 'openai-codex', model: 'gpt-6-luna', reasoningEffort: 'high',
     });
+  } finally { h.dispose?.(); }
+});
+
+test('持久化会话不在本地 sessions map 时仍通过内核选择 effort', async () => {
+  const h = harness({ withoutSessionRegistry: true, next: { provider: 'openai-codex', model: 'gpt-6-luna', reasoningEffort: 'low' } });
+  try {
+    const result = await request(h.route, '/m/api/session-config', { sessionId: 'existing', reasoningEffort: 'high' });
+    assert.equal(result.status, 200);
+    assert.equal(h.calls.some(c => c.endpoint === 'session/selectModel'), true);
+  } finally { h.dispose?.(); }
+});
+
+test('内核确认会话不存在时仍返回 session-not-found', async () => {
+  const h = harness({ withoutSessionRegistry: true, sessionNotFound: true });
+  try {
+    const result = await request(h.route, '/m/api/session-config', {
+      sessionId: 'missing', provider: 'openai-codex', model: 'gpt-6-luna',
+    });
+    assert.equal(result.status, 404);
+    assert.equal(result.body.error, 'session-not-found');
+    assert.equal(h.calls.some(c => c.endpoint === 'session/selectModel'), true);
+  } finally { h.dispose?.(); }
+});
+
+test('休眠会话缺失本地对象时仍拒绝无法应用的权限修改', async () => {
+  const h = harness({ withoutSessionRegistry: true });
+  try {
+    const result = await request(h.route, '/m/api/session-config', {
+      sessionId: 'existing', permissionPreset: 'workspace-write',
+    });
+    assert.equal(result.status, 404);
+    assert.equal(h.calls.some(c => c.endpoint === 'session/selectModel'), false);
   } finally { h.dispose?.(); }
 });
 
