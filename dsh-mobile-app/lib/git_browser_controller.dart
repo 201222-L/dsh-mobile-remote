@@ -629,12 +629,15 @@ class GitBrowserController extends ChangeNotifier {
   }
 
   void markWorktreeStale() {
-    if (_state.worktreeStale) return;
+    // A change can arrive while a worktree load (including a refresh of an
+    // already-stale snapshot) is pending. Its result predates the change.
+    _worktreeGeneration++;
     _worktreeCheckGeneration++;
     if (_state.loadingPreview) _previewGeneration++;
     _emit(
       _state.copyWith(
         worktreeStale: true,
+        loadingWorktree: false,
         loadingPreview: _state.loadingPreview ? false : null,
         previewError: _state.loadingPreview ? 'graph-stale' : null,
       ),

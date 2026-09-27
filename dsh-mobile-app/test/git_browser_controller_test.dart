@@ -213,6 +213,100 @@ void main() {
     },
   );
 
+  test(
+    'a worktree change invalidates an in-flight load until explicit refresh',
+    () async {
+      final api = FakeGitReadApi();
+      final pending = Completer<GitWorktreeSnapshot>();
+      var calls = 0;
+      api.onWorktree = (_, _) {
+        calls++;
+        if (calls == 1) return pending.future;
+        return Future.value(
+          const GitWorktreeSnapshot(repositoryId: 'repo', snapshotId: 'fresh'),
+        );
+      };
+      final controller = GitBrowserController(api);
+      await controller.open('session-a');
+
+      final load = controller.loadWorktree();
+      expect(controller.state.loadingWorktree, isTrue);
+      controller.markWorktreeStale();
+      expect(controller.state.worktreeStale, isTrue);
+      pending.complete(
+        const GitWorktreeSnapshot(repositoryId: 'repo', snapshotId: 'obsolete'),
+      );
+      await load;
+      expect(controller.state.worktreeStale, isTrue);
+      expect(controller.state.worktree?.snapshotId, isNot('obsolete'));
+      expect(controller.state.loadingWorktree, isFalse);
+
+      await controller.loadWorktree(refresh: true);
+      expect(calls, 2);
+      expect(controller.state.worktree?.snapshotId, 'fresh');
+      expect(controller.state.worktreeStale, isFalse);
+    },
+  );
+
+  test('a second change during refresh keeps worktree stale', () async {
+    final api = FakeGitReadApi();
+    final pending = Completer<GitWorktreeSnapshot>();
+    var calls = 0;
+    api.onWorktree = (_, _) {
+      calls++;
+      if (calls == 2) return pending.future;
+      return Future.value(
+        GitWorktreeSnapshot(
+          repositoryId: 'repo',
+          snapshotId: 'snapshot-$calls',
+        ),
+      );
+    };
+    final controller = GitBrowserController(api);
+    await controller.open('session-a');
+    await controller.loadWorktree();
+    controller.markWorktreeStale();
+
+    final refresh = controller.loadWorktree(refresh: true);
+    controller.markWorktreeStale();
+    pending.complete(
+      const GitWorktreeSnapshot(repositoryId: 'repo', snapshotId: 'outdated'),
+    );
+    await refresh;
+    expect(controller.state.worktreeStale, isTrue);
+    expect(controller.state.worktree?.snapshotId, 'snapshot-1');
+
+    await controller.loadWorktree(refresh: true);
+    expect(controller.state.worktreeStale, isFalse);
+    expect(controller.state.worktree?.snapshotId, 'snapshot-3');
+  });
+
+  test('a worktree change cancels in-flight preview', () async {
+    final api = FakeGitReadApi();
+    final pending = Completer<GitFilePreview>();
+    api.onPreview = (_, _, _, _, _, _) => pending.future;
+    final controller = GitBrowserController(api);
+    await controller.open('session-a');
+    await controller.loadWorktree();
+
+    final preview = controller.openPreview(kind: 'staged', path: 'tracked.txt');
+    expect(controller.state.loadingPreview, isTrue);
+    controller.markWorktreeStale();
+    expect(controller.state.loadingPreview, isFalse);
+    expect(controller.state.previewError, 'graph-stale');
+    pending.complete(
+      const GitFilePreview(
+        repositoryId: 'repo',
+        kind: 'staged',
+        path: 'tracked.txt',
+        diff: 'outdated',
+      ),
+    );
+    await preview;
+    expect(controller.state.preview, isNull);
+    expect(controller.state.worktreeStale, isTrue);
+  });
+
   test('opening a branch exposes the pending graph load until its snapshot arrives', () async {
     final api = FakeGitReadApi();
     final page = Completer<GitGraphPage>();

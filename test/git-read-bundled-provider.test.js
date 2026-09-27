@@ -77,6 +77,57 @@ test("worktree read does not execute repository-configured fsmonitor", {
   }
 });
 
+test("worktree read does not execute repository-configured clean filters", {
+  skip: process.platform === "win32" ? "POSIX sentinel script" : false,
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-clean-filter-"));
+  try {
+    fixture(root);
+    writeFileSync(join(root, ".gitattributes"), "tracked.txt filter=evil\n");
+    git(root, "add", ".gitattributes");
+    git(root, "commit", "-qm", "attributes");
+    const marker = join(root, "clean-executed");
+    const script = join(root, "evil-clean.sh");
+    writeFileSync(script, `#!/bin/sh\nprintf executed > '${marker}'\ncat\n`);
+    chmodSync(script, 0o755);
+    git(root, "config", "filter.evil.clean", script);
+    writeFileSync(join(root, "tracked.txt"), "changed\n");
+
+    const result = await providerFor(root).worktree(root);
+
+    assert.equal(existsSync(marker), false, "Git must not execute repository-configured clean filters");
+    assert.ok(result.entries.some((entry) => entry.path === "tracked.txt" && entry.worktree));
+    assert.match(result.signature, /^[0-9a-f]{64}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("worktree read does not execute repository-configured process filters", {
+  skip: process.platform === "win32" ? "POSIX sentinel script" : false,
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-process-filter-"));
+  try {
+    fixture(root);
+    writeFileSync(join(root, ".gitattributes"), "tracked.txt filter=evil\n");
+    git(root, "add", ".gitattributes");
+    git(root, "commit", "-qm", "attributes");
+    const marker = join(root, "process-executed");
+    const script = join(root, "evil-process.sh");
+    writeFileSync(script, `#!/bin/sh\nprintf executed > '${marker}'\nexit 1\n`);
+    chmodSync(script, 0o755);
+    git(root, "config", "filter.evil.process", script);
+    writeFileSync(join(root, "tracked.txt"), "changed\n");
+
+    const result = await providerFor(root).worktree(root);
+
+    assert.equal(existsSync(marker), false, "Git must not execute repository-configured process filters");
+    assert.ok(result.entries.some((entry) => entry.path === "tracked.txt" && entry.worktree));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("git reads clear ambient repository overrides", async () => {
   const root = mkdtempSync(join(tmpdir(), "git-authorized-root-"));
   const outside = mkdtempSync(join(tmpdir(), "git-external-root-"));
@@ -99,6 +150,28 @@ test("git reads clear ambient repository overrides", async () => {
     else process.env.GIT_DIR = previousGitDir;
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("git reads cannot write through inherited trace and trace2 destinations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-trace-env-"));
+  const keys = ["GIT_TRACE", "GIT_TRACE_SETUP", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF"];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  try {
+    fixture(root);
+    const markers = keys.map((key) => join(root, `${key}-marker`));
+    for (let i = 0; i < keys.length; i++) process.env[keys[i]] = markers[i];
+
+    const provider = providerFor(root);
+    const result = await provider.worktree(root);
+    assert.match(result.signature, /^[0-9a-f]{64}$/);
+    for (const marker of markers) assert.equal(existsSync(marker), false, `${marker} must not be created`);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
