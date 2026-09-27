@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/git_browser_controller.dart';
@@ -10,6 +11,8 @@ import 'package:dsh_mobile_app/screens/git_browser_sheet.dart';
 import 'package:dsh_mobile_app/store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 const _main = GitBranch(
   name: 'refs/heads/main',
@@ -208,6 +211,35 @@ AppStore makeStore() {
   return store;
 }
 
+Api makeChatApi() {
+  final client = MockClient((request) async {
+    final body = switch (request.url.path) {
+      '/m/api/history' => {'ok': true, 'events': <Object>[], 'hasMore': false},
+      '/m/api/queue' => {'ok': true, 'rows': <Object>[]},
+      '/m/api/todos' => {'ok': true, 'todos': <Object>[]},
+      '/m/api/session-config' => {'ok': true, 'config': <String, dynamic>{}},
+      _ => {'ok': true},
+    };
+    return http.Response(
+      jsonEncode(body),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  });
+  return Api(client: client)
+    ..baseUrl = 'http://chat.test'
+    ..path = '/m'
+    ..token = ''
+    ..timelineCapabilities = const TimelineCapabilities(
+      version: 1,
+      live: true,
+      history: true,
+      detail: true,
+      unknownEvents: true,
+      callCorrelation: true,
+    );
+}
+
 Future<GitBrowserController> mountSheet(
   WidgetTester tester,
   WidgetGitApi api, {
@@ -239,47 +271,44 @@ void main() {
   setUp(() => L10n.lang = 'en');
   tearDown(() => L10n.lang = 'zh');
 
-  testWidgets(
-    'Git brand button precedes tools and opens the full-screen browser',
-    (tester) async {
-      L10n.lang = 'zh';
-      final gitApi = WidgetGitApi(available: false);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ChatScreen(
-            store: makeStore(),
-            onTitleChanged: () {},
-            gitReadApi: gitApi,
-          ),
+  testWidgets('conversation action rail keeps Git navigation full-screen', (
+    tester,
+  ) async {
+    L10n.lang = 'zh';
+    final gitApi = WidgetGitApi(available: false);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatScreen(
+          store: makeStore(),
+          apiClient: makeChatApi(),
+          onTitleChanged: () {},
+          gitReadApi: gitApi,
         ),
-      );
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 350));
 
-      final git = find.ancestor(
-        of: find.byTooltip('Git'),
-        matching: find.byType(IconButton),
-      );
-      final tools = find.ancestor(
-        of: find.byTooltip('任务 / 子代理 / 目标'),
-        matching: find.byType(IconButton),
-      );
-      expect(git, findsOneWidget);
-      expect(tools, findsOneWidget);
-      expect(tester.getTopLeft(git).dx, lessThan(tester.getTopLeft(tools).dx));
+    await tester.tap(find.byTooltip('对话操作'));
+    await tester.pumpAndSettle();
 
-      // ChatScreen's background history request can replace this test route;
-      // invoke the located IconButton before that unrelated request completes.
-      tester.widget<IconButton>(git).onPressed!();
-      await tester.pumpAndSettle();
-      expect(find.text('Git is unavailable here'), findsOneWidget);
-      expect(find.byType(DraggableScrollableSheet), findsNothing);
-      expect(find.byType(TabBar), findsOneWidget);
-      expect(find.byTooltip('返回聊天'), findsOneWidget);
-      await tester.tap(find.byTooltip('返回聊天'));
-      await tester.pumpAndSettle();
-      expect(find.byType(TabBar), findsNothing);
-      expect(find.byTooltip('返回聊天'), findsNothing);
-    },
-  );
+    final git = find.byTooltip('Git');
+    final tools = find.byTooltip('任务 / 子代理 / 目标');
+    expect(git, findsOneWidget);
+    expect(tools, findsOneWidget);
+    expect(tester.getTopLeft(git).dy, lessThan(tester.getTopLeft(tools).dy));
+
+    await tester.tap(git);
+    await tester.pumpAndSettle();
+    expect(find.text('Git is unavailable here'), findsOneWidget);
+    expect(find.byType(DraggableScrollableSheet), findsNothing);
+    expect(find.byType(TabBar), findsOneWidget);
+    expect(find.byTooltip('返回聊天'), findsOneWidget);
+    expect(find.byTooltip('对话操作'), findsNothing);
+    await tester.tap(find.byTooltip('返回聊天'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TabBar), findsNothing);
+    expect(find.byTooltip('返回聊天'), findsNothing);
+  });
 
   testWidgets(
     'grouped branches search and display current tracking divergence',

@@ -125,6 +125,89 @@ typedef GitBrowserControllerFactory = GitBrowserController Function(
   GitReadApi api,
 );
 
+class _ConversationActionRail extends StatefulWidget {
+  final List<String> initialOrder;
+  final ValueChanged<List<String>> onOrderChanged;
+
+  const _ConversationActionRail({
+    required this.initialOrder,
+    required this.onOrderChanged,
+  });
+
+  @override
+  State<_ConversationActionRail> createState() =>
+      _ConversationActionRailState();
+}
+
+class _ConversationActionRailState extends State<_ConversationActionRail> {
+  late final List<String> _order = List.of(widget.initialOrder);
+
+  void _onReorder(int oldIndex, int newIndex) {
+    setState(() {
+      final action = _order.removeAt(oldIndex);
+      _order.insert(newIndex, action);
+    });
+    widget.onOrderChanged(List.unmodifiable(_order));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Material(
+          elevation: 12,
+          color: Theme.of(context).colorScheme.surface,
+          child: SizedBox(
+            width: 56,
+            height: double.infinity,
+            child: ReorderableListView(
+              buildDefaultDragHandles: false,
+              padding: EdgeInsets.zero,
+              onReorderItem: _onReorder,
+              children: [
+                for (var index = 0; index < _order.length; index++)
+                  SizedBox(
+                    key: ValueKey(_order[index]),
+                    width: 56,
+                    height: 56,
+                    child: ReorderableDelayedDragStartListener(
+                      index: index,
+                      child: _actionButton(context, _order[index]),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton(BuildContext context, String id) {
+    final (icon, label) = switch (id) {
+      'git' => (const GitLogo(size: 22), 'Git'),
+      'session_tools' => (
+        const Icon(Icons.assignment_outlined, size: 20),
+        L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
+      ),
+      'copy' => (
+        const Icon(Icons.copy_all, size: 20),
+        L10n.t('复制当前已加载的对话', 'Copy loaded conversation'),
+      ),
+      _ => throw StateError('Unknown conversation action: $id'),
+    };
+    return Tooltip(
+      message: label,
+      triggerMode: TooltipTriggerMode.manual,
+      child: IconButton(
+        onPressed: () => Navigator.of(context, rootNavigator: true).pop(id),
+        icon: icon,
+      ),
+    );
+  }
+}
+
 class ChatScreen extends StatefulWidget {
   final AppStore store;
   final String? initialSend; // 首页直达发送
@@ -2643,6 +2726,51 @@ class _ChatScreenState extends State<ChatScreen> {
     showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
   }
 
+  void _openSessionToolsFromActionRail() {
+    // Preserve the app-bar action's existing page-session-only behavior.
+    final sid = _mySessionId;
+    if (sid != null) {
+      showSessionToolsSheet(
+        context,
+        widget.store,
+        sid,
+        onTitleChanged: widget.onTitleChanged,
+      );
+    }
+  }
+
+  Future<void> _openConversationActionRail() async {
+    final action = await showGeneralDialog<String>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: L10n.t('关闭对话操作', 'Dismiss conversation actions'),
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (_, _, _) => _ConversationActionRail(
+        initialOrder: widget.store.conversationActionOrder,
+        onOrderChanged: (order) =>
+            unawaited(widget.store.setConversationActionOrder(order)),
+      ),
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(1, 0),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'git':
+        await _openGit();
+      case 'session_tools':
+        _openSessionToolsFromActionRail();
+      case 'copy':
+        await _copyConversation();
+    }
+  }
+
   Future<void> _openGit() async {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null || _gitController != null) return;
@@ -2825,31 +2953,9 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           IconButton(
-            icon: const GitLogo(size: 22),
-            tooltip: 'Git',
-            onPressed: _openGit,
-          ),
-          // v2.7：会话工具（任务 / 子代理 / 目标）
-          IconButton(
-            icon: const Icon(Icons.assignment_outlined, size: 20),
-            tooltip: L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
-            onPressed: () {
-              final sid = _mySessionId;
-              if (sid != null) {
-                showSessionToolsSheet(
-                  context,
-                  widget.store,
-                  sid,
-                  onTitleChanged: widget.onTitleChanged,
-                );
-              }
-            },
-          ),
-          // v3.1.5（issue #15）：会话级复制入口（范围=当前已加载的消息，见 _conversationText）
-          IconButton(
-            icon: const Icon(Icons.copy_all, size: 20),
-            tooltip: L10n.t('复制当前已加载的对话', 'Copy loaded conversation'),
-            onPressed: _copyConversation,
+            icon: const Icon(Icons.more_vert, size: 20),
+            tooltip: L10n.t('对话操作', 'Conversation actions'),
+            onPressed: _openConversationActionRail,
           ),
         ],
       ),

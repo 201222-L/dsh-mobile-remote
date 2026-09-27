@@ -49,6 +49,15 @@ class AppStore extends ChangeNotifier {
   List<String> gitTabs = const ['branches', 'graph', 'worktree'];
   static const gitTabIds = ['branches', 'graph', 'worktree'];
   static const _defaultGitTabs = ['branches', 'graph', 'worktree'];
+
+  /// Chat-page action rail order, shared across conversations on this device.
+  List<String> conversationActionOrder = const ['git', 'session_tools', 'copy'];
+  static const conversationActionIds = ['git', 'session_tools', 'copy'];
+  static const _defaultConversationActionOrder = [
+    'git',
+    'session_tools',
+    'copy',
+  ];
   bool floatingEnabled = false; // 悬浮球开关（v2.7.2：持久化，清理后台/重启后记住）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
@@ -204,6 +213,7 @@ class AppStore extends ChangeNotifier {
   static const _kBalanceThreshold = 'dsh_mr_balance_threshold';
   static const _kFloating = 'dsh_mr_floating';
   static const _kGitTabs = 'dsh_mr_git_tabs';
+  static const _kConversationActionOrder = 'dsh_mr_conversation_action_order';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -243,6 +253,25 @@ class AppStore extends ChangeNotifier {
     } catch (_) {
       // Invalid/corrupt preferences recover to the current default tabs.
       gitTabs = List.unmodifiable(_defaultGitTabs);
+    }
+    conversationActionOrder = List.unmodifiable(
+      _defaultConversationActionOrder,
+    );
+    try {
+      final raw = prefs.getString(_kConversationActionOrder);
+      if (raw != null) {
+        final decoded = jsonDecode(raw);
+        if (_validConversationActionOrder(decoded)) {
+          conversationActionOrder = List.unmodifiable(
+            (decoded as List).cast<String>(),
+          );
+        }
+      }
+    } catch (_) {
+      // Invalid/corrupt preferences recover to the default action order.
+      conversationActionOrder = List.unmodifiable(
+        _defaultConversationActionOrder,
+      );
     }
     final savedWs = prefs.getString(_kWorkspace);
     workspacePath = savedWs == null ? null : _normPath(savedWs);
@@ -294,6 +323,18 @@ class AppStore extends ChangeNotifier {
     return value.toSet().length == value.length;
   }
 
+  static bool _validConversationActionOrder(Object? value) {
+    if (value is! List || value.length != conversationActionIds.length) {
+      return false;
+    }
+    if (value.any(
+      (item) => item is! String || !conversationActionIds.contains(item),
+    )) {
+      return false;
+    }
+    return value.toSet().length == conversationActionIds.length;
+  }
+
   /// 显示哪些 Git 浏览 Tab 及其顺序（1–3 项，跨启动持久化）。
   Future<void> setGitTabs(List<String> tabs) async {
     if (!_validGitTabs(tabs)) {
@@ -302,6 +343,19 @@ class AppStore extends ChangeNotifier {
     gitTabs = List.unmodifiable(tabs);
     notifyListeners();
     await _persistPrefs(_kGitTabs, jsonEncode(gitTabs));
+  }
+
+  /// Updates the app-wide order of the chat action rail and persists it locally.
+  Future<void> setConversationActionOrder(List<String> order) async {
+    if (!_validConversationActionOrder(order)) {
+      throw ArgumentError('Conversation action order must contain all actions');
+    }
+    conversationActionOrder = List.unmodifiable(order);
+    notifyListeners();
+    await _persistPrefs(
+      _kConversationActionOrder,
+      jsonEncode(conversationActionOrder),
+    );
   }
 
   /// 单值持久化（Phase 0 收敛：原各 setter 的 getInstance+setX 样板统一；null = 删除键）。
