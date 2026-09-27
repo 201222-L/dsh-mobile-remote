@@ -14,6 +14,9 @@ class GraphContinuation {
 class GraphRow {
   final int lane;
   final int incomingColorSlot;
+
+  /// Whether a newer child commit connects into this row's lane.
+  final bool hasIncomingEdge;
   final int colorSlot;
   final List<int> parentLanes;
   final List<int> parentColorSlots;
@@ -24,6 +27,7 @@ class GraphRow {
   const GraphRow({
     required this.lane,
     required this.incomingColorSlot,
+    required this.hasIncomingEdge,
     required this.colorSlot,
     required this.parentLanes,
     required this.parentColorSlots,
@@ -87,6 +91,9 @@ GraphLayout layoutGraph(
   for (var i = 0; i < selected.length && i < maxNodeColorSegments; i++) {
     selectedSlots.putIfAbsent(selected[i].oid, () => i);
   }
+  final incomingEdges = state == null
+      ? <String>{}
+      : state.lanes.map((lane) => lane.oid).toSet();
 
   late final List<String> lanes;
   late final List<int> colors;
@@ -134,6 +141,7 @@ GraphLayout layoutGraph(
 
   final rows = <GraphRow>[];
   for (final commit in commits) {
+    final hasIncomingEdge = incomingEdges.remove(commit.oid);
     var lane = lanes.indexOf(commit.oid);
     if (lane < 0) {
       // A commit not reached by an active parent edge starts a disconnected
@@ -159,6 +167,7 @@ GraphLayout layoutGraph(
         afterLanes.insert(parentLane, parent);
         afterColors.insert(parentLane, i == 0 ? outgoing : nextColor++);
       }
+      incomingEdges.add(parent);
     }
     // Resolve indices only after every insertion: a later parent inserted
     // before an existing lane shifts its index in afterLanes.
@@ -181,6 +190,7 @@ GraphLayout layoutGraph(
       GraphRow(
         lane: lane,
         incomingColorSlot: incoming,
+        hasIncomingEdge: hasIncomingEdge,
         colorSlot: outgoing,
         parentLanes: List.unmodifiable(parentLanes),
         parentColorSlots: List.unmodifiable(parentColors),

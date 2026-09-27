@@ -1191,7 +1191,9 @@ class _GraphRowPainter extends CustomPainter {
         continuation.colorSlot,
       );
     }
-    edge(_x(row.lane), 0, _x(row.lane), nodeY, row.incomingColorSlot);
+    if (row.hasIncomingEdge) {
+      edge(_x(row.lane), 0, _x(row.lane), nodeY, row.incomingColorSlot);
+    }
     for (var i = 0; i < row.parentLanes.length; i++) {
       edge(
         _x(row.lane),

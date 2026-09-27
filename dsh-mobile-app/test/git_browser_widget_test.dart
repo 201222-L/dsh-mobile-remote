@@ -493,6 +493,7 @@ void main() {
       );
       final firstRow =
           (tester.widget<CustomPaint>(graphRow.first).painter as dynamic).row;
+      expect(firstRow.hasIncomingEdge, isFalse);
       await tester.drag(
         find.byKey(const Key('git-graph-horizontal')),
         const Offset(-250, 0),

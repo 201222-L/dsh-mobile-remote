@@ -25,6 +25,78 @@ void main() {
     expect(layout.laneCount, 1);
   });
 
+  test('lane topology origins omit only their incoming stems', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/main',
+        displayName: 'main',
+        oid: 'main-tip',
+        kind: 'local',
+        current: true,
+      ),
+      GitBranch(
+        name: 'refs/heads/feature',
+        displayName: 'feature',
+        oid: 'feature-tip',
+        kind: 'local',
+      ),
+    ];
+    final layout = layoutGraph([
+      commit('main-tip', ['shared']),
+      commit('feature-tip', ['shared']),
+      commit('shared', ['root']),
+      commit('root'),
+    ], selected);
+
+    expect(layout.rows.map((row) => row.hasIncomingEdge), [
+      false,
+      false,
+      true,
+      true,
+    ]);
+  });
+
+  test('selected ancestor tip keeps a real incoming child edge', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/child',
+        displayName: 'child',
+        oid: 'child-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/parent',
+        displayName: 'parent',
+        oid: 'parent-tip',
+        kind: 'local',
+      ),
+    ];
+    final layout = layoutGraph([
+      commit('child-tip', ['parent-tip']),
+      commit('parent-tip', ['root']),
+      commit('root'),
+    ], selected);
+
+    expect(layout.rows.map((row) => row.hasIncomingEdge), [false, true, true]);
+    expect(layout.rows.first.parentLanes, [0]);
+  });
+
+  test('incoming edge continues across an appended graph page', () {
+    final first = layoutGraph([
+      commit('tip', ['parent']),
+    ], const []);
+    final second = layoutGraph(
+      [
+        commit('parent', ['root']),
+      ],
+      const [],
+      state: first.continuation,
+    );
+
+    expect(first.rows.single.hasIncomingEdge, isFalse);
+    expect(second.rows.first.hasIncomingEdge, isTrue);
+  });
+
   test('fork and shared ancestor use parent topology without false merge', () {
     final layout = layoutGraph([
       commit('tip', ['left', 'right']),
