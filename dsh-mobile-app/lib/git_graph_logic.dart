@@ -142,6 +142,7 @@ GraphLayout layoutGraph(
   final rows = <GraphRow>[];
   for (final commit in commits) {
     final hasIncomingEdge = incomingEdges.remove(commit.oid);
+    final lanesConnectedBeforeRow = {...incomingEdges};
     var lane = lanes.indexOf(commit.oid);
     if (lane < 0) {
       // A commit not reached by an active parent edge starts a disconnected
@@ -180,7 +181,9 @@ GraphLayout layoutGraph(
     final continuations = <GraphContinuation>[];
     for (var oldLane = 0; oldLane < lanes.length; oldLane++) {
       if (oldLane == lane) continue;
-      final newLane = afterLanes.indexOf(lanes[oldLane]);
+      final oldOid = lanes[oldLane];
+      if (!lanesConnectedBeforeRow.contains(oldOid)) continue;
+      final newLane = afterLanes.indexOf(oldOid);
       if (newLane >= 0) {
         continuations.add(GraphContinuation(oldLane, newLane, colors[oldLane]));
       }

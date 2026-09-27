@@ -81,6 +81,34 @@ void main() {
     expect(layout.rows.first.parentLanes, [0]);
   });
 
+  test('real child edges keep their selected ancestor continuation', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/child',
+        displayName: 'child',
+        oid: 'child-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/parent',
+        displayName: 'parent',
+        oid: 'parent-tip',
+        kind: 'local',
+      ),
+    ];
+    final layout = layoutGraph([
+      commit('child-tip', ['side-tip', 'parent-tip']),
+      commit('side-tip', ['side-root']),
+      commit('parent-tip', ['parent-root']),
+      commit('side-root'),
+      commit('parent-root'),
+    ], selected);
+
+    expect(layout.rows[1].continuations.map((line) => [line.from, line.to]), [
+      [1, 1],
+    ]);
+  });
+
   test('incoming edge continues across an appended graph page', () {
     final first = layoutGraph([
       commit('tip', ['parent']),
@@ -95,6 +123,74 @@ void main() {
 
     expect(first.rows.single.hasIncomingEdge, isFalse);
     expect(second.rows.first.hasIncomingEdge, isTrue);
+  });
+
+  test('selected lane begins at its own tip, not above earlier rows', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/branch-a',
+        displayName: 'branch-a',
+        oid: 'tip-a',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/branch-b',
+        displayName: 'branch-b',
+        oid: 'tip-b',
+        kind: 'local',
+      ),
+    ];
+    final layout = layoutGraph([
+      commit('tip-a', ['parent-a']),
+      commit('tip-b', ['parent-b']),
+    ], selected);
+
+    expect(layout.rows.first.hasIncomingEdge, isFalse);
+    final unstartedLaneLines = layout.rows.first.continuations
+        .where((line) => line.colorSlot == 1)
+        .map((line) => '${line.from}->${line.to}/color${line.colorSlot}')
+        .toList();
+    expect(unstartedLaneLines, isEmpty);
+  });
+
+  test('three selected refs do not draw before their tips in earlier rows', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/develop',
+        displayName: 'develop',
+        oid: 'develop-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/main',
+        displayName: 'main',
+        oid: 'main-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/feature/app-git-management',
+        displayName: 'feature/app-git-management',
+        oid: 'feature-tip',
+        kind: 'local',
+      ),
+    ];
+    final layout = layoutGraph([
+      commit('develop-tip', ['develop-parent']),
+      commit('develop-parent', ['develop-root']),
+      commit('main-tip', ['main-root']),
+      commit('feature-tip', ['feature-root']),
+      commit('develop-root'),
+      commit('main-root'),
+      commit('feature-root'),
+    ], selected);
+
+    expect(
+      layout.rows
+          .take(2)
+          .expand((row) => row.continuations)
+          .where((line) => line.colorSlot == 1 || line.colorSlot == 2),
+      isEmpty,
+    );
   });
 
   test('fork and shared ancestor use parent topology without false merge', () {

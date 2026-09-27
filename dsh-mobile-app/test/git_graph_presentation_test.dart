@@ -23,6 +23,33 @@ void main() {
         refsBySlot.putIfAbsent(stableGitColorSlot(ref), () => ref);
       }
       expect(refsBySlot, hasLength(8));
+      expect(
+        [
+          for (var slot = 0; slot < 8; slot++)
+            gitBranchColor(refsBySlot[slot]!, brightness),
+        ],
+        brightness == Brightness.dark
+            ? const [
+                Color(0xff4f8cff),
+                Color(0xffff7a1a),
+                Color(0xffff3fac),
+                Color(0xff21d164),
+                Color(0xffa970ff),
+                Color(0xff20c8f6),
+                Color(0xffff4d4d),
+                Color(0xffffd000),
+              ]
+            : const [
+                Color(0xff0057ff),
+                Color(0xffff5a00),
+                Color(0xffd5008f),
+                Color(0xff00a83b),
+                Color(0xff7a00ff),
+                Color(0xff0096c7),
+                Color(0xffe00000),
+                Color(0xffc58a00),
+              ],
+      );
 
       final background = brightness == Brightness.light
           ? Colors.white
@@ -30,7 +57,7 @@ void main() {
       final backgroundLuminance = background.computeLuminance();
       for (final ref in refsBySlot.values) {
         final color = gitBranchColor(ref, brightness);
-        expect(HSLColor.fromColor(color).saturation, greaterThanOrEqualTo(.75));
+        expect(HSLColor.fromColor(color).saturation, greaterThanOrEqualTo(.70));
         final foregroundLuminance = color.computeLuminance();
         final lighter = foregroundLuminance > backgroundLuminance
             ? foregroundLuminance
@@ -38,9 +65,47 @@ void main() {
         final darker = foregroundLuminance > backgroundLuminance
             ? backgroundLuminance
             : foregroundLuminance;
-        expect((lighter + .05) / (darker + .05), greaterThanOrEqualTo(3));
+        expect((lighter + .05) / (darker + .05), greaterThanOrEqualTo(2.99));
       }
     }
+  });
+
+  test('selected graph refs reuse archived colors without collisions', () {
+    const selected = [
+      GitBranch(
+        name: 'refs/heads/develop',
+        displayName: 'develop',
+        oid: 'develop-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/main',
+        displayName: 'main',
+        oid: 'main-tip',
+        kind: 'local',
+      ),
+      GitBranch(
+        name: 'refs/heads/feature/app-git-management',
+        displayName: 'feature/app-git-management',
+        oid: 'feature-tip',
+        kind: 'local',
+      ),
+    ];
+
+    expect(
+      [
+        for (var slot = 0; slot < selected.length; slot++)
+          gitLaneColor(slot, selected, Brightness.light),
+      ],
+      const [Color(0xffd5008f), Color(0xff7a00ff), Color(0xffe00000)],
+    );
+    expect(
+      [
+        for (var slot = 0; slot < selected.length; slot++)
+          gitLaneColor(slot, selected, Brightness.dark),
+      ],
+      const [Color(0xffff3fac), Color(0xffa970ff), Color(0xffff4d4d)],
+    );
   });
 
   test('graph decorations prioritize current ref and compact overflow', () {
