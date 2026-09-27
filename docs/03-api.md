@@ -337,10 +337,12 @@
 {
   "ok": true,
   "models": [
-    { "id": "deepseek-v4-flash", "name": "DeepSeek-V4-Flash" },
-    { "id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro" }
+    { "provider": "deepseek-official", "id": "deepseek-v4-flash", "name": "DeepSeek-V4-Flash",
+      "reasoning": { "efforts": [{ "id": "off", "name": "Off" }, { "id": "high", "name": "High" }], "defaultEffort": "high" } },
+    { "provider": "openai-codex", "id": "gpt-6-luna", "name": "GPT-6-Luna",
+      "reasoning": { "efforts": [{ "id": "low", "name": "Low" }, { "id": "xhigh", "name": "Xhigh" }] } }
   ],
-  "reasoningEfforts": ["off", "high", "max"],
+  "reasoningEfforts": ["off", "high", "low", "xhigh"],
   "permissionPresets": [
     { "id": "read-only", "name": "Read Only", "description": "只读 · 拒绝一切写入操作" },
     { "id": "workspace-write", "name": "Workspace Write", "description": "仅工作区内读写 · 危险操作前询问" },
@@ -353,6 +355,7 @@
     { "id": "cordis", "name": "创造模式", "description": "—" }
   ],
   "defaults": {
+    "provider": "deepseek-official",
     "model": "deepseek-v4-flash",
     "reasoningEffort": "max",
     "permissionPreset": "workspace-write",
@@ -361,7 +364,7 @@
 }
 ```
 
-数据来源：`ctx.llm.listProviders()/listModels()`、provider 配置（reasoningEffort 枚举）、`ctx.sandboxPolicy`/permission-presets 服务、agent-presets 目录 manifest（name/description）。默认值来自 settings/配置树。
+`models[].reasoning` 来自内核模型目录，只对该模型有效；没有该字段表示不支持显式强度。`reasoning.defaultEffort` 可以缺省，此时由提供商决定；`off` 是具体等级而不是“跟随默认”。顶层 `reasoningEfforts` 是历史上的跨模型并集，仅为兼容已发布接口保留；客户端必须按当前模型取能力，不能据此绘制或验证当前模型的按钮。`defaults.provider/model` 是部署默认模型，不是第一个活动会话上次使用的模型。目录通常缓存 15 秒；选择失败后的 `GET /m/api/catalog?refresh=1` 绕过缓存，以便重新展示该模型的最新能力。权限、Agent 预设来自对应宿主服务。
 ### 6.3 GET /m/api/session-config
 
 ```json
@@ -369,44 +372,44 @@
   "ok": true,
   "sessionId": "session-abc",
   "config": {
-    "model": "deepseek-v4-flash",
-    "reasoningEffort": "max",
+    "provider": "openai-codex",
+    "model": "gpt-6-luna",
+    "reasoningEffort": "low",
     "permissionPreset": "workspace-write"
   }
 }
 ```
 
+模型身份与强度读取自 `session/control` 的 `modelSelection.next`（待生效选择），不是可能滞后的 `lastUsed`。内核可能把省略的 effort 具体化为模型默认值，因此返回 `low` 不代表用户曾显式选择了 `low`。
+
 ### 6.4 POST /m/api/session-config
 
-**请求**（三个字段均可选，只更新给定项）：
+**切换模型**（provider、model 必须成对提供，省略强度即使用新模型默认值）：
 
 ```json
-{
-  "sessionId": "session-abc",
-  "model": "deepseek-v4-pro",
-  "reasoningEffort": "high",
-  "permissionPreset": "danger-full-access",
-  "confirmDanger": true
-}
+{ "sessionId": "session-abc", "provider": "openai-codex", "model": "gpt-6-luna" }
 ```
+
+**只改强度**：`{ "sessionId": "session-abc", "reasoningEffort": "high" }`；**回到模型默认**：`{ "sessionId": "session-abc", "resetReasoningEffort": true }`。两者不可同时提交。服务端使用同一次 `next` 的 provider/model；若 `next` 不可确认，返回 `409 model-selection-unavailable`，不拿 `lastUsed` 或 DeepSeek 兜底。不支持该模型的显式强度由内核拒绝，目录过期时客户端应刷新目录并显示错误，不静默降级。
 
 - `permissionPreset` 为 `danger-full-access` 时 `confirmDanger` 必须为 `true`，否则 `400 { "error": "risk-confirmation-required" }`（与 PC 端 Full access 需显式确认风险一致）。
 - 权限写入走 PC 端同一路径（`permission/preset` + sandbox/approval 旋钮事件）。
-- 修改当前会话配置不产生新事件；`404 session-not-found`。
+- 模型选择会产生内核 `model/selection` 事件；`404 session-not-found` 表示会话不存在。
 ### 6.5 POST /m/api/sessions（新建会话）
 
 **请求**：
 ```json
 {
   "preset": "standard",
-  "model": "deepseek-v4-flash",
-  "reasoningEffort": "max",
+  "provider": "openai-codex",
+  "model": "gpt-6-luna",
+  "reasoningEffort": "high",
   "permissionPreset": "workspace-write"
 }
 ```
 
-- `preset` 必填（客户端从 catalog 选择；默认值由服务端 `defaults.agentPreset` 兜底）；其余可选。
-- 服务端：`ctx.agents.create({ preset, ... })`（按 preset 组合会话），随后按参数覆写配置。
+- `preset` 未传时使用服务端 Agent 预设默认值；`provider` 和 `model` 必须一起指定，未指定时采用内核部署默认选择（包含部署默认强度），不沿用现有会话配置。主动指定新模型而省略 `reasoningEffort` 时采用该模型默认强度；具体等级由内核校验。
+- 新建页模型草稿不修改已有会话。服务端先确定完整模型身份，再创建 agent 并选择模型；选择或附加配置失败时清理新建会话，返回错误而非假报成功。
 **响应**：`200 { "ok": true, "sessionId": "session-xyz", "agentId": "session-xyz" }`——客户端随后即可 `POST /api/send` 或订阅 SSE 该会话。
 ### 6.6 GET /m/api/notifications
 

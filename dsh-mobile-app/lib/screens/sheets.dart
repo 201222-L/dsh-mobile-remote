@@ -113,120 +113,264 @@ Widget _sheetItem(BuildContext context, {required String name, String? sub, bool
 }
 
 // ── 模型与推理 ──
-void showModelSheet(BuildContext context, AppStore store) {
+void showModelSheet(
+  BuildContext context,
+  AppStore store, {
+  NewSessionModelDraft? draft,
+  VoidCallback? onDraftChanged,
+}) {
   final cat = store.catalog;
   if (cat == null) return;
-  // v2.6：按提供商分组显示（组名来自 catalog.providers，与 PC 端目录同源）
-  final providerNames = <String, String>{};
-  final dormantIds = <String>{};
-  for (final p in cat.providers) {
-    providerNames[p.id] = p.name;
-    if (p.dormant) dormantIds.add(p.id);
-  }
-  final groups = <String, List<CatalogModel>>{};
-  final groupOrder = <String>[];
-  for (final m in cat.models) {
-    final pid = m.provider;
-    if (!groups.containsKey(pid)) {
-      groups[pid] = [];
-      groupOrder.add(pid);
-    }
-    groups[pid]!.add(m);
-  }
-  final sheetChildren = <Widget>[
-    for (final pid in groupOrder) ...[
-      Padding(
-        padding: const EdgeInsets.only(top: 12, bottom: 4),
-        child: Text(
-          providerNames[pid] ?? pid,
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: DshColors.ink2(context)),
-        ),
+  var saving = false;
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: DshColors.surface(context),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(DshTheme.radiusLg),
       ),
-      ...groups[pid]!.map((model) => _sheetItem(
-            context,
-            name: model.name,
-            // v3.0.0 图像链路：图片能力标注（PC 端目录同源 inputModalities）
-            sub: model.imageSupported ? '${model.id} · 📷 ${L10n.t('支持图片', 'images')}' : model.id,
-            active: store.sessionConfig.provider == model.provider && store.sessionConfig.model == model.id,
-            onTap: () {
-              final msgr = ScaffoldMessenger.of(context);
-              Navigator.of(context).pop();
-              store
-                  .applySessionConfig({'provider': model.provider, 'model': model.id})
-                  .then((_) => showToastAt(msgr, L10n.t('已切换模型', 'Model switched')))
-                  .catchError((e) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$e'));
-            },
-          )),
-    ],
-    // 未配置提供商收敛为一条入口（不再逐条列出）
-    if (dormantIds.isNotEmpty)
-      Padding(
-        padding: const EdgeInsets.only(top: 10),
-        child: InkWell(
-          onTap: () {
-            Navigator.of(context).pop();
-            // Phase 2：与设置页共用提供商页打开入口
-            openProviders(context, store);
-          },
-          borderRadius: BorderRadius.circular(8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '${L10n.t('还有 ', '')}${dormantIds.length}${L10n.t(' 个提供商未配置', ' more providers not configured')}',
-                  style: TextStyle(fontSize: 12.5, color: DshColors.ink3(context)),
-                ),
-              ),
-              Text(L10n.t('前往设置 ➜', 'Go to Settings ➜'), style: TextStyle(fontSize: 12, color: DshColors.brand(context))),
-            ],
-          ),
-        ),
-      ),
-  ];
-  showSheet(context, L10n.t('模型与推理', 'Model & Reasoning'), [
-    ...sheetChildren,
-    const SizedBox(height: 10),
-    Text(L10n.t('推理强度', 'Reasoning Effort'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-    const SizedBox(height: 10),
-    Row(
-      children: [
-        for (final e in cat.reasoningEfforts)
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: GestureDetector(
-                onTap: () {
-                  final msgr = ScaffoldMessenger.of(context);
-                  Navigator.of(context).pop();
-                  store
-                      .applySessionConfig({'reasoningEffort': e})
-                      .catchError((err) => showToastAt(msgr, '${L10n.t('切换失败：', 'Switch failed: ')}$err'));
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 9),
-                  decoration: BoxDecoration(
-                    color: store.sessionConfig.reasoningEffort == e ? DshColors.brand(context) : null,
-                    border: Border.all(color: DshColors.line(context)),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    e,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      color: store.sessionConfig.reasoningEffort == e ? Colors.white : DshColors.ink2(context),
-                      fontWeight: store.sessionConfig.reasoningEffort == e ? FontWeight.w600 : FontWeight.w400,
-                    ),
-                  ),
+    ),
+    builder: (sheetCtx) => StatefulBuilder(
+      builder: (sheetCtx, setSheet) {
+        final currentCat = store.catalog ?? cat;
+        final selected = draft != null
+            ? draft.model
+            : currentCat.models
+                  .where(
+                    (m) =>
+                        m.provider == store.sessionConfig.provider &&
+                        m.id == store.sessionConfig.model,
+                  )
+                  .firstOrNull;
+        final selectedEffort = draft == null
+            ? store.sessionConfig.reasoningEffort
+            : draft.reasoningEffort;
+        // 内核可能把模型默认强度具体化；GET 不能追溯用户当初选择默认还是显式 off。
+        // 只有 null 可以确定为未指定；off 始终是独立的可选等级。
+        final isDefault = selectedEffort == null && (draft?.needsEffortReselection != true);
+        Future<void> pickModel(CatalogModel? model) async {
+          if (saving) return;
+          if (draft != null) {
+            setSheet(() => draft.selectModel(model));
+            onDraftChanged?.call();
+            return;
+          }
+          if (model == null) return;
+          setSheet(() => saving = true);
+          try {
+            await store.applySessionConfig({
+              'provider': model.provider,
+              'model': model.id,
+            });
+            if (sheetCtx.mounted) setSheet(() {});
+          } catch (e) {
+            // 目录可能已过期：明确报错并强制绕开服务端 15 秒缓存重拉能力。
+            if (e is ApiException && (e.code == 'session/model-unavailable' || e.code == 'model-select-failed')) {
+              await store.refreshCatalog(force: true);
+            }
+            if (sheetCtx.mounted) {
+              showToast(sheetCtx, '${L10n.t('切换失败：', 'Switch failed: ')}$e');
+            }
+          } finally {
+            if (sheetCtx.mounted) setSheet(() => saving = false);
+          }
+        }
+
+        Future<void> pickEffort(String? effort) async {
+          if (saving || selected == null) return;
+          if (draft != null) {
+            setSheet(() => draft.selectEffort(effort));
+            onDraftChanged?.call();
+            return;
+          }
+          setSheet(() => saving = true);
+          try {
+            await store.applySessionConfig(
+              effort == null
+                  ? {'resetReasoningEffort': true}
+                  : {'reasoningEffort': effort},
+            );
+            if (sheetCtx.mounted) setSheet(() {});
+          } catch (e) {
+            // 目录可能已过期：明确报错并强制绕开服务端 15 秒缓存重拉能力。
+            if (e is ApiException && (e.code == 'session/model-unavailable' || e.code == 'model-select-failed')) {
+              await store.refreshCatalog(force: true);
+            }
+            if (sheetCtx.mounted) {
+              showToast(sheetCtx, '${L10n.t('切换失败：', 'Switch failed: ')}$e');
+            }
+          } finally {
+            if (sheetCtx.mounted) setSheet(() => saving = false);
+          }
+        }
+
+        // v2.6：按提供商分组显示（组名来自 catalog.providers，与 PC 端目录同源）
+        final providerNames = <String, String>{};
+        final dormantIds = <String>{};
+        for (final p in currentCat.providers) {
+          providerNames[p.id] = p.name;
+          if (p.dormant) dormantIds.add(p.id);
+        }
+        final groups = <String, List<CatalogModel>>{};
+        final groupOrder = <String>[];
+        for (final m in currentCat.models) {
+          final pid = m.provider;
+          if (!groups.containsKey(pid)) {
+            groups[pid] = [];
+            groupOrder.add(pid);
+          }
+          groups[pid]!.add(m);
+        }
+        final sheetChildren = <Widget>[
+          if (draft != null)
+            _sheetItem(
+              sheetCtx,
+              name: L10n.t('电脑端默认模型', 'Desktop default model'),
+              active: selected == null && !draft.needsModelReselection,
+              onTap: () => pickModel(null),
+            ),
+          for (final pid in groupOrder) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 4),
+              child: Text(
+                providerNames[pid] ?? pid,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: DshColors.ink2(context),
                 ),
               ),
             ),
+            ...groups[pid]!.map(
+              (model) => _sheetItem(
+                context,
+                name: model.name,
+                // v3.0.0 图像链路：图片能力标注（PC 端目录同源 inputModalities）
+                sub: model.imageSupported
+                    ? '${model.id} · 📷 ${L10n.t('支持图片', 'images')}'
+                    : model.id,
+                active:
+                    selected?.provider == model.provider &&
+                    selected?.id == model.id,
+                onTap: () => pickModel(model),
+              ),
+            ),
+          ],
+          // 新建会话不离开草稿弹层；现有会话保留提供商设置入口。
+          if (draft == null && dormantIds.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: InkWell(
+                onTap: () {
+                  Navigator.of(context).pop();
+                  // Phase 2：与设置页共用提供商页打开入口
+                  openProviders(context, store);
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${L10n.t('还有 ', '')}${dormantIds.length}${L10n.t(' 个提供商未配置', ' more providers not configured')}',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: DshColors.ink3(context),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      L10n.t('前往设置 ➜', 'Go to Settings ➜'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: DshColors.brand(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ];
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: DshColors.line(sheetCtx),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  L10n.t('模型与推理', 'Model & Reasoning'),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ...sheetChildren,
+                        if (draft?.needsEffortReselection == true) ...[
+                          const SizedBox(height: 8),
+                          Text(L10n.t('原选强度已失效，请重新选择强度或模型', 'Previous effort is unavailable; choose an effort or model'),
+                            style: TextStyle(fontSize: 12, color: DshColors.danger(sheetCtx))),
+                        ],
+                        if (selected?.reasoning != null &&
+                            selected!.reasoning!.efforts.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            L10n.t('推理强度', 'Reasoning Effort'),
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          _sheetItem(
+                            sheetCtx,
+                            name: L10n.t('跟随模型默认', 'Use model default'),
+                            sub: selected.reasoning!.defaultEffort == null
+                                ? null
+                                : '${L10n.t('默认强度', 'Default effort')}: ${selected.reasoning!.defaultEffort}',
+                            active: isDefault,
+                            onTap: () => pickEffort(null),
+                          ),
+                          for (final effort in selected.reasoning!.efforts)
+                            _sheetItem(
+                              sheetCtx,
+                              name: effort.name,
+                              sub: effort.description,
+                              active: !isDefault && selectedEffort == effort.id,
+                              onTap: () => pickEffort(effort.id),
+                            ),
+                        ] else if (selected != null) ...[
+                          const SizedBox(height: 12),
+                          Text(L10n.t('此模型不提供推理强度选择', 'This model has no reasoning effort options'),
+                            style: TextStyle(fontSize: 12, color: DshColors.ink3(sheetCtx))),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (saving) const LinearProgressIndicator(),
+              ],
+            ),
           ),
-      ],
+        );
+      },
     ),
-    const SizedBox(height: 8),
-    Text(L10n.t('与桌面端模型目录一致', 'Same model catalog as the desktop app'), textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: DshColors.ink3(context))),
-  ]);
+  );
 }
 
 // ── 权限预设（danger 需风险确认） ──
@@ -366,6 +510,8 @@ Future<void> showNewSessionSheet(
 ) async {
   String? pendingMode;
   String? pendingDir;
+  final modelDraft = NewSessionModelDraft();
+  VoidCallback? refreshNewSessionSheet;
   // issue #6：本次会话的权限预设（默认跟随设置页的默认预设）。
   // danger-full-access 必须先过风险确认（permConfirmed），doCreate 才带 confirmDanger: true；
   // 旧版整条链路缺失 → 默认预设设成完全访问后，新建会话必 400 risk-confirmation-required（死锁）。
@@ -421,8 +567,7 @@ Future<void> showNewSessionSheet(
       final created = await api.createSession({
         'preset': preset,
         'cwd': ?pendingDir,
-        'model': store.sessionConfig.model ?? 'deepseek-v4-flash',
-        'reasoningEffort': store.sessionConfig.reasoningEffort ?? 'max',
+        ...modelDraft.createFields,
         'permissionPreset': perm,
         if (perm == 'danger-full-access') 'confirmDanger': true,
       });
@@ -432,6 +577,13 @@ Future<void> showNewSessionSheet(
       showToastAt(msgr, '${L10n.t('已用「', 'Created session: ')}$name${L10n.t('」新建会话', '')}');
       await onCreated(created['sessionId'] as String);
     } catch (e) {
+      if (e is ApiException && e.code == 'session/model-unavailable') {
+        final fresh = await store.refreshCatalog(force: true);
+        if (fresh != null) {
+          modelDraft.reconcile(fresh);
+          refreshNewSessionSheet?.call();
+        }
+      }
       if (context.mounted) showToastAt(ScaffoldMessenger.of(context), '${L10n.t('新建失败：', 'Failed to create: ')}$e');
     } finally {
       creating = false;
@@ -460,7 +612,8 @@ Future<void> showNewSessionSheet(
     ),
     builder: (sheetCtx) => StatefulBuilder(
       builder: (sheetCtx, setSheet) {
-        void refresh() => setSheet(() {});
+        void refresh() { if (sheetCtx.mounted) setSheet(() {}); }
+        refreshNewSessionSheet = refresh;
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
@@ -523,15 +676,14 @@ Future<void> showNewSessionSheet(
                             ),
                           ),
                         ),
-                        // v2.7.1：模型与推理入口（新建会话时选模型/调推理强度；选择写入 sessionConfig，
-                        // doCreate 会带上）
+                        // 模型与推理仅保存在新建草稿，不修改当前会话。
                         InkWell(
                           onTap: () {
-                            showModelSheet(context, store);
-                            // showModelSheet 选择后 pop 返回，刷新本弹层显示当前值
-                            Future<void>.delayed(const Duration(milliseconds: 400), () {
-                              if (sheetCtx.mounted) refresh();
-                            });
+                            showModelSheet(sheetCtx, store,
+                              draft: modelDraft,
+                              onDraftChanged: () {
+                                if (sheetCtx.mounted) refresh();
+                              });
                           },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
@@ -545,8 +697,13 @@ Future<void> showNewSessionSheet(
                                     children: [
                                       Text(L10n.t('模型与推理强度', 'Model & Reasoning Effort'), style: const TextStyle(fontSize: 14)),
                                       Text(
-                                        '${store.sessionConfig.model ?? L10n.t('选择模型', 'Select model')}'
-                                        ' · ${store.sessionConfig.reasoningEffort ?? 'max'}',
+                                        modelDraft.needsModelReselection
+                                            ? L10n.t('原选模型已不可用，请重新选择', 'Selected model unavailable; choose again')
+                                            : modelDraft.needsEffortReselection
+                                                ? L10n.t('原选强度已不可用，请重新选择', 'Selected effort unavailable; choose again')
+                                                : modelDraft.model == null
+                                                    ? L10n.t('电脑端默认', 'Desktop default')
+                                                    : '${modelDraft.model!.name} · ${modelDraft.reasoningEffort ?? L10n.t('模型默认', 'Model default')}',
                                         style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
                                         overflow: TextOverflow.ellipsis,
                                       ),

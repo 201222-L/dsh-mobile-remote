@@ -38,6 +38,38 @@ class Session {
   int get sortKey => lastActivity ?? createdAt;
 }
 
+class ReasoningEffort {
+  final String id;
+  final String name;
+  final String? description;
+
+  const ReasoningEffort({
+    required this.id,
+    required this.name,
+    this.description,
+  });
+
+  factory ReasoningEffort.fromJson(Map<String, dynamic> j) => ReasoningEffort(
+    id: j['id'] as String,
+    name: j['name'] as String? ?? j['id'] as String,
+    description: j['description'] as String?,
+  );
+}
+
+class ModelReasoning {
+  final List<ReasoningEffort> efforts;
+  final String? defaultEffort;
+
+  const ModelReasoning({required this.efforts, this.defaultEffort});
+
+  factory ModelReasoning.fromJson(Map<String, dynamic> j) => ModelReasoning(
+    efforts: (j['efforts'] as List? ?? [])
+        .map((e) => ReasoningEffort.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    defaultEffort: j['defaultEffort'] as String?,
+  );
+}
+
 class CatalogModel {
   final String provider;
   final String id;
@@ -46,6 +78,7 @@ class CatalogModel {
   final int? contextWindow;
   // v3.0.0 图像链路：模型是否支持图片输入（inputModalities 标注）
   final bool imageSupported;
+  final ModelReasoning? reasoning;
   CatalogModel({
     required this.provider,
     required this.id,
@@ -53,14 +86,18 @@ class CatalogModel {
     this.description,
     this.contextWindow,
     this.imageSupported = false,
+    this.reasoning,
   });
   factory CatalogModel.fromJson(Map<String, dynamic> j) => CatalogModel(
-    provider: j['provider'] as String? ?? 'deepseek-official',
+    provider: j['provider'] as String,
     id: j['id'] as String,
     name: j['name'] as String? ?? j['id'] as String,
     description: j['description'] as String?,
     contextWindow: (j['contextWindow'] as num?)?.toInt(),
     imageSupported: j['imageSupported'] == true,
+    reasoning: j['reasoning'] is Map<String, dynamic>
+        ? ModelReasoning.fromJson(j['reasoning'] as Map<String, dynamic>)
+        : null,
   );
 }
 
@@ -98,7 +135,6 @@ class PermissionPreset {
 
 class Catalog {
   final List<CatalogModel> models;
-  final List<String> reasoningEfforts;
   final List<PermissionPreset> permissionPresets;
   final List<AgentPreset> agentPresets;
   final Map<String, dynamic> defaults;
@@ -108,7 +144,6 @@ class Catalog {
   final Map<String, dynamic> imageLimits;
   Catalog({
     required this.models,
-    required this.reasoningEfforts,
     required this.permissionPresets,
     required this.agentPresets,
     required this.defaults,
@@ -119,9 +154,6 @@ class Catalog {
   factory Catalog.fromJson(Map<String, dynamic> j) => Catalog(
     models: (j['models'] as List? ?? [])
         .map((e) => CatalogModel.fromJson(e as Map<String, dynamic>))
-        .toList(),
-    reasoningEfforts: (j['reasoningEfforts'] as List? ?? [])
-        .map((e) => e as String)
         .toList(),
     permissionPresets: (j['permissionPresets'] as List? ?? [])
         .map((e) => PermissionPreset.fromJson(e as Map<String, dynamic>))
@@ -331,6 +363,63 @@ class UsageIndividualLimit {
       );
 }
 
+/// 新建会话专用模型草稿；不读取或修改当前聊天会话的配置。
+class NewSessionModelDraft {
+  CatalogModel? model;
+  String? reasoningEffort;
+  bool needsModelReselection = false;
+  bool needsEffortReselection = false;
+
+  void selectModel(CatalogModel? next) {
+    if (!needsModelReselection && !needsEffortReselection && model?.provider == next?.provider && model?.id == next?.id) return;
+    model = next;
+    reasoningEffort = null;
+    needsModelReselection = false;
+    needsEffortReselection = false;
+  }
+
+  void selectEffort(String? effort) {
+    if (model == null) throw StateError('请先选择模型');
+    if (effort != null &&
+        !(model!.reasoning?.efforts.any((e) => e.id == effort) ?? false)) {
+      throw ArgumentError.value(
+        effort,
+        'effort',
+        '当前模型不支持该推理强度',
+      );
+    }
+    reasoningEffort = effort;
+    needsEffortReselection = false;
+  }
+
+  /// 强制刷新目录后换用最新模型能力，不保留已失效的推理强度。
+  void reconcile(Catalog catalog) {
+    final previous = model;
+    if (previous == null) return;
+    model = catalog.models.where((candidate) => candidate.provider == previous.provider && candidate.id == previous.id).firstOrNull;
+    needsModelReselection = model == null;
+    if (model == null) {
+      reasoningEffort = null;
+      needsEffortReselection = false;
+    } else if (reasoningEffort != null && !(model!.reasoning?.efforts.any((e) => e.id == reasoningEffort) ?? false)) {
+      reasoningEffort = null;
+      needsEffortReselection = true;
+    }
+  }
+
+  Map<String, dynamic> get createFields {
+    if (needsModelReselection) throw StateError('原选模型已不可用，请重新选择模型');
+    if (needsEffortReselection) throw StateError('原选强度已不可用，请重新选择或明确使用模型默认');
+    return model == null
+        ? <String, dynamic>{}
+        : <String, dynamic>{
+            'provider': model!.provider,
+            'model': model!.id,
+            if (reasoningEffort != null) 'reasoningEffort': reasoningEffort,
+          };
+  }
+}
+
 class SessionConfig {
   final String? model;
   final String? provider; // v2.6：当前模型所属提供商
@@ -389,17 +478,27 @@ class ChatEvent {
   // v2.7.2 review(M1)：事件所属会话（store 广播时附加）——叠层聊天页各收各的
   final String? sessionId;
   final bool detailAvailable;
+
   /// 详情正文长度提示（服务端 `detail.textChars`，仅 assistant/message 提供）：
   /// 与摘要同 `blocksToText` 口径的**未截断**正文长度，供“是否真有正文增量”判定。
   final int? detailTextChars;
-  ChatEvent({this.seq, required this.type, this.data, this.sessionId, this.detailAvailable = false, this.detailTextChars});
+  ChatEvent({
+    this.seq,
+    required this.type,
+    this.data,
+    this.sessionId,
+    this.detailAvailable = false,
+    this.detailTextChars,
+  });
   factory ChatEvent.fromJson(Map<String, dynamic> j) {
     final detail = j['detail'];
     final d = detail is Map ? detail : const <String, dynamic>{};
     return ChatEvent(
       seq: (j['seq'] as num?)?.toInt(),
       type: j['type'] as String? ?? 'unknown',
-      data: j['data'] is Map ? Map<String, dynamic>.from(j['data'] as Map) : null,
+      data: j['data'] is Map
+          ? Map<String, dynamic>.from(j['data'] as Map)
+          : null,
       detailAvailable: d['available'] == true,
       detailTextChars: (d['textChars'] as num?)?.toInt(),
     );
@@ -429,7 +528,11 @@ class EventDetail {
   final Map<String, dynamic> event;
   final bool degraded;
   final String? detailMode;
-  const EventDetail({required this.event, this.degraded = false, this.detailMode});
+  const EventDetail({
+    required this.event,
+    this.degraded = false,
+    this.detailMode,
+  });
 }
 
 class TimelineCapabilities {
