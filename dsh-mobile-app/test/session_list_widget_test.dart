@@ -37,12 +37,12 @@ Map<String, dynamic> _row({
   'id': id,
   'title': title ?? id,
   'createdAt': createdAt,
-  if (lastActivity != null) 'lastActivity': lastActivity,
+  'lastActivity': ?lastActivity,
   'lastMessageAt': lastMessageAt,
-  if (origin != null) 'origin': origin,
-  if (parentSession != null) 'parentSession': parentSession,
+  'origin': ?origin,
+  'parentSession': ?parentSession,
   'archived': archived,
-  if (cwd != null) 'cwd': cwd,
+  'cwd': ?cwd,
 };
 
 /// 真实 agent/status 帧（与插件 broadcast 的形状一致）。
@@ -64,6 +64,12 @@ Map<String, dynamic> _approvalFrame(String sessionId, String approvalId) => {
     'toolName': 'bash',
   },
 };
+
+/// 真实 session/jobs 帧（后台任务快照）。
+Map<String, dynamic> _jobsFrame(
+  String sessionId,
+  List<Map<String, dynamic>> jobs,
+) => {'type': 'session/jobs', 'sessionId': sessionId, 'jobs': jobs};
 
 /// 真实 mobile/frame 的问询请求帧。
 Map<String, dynamic> _questionFrame(String sessionId, String rpcId) => {
@@ -148,6 +154,16 @@ void main() {
   List<SessionIcon> rowIcons(WidgetTester tester) =>
       tester.widgetList<SessionIcon>(find.byType(SessionIcon)).toList();
 
+  /// 按会话 id 精确定位该行的状态标识。
+  /// 不依赖渲染顺序——排序键相同时以 id 为次级键，索引位置并不直观。
+  SessionIcon iconOf(WidgetTester tester, String sessionId) =>
+      tester.widget<SessionIcon>(
+        find.descendant(
+          of: find.byKey(ValueKey('session-row-$sessionId')),
+          matching: find.byType(SessionIcon),
+        ),
+      );
+
   group('会话列表：状态标识', () {
     testWidgets('运行中会话显示旋转标识，空闲会话没有标识', (tester) async {
       _sessionRows = [_row(id: 'session-run'), _row(id: 'session-idle')];
@@ -155,19 +171,20 @@ void main() {
       // 初始（都空闲）：无状态、无动画
       for (final icon in rowIcons(tester)) {
         expect(icon.state, SessionRowState.idle);
-        expect(icon.animation, isNull);
+        expect(icon.effectiveAnimation, isNull);
       }
 
       // 投递真实 agent/status 帧：只有 session-run 在跑
       store.injectFrame(_statusFrame('session-run', 'running'));
       await tester.pump();
 
-      final icons = rowIcons(tester);
-      expect(icons.length, 2);
-      expect(icons[0].state, SessionRowState.running);
-      expect(icons[0].animation, isNotNull, reason: '运行中必须带旋转动画');
-      expect(icons[1].state, SessionRowState.idle);
-      expect(icons[1].animation, isNull, reason: '空闲行不得有动效');
+      expect(rowIcons(tester).length, 2);
+      final running = iconOf(tester, 'session-run');
+      expect(running.state, SessionRowState.running);
+      expect(running.effectiveAnimation, isNotNull, reason: '运行中必须带旋转动画');
+      final idle = iconOf(tester, 'session-idle');
+      expect(idle.state, SessionRowState.idle);
+      expect(idle.effectiveAnimation, isNull, reason: '空闲行不得有动效');
     });
 
     testWidgets('会话结束后动效停止（idle 帧让标识消失）', (tester) async {
@@ -175,12 +192,13 @@ void main() {
       final store = await pumpSessions(tester);
       store.injectFrame(_statusFrame('session-run', 'running'));
       await tester.pump();
-      expect(rowIcons(tester)[0].state, SessionRowState.running);
+      expect(iconOf(tester, 'session-run').state, SessionRowState.running);
 
       store.injectFrame(_statusFrame('session-run', 'idle'));
       await tester.pump();
-      expect(rowIcons(tester)[0].state, SessionRowState.idle);
-      expect(rowIcons(tester)[0].animation, isNull);
+      final stopped = iconOf(tester, 'session-run');
+      expect(stopped.state, SessionRowState.idle);
+      expect(stopped.effectiveAnimation, isNull);
     });
 
     testWidgets('等待审批的会话是 waiting（静态、警示色），且优先于 running', (tester) async {
@@ -190,9 +208,9 @@ void main() {
       store.injectFrame(_approvalFrame('session-wait', 'ap-1'));
       await tester.pump();
 
-      final icon = rowIcons(tester)[0];
+      final icon = iconOf(tester, 'session-wait');
       expect(icon.state, SessionRowState.waiting, reason: '等待态优先于运行态');
-      expect(icon.animation, isNull, reason: '等待态不旋转（它在等我，不是在干活）');
+      expect(icon.effectiveAnimation, isNull, reason: '等待态不旋转（它在等我，不是在干活）');
     });
 
     testWidgets('空闲但有待答问询 → waiting', (tester) async {
@@ -201,20 +219,23 @@ void main() {
       store.injectFrame(_questionFrame('session-idle-wait', 'q-rpc-1'));
       await tester.pump();
 
-      final icon = rowIcons(tester)[0];
+      final icon = iconOf(tester, 'session-idle-wait');
       expect(icon.state, SessionRowState.waiting);
-      expect(icon.animation, isNull);
+      expect(icon.effectiveAnimation, isNull);
     });
 
     testWidgets('运行判定：idle 但有 running 后台任务 → 视为运行中', (tester) async {
       _sessionRows = [_row(id: 'session-jobs')];
       final store = await pumpSessions(tester);
-      store.jobsBySession['session-jobs'] = [
-        {'id': 'job-1', 'status': 'running'},
-      ];
+      // 走真实帧路径（直接改 map 不会 notify，界面不会重建）
+      store.injectFrame(
+        _jobsFrame('session-jobs', [
+          {'id': 'job-1', 'status': 'running'},
+        ]),
+      );
       await tester.pump();
 
-      expect(rowIcons(tester)[0].state, SessionRowState.running);
+      expect(iconOf(tester, 'session-jobs').state, SessionRowState.running);
     });
 
     testWidgets('减弱动态效果下状态标识仍在（静态虚线，靠颜色区分）', (tester) async {
@@ -230,10 +251,10 @@ void main() {
       store.injectFrame(_statusFrame('session-run', 'running'));
       await tester.pump();
 
-      final icon = rowIcons(tester)[0];
+      final icon = iconOf(tester, 'session-run');
       // 状态语义不因关闭动画而丢失；只是不再旋转
       expect(icon.state, SessionRowState.running);
-      expect(icon.animation, isNull, reason: '减弱动效下不得旋转');
+      expect(icon.effectiveAnimation, isNull, reason: '减弱动效下不得旋转');
     });
 
     testWidgets('bootstrap 全量快照把会话从 running 拉回 idle 时，标识随之消失', (tester) async {
@@ -241,15 +262,16 @@ void main() {
       final store = await pumpSessions(tester);
       store.injectFrame(_statusFrame('session-run', 'running'));
       await tester.pump();
-      expect(rowIcons(tester)[0].state, SessionRowState.running);
+      expect(iconOf(tester, 'session-run').state, SessionRowState.running);
 
       // 全量快照里该会话的 agent 已消失（会话结束/agent 销毁）→ 必须回落 idle
       await tester.runAsync(() async {
         await store.refreshAll();
       });
       await tester.pump();
-      expect(rowIcons(tester)[0].state, SessionRowState.idle);
-      expect(rowIcons(tester)[0].animation, isNull);
+      final afterPrune = iconOf(tester, 'session-run');
+      expect(afterPrune.state, SessionRowState.idle);
+      expect(afterPrune.effectiveAnimation, isNull);
     });
 
     testWidgets('已归档但仍在运行的会话同样显示状态', (tester) async {
@@ -263,7 +285,7 @@ void main() {
       await tester.pump();
 
       expect(find.text('archived-run'), findsOneWidget);
-      expect(rowIcons(tester)[0].state, SessionRowState.running);
+      expect(iconOf(tester, 'archived-run').state, SessionRowState.running);
     });
   });
 

@@ -43,8 +43,14 @@ class SessionIcon extends StatelessWidget {
   final double size;
   final double iconSize;
 
-  /// 共享的方形虚线旋转动画（null = 不旋转，用于静态场景/减弱动效）。
+  /// 由列表页共享的旋转 ticker（null = 不旋转，用于静态场景/减弱动效）。
   final Animation<double>? animation;
+
+  /// 该图标**实际**是否在旋转：只有运行中才旋转。
+  /// 等待态（静态警示色）与空闲态即使拿到 ticker 也不旋转——这是组件的对外契约，
+  /// 也是"等待态不旋转，好让我区分它在等我还是在干活"（US6）的落点。
+  Animation<double>? get effectiveAnimation =>
+      state == SessionRowState.running ? animation : null;
 
   @override
   Widget build(BuildContext context) {
@@ -82,7 +88,7 @@ class SessionIcon extends StatelessWidget {
             Positioned.fill(
               child: _DashedSquareBorder(
                 color: stroke,
-                animation: state == SessionRowState.running ? animation : null,
+                animation: effectiveAnimation,
               ),
             ),
         ],

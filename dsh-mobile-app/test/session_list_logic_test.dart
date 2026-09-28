@@ -211,12 +211,40 @@ void main() {
       expect(second.map((s) => s.id), ['session-a', 'session-b', 'session-c']);
     });
 
-    test('同时存在有/无消息时间的会话：有时间的排在前面', () {
+    test('有/无消息时间的会话混排：按各自排序键的值比较（回退值参与真实比较）', () {
+      // 回退不是"一律排在最后"，而是把 lastActivity 当作该会话的排序键参与比较——
+      // 这正是 ADR 0013 记录的兼容例外：无消息时间的会话仍可能上浮。
       final out = sortSessionsForList([
         makeSession(id: 'no-msg', lastActivity: 900),
         makeSession(id: 'has-msg', lastMessageAt: 100),
       ]);
-      expect(out.map((s) => s.id), ['has-msg', 'no-msg']);
+      expect(out.map((s) => s.id), ['no-msg', 'has-msg']);
+
+      // 反过来：消息时间更新时，有消息时间的会话排前
+      final out2 = sortSessionsForList([
+        makeSession(id: 'no-msg', lastActivity: 100),
+        makeSession(id: 'has-msg', lastMessageAt: 900),
+      ]);
+      expect(out2.map((s) => s.id), ['has-msg', 'no-msg']);
+    });
+
+    test('兼容例外：旧 App 的 touch 推高无消息会话的 lastActivity 后它会重排（已接受）', () {
+      final before = sortSessionsForList([
+        makeSession(id: 'has-msg', lastMessageAt: 500),
+        makeSession(id: 'no-msg', lastActivity: 100),
+      ]);
+      expect(before.map((s) => s.id), ['has-msg', 'no-msg']);
+
+      // 旧版 App 打开 no-msg（touch 只推高 lastActivity）→ 它上浮到第一位
+      final after = sortSessionsForList([
+        makeSession(id: 'has-msg', lastMessageAt: 500),
+        makeSession(id: 'no-msg', lastActivity: 9999),
+      ]);
+      expect(
+        after.map((s) => s.id),
+        ['no-msg', 'has-msg'],
+        reason: 'docs/03 明确：这项兼容回退不保证打开后顺序始终不变',
+      );
     });
   });
 
