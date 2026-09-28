@@ -248,6 +248,52 @@ void main() {
     });
   });
 
+  group('动效启停规则 shouldAnimateIndicators（ADR 0013）', () {
+    test('可见 + 有运行中会话 + 未减弱动效 → 旋转', () {
+      expect(
+        shouldAnimateIndicators(
+          visible: true,
+          hasRunningSessions: true,
+          reducedMotion: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('无运行中会话 → 不空转（没有东西要转）', () {
+      expect(
+        shouldAnimateIndicators(
+          visible: true,
+          hasRunningSessions: false,
+          reducedMotion: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('页面不可见 → 暂停（切到别的页不耗电）', () {
+      expect(
+        shouldAnimateIndicators(
+          visible: false,
+          hasRunningSessions: true,
+          reducedMotion: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('减弱动态效果 → 不空转（标识改为静态，只靠颜色区分状态）', () {
+      expect(
+        shouldAnimateIndicators(
+          visible: true,
+          hasRunningSessions: true,
+          reducedMotion: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('projectSessions（列表页与首页共用的投影）', () {
     test('先过滤子代理会话，再按消息时间排序', () {
       final out = projectSessions([

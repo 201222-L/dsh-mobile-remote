@@ -333,6 +333,64 @@ test("会话列表：回填读日志失败不影响响应返回（视为无记�
 	}
 });
 
+test("会话列表：回填读成功后按长 TTL 缓存，不反复读同一批冷会话的日志", async () => {
+	// 一次列表刷新不应让冷会话日志被重复读取（titleCache 用同一 TTL 规避同款代价）
+	let reads = 0;
+	const harness = createHarness({
+		records: [record("session-cold")],
+		liveSessions: [],
+		query: {
+			listSessions: async () => [record("session-cold")],
+			readSession: async () => {
+				reads += 1;
+				// 日志里确实没有消息 → 视为"无记录"，属成功读取结果
+				return { events: [{ type: "turn/end", seq: 1, time: 5_000, data: { turn: 1, reason: { kind: "completed" } } }] };
+			},
+		},
+	});
+	try {
+		await sessions(harness.route);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		const afterFirst = reads;
+		assert.equal(afterFirst, 1, "首次列表应触发一次回填读取");
+		// 再来两次列表刷新：命中缓存，不得再读日志
+		await sessions(harness.route);
+		await sessions(harness.route);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(reads, afterFirst, "成功后应命中缓存，不重复读日志");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("会话列表：回填读失败按短 TTL 缓存，允许瞬时故障自愈", async () => {
+	// 读取失败不该被当成"这个会话永远没有消息"——短 TTL 过后必须重试。
+	let attempts = 0;
+	const harness = createHarness({
+		records: [record("session-flaky")],
+		liveSessions: [],
+		query: {
+			listSessions: async () => [record("session-flaky")],
+			readSession: async () => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("transient storage blip");
+				return { events: [messageEvent(1, 7_000)] };
+			},
+		},
+	});
+	try {
+		await sessions(harness.route);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(attempts, 1, "首次触发一次失败的读取");
+		// 短 TTL 内不再重试（避免每次刷新都打存储）
+		await sessions(harness.route);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(attempts, 1, "失败结果在短 TTL 内应命中缓存，不立刻重试");
+	} finally {
+		harness.clean();
+	}
+});
+
 test("会话列表：回填从会话日志取最新消息时间，并忽略工具/生命周期事件", async () => {
 	// 会话不在 live 注册表 → 走回填路径。日志里工具事件时间更晚，但只有消息事件算数。
 	const body = () => record("session-dormant");

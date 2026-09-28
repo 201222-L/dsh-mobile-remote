@@ -12,6 +12,7 @@ import '../l10n.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
+import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../fmt.dart';
@@ -39,6 +40,7 @@ class _SessionsScreenState extends State<SessionsScreen>
     with SingleTickerProviderStateMixin {
   bool _showArchived = false;
   late final SessionIndicatorDriver _indicator;
+  bool _reducedMotion = false;
 
   @override
   void initState() {
@@ -48,6 +50,14 @@ class _SessionsScreenState extends State<SessionsScreen>
       ..setVisible(widget.visible);
     widget.store.addListener(_onStore);
     widget.store.refreshSessions();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 「减弱动态效果」在系统设置里可以随时改，跟随 MediaQuery 而不只读一次。
+    // 这里也承担 initState 之后的首轮同步（此时才有可用的 MediaQuery）。
+    _reducedMotion = prefersReducedMotion(context);
     _syncIndicator();
   }
 
@@ -73,13 +83,18 @@ class _SessionsScreenState extends State<SessionsScreen>
     }
   }
 
-  /// 只在「本页可见的列表里存在运行中会话」时启动旋转。
+  /// 只在「本页可见、确有运行中会话、且未开启减弱动效」时启动动画。
+  /// 规则本身收敛在 session_list.dart，首页与本页共用同一份判定。
   void _syncIndicator() {
     _indicator.setNeeded(
-      widget.store.hasRunningSessions(
-        _showArchived
-            ? widget.store.archivedSessions
-            : widget.store.activeSessions,
+      shouldAnimateIndicators(
+        visible: widget.visible,
+        hasRunningSessions: widget.store.hasRunningSessions(
+          _showArchived
+              ? widget.store.archivedSessions
+              : widget.store.activeSessions,
+        ),
+        reducedMotion: _reducedMotion,
       ),
     );
   }

@@ -33,6 +33,7 @@ class _HomeScreenState extends State<HomeScreen>
   // v3.0.0 review：新建会话弹层打开中标志（双击防抖）
   bool _openingSheet = false;
   late final SessionIndicatorDriver _indicator;
+  bool _reducedMotion = false;
 
   @override
   void initState() {
@@ -41,6 +42,13 @@ class _HomeScreenState extends State<HomeScreen>
     _indicator = SessionIndicatorDriver(vsync: this)
       ..setVisible(widget.visible);
     widget.store.addListener(_onStore);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 「减弱动态效果」跟随系统设置；这里同时承担首轮同步（此时才有 MediaQuery）
+    _reducedMotion = prefersReducedMotion(context);
     _syncIndicator();
   }
 
@@ -66,8 +74,17 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  /// 与会话列表页共用同一条动效启停规则（session_list.dart）。
   void _syncIndicator() {
-    _indicator.setNeeded(widget.store.hasRunningSessions(widget.store.activeSessions));
+    _indicator.setNeeded(
+      shouldAnimateIndicators(
+        visible: widget.visible,
+        hasRunningSessions: widget.store.hasRunningSessions(
+          widget.store.activeSessions,
+        ),
+        reducedMotion: _reducedMotion,
+      ),
+    );
   }
 
   Future<void> _openSession(Session s) async {

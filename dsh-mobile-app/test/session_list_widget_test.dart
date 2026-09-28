@@ -289,6 +289,83 @@ void main() {
     });
   });
 
+  group('会话列表：动效生命周期（ADR 0013）', () {
+    testWidgets('没有运行中会话时不空转动画', (tester) async {
+      _sessionRows = [_row(id: 's-idle-a'), _row(id: 's-idle-b')];
+      final store = await pumpSessions(tester);
+      // 全空闲：列表不消耗额外资源
+      for (final icon in rowIcons(tester)) {
+        expect(icon.effectiveAnimation, isNull);
+      }
+      expect(store.agentStatusForSession('s-idle-a'), 'idle');
+    });
+
+    testWidgets('页面不可见时暂停旋转（IndexedStack 下两页同时活着）', (tester) async {
+      _sessionRows = [_row(id: 's-vis')];
+      // visible: false 模拟切到别的页（HomeScreen/SessionsScreen 同在 IndexedStack 里）
+      final store = AppStore();
+      await store.loadPrefs();
+      await tester.runAsync(() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SessionsScreen(
+                store: store,
+                onOpenSession: () {},
+                visible: false,
+              ),
+            ),
+          ),
+        );
+        await store.refreshSessions();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      store.injectFrame(_statusFrame('s-vis', 'running'));
+      await tester.pump();
+
+      // 状态标识照常渲染（信息不丢），但 ticker 不该在后台空转
+      final icon = iconOf(tester, 's-vis');
+      expect(icon.state, SessionRowState.running);
+      expect(
+        icon.effectiveAnimation!.isAnimating,
+        isFalse,
+        reason: '页面不可见时旋转必须暂停',
+      );
+    });
+
+    testWidgets('减弱动态效果下不空转 ticker（标识是静态的，没有东西要转）', (tester) async {
+      tester.platformDispatcher.accessibilityFeaturesTestValue =
+          const FakeAccessibilityFeatures(disableAnimations: true);
+      addTearDown(
+        tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+      );
+
+      _sessionRows = [_row(id: 's-reduced')];
+      final store = await pumpSessions(tester);
+      store.injectFrame(_statusFrame('s-reduced', 'running'));
+      await tester.pump();
+
+      final icon = iconOf(tester, 's-reduced');
+      expect(icon.state, SessionRowState.running, reason: '状态语义必须保留');
+      expect(icon.effectiveAnimation, isNull, reason: '减弱动效下不旋转');
+    });
+
+    testWidgets('页面可见且有运行中会话时旋转真的在跑', (tester) async {
+      _sessionRows = [_row(id: 's-run-live')];
+      final store = await pumpSessions(tester);
+      store.injectFrame(_statusFrame('s-run-live', 'running'));
+      await tester.pump();
+
+      final icon = iconOf(tester, 's-run-live');
+      expect(icon.effectiveAnimation, isNotNull);
+      expect(
+        icon.effectiveAnimation!.isAnimating,
+        isTrue,
+        reason: '可见页面上的运行中会话必须真的在转',
+      );
+    });
+  });
+
   group('会话列表：隐藏子代理会话', () {
     testWidgets('子代理会话不出现，fork 出的会话正常显示', (tester) async {
       _sessionRows = [

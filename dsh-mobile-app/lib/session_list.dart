@@ -74,3 +74,14 @@ List<Session> sortSessionsForList(Iterable<Session> sessions) {
 /// 归档只是分类，不代表会话停了——因此**已归档但仍运行**的会话同样带状态标识。
 List<Session> projectSessions(Iterable<Session> sessions) =>
     sortSessionsForList(visibleSessions(sessions));
+
+/// 状态标识的旋转是否需要 ticker 运行（ADR 0013 的动效生命周期）。
+///
+/// 三个条件全满足才转：**页面可见**、**列表里确有运行中会话**、**系统未要求减弱动态效果**。
+/// 减弱动效下标识仍是静态可见的（只靠颜色区分），所以没有任何东西需要转动——
+/// 此时必须让 ticker 停下，不能空转耗电（US14）。
+bool shouldAnimateIndicators({
+  required bool visible,
+  required bool hasRunningSessions,
+  required bool reducedMotion,
+}) => visible && hasRunningSessions && !reducedMotion;

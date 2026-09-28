@@ -189,6 +189,10 @@ class SessionIndicatorDriver extends ChangeNotifier {
   /// 供 [SessionIcon] 使用的旋转动画（线性：匀速绕圈，不需要缓动）。
   Animation<double> get animation => _controller;
 
+  /// 旋转是否真的在跑：无运行中会话、页面不可见、或减弱动态效果时都应为 false。
+  /// 这条契约保证"没有东西要转时不空转 ticker"（省电），可被测试直接断言。
+  bool get isActive => _controller.isAnimating;
+
   /// 告知本页是否存在运行中会话（驱动启停）。
   void setNeeded(bool value) {
     if (_needed == value) return;
