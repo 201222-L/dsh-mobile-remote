@@ -333,6 +333,51 @@ void main() {
       );
     });
 
+    testWidgets('从隐藏切回可见时动效恢复（不是只改 visible 就完事）', (tester) async {
+      // 回归：早先 visible 被算进 needed，隐藏期间 needed 被置 false，
+      // 切回页签只调 setVisible(true) 而不重算 needed → 动效永久静止，
+      // 直到下一次 store 通知（安静运行的会话可能很久没有通知）。
+      _sessionRows = [_row(id: 's-toggle')];
+      final store = AppStore();
+      await store.loadPrefs();
+
+      Widget build({required bool visible}) => MaterialApp(
+        home: Scaffold(
+          body: SessionsScreen(
+            store: store,
+            onOpenSession: () {},
+            visible: visible,
+          ),
+        ),
+      );
+
+      await tester.runAsync(() async {
+        await tester.pumpWidget(build(visible: false));
+        await store.refreshSessions();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      // 隐藏期间会话已在运行（needed 此时不应污染可见后的状态）
+      store.injectFrame(_statusFrame('s-toggle', 'running'));
+      await tester.pump();
+      expect(
+        iconOf(tester, 's-toggle').effectiveAnimation!.isAnimating,
+        isFalse,
+        reason: '隐藏时不转（省电）',
+      );
+
+      // 切回可见：同一 widget 类型 + 同 key → 触发 didUpdateWidget
+      await tester.pumpWidget(build(visible: true));
+      await tester.pump();
+
+      final icon = iconOf(tester, 's-toggle');
+      expect(icon.state, SessionRowState.running);
+      expect(
+        icon.effectiveAnimation!.isAnimating,
+        isTrue,
+        reason: '切回可见后必须恢复旋转，不能等下一次 store 通知',
+      );
+    });
+
     testWidgets('减弱动态效果下不空转 ticker（标识是静态的，没有东西要转）', (tester) async {
       tester.platformDispatcher.accessibilityFeaturesTestValue =
           const FakeAccessibilityFeatures(disableAnimations: true);

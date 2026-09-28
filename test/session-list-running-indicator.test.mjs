@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let apply;
+let planMessageTimePrune;
+let CORPUS_FRESH_MS;
 let testHome;
 
 // 进程级持久化文件必须隔离，否则会读写开发者本机的 ~/.dsh/mobile-remote。
@@ -23,7 +25,7 @@ test.before(async () => {
 	testHome = await mkdtemp(join(tmpdir(), "dsh-mobile-session-list-"));
 	process.env.HOME = testHome;
 	// 消息时间表与活跃时间表都在 apply() 时按 HOME 解析路径，import 需在设置 HOME 之后
-	({ apply } = await import("../lib/index.js"));
+	({ apply, planMessageTimePrune, CORPUS_FRESH_MS } = await import("../lib/index.js"));
 });
 
 test.after(async () => {
@@ -104,7 +106,7 @@ class FakeRequest extends EventEmitter {
 }
 
 /** 构造假宿主：records 走 sessionQuery.listSessions，live 会话走 sessions.get。 */
-function createHarness({ records, liveSessions = [], query, noQuery = false } = {}) {
+function createHarness({ records, liveSessions = [], query, noQuery = false, agents = null, gateway = null } = {}) {
 	const routes = [];
 	const handlers = [];
 	const liveMap = new Map(liveSessions.map((s) => [s.id, s]));
@@ -112,6 +114,8 @@ function createHarness({ records, liveSessions = [], query, noQuery = false } = 
 		["sessions", { get: (id) => liveMap.get(id), list: () => liveSessions }],
 	]);
 	if (!noQuery) provided.set("sessionQuery", query ?? { listSessions: async () => records ?? [] });
+	if (agents) provided.set("agents", agents);
+	if (gateway) provided.set("typertGateway", gateway);
 	const ctx = {
 		webServer: { host: "127.0.0.1", port: 43120, register(spec) { routes.push(spec); return () => {}; } },
 		logger: { warn() {}, info() {} },
@@ -160,12 +164,12 @@ const liveSession = (id, events, header = {}) => ({
 	snapshotEvents: () => events,
 });
 
-const messageEvent = (seq, time, type = "user/message") => ({
+const messageEvent = (seq, time, type = "user/message", { source } = {}) => ({
 	type,
 	seq,
 	time,
 	data: type === "user/message"
-		? { message: { id: `m-${seq}`, content: [{ type: "text", text: `t${seq}` }] } }
+		? { id: `m-${seq}`, role: "user", content: [{ type: "text", text: `t${seq}` }], ...(source ? { source } : {}) }
 		: { message: { id: `m-${seq}`, content: [{ type: "text", text: `t${seq}` }] }, turn: 1, step: 1 },
 });
 
@@ -445,6 +449,221 @@ test("会话列表：实时消息事件更新 lastMessageAt（工具/生命周�
 	}
 });
 
+test("会话列表：系统注入与空助手消息不计入 lastMessageAt（只认可见对话消息）", async () => {
+	const harness = createHarness({
+		records: [record("session-inj")],
+		liveSessions: [liveSession("session-inj", [])],
+	});
+	try {
+		const value = async () => (await sessions(harness.route)).body.sessions[0].lastMessageAt;
+		// 真人提问：算
+		harness.emit("session-inj", messageEvent(1, 1000));
+		assert.equal(await value(), 1000);
+		// 系统注入（source.kind = plugin）：不算——App 普通模式下不渲染它
+		harness.emit("session-inj", {
+			type: "user/message", seq: 2, time: 5000,
+			data: { id: "inj-1", role: "user", content: [{ type: "text", text: "[SCHEDULE REMINDER] ..." }], source: { kind: "plugin", plugin: "x" } },
+		});
+		assert.equal(await value(), 1000, "插件注入不得推高 lastMessageAt");
+		// agent-instructions / tool 注入同样不算
+		for (const kind of ["agent-instructions", "tool"]) {
+			harness.emit("session-inj", {
+				type: "user/message", seq: 3, time: 6000,
+				data: { id: `inj-${kind}`, role: "user", content: [{ type: "text", text: "injected" }], source: { kind } },
+			});
+		}
+		assert.equal(await value(), 1000, "其它来源注入也不得推高");
+		// 正文为空的 assistant 中间产物（纯工具阶段）：不算
+		harness.emit("session-inj", {
+			type: "assistant/message", seq: 4, time: 7000,
+			data: { turn: 1, step: 1, message: { id: "a-empty", content: [{ type: "tool-call", name: "shell" }] } },
+		});
+		assert.equal(await value(), 1000, "空正文 assistant 中间产物不得推高");
+		// 有正文的 assistant：算
+		harness.emit("session-inj", {
+			type: "assistant/message", seq: 5, time: 8000,
+			data: { turn: 1, step: 1, message: { id: "a-real", content: [{ type: "text", text: "回答" }] } },
+		});
+		assert.equal(await value(), 8000, "有正文的助手回复必须计入");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("会话列表：回填同样只认可见对话消息（注入/空助手不影响排序键）", async () => {
+	const rows = [record("session-dormant-inj")];
+	const harness = createHarness({
+		records: rows,
+		liveSessions: [],
+		query: {
+			listSessions: async () => rows,
+			readSession: async () => ({
+				events: [
+					messageEvent(1, 3000),
+					// 更晚、但都是不可见记录
+					{ type: "user/message", seq: 2, time: 9000, data: { id: "i", role: "user", content: [{ type: "text", text: "x" }], source: { kind: "plugin" } } },
+					{ type: "assistant/message", seq: 3, time: 9500, data: { turn: 1, step: 1, message: { id: "e", content: [{ type: "tool-call", name: "t" }] } } },
+				],
+			}),
+		},
+	});
+	try {
+		await sessions(harness.route);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		const { body } = await sessions(harness.route);
+		assert.equal(body.sessions[0].lastMessageAt, 3000, "回填必须跳过注入与空助手消息");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("会话列表：模型 / reasoning effort 选择不改变排序（F-38 补充回归）", async () => {
+	// 用户实测项：切换模型或 effort 后返回列表，排序位置保持不变。
+	// 这些事件都不是可见对话消息，因此不得触碰 lastMessageAt。
+	const harness = createHarness({
+		records: [record("session-cfg")],
+		liveSessions: [liveSession("session-cfg", [])],
+	});
+	try {
+		const value = async () => (await sessions(harness.route)).body.sessions[0].lastMessageAt;
+		harness.emit("session-cfg", messageEvent(1, 2000));
+		assert.equal(await value(), 2000);
+		for (const ev of [
+			{ type: "model/selection", seq: 2, time: 8000, data: { provider: "openai", model: "gpt" } },
+			{ type: "model/selection", seq: 3, time: 8100, data: { provider: "deepseek-official", model: "deepseek-v4-pro", reasoningEffort: "max" } },
+			{ type: "permission/preset", seq: 4, time: 8200, data: { preset: "read-only" } },
+			{ type: "agent-preset/selected", seq: 5, time: 8300, data: { agentPreset: "standard" } },
+		]) {
+			harness.emit("session-cfg", ev);
+		}
+		assert.equal(await value(), 2000, "配置类事件不得改变排序键");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("/subagents：父 agent 活跃时走内核 RPC（既有行为不变）", async () => {
+	// 伪内核网关：确定性地断言「活跃父走 subagent.list RPC」而非持久化枚举
+	const rpcCalls = [];
+	const harness = createHarness({
+		records: [record("session-parent")],
+		liveSessions: [],
+		agents: {
+			get: (id) => (id === "session-parent" ? { id, session: { id } } : undefined),
+			list: () => [],
+		},
+		gateway: {
+			invokeRpc: async (endpoint, { args }) => {
+				rpcCalls.push({ endpoint, args });
+				return {
+					ok: true,
+					value: { parentAvailable: true, entries: [{ id: "live-child", kind: "child", activity: "running", label: "活跃子代理" }] },
+				};
+			},
+		},
+	});
+	try {
+		const { status, body } = await call(harness.route, "/m/api/subagents?parentSessionId=session-parent");
+		assert.equal(status, 200);
+		assert.equal(body.parentAvailable, true);
+		assert.deepEqual(body.subagents, [
+			{ id: "live-child", kind: "child", status: "running", title: "活跃子代理" },
+		]);
+		assert.equal(rpcCalls.length, 1, "活跃父必须走内核 RPC");
+		// subagent.list 的适配器直接传 { parentSessionId }（不经 request 包装，见 RPC_PAYLOAD_ADAPTER）
+		assert.deepEqual(rpcCalls[0].args, { parentSessionId: "session-parent" },
+			"RPC payload 形状不得改变（subagent.list ← parentSessionId）");
+		assert.equal(rpcCalls[0].endpoint, "subagents/list", "RPC 端点名按内核真名映射");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("/subagents：休眠/归档父会话仍可列出子代理（US35，不依赖父 agent 活跃）", async () => {
+	// 父会话已休眠：内核内存无 agent 实例（agents.get 恒 undefined）
+	const harness = createHarness({
+		records: [
+			record("session-parent"),
+			record("session-child-1", { origin: "subagent", parentSession: "session-parent" }),
+			record("session-child-2", { origin: "subagent", parentSession: "session-parent" }),
+			// 用户 fork：有 parentSession 但**无** origin → 不是子代理，不得列出
+			record("session-fork", { parentSession: "session-parent" }),
+			// 别人的子代理
+			record("session-other-child", { origin: "subagent", parentSession: "session-other" }),
+		],
+		liveSessions: [],
+		agents: { get: () => undefined, list: () => [] },
+		query: {
+			listSessions: async () => [
+				record("session-parent"),
+				record("session-child-1", { origin: "subagent", parentSession: "session-parent" }),
+				record("session-child-2", { origin: "subagent", parentSession: "session-parent" }),
+				record("session-fork", { parentSession: "session-parent" }),
+				record("session-other-child", { origin: "subagent", parentSession: "session-other" }),
+			],
+			readTitleSnapshots: async (ids) => ids.map((id) => ({ status: "fulfilled", value: { title: { title: `标题 ${id}` } } })),
+		},
+	});
+	try {
+		const { status, body } = await call(harness.route, "/m/api/subagents?parentSessionId=session-parent");
+		assert.equal(status, 200, "休眠父会话必须仍可列出子代理");
+		assert.equal(body.ok, true);
+		assert.equal(body.parentAvailable, false, "父会话无活跃 agent 应如实标注");
+		const ids = body.subagents.map((e) => e.id).sort();
+		assert.deepEqual(ids, ["session-child-1", "session-child-2"], "只列该父会话的子代理，排除 fork 与别人的子代理");
+		for (const e of body.subagents) assert.equal(typeof e.title, "string");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("/subagents：嵌套子代理（子代理自身作为父）同样可列出", async () => {
+	const rows = [
+		record("session-parent"),
+		record("session-child", { origin: "subagent", parentSession: "session-parent" }),
+		record("session-grandchild", { origin: "subagent", parentSession: "session-child" }),
+	];
+	const harness = createHarness({
+		records: rows,
+		liveSessions: [],
+		agents: { get: () => undefined, list: () => [] },
+		query: { listSessions: async () => rows, readTitleSnapshots: async (ids) => ids.map(() => ({ status: "rejected" })) },
+	});
+	try {
+		const { status, body } = await call(harness.route, "/m/api/subagents?parentSessionId=session-child");
+		assert.equal(status, 200);
+		assert.deepEqual(body.subagents.map((e) => e.id), ["session-grandchild"]);
+	} finally {
+		harness.clean();
+	}
+});
+
+test("/subagents：会话确实不存在时仍返回 404", async () => {
+	const harness = createHarness({
+		records: [record("session-someone-else")],
+		liveSessions: [],
+		agents: { get: () => undefined, list: () => [] },
+	});
+	try {
+		const { status, body } = await call(harness.route, "/m/api/subagents?parentSessionId=session-missing");
+		assert.equal(status, 404);
+		assert.equal(body.error, "session-not-found");
+	} finally {
+		harness.clean();
+	}
+});
+
+test("/subagents：缺 parentSessionId → 400（既有契约不变）", async () => {
+	const harness = createHarness({ records: [], liveSessions: [], agents: { get: () => undefined } });
+	try {
+		const { status, body } = await call(harness.route, "/m/api/subagents");
+		assert.equal(status, 400);
+		assert.equal(body.error, "parentSessionId-required");
+	} finally {
+		harness.clean();
+	}
+});
+
 test("会话列表：旧版 App 的 touch 端点仍然可用且不影响 lastMessageAt", async () => {
 	const harness = createHarness({
 		records: [record("session-legacy")],
@@ -466,4 +685,83 @@ test("会话列表：旧版 App 的 touch 端点仍然可用且不影响 lastMes
 	} finally {
 		harness.clean();
 	}
+});
+
+// ── 存在性剪枝（issue #14 复核 #5）：纯函数直测，不依赖定时器 ──
+
+test("剪枝：会话仍存在时保留排序键（哪怕是很久以前的会话）", () => {
+	const now = 1_000_000_000;
+	const plan = planMessageTimePrune({
+		messageTimeIds: ["old-but-alive"],
+		corpusIds: new Set(["old-but-alive"]),
+		corpusObservedAt: now - 1000,
+		now,
+	});
+	assert.deepEqual(plan.remove, [], "存在的旧会话不得被剪掉");
+	assert.equal(plan.misses.size, 0);
+});
+
+test("剪枝：会话确实消失时连续两次观测才删除", () => {
+	const now = 1_000_000_000;
+	const corpus = new Set(["alive"]);
+	// 第一次观测缺失 → 只登记待确认，不删
+	const first = planMessageTimePrune({
+		messageTimeIds: ["gone", "alive"],
+		corpusIds: corpus,
+		corpusObservedAt: now - 1000,
+		now,
+	});
+	assert.deepEqual(first.remove, []);
+	assert.deepEqual([...first.misses], ["gone"]);
+	// 第二次仍缺失 → 确认删除
+	const second = planMessageTimePrune({
+		messageTimeIds: ["gone", "alive"],
+		corpusIds: corpus,
+		corpusObservedAt: now - 1000,
+		misses: first.misses,
+		now,
+	});
+	assert.deepEqual(second.remove, ["gone"]);
+});
+
+test("剪枝：会话重新出现则清除待确认（不误删）", () => {
+	const now = 1_000_000_000;
+	const plan = planMessageTimePrune({
+		messageTimeIds: ["back"],
+		corpusIds: new Set(["back"]),
+		corpusObservedAt: now - 1000,
+		misses: new Set(["back"]), // 上一轮曾判缺失
+		now,
+	});
+	assert.deepEqual(plan.remove, []);
+	assert.equal(plan.misses.has("back"), false, "回归的会话必须从待删集合移除");
+});
+
+test("剪枝：从未观测过完整语料时不剪枝（旧内核 / 读取失败）", () => {
+	const now = 1_000_000_000;
+	const plan = planMessageTimePrune({
+		messageTimeIds: ["a", "b"],
+		corpusIds: new Set(),
+		corpusObservedAt: 0,
+		now,
+	});
+	assert.deepEqual(plan.remove, [], "没有语料观测就不得删任何键");
+	assert.equal(plan.misses.size, 0);
+});
+
+test("剪枝：观测过旧时不剪枝，并清空陈旧待确认（避免下一轮误删）", () => {
+	const now = 1_000_000_000;
+	const plan = planMessageTimePrune({
+		messageTimeIds: ["stale"],
+		corpusIds: new Set(["other"]),
+		corpusObservedAt: now - CORPUS_FRESH_MS - 1, // 刚好过期
+		misses: new Set(["stale"]), // 上一轮留下的待确认
+		now,
+	});
+	assert.deepEqual(plan.remove, [], "过旧观测不得触发删除");
+	assert.equal(
+		plan.misses.size,
+		0,
+		"必须清空陈旧待确认，否则下轮新鲜观测会把它当成第二次确认而误删",
+	);
 });

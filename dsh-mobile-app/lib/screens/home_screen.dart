@@ -75,10 +75,10 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   /// 与会话列表页共用同一条动效启停规则（session_list.dart）。
+  /// 页面可见性由 driver 单独持有（setVisible），两者正交。
   void _syncIndicator() {
     _indicator.setNeeded(
       shouldAnimateIndicators(
-        visible: widget.visible,
         hasRunningSessions: widget.store.hasRunningSessions(
           widget.store.activeSessions,
         ),

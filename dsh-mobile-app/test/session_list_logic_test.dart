@@ -6,9 +6,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/session_list.dart';
+import 'package:dsh_mobile_app/store.dart';
 
 Session makeSession({
   required String id,
+  String? title,
   int createdAt = 0,
   int? lastActivity,
   int? lastMessageAt,
@@ -17,6 +19,7 @@ Session makeSession({
   bool archived = false,
 }) => Session(
   id: id,
+  title: title,
   createdAt: createdAt,
   lastActivity: lastActivity,
   lastMessageAt: lastMessageAt,
@@ -249,10 +252,12 @@ void main() {
   });
 
   group('动效启停规则 shouldAnimateIndicators（ADR 0013）', () {
-    test('可见 + 有运行中会话 + 未减弱动效 → 旋转', () {
+    // 该规则只管**内容**维度（有无运行中会话、是否减弱动效）。
+    // 页面可见性由 SessionIndicatorDriver 自己持有并门控——两者正交。
+    // 早先 visible 也算进本规则，导致隐藏期间把 needed 置死、切回页签动效不恢复。
+    test('有运行中会话 + 未减弱动效 → 需要旋转', () {
       expect(
         shouldAnimateIndicators(
-          visible: true,
           hasRunningSessions: true,
           reducedMotion: false,
         ),
@@ -260,10 +265,9 @@ void main() {
       );
     });
 
-    test('无运行中会话 → 不空转（没有东西要转）', () {
+    test('无运行中会话 → 不需要（没有东西要转）', () {
       expect(
         shouldAnimateIndicators(
-          visible: true,
           hasRunningSessions: false,
           reducedMotion: false,
         ),
@@ -271,26 +275,83 @@ void main() {
       );
     });
 
-    test('页面不可见 → 暂停（切到别的页不耗电）', () {
+    test('减弱动态效果 → 不需要（标识改为静态，只靠颜色区分状态）', () {
       expect(
         shouldAnimateIndicators(
-          visible: false,
-          hasRunningSessions: true,
-          reducedMotion: false,
-        ),
-        isFalse,
-      );
-    });
-
-    test('减弱动态效果 → 不空转（标识改为静态，只靠颜色区分状态）', () {
-      expect(
-        shouldAnimateIndicators(
-          visible: true,
           hasRunningSessions: true,
           reducedMotion: true,
         ),
         isFalse,
       );
+    });
+  });
+
+  group('Session.copyWith（乐观更新不得丢字段）', () {
+    test('只改 archived，其余字段（含新增三字段）完整保留', () {
+      final s = makeSession(
+        id: 'x',
+        lastMessageAt: 500,
+        lastActivity: 900,
+        origin: 'subagent',
+        parentSession: 'p',
+        archived: false,
+      );
+      final out = s.copyWith(archived: true);
+      expect(out.id, 'x');
+      expect(out.archived, isTrue);
+      // 关键：新增字段不得被乐观更新丢掉（否则排序键回退、时间与位置矛盾）
+      expect(out.lastMessageAt, 500);
+      expect(out.lastActivity, 900);
+      expect(out.origin, 'subagent');
+      expect(out.parentSession, 'p');
+      expect(out.sortKey, s.sortKey, reason: '排序键必须不变');
+      expect(out.isSubagent, isTrue, reason: '子代理身份必须保留');
+    });
+  });
+
+  group('归档乐观更新（applyArchiveLocally 真调用，F-38 显示时间与位置一致）', () {
+    // 直接驱动 AppStore 的真实方法——只测 copyWith 会漏掉 store 层的字段丢失。
+    test('归档后新增字段与排序键完整保留，列表归属正确', () {
+      final store = AppStore();
+      store.sessions = [
+        makeSession(id: 'a', title: 'A', lastMessageAt: 9000, lastActivity: 8000),
+        makeSession(id: 'b', title: 'B', lastMessageAt: 1000),
+        makeSession(id: 'sub', origin: 'subagent', parentSession: 'a', lastMessageAt: 5000),
+      ];
+      // activeSessions 会过滤子代理会话（sub 不在其中），顺序按消息时间倒序
+      expect(store.activeSessions.map((s) => s.id).toList(), ['a', 'b']);
+
+      store.applyArchiveLocally('a', archived: true);
+
+      expect(store.activeSessions.map((s) => s.id).toList(), ['b'], reason: 'a 应离开活跃列表');
+      final archived = store.archivedSessions.single;
+      expect(archived.id, 'a');
+      // 关键：乐观更新不得丢字段，否则显示时间与排序会跳变
+      expect(archived.lastMessageAt, 9000, reason: 'lastMessageAt 不得被乐观更新丢掉');
+      expect(archived.lastActivity, 8000);
+      expect(archived.sortKey, 9000);
+      expect(archived.title, 'A');
+    });
+
+    test('取消归档同样保留字段', () {
+      final store = AppStore();
+      store.sessions = [
+        makeSession(id: 'a', lastMessageAt: 7000, archived: true),
+      ];
+      store.applyArchiveLocally('a', archived: false);
+      final row = store.activeSessions.single;
+      expect(row.lastMessageAt, 7000);
+      expect(row.sortKey, 7000);
+    });
+
+    test('归档保留子代理身份（origin/parentSession 不被抹掉）', () {
+      final store = AppStore();
+      store.sessions = [makeSession(id: 'sub', origin: 'subagent', parentSession: 'p')];
+      store.applyArchiveLocally('sub', archived: true);
+      final row = store.sessions.single;
+      expect(row.origin, 'subagent');
+      expect(row.parentSession, 'p');
+      expect(row.isSubagent, isTrue, reason: '归档不得让子代理会话"变成"主会话');
     });
   });
 

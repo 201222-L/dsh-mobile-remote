@@ -83,12 +83,12 @@ class _SessionsScreenState extends State<SessionsScreen>
     }
   }
 
-  /// 只在「本页可见、确有运行中会话、且未开启减弱动效」时启动动画。
+  /// 只在「确有运行中会话、且未开启减弱动效」时启动动画；
+  /// 页面可见性由 driver 单独持有（setVisible），两者正交，避免可见性成为两处状态。
   /// 规则本身收敛在 session_list.dart，首页与本页共用同一份判定。
   void _syncIndicator() {
     _indicator.setNeeded(
       shouldAnimateIndicators(
-        visible: widget.visible,
         hasRunningSessions: widget.store.hasRunningSessions(
           _showArchived
               ? widget.store.archivedSessions

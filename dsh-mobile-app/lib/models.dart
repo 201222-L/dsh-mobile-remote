@@ -57,6 +57,32 @@ class Session {
   String get label =>
       (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
 
+  /// 复制并覆盖部分字段。
+  ///
+  /// v3.1.6（issue #14）：乐观更新（归档/恢复）此前手工重建 Session、只复制旧字段，
+  /// 会把新增的 [lastMessageAt] / [origin] / [parentSession] 丢掉——排序键瞬间回退、
+  /// 显示时间与位置矛盾。改用本方法后，新增字段不会再被漏掉。
+  Session copyWith({
+    String? title,
+    String? cwd,
+    int? createdAt,
+    bool? archived,
+    int? lastActivity,
+    int? lastMessageAt,
+    String? origin,
+    String? parentSession,
+  }) => Session(
+    id: id,
+    title: title ?? this.title,
+    cwd: cwd ?? this.cwd,
+    createdAt: createdAt ?? this.createdAt,
+    archived: archived ?? this.archived,
+    lastActivity: lastActivity ?? this.lastActivity,
+    lastMessageAt: lastMessageAt ?? this.lastMessageAt,
+    origin: origin ?? this.origin,
+    parentSession: parentSession ?? this.parentSession,
+  );
+
   /// 排序键（ADR 0013）：最新消息时间 → 最近活跃时间 → 创建时间。
   /// 后两级只为旧插件降级保留。
   int get sortKey => lastMessageAt ?? lastActivity ?? createdAt;

@@ -77,11 +77,12 @@ List<Session> projectSessions(Iterable<Session> sessions) =>
 
 /// 状态标识的旋转是否需要 ticker 运行（ADR 0013 的动效生命周期）。
 ///
-/// 三个条件全满足才转：**页面可见**、**列表里确有运行中会话**、**系统未要求减弱动态效果**。
-/// 减弱动效下标识仍是静态可见的（只靠颜色区分），所以没有任何东西需要转动——
-/// 此时必须让 ticker 停下，不能空转耗电（US14）。
+/// 只管**内容**维度：列表里确有运行中会话、且系统未要求减弱动态效果。
+/// **不含页面可见性**——可见性由 [SessionIndicatorDriver] 自己持有并门控。
+/// 早先把 visible 也算进这里，导致「可见」成了两个地方的状态：隐藏期间本函数返回
+/// false 把 needed 置死，切回页签时只改 visible 而不重算 needed，动效就卡在静止态
+/// （安静运行的会话可能长时间没有 store 通知，表现为"虚线不转"）。
 bool shouldAnimateIndicators({
-  required bool visible,
   required bool hasRunningSessions,
   required bool reducedMotion,
-}) => visible && hasRunningSessions && !reducedMotion;
+}) => hasRunningSessions && !reducedMotion;
