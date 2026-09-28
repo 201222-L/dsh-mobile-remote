@@ -7,6 +7,20 @@ class Session {
   final int createdAt;
   final bool archived;
   final int? lastActivity;
+
+  /// 最新消息时间（ADR 0013）：会话内最近一条用户/助手可见对话消息的时间。
+  /// 是会话列表的排序依据；打开会话、查看历史或工具活动都不会改变它。
+  /// 旧插件不返回该字段时为 null，排序回退 [lastActivity]。
+  final int? lastMessageAt;
+
+  /// 内核会话来源标记，子代理会话为 `subagent`；其余会话不返回。
+  /// 判定子代理会话只认该字段——[parentSession] 不得用于此判定。
+  final String? origin;
+
+  /// 派生来源会话 id。用户主动 fork 的会话只有它而没有 [origin]，
+  /// 因此按它过滤会误伤用户的 fork。当前仅为将来"折叠到父会话"预留。
+  final String? parentSession;
+
   Session({
     required this.id,
     this.title,
@@ -14,6 +28,9 @@ class Session {
     required this.createdAt,
     this.archived = false,
     this.lastActivity,
+    this.lastMessageAt,
+    this.origin,
+    this.parentSession,
   });
   factory Session.fromJson(Map<String, dynamic> j) => Session(
     id: j['id'] as String,
@@ -22,6 +39,9 @@ class Session {
     createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
     archived: j['archived'] as bool? ?? false,
     lastActivity: (j['lastActivity'] as num?)?.toInt(),
+    lastMessageAt: (j['lastMessageAt'] as num?)?.toInt(),
+    origin: j['origin'] as String?,
+    parentSession: j['parentSession'] as String?,
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -30,12 +50,20 @@ class Session {
     'createdAt': createdAt,
     'archived': archived,
     'lastActivity': lastActivity,
+    'lastMessageAt': lastMessageAt,
+    'origin': origin,
+    'parentSession': parentSession,
   };
   String get label =>
       (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
 
-  /// 排序键：最近活跃优先，无活跃记录回退创建时间。
-  int get sortKey => lastActivity ?? createdAt;
+  /// 排序键（ADR 0013）：最新消息时间 → 最近活跃时间 → 创建时间。
+  /// 后两级只为旧插件降级保留。
+  int get sortKey => lastMessageAt ?? lastActivity ?? createdAt;
+
+  /// 是否子代理会话：只认内核 `origin === 'subagent'`（ADR 0013）。
+  /// fork 出的会话带 parentSession 但没有 origin，必须正常显示。
+  bool get isSubagent => origin == 'subagent';
 }
 
 class CatalogModel {

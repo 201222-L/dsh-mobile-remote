@@ -8,6 +8,13 @@ import 'floating.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
+import 'session_list.dart';
+
+/// 内核 `AgentStatus` 是 **`idle | running` 二元联合**（ADR 0013）——不存在 `waiting`。
+/// 等待用户审批/作答时驱动仍在跑，属于 `running`；该事实由挂起的问询/审批独立承载。
+/// 这里对未知取值统一归一到 `idle`（防御性猜测不再保留，避免列表出现永不消失的第三态）。
+String normalizeAgentStatus(Object? status) =>
+    status == 'running' ? 'running' : 'idle';
 
 class AppStore extends ChangeNotifier {
   // ── 数据 ──
@@ -17,7 +24,7 @@ class AppStore extends ChangeNotifier {
   List<Session> sessions = [];
   List<Map<String, dynamic>> actions = [];
   int unread = 0;
-  String agentStatus = 'idle'; // idle | running | waiting
+  String agentStatus = 'idle'; // idle | running（内核 AgentStatus 二元；无 waiting）
 
   /// v2.7.1：各 agent 最新状态映射（bootstrap + agent/status 帧维护）。
   final Map<String, String> agentStatusMap = {};
@@ -310,8 +317,8 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     if (id != null) {
       await _persistPrefs(_kSession, id);
-      // 记录打开时间（"最近会话"排序依据之一），失败静默
-      unawaited(api.touchSession(id));
+      // v3.1.6（issue #14 / ADR 0013）：不再调用 /sessions/touch——打开会话不得
+      // 改变列表顺序（排序依据已改为最新消息时间）。端点保留给旧版 App。
     }
   }
 
@@ -444,25 +451,35 @@ class AppStore extends ChangeNotifier {
     return null;
   }
 
-  /// 未归档会话，按最近活跃（打开/SSE 动静）排序；按当前工作区过滤。
+  /// 未归档会话，按最新消息时间排序；按当前工作区过滤；隐藏子代理会话（ADR 0013）。
   List<Session> get activeSessions {
     final ws = _selectedWorkspace();
-    final list = sessions
-        .where((s) => !s.archived && (ws == null || _inWorkspace(s, ws)))
-        .toList();
-    list.sort((a, b) => b.sortKey.compareTo(a.sortKey));
-    return list;
+    return projectSessions(
+      sessions.where((s) => !s.archived && (ws == null || _inWorkspace(s, ws))),
+    );
   }
 
-  /// 已归档会话，同样按最近活跃排序；按当前工作区过滤。
+  /// 已归档会话，同样按最新消息时间排序；子代理会话在已归档视图里也不出现。
   List<Session> get archivedSessions {
     final ws = _selectedWorkspace();
-    final list = sessions
-        .where((s) => s.archived && (ws == null || _inWorkspace(s, ws)))
-        .toList();
-    list.sort((a, b) => b.sortKey.compareTo(a.sortKey));
-    return list;
+    return projectSessions(
+      sessions.where((s) => s.archived && (ws == null || _inWorkspace(s, ws))),
+    );
   }
+
+  /// 会话行的状态标识（ADR 0013）：等待态优先于运行态。
+  /// 「等待用户处理」来自挂起的问询/审批，不是运行状态的第三个取值。
+  SessionRowState rowStateOf(String sessionId) => sessionRowState(
+    agentStatus: agentStatusForSession(sessionId),
+    hasRunningJobs: hasRunningJobs(sessionId),
+    hasPendingQuestion: questionForSession(sessionId) != null,
+    hasPendingApproval: approvalForSession(sessionId) != null,
+  );
+
+  /// 当前列表里是否存在需要驱动旋转标识的会话（存在运行中会话才启动动画）。
+  bool hasRunningSessions(Iterable<Session> visible) => visible.any(
+    (s) => rowStateOf(s.id) == SessionRowState.running,
+  );
 
   /// 当前工作区的显示名（无工作区/全部时为 null）。
   String? get workspaceTitle {
@@ -575,21 +592,50 @@ class AppStore extends ChangeNotifier {
     for (final a in agents) {
       if (a is Map) {
         final st = a['status'];
-        final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+        final norm = normalizeAgentStatus(st);
         final id = a['id'];
         if (id is String && id.isNotEmpty) liveAgents[id] = norm;
         final sid = a['sessionId'];
         if (sid is String && sid.isNotEmpty) liveSessions[sid] = norm;
       }
     }
-    if (snapshotEpoch == null || snapshotEpoch == _agentStatusEpoch) {
+    // v3.1.6（issue #14）：bootstrap 是**全量快照**，既会改变已存在会话的状态，
+    // 也会通过裁剪（会话消失/agent 销毁）把某个会话从 running 拉回 idle。
+    // 列表页的 running 标识依赖这份映射，所以这两种变化都必须让界面重绘，
+    // 而不只是"当前打开的会话"变化时。下面逐项比对（含将被裁剪的键）。
+    final willPrune =
+        snapshotEpoch == null || snapshotEpoch == _agentStatusEpoch;
+    final changed = _statusSetChanged(
+      agentStatusMap,
+      liveAgents,
+      prune: willPrune,
+    ) || _statusSetChanged(sessionAgentStatus, liveSessions, prune: willPrune);
+
+    if (willPrune) {
       // 快照权威：先删不在快照里的陈旧键，再写入快照值
       agentStatusMap.removeWhere((id, _) => !liveAgents.containsKey(id));
       sessionAgentStatus.removeWhere((sid, _) => !liveSessions.containsKey(sid));
     }
     agentStatusMap.addAll(liveAgents);
     sessionAgentStatus.addAll(liveSessions);
+    final before = agentStatus;
     applyAgentStatusForSession();
+    // 当前会话状态没变（applyAgentStatusForSession 已自行通知），但状态集合变了
+    // → 补一次通知，否则会话列表的标识会卡在旧状态。
+    if (changed && agentStatus == before) notifyListeners();
+  }
+
+  /// 快照与当前映射相比，状态集合是否变化（[prune] 为真时把"将被裁剪"也算变化）。
+  static bool _statusSetChanged(
+    Map<String, String> current,
+    Map<String, String> incoming, {
+    required bool prune,
+  }) {
+    for (final entry in incoming.entries) {
+      if (current[entry.key] != entry.value) return true;
+    }
+    if (prune && current.length != incoming.length) return true;
+    return false;
   }
 
   /// 把「当前打开会话」的状态应用到显示值。
@@ -841,6 +887,12 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// v3.1.6（issue #14）：把一帧 SSE 载荷喂给进度处理器。
+  /// 仅供 widget 测试构造真实的 agent/status 与 mobile/frame 帧（测试 seam），
+  /// 生产路径由 SSE 订阅直接调用 [_onFrame]。
+  @visibleForTesting
+  void injectFrame(Map<String, dynamic> frame) => _onFrame(frame);
+
   void _onFrame(Map<String, dynamic> frame) {
     _retry = 0;
     final type = frame['type'];
@@ -1017,13 +1069,23 @@ class AppStore extends ChangeNotifier {
       final aid = frame['agentId'] as String?;
       final sid = frame['sessionId'] as String?;
       final st = frame['status'];
-      final norm = st == 'running' ? 'running' : (st == 'waiting' ? 'waiting' : 'idle');
+      final norm = normalizeAgentStatus(st);
       _agentStatusEpoch++; // 增量帧落地：期间到达的 bootstrap 快照不再裁剪（见 _syncAgentStatus）
+      // v3.1.6（issue #14）：会话列表的 running 标识必须随**任意**会话的状态变化实时
+      // 启停（此前只在"当前打开的会话"变化时通知界面，列表动效会卡住不动）。
+      // 但也不能每帧都通知——高频重复帧会让整页反复重建；只在取值真的变化时通知。
+      final changed =
+          (aid != null && aid.isNotEmpty && agentStatusMap[aid] != norm) ||
+          (sid != null && sid.isNotEmpty && sessionAgentStatus[sid] != norm);
       if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
       if (sid != null && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
       final current = sid != null && sid.isNotEmpty ? sid == sessionId : aid == sessionId;
-      if (current || (sid == null && aid == null)) {
+      // legacy：无 id 的帧只影响当前页显示（保留下方原有语义）
+      final legacyUnrouted = sid == null && aid == null;
+      if (current || legacyUnrouted) {
         agentStatus = norm;
+      }
+      if (current || changed || legacyUnrouted) {
         notifyListeners();
       }
       if (sid != null && sid.isNotEmpty) {

@@ -3,39 +3,71 @@ import 'package:flutter/material.dart';
 import '../l10n.dart';
 import '../toast.dart';
 import '../models.dart';
+import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../fmt.dart';
+import '../widgets/session_indicator.dart';
 import 'chat_screen.dart';
 import 'sheets.dart';
 
 class HomeScreen extends StatefulWidget {
   final AppStore store;
   final VoidCallback onOpenSession;
-  const HomeScreen({super.key, required this.store, required this.onOpenSession});
+
+  /// 本页当前是否可见（IndexedStack 下三个页面同时活着，需显式告知以暂停动效）。
+  final bool visible;
+  const HomeScreen({
+    super.key,
+    required this.store,
+    required this.onOpenSession,
+    this.visible = true,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   // v3.0.0 review：新建会话弹层打开中标志（双击防抖）
   bool _openingSheet = false;
+  late final SessionIndicatorDriver _indicator;
 
   @override
   void initState() {
     super.initState();
+    // 与会话列表页共用同一个组件与同一套启停规则（ADR 0013：两处表现一致）
+    _indicator = SessionIndicatorDriver(vsync: this)
+      ..setVisible(widget.visible);
     widget.store.addListener(_onStore);
+    _syncIndicator();
+  }
+
+  @override
+  void didUpdateWidget(HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.visible != widget.visible) {
+      _indicator.setVisible(widget.visible);
+    }
   }
 
   @override
   void dispose() {
     widget.store.removeListener(_onStore);
+    _indicator.dispose();
     super.dispose();
   }
 
   void _onStore() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      _syncIndicator();
+    }
+  }
+
+  void _syncIndicator() {
+    _indicator.setNeeded(widget.store.hasRunningSessions(widget.store.activeSessions));
   }
 
   Future<void> _openSession(Session s) async {
@@ -50,6 +82,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final store = widget.store;
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
+    // v3.1.6（issue #14）：与会话列表页共用同一份过滤 + 排序投影（隐藏子代理、按消息时间）
+    final recent = store.activeSessions;
+    final reducedMotion = prefersReducedMotion(context);
 
     return Column(
       children: [
@@ -121,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ),
                                   ),
-                                  if (store.activeSessions.isEmpty)
+                                  if (recent.isEmpty)
                                     Padding(
                                       padding: const EdgeInsets.symmetric(vertical: 24),
                                       child: Center(child: Text(L10n.t('暂无会话，点下方新建', 'No sessions yet, create one below'), style: const TextStyle(color: Colors.grey))),
@@ -133,12 +168,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                       child: ListView.separated(
                                         shrinkWrap: true,
                                         padding: EdgeInsets.zero,
-                                        itemCount: store.activeSessions.length,
+                                        itemCount: recent.length,
                                         separatorBuilder: (_, _) => Divider(height: 1, color: line),
                                         itemBuilder: (context, i) => _SessionRow(
-                                          session: store.activeSessions[i],
-                                          workspace: store.workspaceLabelOf(store.activeSessions[i]),
-                                          onTap: () => _openSession(store.activeSessions[i]),
+                                          // 稳定行标识：复用时不跟错会话的状态
+                                          key: ValueKey('home-session-row-${recent[i].id}'),
+                                          session: recent[i],
+                                          workspace: store.workspaceLabelOf(recent[i]),
+                                          state: store.rowStateOf(recent[i].id),
+                                          indicator: reducedMotion ? null : _indicator.animation,
+                                          onTap: () => _openSession(recent[i]),
                                         ),
                                       ),
                                     ),
@@ -181,26 +220,30 @@ class _HomeScreenState extends State<HomeScreen> {
 class _SessionRow extends StatelessWidget {
   final Session session;
   final String? workspace; // 所属工作区标题（null = 无工作区概念，不显示）
+  final SessionRowState state;
+  final Animation<double>? indicator;
   final VoidCallback onTap;
-  const _SessionRow({required this.session, this.workspace, required this.onTap});
+  const _SessionRow({
+    super.key,
+    required this.session,
+    this.workspace,
+    required this.state,
+    this.indicator,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final ink2 = DshColors.ink2(context);
     final ink3 = DshColors.ink3(context);
-    final line = DshColors.line(context);
     return InkWell(
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: Row(
           children: [
-            Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(color: line, borderRadius: BorderRadius.circular(8)),
-              child: Icon(Icons.description_outlined, size: 15, color: ink2),
-            ),
+            // 与会话列表页共用同一个状态标识组件（此前后者是重复实现）
+            SessionIcon(state: state, archived: session.archived, animation: indicator),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
