@@ -4,10 +4,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../fmt.dart';
 import '../l10n.dart';
+import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
+import '../widgets/session_indicator.dart';
 import 'chat_screen.dart';
 
 /// 打开会话工具面板。
@@ -93,6 +96,7 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
                     _SubagentsTab(
                       sessionId: widget.sessionId,
                       onOpenSubagent: widget.onOpenSubagent,
+                      store: widget.store,
                       apiClient: widget.apiClient,
                     ),
                     _GoalTab(sessionId: widget.sessionId, apiClient: widget.apiClient),
@@ -241,22 +245,44 @@ class _SubagentsTab extends StatefulWidget {
   final String sessionId;
   final void Function(String childSessionId) onOpenSubagent;
   final Api? apiClient;
-  const _SubagentsTab({required this.sessionId, required this.onOpenSubagent, this.apiClient});
+  final AppStore store;
+  const _SubagentsTab({
+    required this.sessionId,
+    required this.onOpenSubagent,
+    required this.store,
+    this.apiClient,
+  });
 
   @override
   State<_SubagentsTab> createState() => _SubagentsTabState();
 }
 
-class _SubagentsTabState extends State<_SubagentsTab> {
+class _SubagentsTabState extends State<_SubagentsTab> with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>>? _subs;
   String? _error;
   // v3.0.0 review：中断在途锁（防连点重复请求/闪烁）
   bool _interruptBusy = false;
+  // 与子代理行共用一个旋转 ticker（issue #17）：复用会话列表的动效契约，
+  // 而不是每行各起一个动画。
+  late final SessionIndicatorDriver _indicator = SessionIndicatorDriver(vsync: this);
 
   @override
   void initState() {
     super.initState();
+    // store 变化（SSE 推送运行状态）时重绘行状态与"中断"按钮；列表顺序不受影响。
+    widget.store.addListener(_onStoreChanged);
     _load();
+  }
+
+  @override
+  void dispose() {
+    widget.store.removeListener(_onStoreChanged);
+    _indicator.dispose();
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _load() async {
@@ -264,7 +290,7 @@ class _SubagentsTabState extends State<_SubagentsTab> {
     try {
       final list = await (widget.apiClient ?? api).subagents(widget.sessionId);
       if (!mounted) return;
-      setState(() => _subs = list);
+      setState(() => _subs = sortSubagentsForSheet(list));
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '$e');
@@ -289,7 +315,6 @@ class _SubagentsTabState extends State<_SubagentsTab> {
     final ink2 = DshColors.ink2(context);
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
-    final warn = DshColors.warn(context);
     final danger = DshColors.danger(context);
     if (_error != null) {
       return Center(
@@ -309,8 +334,18 @@ class _SubagentsTabState extends State<_SubagentsTab> {
     if (subs.isEmpty) {
       return Center(child: Text(L10n.t('暂无子代理', 'No subagents'), style: TextStyle(fontSize: 13, color: ink3)));
     }
+    // 有运行中的子代理才转（与列表页同一规则）；减弱动态效果时交回静态虚线。
+    final reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    _indicator.setNeeded(
+      shouldAnimateIndicators(
+        hasRunningSessions: subs.any((s) => widget.store.rowStateOf(s['id'] as String? ?? '') == SessionRowState.running),
+        reducedMotion: reducedMotion,
+      ),
+    );
     return RefreshIndicator(
       onRefresh: _load,
+      // issue #17：按 createdAt 降序（最新派生在最上）。与会话列表的 lastMessageAt
+      // 有意不同——子代理列表是"我最近派了什么"，不该因子代理干活而跳动。
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
         itemCount: subs.length,
@@ -318,7 +353,10 @@ class _SubagentsTabState extends State<_SubagentsTab> {
         itemBuilder: (context, i) {
           final s = subs[i];
           final id = (s['id'] as String? ?? '').toString();
-          final running = s['status'] == 'running';
+          // 状态真源是 store（实时 SSE），不是 REST 的 activity：
+          // 后者在休眠父会话下恒为 inactive，会与实时状态自相矛盾（issue #17）。
+          final rowState = widget.store.rowStateOf(id);
+          final createdAt = subagentCreatedAt(s);
           return InkWell(
             // v3.1.5（#11 复核补正）：整行可点 → 跳到该子代理会话；右侧箭头提示可进入。
             onTap: id.isEmpty ? null : () => widget.onOpenSubagent(id),
@@ -326,7 +364,17 @@ class _SubagentsTabState extends State<_SubagentsTab> {
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Row(
                 children: [
-                  Icon(Icons.polyline_outlined, size: 16, color: warn),
+                  // 复用会话列表同一套方形虚线（running 旋转 / waiting 静态警示），
+                  // 只把图标换成子代理自己的，避免第二套运行状态语义。
+                  SessionIcon(
+                    state: rowState,
+                    archived: false,
+                    size: 24,
+                    iconSize: 16,
+                    icon: Icons.polyline_outlined,
+                    squircle: false,
+                    animation: _indicator.animation,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -339,13 +387,20 @@ class _SubagentsTabState extends State<_SubagentsTab> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          [id, (s['status'] as String? ?? '').toString()].join(' · '),
+                          // 状态不再印英文 activity（改由指示器表达，避免与 store 冲突）；
+                          // 时间与排序同源，让"为什么是这个顺序"自解释。
+                          createdAt == null
+                              ? id
+                              : [id, relTime(createdAt)].join(' · '),
                           style: TextStyle(fontSize: 11.5, color: ink3),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
                   ),
-                  if (running)
+                  // 「中断」只在真的运行时可用——用 store 判定，与指示器同源。
+                  if (rowState == SessionRowState.running)
                     TextButton(
                       onPressed: () => _interrupt(id),
                       style: TextButton.styleFrom(

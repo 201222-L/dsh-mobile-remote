@@ -36,6 +36,8 @@ class SessionIcon extends StatelessWidget {
     this.size = 30,
     this.iconSize = 15,
     this.animation,
+    this.icon,
+    this.squircle = true,
   });
 
   final SessionRowState state;
@@ -45,6 +47,13 @@ class SessionIcon extends StatelessWidget {
 
   /// 由列表页共享的旋转 ticker（null = 不旋转，用于静态场景/减弱动效）。
   final Animation<double>? animation;
+
+  /// 图标覆盖（issue #17）：子代理行复用同一套虚线语义但用不同图标，
+  /// 从而共享完全相同的颜色/动效/无障碍契约，而不是再写一份。
+  final IconData? icon;
+
+  /// 是否绘制圆角底板与图标。子代理行只要虚线包住自己的图标，不要会话底板。
+  final bool squircle;
 
   /// 该图标**实际**是否在旋转：只有运行中才旋转。
   /// 等待态（静态警示色）与空闲态即使拿到 ticker 也不旋转——这是组件的对外契约，
@@ -71,19 +80,22 @@ class SessionIcon extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              color: archived ? line : DshColors.brandSoft(context),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              archived ? Icons.archive_outlined : Icons.description_outlined,
-              size: iconSize,
-              color: archived ? ink2 : brand,
-            ),
-          ),
+          if (squircle)
+            Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                color: archived ? line : DshColors.brandSoft(context),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                icon ?? (archived ? Icons.archive_outlined : Icons.description_outlined),
+                size: iconSize,
+                color: archived ? ink2 : brand,
+              ),
+            )
+          else
+            Icon(icon, size: iconSize, color: ink2),
           if (state != SessionRowState.idle)
             Positioned.fill(
               child: _DashedSquareBorder(

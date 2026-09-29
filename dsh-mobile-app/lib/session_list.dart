@@ -86,3 +86,39 @@ bool shouldAnimateIndicators({
   required bool hasRunningSessions,
   required bool reducedMotion,
 }) => hasRunningSessions && !reducedMotion;
+
+// ── 子代理列表（issue #17）──
+//
+// 子代理本身就是**会话**（CONTEXT.md「子代理会话」），所以行状态直接复用上面
+// 同一套 [sessionRowState]，不再发明第二套运行状态语义。
+//
+// 但**排序有意与会话列表不同**：会话列表用 lastMessageAt（"最近聊了什么"），
+// 子代理列表用 createdAt 降序（"我最近派了什么"）。后者不随子代理干活而跳动，
+// 顺序稳定可预期——这是刻意的不一致，勿"修正"为与会话列表相同。
+
+/// 子代理条目的创建时间；缺失时返回 null（由调用方回退）。
+int? subagentCreatedAt(Map<String, dynamic> entry) {
+  final v = entry['createdAt'];
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  return null;
+}
+
+/// 子代理排序：`createdAt` **降序**（最新派生在最上），等值按 id 升序保证稳定。
+///
+/// 时间缺失的条目排在最后（而不是最前）：缺字段是插件/旧数据的降级情况，
+/// 不该因此抢占"最近派生"的位置。返回新列表，不修改入参。
+List<Map<String, dynamic>> sortSubagentsForSheet(Iterable<Map<String, dynamic>> entries) {
+  final list = entries.toList();
+  list.sort((a, b) {
+    final ta = subagentCreatedAt(a);
+    final tb = subagentCreatedAt(b);
+    if (ta != tb) {
+      if (ta == null) return 1;
+      if (tb == null) return -1;
+      return tb.compareTo(ta);
+    }
+    return (a['id'] as String? ?? '').compareTo(b['id'] as String? ?? '');
+  });
+  return list;
+}
