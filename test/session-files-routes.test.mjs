@@ -189,6 +189,41 @@ test("files：下载返回文件字节与下载响应头", async () => {
 	}
 });
 
+/**
+ * 下载必须显式 connection: close（v3.1.5+39 真机回归）。
+ *
+ * 症状：文件预览返回后列目录报「无法读取目录：TimeoutException」。
+ * 根因：这条路由此前是唯一不设 connection 的响应，沿用 Node 默认 keep-alive
+ * (timeout=5)；手机 dart:io 连接池 idle 15s 与服务端 5s 存在半关竞态，复用那条
+ * socket 的下一个请求会一直等到客户端超时。sendJson 与图片路由早已修过，此处补齐。
+ *
+ * 这里只断言"头被显式设为 close"；真实的半关竞态需要真机/真实 socket 时序才能
+ * 复现，单元层能钉住的是"我们不再依赖服务端默认值"这一点。
+ */
+test("files：下载响应显式 connection: close（半关竞态回归）", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const res = await call(route, { url: `/m/api/files?path=${encodeURIComponent(join(root, "README.md"))}` });
+		assert.equal(res.status, 200);
+		assert.equal(res.headers["connection"], "close");
+	} finally {
+		clean();
+	}
+});
+
+test("directories：成功响应同样 connection: close（对齐既有约定）", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const res = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}` });
+		assert.equal(res.status, 200);
+		assert.equal(res.headers["connection"], "close");
+	} finally {
+		clean();
+	}
+});
+
 test("files：二进制文件按字节返回，不被改写", async () => {
 	const { route, clean } = createHarness();
 	try {

@@ -80,21 +80,48 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
     if (mounted) setState(() {});
   }
 
+  /// 页面内部还有"上一层"可回吗（预览中，或已下钻到子目录）。
+  ///
+  /// 与同栏的 Git 页面（git_browser_sheet.dart 的 PopScope/_back）保持一致的
+  /// 「返回是往回走一层，而不是直接离开」范式；此前没有这层拦截，右滑会在
+  /// 任意深度直接退出整个页面，用户丢掉已下钻的层级。
+  bool get _hasInnerLevel =>
+      _c.stage == BrowseStage.preview ||
+      (_c.root.isNotEmpty && !_c.atRoot);
+
+  /// 系统返回（手势/返回键）触发的"往回走一层"。
+  ///
+  /// 只在 [_hasInnerLevel] 为真时被调用：退出预览 → 逐级返回上级目录。
+  /// 已经在浏览根时 canPop 为真，交给系统正常退出，不会走到这里。
+  void _handleBack() {
+    if (_c.stage == BrowseStage.preview) {
+      _c.closePreview();
+    } else if (_c.root.isNotEmpty && !_c.atRoot) {
+      _c.goUp();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(L10n.t('文件', 'Files')),
-        actions: [
-          IconButton(
-            key: const Key('sf-refresh'),
-            icon: const Icon(Icons.refresh),
-            tooltip: L10n.t('刷新', 'Refresh'),
-            onPressed: () => _c.refresh(),
-          ),
-        ],
+    return PopScope(
+      canPop: !_hasInnerLevel,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && mounted) _handleBack();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(L10n.t('文件', 'Files')),
+          actions: [
+            IconButton(
+              key: const Key('sf-refresh'),
+              icon: const Icon(Icons.refresh),
+              tooltip: L10n.t('刷新', 'Refresh'),
+              onPressed: () => _c.refresh(),
+            ),
+          ],
+        ),
+        body: SafeArea(child: _body()),
       ),
-      body: SafeArea(child: _body()),
     );
   }
 
