@@ -135,6 +135,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('Git'), findsOneWidget);
+    expect(find.byTooltip('文件'), findsOneWidget);
     expect(find.byTooltip('任务 / 子代理 / 目标'), findsOneWidget);
     expect(find.byTooltip('复制当前已加载的对话'), findsOneWidget);
 
@@ -142,6 +143,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byTooltip('Git'), findsNothing);
     expect(find.byTooltip('对话操作'), findsOneWidget);
+  });
+
+  testWidgets('files action opens the session file browser', (tester) async {
+    final backend = _TimelineBackend();
+    final store = AppStore()
+      ..sessionId = 'session-files'
+      ..sessions = [
+        Session(id: 'session-files', title: 'F', cwd: null, createdAt: 1),
+      ];
+    await _pumpChat(tester, store, backend);
+
+    await tester.tap(find.byTooltip('对话操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('文件'));
+    await tester.pumpAndSettle();
+
+    // 打开的是会话文件浏览页；该会话无 cwd，因此页内说明原因而不是空白。
+    expect(find.text('文件'), findsWidgets);
+    expect(find.byKey(const Key('sf-error')), findsOneWidget);
+    expect(find.textContaining('工作目录'), findsOneWidget);
+    // 操作栏已关闭
+    expect(find.byTooltip('Git'), findsNothing);
   });
 
   testWidgets('session tools remain in their existing bottom sheet', (

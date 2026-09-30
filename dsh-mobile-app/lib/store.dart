@@ -51,10 +51,20 @@ class AppStore extends ChangeNotifier {
   static const _defaultGitTabs = ['branches', 'graph', 'worktree'];
 
   /// Chat-page action rail order, shared across conversations on this device.
-  List<String> conversationActionOrder = const ['git', 'session_tools', 'copy'];
-  static const conversationActionIds = ['git', 'session_tools', 'copy'];
+  ///
+  /// 新增动作时**必须同步 [conversationActionIds]**：持久化的旧顺序因长度不等
+  /// 会被 [_validConversationActionOrder] 判为无效，自动回退到新默认顺序
+  /// （用户只丢一次自定义排序，不会拿到缺项或未知项的脏数据）。
+  List<String> conversationActionOrder = const [
+    'git',
+    'files',
+    'session_tools',
+    'copy',
+  ];
+  static const conversationActionIds = ['git', 'files', 'session_tools', 'copy'];
   static const _defaultConversationActionOrder = [
     'git',
+    'files',
     'session_tools',
     'copy',
   ];

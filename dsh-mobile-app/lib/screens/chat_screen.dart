@@ -23,6 +23,7 @@ import '../git_browser_controller.dart';
 import 'git_browser_sheet.dart';
 import '../widgets/git_logo.dart';
 import 'sheets.dart';
+import 'session_files_screen.dart';
 import 'session_tools_sheet.dart';
 
 /// v3.0.0(热修 07)：服务端"明确拒绝"的错误码白名单——这些代表消息**未被投递且服务端无回执**，
@@ -187,6 +188,10 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
   Widget _actionButton(BuildContext context, String id) {
     final (icon, label) = switch (id) {
       'git' => (const GitLogo(size: 22), 'Git'),
+      'files' => (
+        const Icon(Icons.folder_outlined, size: 20),
+        L10n.t('文件', 'Files'),
+      ),
       'session_tools' => (
         const Icon(Icons.assignment_outlined, size: 20),
         L10n.t('任务 / 子代理 / 目标', 'Tasks / Subagents / Goals'),
@@ -2764,11 +2769,20 @@ class _ChatScreenState extends State<ChatScreen> {
     switch (action) {
       case 'git':
         await _openGit();
+      case 'files':
+        _openSessionFilesFromActionRail();
       case 'session_tools':
         _openSessionToolsFromActionRail();
       case 'copy':
         await _copyConversation();
     }
+  }
+
+  /// 打开会话文件浏览（浏览根 = 本会话工作目录，与 Git 导航同源）。
+  void _openSessionFilesFromActionRail() {
+    final sid = _mySessionId ?? widget.store.sessionId;
+    if (sid == null) return;
+    openSessionFiles(context, widget.store, sid);
   }
 
   Future<void> _openGit() async {
