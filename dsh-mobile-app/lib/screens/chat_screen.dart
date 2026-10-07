@@ -525,8 +525,9 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       // v3.1.6（app-audit ②）：守卫之后才写降级标记——过期响应（会话切换/重同步重叠）此前
       // 也会改写横幅状态：`_historyDegraded` 是赋值语义，过期页能把已置位的提示抹回 false。
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       setState(() {
         // 打开/重同步会话时以本次响应为准（赋值，而非 |=）：避免上一条会话的「仅部分历史」
         // 横幅残留到正常会话。后续增量分页（after/before）仍用 |=：任一页降级即持续提示。
@@ -612,8 +613,9 @@ class _ChatScreenState extends State<ChatScreen> {
             .toList();
         final keepWithoutEcho = keep.where((m) {
           final duplicate = durableUsers.any((d) {
-            if (m.messageId != null && d.messageId != null)
+            if (m.messageId != null && d.messageId != null) {
               return m.messageId == d.messageId;
+            }
             return m.messageId == null &&
                 d.messageId == null &&
                 m.text.trim().isNotEmpty &&
@@ -640,8 +642,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _refreshUsage();
       widget.store.refreshSessionConfig();
     } catch (e) {
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       AppLog.instance.log('Chat: 历史加载失败 $id → $e');
       if (mounted) {
         if (_items.isNotEmpty || _olderItems.isNotEmpty) {
@@ -668,8 +671,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
   Future<void> _loadMoreInfinite() async {
     final id = _mySessionId ?? widget.store.sessionId;
-    if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory)
+    if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) {
       return;
+    }
     _loadingMore = true;
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
@@ -680,8 +684,9 @@ class _ChatScreenState extends State<ChatScreen> {
         limit: _histPageSize,
       );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -742,8 +747,9 @@ class _ChatScreenState extends State<ChatScreen> {
         limit: _histPageSize,
       );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -789,8 +795,9 @@ class _ChatScreenState extends State<ChatScreen> {
         limit: _histPageSize,
       );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -826,8 +833,9 @@ class _ChatScreenState extends State<ChatScreen> {
         limit: _histPageSize,
       );
       final events = page.events;
-      if (!mounted || generation != _loadGeneration || id != _mySessionId)
+      if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
+      }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
@@ -919,11 +927,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 delegate: SliverChildBuilderDelegate((context, index) {
                   // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
                   if ((topButton || loadingTail) && index == 0) {
-                    if (topButton)
+                    if (topButton) {
                       return _OlderButton(
                         busy: _loadingMore,
                         onTap: _openHistory,
                       );
+                    }
                     return const Padding(
                       padding: EdgeInsets.symmetric(vertical: 10),
                       child: Center(
@@ -936,10 +945,12 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   }
                   final dataIndex = index - (topButton || loadingTail ? 1 : 0);
-                  if (dataIndex < _items.length)
+                  if (dataIndex < _items.length) {
                     return _buildItem(_items[_items.length - 1 - dataIndex]);
-                  if (hasDraft)
+                  }
+                  if (hasDraft) {
                     return _AssistantBubble(text: _draft, streaming: true);
+                  }
                   return const SizedBox.shrink();
                 }, childCount: _items.length + currentExtra),
               ),
@@ -1234,8 +1245,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _scheduleDraftFlush();
       } else if (text.isNotEmpty && reasoning) {
         // 思考内容实时累积（活动条面板，可展开）
-        if (_reasoning.isEmpty)
+        if (_reasoning.isEmpty) {
           AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+        }
         _reasoning += text;
         _scheduleActivityFlush();
       }
@@ -1262,8 +1274,9 @@ class _ChatScreenState extends State<ChatScreen> {
       } else {
         // 轮次结束：清空活动条与思考草稿
         _activeTools.clear();
-        if (_reasoning.isNotEmpty)
+        if (_reasoning.isNotEmpty) {
           AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
+        }
         _reasoning = '';
         _reasoningExpanded = false;
       }
@@ -1313,12 +1326,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!needsTurnEndResync(
       lastUserSeq: _lastUserSeq,
       lastAssistantSeq: _lastAssistantSeq,
-    ))
+    )) {
       return;
+    }
     final now = DateTime.now();
     if (_lastResyncAt != null &&
-        now.difference(_lastResyncAt!) < const Duration(seconds: 10))
+        now.difference(_lastResyncAt!) < const Duration(seconds: 10)) {
       return;
+    }
     _lastResyncAt = now;
     AppLog.instance.log(
       'Chat: 轮次结束但无回复条目（lastUser=$_lastUserSeq lastAssistant=$_lastAssistantSeq）→ 兜底补拉',
@@ -1341,8 +1356,9 @@ class _ChatScreenState extends State<ChatScreen> {
           version != _todoProjectionVersion ||
           generation != _loadGeneration ||
           id != _mySessionId ||
-          list == null)
+          list == null) {
         return;
+      }
       setState(() => _todos = list);
     } catch (e) {
       AppLog.instance.log('Chat: 任务清单拉取失败 $id → $e');
@@ -1363,8 +1379,9 @@ class _ChatScreenState extends State<ChatScreen> {
       while (pageNo < _catchupMaxPages) {
         pageNo++;
         final page = await _api.historyPage(id, after: cursor, limit: 100);
-        if (!mounted || generation != _loadGeneration || id != _mySessionId)
+        if (!mounted || generation != _loadGeneration || id != _mySessionId) {
           return;
+        }
         // v3.1.6（app-audit ②）：守卫之后才写降级标记（过期响应不得改写横幅）
         if (page.degraded) _historyDegraded = true;
         final fresh = <ChatEvent>[];
@@ -1397,10 +1414,11 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!page.hasMore) break;
         truncated = pageNo >= _catchupMaxPages;
       }
-      if (truncated)
+      if (truncated) {
         AppLog.instance.log(
           'Chat: catch-up 截断于 $_catchupMaxPages 页（cursor=$cursor），剩余由下次补拉收敛',
         );
+      }
     } catch (e) {
       AppLog.instance.log('Chat: catch-up failed $e');
     }
@@ -1965,8 +1983,9 @@ class _ChatScreenState extends State<ChatScreen> {
         // 去重（SSE 回显 vs 本地乐观添加）：
         // 1) 已有同 messageId 的消息 → 直接跳过（回显已完成渲染，同文本连发也不误并）
         if (mid != null &&
-            out.any((m) => m.kind == _MsgKind.user && m.messageId == mid))
+            out.any((m) => m.kind == _MsgKind.user && m.messageId == mid)) {
           return;
+        }
         // 2) 列表中已存在本地乐观添加（messageId 尚未赋值）且文本一致的消息 → 合并。
         //    全列表查找而非只看 out.first：turn/start 等事件可能先于回显插入，
         //    把乐观消息挤到非首位（否则会出现"同一条消息显示两次"）。
@@ -2048,8 +2067,9 @@ class _ChatScreenState extends State<ChatScreen> {
         // （注入的上下文快照虽然进模型但界面隐藏，不能算作本轮已有回复）。
         if ((!history || tail) &&
             ev.seq != null &&
-            !timelineIsInjectedNoise(body))
+            !timelineIsInjectedNoise(body)) {
           _lastAssistantSeq = ev.seq;
+        }
         if (history) {
           out.add(item);
         } else {
@@ -2177,8 +2197,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if ((text.isEmpty && _pendingImages.isEmpty) ||
         id == null ||
         _sending ||
-        preset != null && _pendingImages.isNotEmpty)
+        preset != null && _pendingImages.isNotEmpty) {
       return;
+    }
     // v3.0.0 图像链路：有待发图片 → 走图片通路（原始字节不压缩；成功/失败处理独立）
     if (mode == 'steer' && _pageAgentStatus != 'running') {
       showToast(
@@ -2666,17 +2687,20 @@ class _ChatScreenState extends State<ChatScreen> {
       return true;
     }
 
-    if (startsWith(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+    if (startsWith(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) {
       return 'image/png';
+    }
     if (startsWith(const [0xFF, 0xD8, 0xFF])) return 'image/jpeg';
     if (startsWith(const [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
     if (startsWith(const [0x52, 0x49, 0x46, 0x46]) &&
-        startsWith(const [0x57, 0x45, 0x42, 0x50], 8))
+        startsWith(const [0x57, 0x45, 0x42, 0x50], 8)) {
       return 'image/webp';
+    }
     if (startsWith(const [0x66, 0x74, 0x79, 0x70], 4)) {
       final brand = String.fromCharCodes(b.sublist(8, 12));
-      if (const ['heic', 'heix', 'hevc', 'mif1'].contains(brand))
+      if (const ['heic', 'heix', 'hevc', 'mif1'].contains(brand)) {
         return 'image/heic';
+      }
     }
     return null;
   }
@@ -2719,8 +2743,9 @@ class _ChatScreenState extends State<ChatScreen> {
       await _api.jobKill(sid, jobId);
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
+      }
     }
   }
 
@@ -3415,8 +3440,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final name = picked['name'] as String? ?? 'file';
       final bytes = picked['bytes'] as Uint8List?;
       if (bytes == null || bytes.isEmpty) {
-        if (mounted)
+        if (mounted) {
           showToast(context, L10n.t('读取文件失败', 'Failed to read the file'));
+        }
         return;
       }
       final r = await _api.uploadFile(sid, name, bytes);
@@ -3427,8 +3453,9 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         showToast(context, '${L10n.t('上传失败：', 'Upload failed: ')}$e');
+      }
     }
   }
 
@@ -3453,8 +3480,9 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
+      }
     }
   }
 
@@ -3839,8 +3867,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null ||
         detailSeq == null ||
         item.detailLoading ||
-        !_api.timelineCapabilities.detail)
+        !_api.timelineCapabilities.detail) {
       return;
+    }
     // 去重登记下沉到唯一入口：手动展开此前不登记，卡片重锚重建后会对同一 (卡, detailSeq)
     // 再发一次 HTTP；失败时移除登记，保证「重试」按钮仍能重新请求。
     final requestKey = '${_failureKey(item)}:$detailSeq';
@@ -3865,8 +3894,9 @@ class _ChatScreenState extends State<ChatScreen> {
           : <String, dynamic>{};
       String textOf(Object? value) {
         if (value is String) return value;
-        if (value is List)
+        if (value is List) {
           return value.map(textOf).where((text) => text.isNotEmpty).join();
+        }
         if (value is Map) {
           if (value['text'] is String) return value['text'] as String;
           return textOf(value['content']);
@@ -3970,8 +4000,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (current == null ||
           ((current.kind == _MsgKind.tool ||
                   current.kind == _MsgKind.assistant) &&
-              current.detailSeq != detailSeq))
+              current.detailSeq != detailSeq)) {
         return;
+      }
       final code = e is ApiException
           ? (e.code ?? 'event-detail-unavailable')
           : 'event-detail-unavailable';
@@ -3990,8 +4021,9 @@ class _ChatScreenState extends State<ChatScreen> {
         // v3.1.4（issue #12）：系统注入消息（内核 source.kind ≠ "user"）不当普通气泡铺屏，
         // 改为可折叠块——默认收起、点按展开，展开状态按 messageId 持久化（同思维链机制）。
         if (_isNoiseText(item.text)) return const SizedBox.shrink();
-        if (item.injected && !widget.store.timelineDebug)
+        if (item.injected && !widget.store.timelineDebug) {
           return const SizedBox.shrink();
+        }
         if (item.injected) {
           final ikey = item.messageId ?? 's${item.seq}';
           final expanded =
@@ -4750,8 +4782,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     super.didUpdateWidget(oldWidget);
     final override = widget.expandedOverride;
     userOverride = override != null;
-    if (!userOverride && (_failed || oldWidget.debug != widget.debug))
+    if (!userOverride && (_failed || oldWidget.debug != widget.debug)) {
       expanded = _defaultExpanded;
+    }
     if (override != null && override != expanded) expanded = override;
     if (oldWidget.item.toolCallId != widget.item.toolCallId ||
         oldWidget.item.detailSeq != widget.item.detailSeq ||
@@ -4775,8 +4808,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
 
   String _status() {
     if (widget.item.detailLoading) return L10n.t('加载详情…', 'Loading details…');
-    if (widget.item.toolStatus == 'failed' || widget.item.toolError)
+    if (widget.item.toolStatus == 'failed' || widget.item.toolError) {
       return L10n.t('失败', 'Failed');
+    }
     if (widget.item.toolStatus == 'success') return L10n.t('成功', 'Succeeded');
     return L10n.t('进行中', 'Running');
   }
@@ -5086,8 +5120,9 @@ class _TimelineEventCardState extends State<_TimelineEventCard> {
     final override = widget.expandedOverride;
     userOverride = override != null;
     if (!userOverride &&
-        (oldWidget.debug != widget.debug || widget.item.toolError))
+        (oldWidget.debug != widget.debug || widget.item.toolError)) {
       expanded = _defaultExpanded;
+    }
     if (override != null && override != expanded) expanded = override;
     if (oldWidget.item.seq != widget.item.seq ||
         oldWidget.debug != widget.debug) {
@@ -5620,8 +5655,9 @@ class _FileResultTile extends StatelessWidget {
     final name = file['name']?.toString();
     if (name != null && name.isNotEmpty) return name;
     final path = file['path']?.toString();
-    if (path != null && path.isNotEmpty)
+    if (path != null && path.isNotEmpty) {
       return path.split(RegExp(r'[/\\]')).last;
+    }
     return L10n.t('附件', 'Attachment');
   }
 
@@ -5749,8 +5785,9 @@ class _MsgImageState extends State<_MsgImage> {
       if (!mounted ||
           token != _loadToken ||
           sessionId != widget.sessionId ||
-          id != _attachmentId)
+          id != _attachmentId) {
         return;
+      }
       setState(() {
         _bytes = bytes;
         _loading = false;
@@ -5759,8 +5796,9 @@ class _MsgImageState extends State<_MsgImage> {
       if (!mounted ||
           token != _loadToken ||
           sessionId != widget.sessionId ||
-          id != _attachmentId)
+          id != _attachmentId) {
         return;
+      }
       setState(() => _loading = false);
     }
   }
@@ -5779,8 +5817,9 @@ class _MsgImageState extends State<_MsgImage> {
         '${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}',
       );
       await target.writeAsBytes(b, flush: true);
-      if (mounted)
+      if (mounted) {
         showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
+      }
     } catch (e) {
       if (mounted) showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
     }

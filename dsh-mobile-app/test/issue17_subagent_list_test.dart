@@ -15,9 +15,9 @@ Map<String, dynamic> sub({
   String? title,
 }) => {
   'id': id,
-  if (createdAt != null) 'createdAt': createdAt,
+  'createdAt': ?createdAt,
   'status': status,
-  if (title != null) 'title': title,
+  'title': ?title,
 };
 
 void main() {
