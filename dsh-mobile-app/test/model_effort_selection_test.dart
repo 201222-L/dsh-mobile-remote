@@ -164,4 +164,54 @@ void main() {
       expect(store.sessionConfig.model, 'beta');
     },
   );
+
+  // ── PR #27 复核补正（2026-10-04）：selected == null 时不得让强度区域静默消失 ──
+  const noModelHint = '尚未确定当前模型，先在上方选择一个模型，再选择推理强度';
+
+  testWidgets('会话未确定模型时，强度区域给出显式说明而不是整块消失', (tester) async {
+    // sessionConfig 无 provider/model → 与目录任何条目都匹配不上 → selected == null
+    final store = AppStore()..catalog = catalog;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showModelSheet(context, store),
+              child: const Text('Open picker'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open picker'));
+    await tester.pumpAndSettle();
+    expect(find.text('推理强度'), findsNothing);
+    expect(find.text(noModelHint), findsOneWidget);
+  });
+
+  testWidgets('新建会话草稿：未选模型时给说明，选中后回到正常强度区域', (tester) async {
+    final store = AppStore()..catalog = catalog;
+    final draft = NewSessionModelDraft();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () =>
+                  showModelSheet(context, store, draft: draft),
+              child: const Text('Open picker'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open picker'));
+    await tester.pumpAndSettle();
+    expect(find.text(noModelHint), findsOneWidget);
+    await tester.tap(find.text('Alpha'));
+    await tester.pumpAndSettle();
+    expect(find.text(noModelHint), findsNothing);
+    expect(find.text('推理强度'), findsOneWidget);
+    expect(find.text('跟随模型默认'), findsOneWidget);
+  });
 }

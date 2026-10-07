@@ -358,6 +358,20 @@ void showModelSheet(
                           const SizedBox(height: 12),
                           Text(L10n.t('此模型不提供推理强度选择', 'This model has no reasoning effort options'),
                             style: TextStyle(fontSize: 12, color: DshColors.ink3(sheetCtx))),
+                        ] else ...[
+                          // 复核补正（PR #27，2026-10-04）：`selected == null` 时上面两个分支都不命中，
+                          // 整块强度选择会**静默消失**，用户既看不到控件也看不到原因。
+                          // 两种进入路径都会命中：① 新建会话草稿尚未选模型；
+                          // ② 会话的 `modelSelection.next` 为 null（内核投影允许），或模型不在目录里
+                          //   （目录过期 / 第三方提供商）。
+                          const SizedBox(height: 12),
+                          Text(
+                            L10n.t(
+                              '尚未确定当前模型，先在上方选择一个模型，再选择推理强度',
+                              'No model selected yet — pick a model above to choose a reasoning effort',
+                            ),
+                            style: TextStyle(fontSize: 12, color: DshColors.ink3(sheetCtx)),
+                          ),
                         ],
                       ],
                     ),
