@@ -1,5 +1,6 @@
 // Markdown 渲染 —— 完全对齐网页端 page.html 的 renderMarkdown：
 // 段落/标题1-4/列表/引用/代码块/行内代码/表格/链接/分隔线，样式同 CSS。
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -436,18 +437,31 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
         ),
       );
 
-  return SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    child: Container(
-      decoration: BoxDecoration(border: Border.all(color: line)),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          row(head, header: true, lastRow: body.isEmpty),
-          for (var r = 0; r < body.length; r++)
-            row(body[r], header: false, lastRow: r == body.length - 1),
-        ],
+  // issue #33：宽表格必须能横向滑动。表格的横向 `SingleChildScrollView` 与外层纵向消息
+  // 列表在同一个手势竞技场里竞争，两者都从环境 `MediaQuery.gestureSettings` 取拖拽阈值
+  // （Android 实测 ≈8px）。手势起始略偏纵向时只有纵向识别器越过阈值 → 纵向列表赢下整个
+  // 手势：表格完全滑不动，列表跟着手指上翻，并因靠近前缘触发 shouldLoadOlderFromScroll
+  // → _loadMoreInfinite()，用户被一路带到更早的历史。
+  // 把本子树阈值压到 4px：让"横向分量已明显、但纵向先越线"的手势在同一事件内两者都越线，
+  // 按 hit-test 顺序由最内层（表格）胜出。作用域仅限表格子树——外层消息列表、通知横幅的
+  // Dismissible、会话操作栏都不受影响（纯纵向手势仍然归列表）。
+  return MediaQuery(
+    data: MediaQuery.of(context).copyWith(
+      gestureSettings: const DeviceGestureSettings(touchSlop: 4),
+    ),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Container(
+        decoration: BoxDecoration(border: Border.all(color: line)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            row(head, header: true, lastRow: body.isEmpty),
+            for (var r = 0; r < body.length; r++)
+              row(body[r], header: false, lastRow: r == body.length - 1),
+          ],
+        ),
       ),
     ),
   );
