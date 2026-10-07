@@ -390,11 +390,11 @@
 { "sessionId": "session-abc", "provider": "openai-codex", "model": "gpt-6-luna" }
 ```
 
-**只改强度**：`{ "sessionId": "session-abc", "reasoningEffort": "high" }`；**回到模型默认**：`{ "sessionId": "session-abc", "resetReasoningEffort": true }`。两者不可同时提交。服务端使用同一次 `next` 的 provider/model；若 `next` 不可确认，返回 `409 model-selection-unavailable`，不拿 `lastUsed` 或 DeepSeek 兜底。不支持该模型的显式强度由内核拒绝，目录过期时客户端应刷新目录并显示错误，不静默降级。
+**只改强度**：`{ "sessionId": "session-abc", "reasoningEffort": "high" }`；**回到模型默认**：`{ "sessionId": "session-abc", "resetReasoningEffort": true }`。两者不可同时提交。服务端使用同一次 `next` 的 provider/model；若 `next` 不可确认，返回 `409 model-selection-unavailable`，不拿 `lastUsed` 或 DeepSeek 兜底。**限定条件（2026-10-04 补充）**：该保证针对**已挂载**会话；对休眠会话，插件在按 `next` 取值后仍会执行 `Object.assign(config, foldFromEvents(events))`，而折叠函数恒返回全部字段（无匹配事件时为 `undefined`），会覆盖投影值——两者同源（都来自 `model/selection` 事件），但休眠会话可能因此报不出 effort。真正的修复方向是核心侧 `readSession` 走 restore 构造路径（见 issue #20）。不支持该模型的显式强度由内核拒绝，目录过期时客户端应刷新目录并显示错误，不静默降级。
 
 - `permissionPreset` 为 `danger-full-access` 时 `confirmDanger` 必须为 `true`，否则 `400 { "error": "risk-confirmation-required" }`（与 PC 端 Full access 需显式确认风险一致）。
 - 权限写入走 PC 端同一路径（`permission/preset` + sandbox/approval 旋钮事件）。
-- 模型选择会产生内核 `model/selection` 事件；`404 session-not-found` 表示会话不存在。
+- 模型选择会产生内核 `model/selection` 事件；`404 session-not-found` 通常表示会话不存在——但**请求带 `permissionPreset` 时，休眠（未挂载）会话也会 404**：权限预设需要本地 Session 对象才能 `applyPermissionPreset`，无法像模型/强度那样经内核 `selectModel` 对持久化会话生效（2026-10-04 补充）。
 ### 6.5 POST /m/api/sessions（新建会话）
 
 **请求**：
@@ -608,12 +608,13 @@
 ```json
 { "ok": true, "commands": [
   { "name": "goal", "description": "set or view the goal for a long-running task",
-    "input": { "hint": "[<objective>|clear|edit <objective>|pause|resume]", "images": true } }
+    "input": { "hint": "[<objective>|clear|edit <objective>|pause|resume]", "attachments": true } }
 ] }
 ```
-- 命令条目：`name` / `description` 必填；`input`（`hint` / `images`）可选，有则返回
+- 命令条目：`name` / `description` 必填；`input`（`hint` / `attachments`）可选，有则返回——**原样透传**内核 `commands.list()` 的描述符，插件不改写字段
+- ⚠️ **字段名是 `attachments`，不是 `images`**（内核 `dsh-commands` 与 PC 端客户端均判定 `input.attachments === true`）。本文档 2026-10-04 修正，此前误写为 `images` —— 按旧文档实现会永远读不到该标志
 - `commands` 服务未注册（无 dsh-commands host 服务）→ `200 { ok, commands: [], unavailable: true }`（App 端弹「无可用命令」，不硬 503）
-- 会话不存在 → `404 session-not-found`；缺 `sessionId` → `400 bad-request`
+- 会话不存在 → `404 session-not-found`；缺 `sessionId` → `400 bad-request`。**GET 要求会话已挂载**（`agents.get(sessionId)` 命中）：休眠/未挂载会话返回 404 —— 这与 `/send`（会先自动 resume 再发）不同，客户端不能假设"能发消息就一定能列命令"
 
 **POST `/m/api/commands`** — 执行斜杠命令
 ```json
@@ -621,7 +622,9 @@
 响应: { "ok": true, "result": { "commandId": "cmd-…", "result": { "kind": "success", "text": "…" } } }
 ```
 - 映射内核 `commands.execute(agent, line, images, signal)`（0.1.1-rc.2 四参签名；本插件 `images` 恒为空数组，`signal` 为 15s 超时中止；2.8.1 的旧三参调用会把 AbortSignal 误传 images 槽，已改正）
-- `line` 必须以 `/` 开头（否则 `400 bad-request`）；未知/畸形命令 `404 command-not-found`；服务未注册 `503 commands-unavailable`（带 detail）；服务在而会话不存在 `404 session-not-found`（与 GET 拆分语义一致）
+- 缺 `sessionId` → `400 missing-sessionId`（注意与 GET 的 `bad-request` **不同码**）；`line` 必须以 `/` 开头（否则 `400 bad-request`）；未知/畸形命令 `404 command-not-found`；服务未注册 `503 commands-unavailable`（带 detail）；服务在而会话不存在 `404 session-not-found`（与 GET 拆分语义一致）
+- **会话必须已挂载**：`agents.get(sessionId)` 未命中即 404。休眠会话需先经 `/send` 唤醒，否则命令无法执行（与 `/send` 的自动 resume 语义不同）
+- `commands.execute` 外层套 `AbortSignal.timeout(15000)`：15s 是**整个命令**的上限。`/compact` 之类会等一次完整的 LLM 摘要，长会话可能超时 → `504 commands-execute-failed`；客户端此时**不能断言失败**（结果未知）
 - `result` 为内核 settle 对象（`commandId` + `result.{kind,text}`），与 PC 端一致
 
 ### 6.16 GET /m/api/account-usage（用量与额度，v3.2）
