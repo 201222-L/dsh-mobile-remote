@@ -216,9 +216,15 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
         child: Material(
           elevation: 12,
           color: Theme.of(context).colorScheme.surface,
+          // 高度贴合内容后它是一条"浮动短条"，左侧圆角让它与右边缘的贴合看起来是有意的
+          borderRadius: const BorderRadius.horizontal(left: Radius.circular(14)),
+          clipBehavior: Clip.antiAlias,
           child: SizedBox(
             width: 56,
-            height: double.infinity,
+            // 修复：原为 height: double.infinity —— 白条会撑满整屏，而 4 个动作只有 224dp，
+            // 下面一大片空白（用户反馈"白条太长"）。改为按动作数取高，由外层
+            // Align(centerRight) 负责垂直居中。
+            height: 56.0 * _order.length,
             child: ReorderableListView(
               buildDefaultDragHandles: false,
               padding: EdgeInsets.zero,
@@ -3883,6 +3889,22 @@ class _ChatScreenState extends State<ChatScreen> {
       offset: _inputCtrl.text.length,
     );
     _onDraftChanged();
+    // issue #25 真机反馈（2026-10-07）：6 条命令里只有 /compact、/export 是裸命令（点选即执行），
+    // 其余 4 条带参数，点选后仅"填字"。真机实测用户会以为"点了没反应 / 命令不能用"——
+    // 这里补一条明确提示：需要补参数后点发送才执行，并带上内核给的参数用法。
+    final usage = commandMenuSubtitle(picked);
+    showToast(
+      context,
+      usage == null
+          ? L10n.t(
+              '已填入输入框：补参数后点发送才会执行',
+              'Inserted — add arguments, then send to run',
+            )
+          : L10n.t(
+              '已填入输入框：补参数后点发送才会执行（用法 $usage）',
+              'Inserted — add arguments, then send to run (usage: $usage)',
+            ),
+    );
   }
 
   /// 上下文占用比例（已用 tokens / 模型上下文窗口），数据缺失时为 null。
