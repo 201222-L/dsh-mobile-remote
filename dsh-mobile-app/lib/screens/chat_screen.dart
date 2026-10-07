@@ -63,6 +63,63 @@ String composerSignature(
   List<String> imagePaths,
 ) => '$sessionId|$mode|$text|${imagePaths.join(',')}';
 
+/// issue #25：内核命令行语法的**唯一**判定式（与内核 `parseCommandLine` 同形）——
+/// 首字符 `/`，随后是小写命令名 `[a-z][a-z0-9_-]*`，名字之后必须是空白或行尾。
+final RegExp _commandLinePattern = RegExp(r'^/([a-z][a-z0-9_-]*)(?:\s|$)');
+
+/// issue #25：这一行是不是斜杠命令行（纯判定，便于单测）。
+/// 提交时由它决定"执行命令"还是"当普通消息发给模型"——`/compact` 曾被当成用户消息喂给模型，
+/// 用户看不到任何报错（issue #25 主诉）。
+///
+/// 语法后果（有意，非疏漏）：`/m/api/send 是什么` **不是**命令（`m` 之后是 `/` 而不是空白），
+/// 因此这类路径样式的消息照旧原样发给模型；而 `/tmp` 这类单段文本**是**命令——语法上无法与
+/// 命令名区分，由"目录里查不到该名字 → 提示一次未知命令后照常发送"兜底（见 `_tryRunCommandLine`）。
+bool isCommandLine(String text) =>
+    _commandLinePattern.hasMatch(text.trim());
+
+/// issue #25：命令行里的命令名（不是命令行时 null）。入参内部先 trim，与 [isCommandLine] 同口径。
+String? commandLineName(String text) =>
+    _commandLinePattern.firstMatch(text.trim())?.group(1);
+
+/// issue #25：⊕ 命令菜单某一行的副标题——内核声明了 `input.hint`（参数用法）就优先显示它，
+/// 否则回退 `description`（旧行为）。
+String? commandMenuSubtitle(Map<String, dynamic> command) {
+  final input = command['input'];
+  final hint = input is Map ? input['hint'] : null;
+  if (hint is String && hint.isNotEmpty) return hint;
+  final description = command['description'];
+  return description is String && description.isNotEmpty ? description : null;
+}
+
+/// issue #25：命令执行失败的错误码 → 用户提示（失败一律保留草稿，用户可改参数重发）。
+String commandExecuteErrorToast(ApiException e) {
+  // 结果未知优先判定：服务端 180s `AbortSignal` 中止时 rpcError 把 TimeoutError/AbortError 映射成
+  // 504 `commands-execute-failed`（见 lib/index.js）——命令可能已经跑完，**绝不能断言失败**。
+  // status 缺失时同样按未知处理（宁可不肯定，也不谎报失败）。
+  if (e.code == 'commands-execute-failed' &&
+      (e.status == null || e.status == 504)) {
+    return L10n.t(
+      '命令已提交，但结果未知：请在对话里确认结果，不要盲目重发',
+      'Command submitted but the outcome is unknown — check the conversation before resending',
+    );
+  }
+  return switch (e.code) {
+    'command-not-found' => L10n.t(
+      '未知命令（命令目录已过期）：草稿已保留',
+      'Unknown command (stale catalog) — your draft was kept',
+    ),
+    'commands-unavailable' => L10n.t(
+      '当前 DSH 未提供命令服务：草稿已保留',
+      'Command service is unavailable — your draft was kept',
+    ),
+    'session-not-found' => L10n.t(
+      '该会话已休眠：请先发一条消息唤醒它，再执行命令（草稿已保留）',
+      'Session is dormant — send a message first to wake it, then run the command (draft kept)',
+    ),
+    _ => '${L10n.t('命令执行失败：', 'Command failed: ')}$e',
+  };
+}
+
 /// v3.1.4（issue #13 排查建议 3）：轮次结束时是否需要**兜底补拉**——
 /// 本轮出现过真人提问（lastUserSeq 非空），但没有渲染出更晚的回复条目
 /// （lastAssistantSeq 为空或早于提问）→ 判定内容被静默吞掉，补拉一次历史。
@@ -309,6 +366,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // （服务端幂等不重复投递）；内容变化后重新生成。
   String? _pendingRequestId;
   String? _pendingSignature;
+  // issue #25：命令目录缓存（提交时判定 `/xxx` 是执行命令还是普通消息用）——每会话一份，
+  // ⊕ 菜单取回目录时同步刷新；`command-not-found`（目录过期）时丢弃、下次提交重新拉取。
+  List<Map<String, dynamic>>? _commandCatalog;
+  String? _commandCatalogSessionId;
   bool _pickingImages = false; // 选图在途锁（相册多选期间防重复触发）
   GitBrowserController? _gitController;
 
@@ -2190,6 +2251,112 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
+  /// issue #25：本会话的命令目录（判定 `/xxx` 是不是已注册命令）。命中缓存即用，否则取一次
+  /// （`GET /api/commands`）并缓存——目录在会话生命周期内基本不变，没必要每条命令消息都多一次往返。
+  /// 服务未提供时得到空目录（等同于"所有名字都未注册"，照常按普通消息发送，不阻塞）。
+  Future<List<Map<String, dynamic>>> _commandCatalogFor(String id) async {
+    final cached = _commandCatalog;
+    if (cached != null && _commandCatalogSessionId == id) return cached;
+    final (cmds, unavailable) = await _api.commands(id);
+    final list = unavailable ? <Map<String, dynamic>>[] : cmds;
+    _commandCatalog = list;
+    _commandCatalogSessionId = id;
+    return list;
+  }
+
+  /// issue #25：提交时把"形如命令行"的一行交给内核。
+  /// 返回 true = 已按命令处理（调用方必须放弃普通发送路径）；false = 放行给普通发送路径。
+  Future<bool> _tryRunCommandLine(String id, String line) async {
+    final name = commandLineName(line);
+    if (name == null) return false;
+    List<Map<String, dynamic>> catalog;
+    try {
+      catalog = await _commandCatalogFor(id);
+    } catch (e) {
+      // 目录取不到（休眠/未挂载会话的 404 session-not-found、网络故障、旧服务端无此接口）：
+      // 无法判定这行是不是命令 → **绝不阻塞**，按普通消息发送（与今日行为一致；
+      // 消息还能顺带唤醒休眠会话，正是本条命令之后需要的）。
+      AppLog.instance.log('Chat: 命令目录取回失败，按普通消息发送 → $e');
+      return false;
+    }
+    if (catalog.any((c) => c['name'] == name)) {
+      await _executeCommandLine(id, line, draft: line);
+      return true;
+    }
+    if (!mounted) return true; // 页面已销毁：不提示，也不能落回普通发送路径去碰 context
+    // 名字未注册 → **不阻塞**（刻意与 issue #25 原文的"提示 + 保留草稿"不同）：拦截会让 `/tmp`
+    // 这类合法普通消息永远发不出去（单段文本在语法上与命令名无法区分，见 [isCommandLine]），
+    // 而 PC 端对无法解析的名字同样下沉成普通发送。这里只给一次非阻塞提示，随后照旧发给模型。
+    showToast(
+      context,
+      L10n.t(
+        '未知命令 /$name：将作为普通消息发送',
+        'Unknown command /$name — sending it as a normal message',
+      ),
+    );
+    return false;
+  }
+
+  /// issue #25：真正执行一条命令（提交路径与 ⊕ 菜单里的裸命令共用）。
+  /// [draft] 非空 = 该行来自输入框提交：提交成功后仅在草稿**仍等于该行**时清空（执行期间用户新
+  /// 输入的内容绝不覆盖）；任何异常都保留草稿。菜单来的裸命令传 null（不碰草稿）。
+  Future<void> _executeCommandLine(
+    String id,
+    String line, {
+    String? draft,
+  }) async {
+    // 旗标归属：已有普通发送在途时不抢 _sending，否则 finally 会提前解锁别人的发送
+    final acquired = !_sending;
+    if (acquired) setState(() => _sending = true);
+    AppLog.instance.log('Chat: 执行命令 → $id : $line');
+    try {
+      final r = await _api.runCommand(id, line);
+      if (!mounted) return;
+      // 提交成功（HTTP 200）才清草稿；内核 settle kind=error 也算"已受理并给出了明确答复"，
+      // 用户看到提示后可重新输入。
+      if (draft != null && _inputCtrl.text.trim() == draft) _inputCtrl.clear();
+      final inner = r?['result']; // 服务端信封 { ok, result: { commandId, result: {kind,text} } }
+      final settle = inner is Map ? inner['result'] : null;
+      final data = settle is Map ? settle : const <dynamic, dynamic>{};
+      final text = data['text'] is String ? data['text'] as String : '';
+      if (data['kind'] == 'error') {
+        // 命令自身失败（内核 settle kind=error）。移动端时间线在正常模式**不渲染** command/run、
+        // command/done（见 timeline.dart 白名单），这里不提示的话用户完全看不到反馈。
+        showToast(context, '${L10n.t('命令失败：', 'Command failed: ')}$text');
+        return;
+      }
+      AppLog.instance.log('Chat: 命令完成 → $line');
+      showToast(
+        context,
+        text.isNotEmpty ? text : L10n.t('命令已执行', 'Command executed'),
+      );
+    } on ApiException catch (e) {
+      // 目录过期（名字在 App 目录里、宿主已没有它）→ 丢弃缓存，下次提交重新拉取，
+      // 避免这个名字被永久卡在"未知命令"上。
+      if (e.code == 'command-not-found') {
+        _commandCatalog = null;
+        _commandCatalogSessionId = null;
+      }
+      if (!mounted) return;
+      showToast(context, commandExecuteErrorToast(e));
+    } on TimeoutException {
+      // 客户端 200s 先超时：服务端可能仍在跑（180s 上限 + 响应回程），同样**不断言失败**。
+      if (!mounted) return;
+      showToast(
+        context,
+        L10n.t(
+          '命令已提交，但结果未知：请在对话里确认结果，不要盲目重发',
+          'Command submitted but the outcome is unknown — check the conversation before resending',
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showToast(context, '${L10n.t('命令执行失败：', 'Command failed: ')}$e');
+    } finally {
+      if (acquired && mounted) setState(() => _sending = false);
+    }
+  }
+
   Future<void> _send([String? preset, String mode = 'followup']) async {
     final text = (preset ?? _inputCtrl.text).trim();
     // v2.9.0 review(HIGH)：页级动作绑定本页会话，叠层聊天不回退时发错会话
@@ -2199,6 +2366,17 @@ class _ChatScreenState extends State<ChatScreen> {
         _sending ||
         preset != null && _pendingImages.isNotEmpty) {
       return;
+    }
+    // ── issue #25：斜杠命令必须在**提交时**判定，绝不能当普通消息喂给模型 ──
+    // 门控 preset == null（初始自动发送 initialSend 语义不变）且无待发图片（图片只能走 /send）。
+    // 位置必须早于 steer 降级提示、_sendImages、requestId 签名与乐观气泡：命令不产生用户气泡、
+    // 不拿 requestId（与回执对账无关），也不会弹出「agent 空闲，已按普通消息发送」这类误导提示。
+    if (preset == null && _pendingImages.isEmpty && isCommandLine(text)) {
+      // true = 已按命令处理（命中目录并执行完/已给出失败提示）；false = 未注册命令的放行，
+      // 继续走下面的普通发送路径（见 _tryRunCommandLine 里的取舍说明）。
+      final handled = await _tryRunCommandLine(id, text);
+      if (!mounted) return; // 取目录/执行期间页面可能已销毁
+      if (handled) return;
     }
     // v3.0.0 图像链路：有待发图片 → 走图片通路（原始字节不压缩；成功/失败处理独立）
     if (mode == 'steer' && _pageAgentStatus != 'running') {
@@ -3321,7 +3499,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _shortPerm(String perm) =>
       perm.length > 14 ? '${perm.substring(0, 13)}…' : perm;
 
-  /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令，点选填入输入框。
+  /// v2.8.0：斜杠命令菜单（对齐 PC 端 command menu）——列出命令。
+  /// issue #25：裸命令（无 input，如 /compact）点选即执行；需要参数的命令仍只填入输入框。
   /// v3.0.0 图像链路：⊕ = 更多菜单（拍照 / 从相册选择 / 命令）。
   Future<void> _showComposerMenu() async {
     if (_pickingImages) return;
@@ -3604,6 +3783,24 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// issue #25：命令菜单里的一行。副标题优先显示 `input.hint`（内核声明的参数用法），
+  /// 没有 hint 时回退 `description`。
+  Widget _commandTile(BuildContext ctx, Map<String, dynamic> c) {
+    final subtitle = commandMenuSubtitle(c);
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.tag, size: 18),
+      title: Text('/${c['name']}', style: const TextStyle(fontSize: 14)),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle,
+              style: TextStyle(fontSize: 12, color: DshColors.ink3(ctx)),
+            ),
+      onTap: () => Navigator.of(ctx).pop(c),
+    );
+  }
+
   Future<void> _showCommandMenu() async {
     // v2.9.0 review(HIGH)：页级动作绑定本页会话
     final id = _mySessionId ?? widget.store.sessionId;
@@ -3621,6 +3818,9 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     if (!mounted) return;
+    // issue #25：顺手把本次取回的目录喂给提交路径的判定缓存（提交 `/xxx` 时不必再多一次往返）
+    _commandCatalog = unavailable ? <Map<String, dynamic>>[] : cmds;
+    _commandCatalogSessionId = id;
     // v2.9.0 review(LOW#13)：区分"命令服务不可用"与"会话无命令"
     if (unavailable) {
       showToast(
@@ -3636,7 +3836,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       return;
     }
-    final picked = await showModalBottomSheet<String>(
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
@@ -3663,34 +3863,22 @@ class _ChatScreenState extends State<ChatScreen> {
             for (final c in cmds.where(
               (c) => c['name'] is String && (c['name'] as String).isNotEmpty,
             ))
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.tag, size: 18),
-                title: Text(
-                  '/${c['name']}',
-                  style: const TextStyle(fontSize: 14),
-                ),
-                subtitle:
-                    c['description'] is String &&
-                        (c['description'] as String).isNotEmpty
-                    ? Text(
-                        c['description'] as String,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: DshColors.ink3(ctx),
-                        ),
-                      )
-                    : null,
-                onTap: () => Navigator.of(ctx).pop('/${c['name']}'),
-              ),
+              _commandTile(ctx, c),
             const SizedBox(height: 6),
           ],
         ),
       ),
     );
     if (picked == null || !mounted) return;
-    // 对齐 PC 端 leadingInput：命令名填入输入框，用户可补参数后发送
-    _inputCtrl.text = '$picked ';
+    final name = picked['name'] as String; // 上面已过滤：name 为非空 String
+    // issue #25：**裸命令**（无 input，如 /compact）在 PC 端菜单里是"点选即执行"——移动端照搬：
+    // 只填输入框会让用户以为命令已经跑了（issue #25 的第二条复现路径）。
+    if (picked['input'] is! Map) {
+      await _executeCommandLine(id, '/$name');
+      return;
+    }
+    // 需要参数的命令：对齐 PC 端 leadingInput——命令名填入输入框，用户补参数后发送
+    _inputCtrl.text = '/$name ';
     _inputCtrl.selection = TextSelection.collapsed(
       offset: _inputCtrl.text.length,
     );

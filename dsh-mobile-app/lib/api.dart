@@ -16,7 +16,12 @@ class ApiException implements Exception {
 
   /// v3.0.0：内核错误码（如 queue-item-not-found / steer-unavailable），供 UI 区分语义
   final String? code;
-  ApiException(this.message, {this.code});
+
+  /// issue #25：HTTP 状态码（仅"服务端确实应答过"的路径有值）。
+  /// 命令通路要靠它区分 `commands-execute-failed` 的两种含义：504 = 服务端 AbortSignal 中止
+  /// （结果未知，不能断言失败）vs 400 = 命令自己抛错（确定失败）。
+  final int? status;
+  ApiException(this.message, {this.code, this.status});
   @override
   String toString() => message;
 }
@@ -350,6 +355,7 @@ class Api implements GitReadApi {
         throw ApiException(
           (body?['detail'] as String?) ?? 'HTTP ${res.statusCode}',
           code: body?['error'] is String ? (body?['error'] as String) : null,
+          status: res.statusCode,
         );
       }
       return res.bodyBytes;
@@ -391,9 +397,12 @@ class Api implements GitReadApi {
             (body?['error'] as String?) ??
             'HTTP ${res.statusCode}',
         code: body?['error'] is String ? (body?['error'] as String) : null,
+        status: res.statusCode,
       );
     }
-    if (body == null) throw ApiException('HTTP ${res.statusCode}');
+    if (body == null) {
+      throw ApiException('HTTP ${res.statusCode}', status: res.statusCode);
+    }
     return body;
   }
 
@@ -596,15 +605,18 @@ class Api implements GitReadApi {
   }
 
   /// v2.8.0：执行斜杠命令（line 形如 "/plan 目标"）。
-  /// 预留契约：当前命令入口走"填入输入框由用户发送"（PC 端 leadingInput 语义），本方法暂未调用。
+  /// issue #25：提交时（`_send` 判定为命令行且名字在命令目录里）与 ⊕ 菜单里的裸命令都走这里。
+  /// 服务端把整条命令的上限放宽到 180s（`/compact` 要等内核跑完一次完整 LLM 摘要），客户端
+  /// 必须比它更晚放弃（200s）——否则会在服务端收敛前先本地超时，把"已提交、结果未知"误报成失败。
   Future<Map<String, dynamic>?> runCommand(
     String sessionId,
-    String line,
-  ) async {
+    String line, {
+    Duration timeout = const Duration(seconds: 200),
+  }) async {
     return await postJson('/api/commands', {
       'sessionId': sessionId,
       'line': line,
-    });
+    }, timeout: timeout);
   }
 
   Future<Map<String, dynamic>> createSession(Map<String, dynamic> body) async =>
