@@ -1,5 +1,69 @@
 # Changelog
 
+## v3.2.0（2026-10-04，issue #25 / #26 / #33，PR #27 / #28 / #29 / #30 / #31 / #32）— 移动端 Git 与会话文件浏览 + 会话列表状态 + 命令与手势修复
+
+> 版本：插件 `3.2.0` / App `3.2.0+23`。
+> 验收门禁：`node --test test/*.mjs`（94 通过 + 1 平台跳过）、`node tools/timeline-contract-check.mjs`（77）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（366）。
+
+本版把 4 个社区 PR 收进主线（其中 PR #30 覆盖 #29、PR #31 覆盖 #28），并修掉 3 个 App 侧缺陷。
+
+### 斜杠命令：提交时解析并真正执行（issue #25）
+
+- 此前在输入框直接发送 `/compact` **不会执行命令**，而是被当作普通用户消息投给模型：会话流出现一条 `/compact` 气泡、模型把它当用户发言回应、压缩从未发生，且没有任何报错——移动端几乎唯一的上下文压缩手段实际不可用。命令面板点选也只是"填字"，不完成提交。
+- 现在**提交时在客户端解析**：命中内核命令语法（`/` + 小写名 + 边界）且名字在已拉取的命令目录里 → 走 `POST /m/api/commands` 执行；**不插入乐观用户气泡**、不进 `/send` 的 requestId/回执对账；成功后清草稿，并把命令结果文本 toast 出来（`command/run`、`command/done` 在普通模式不渲染，不提示就等于没有反馈）。
+- 名字**不在目录里**时按普通消息发送，但先给一条非阻塞提示。这与 issue 原文"未知命令给出提示并保留草稿"不同：照原文实现会让以 `/` 开头的正常消息（如 `/tmp`）永远发不出去，而 PC 端对无法解析的名字同样是回落普通发送。
+- ⊕ 命令面板：**裸命令**（无 `input`，如 `/compact`）点选即执行，与 PC 端菜单行为一致；带参数的命令仍填入输入框，并把 `input.hint` 作为副标题显示（此前完全忽略 `input`）。
+- 服务端 `commands.execute` 的整条命令上限由 **15s 放宽到 180s**：原值会把 `/compact` 掐死（它要等内核完整跑完一次 LLM 摘要，大会话远不止 15s）；客户端 `runCommand` 用 200s，保证先由服务端收敛、客户端不抢跑成"本地失败"。504 时按"已提交、结果未知"提示，不断言失败。
+- 新增 `dsh-mobile-app/test/issue25_command_line_test.dart`（命令行判定纯函数 + 提交行为）。
+
+### 宽表格横滑不再被消息列表抢走（issue #33）
+
+- 症状：安卓上看宽表格，手指按住表格横向滑动时页面滑不动，反而从当前对话跳到更早的历史位置。
+- 根因：表格的横向 `SingleChildScrollView` 与外层纵向消息列表处在同一手势竞技场，两者都从环境 `MediaQuery.gestureSettings` 取拖拽阈值（Android 实测 ≈8px）。首次移动事件里**纵向分量先越线、横向分量尚未越线**时，只有纵向识别器被接受 → 列表赢下整个手势：表格冻结，列表跟着手指上翻，并因靠近前缘触发 `shouldLoadOlderFromScroll` → `_loadMoreInfinite()`（每页 30 条、可无限重复），用户可以一路被带到任意早的历史。
+- 修复：把**表格子树**的拖拽阈值压到 4px，使"横向分量已明显、纵向先越线"的手势在同一事件内两个识别器都越线，按 hit-test 顺序由最内层（表格）胜出。作用域仅限表格：外层消息列表、通知横幅的 `Dismissible`、会话操作栏都不受影响，纯纵向手势仍归列表。
+- 既有 `md_table_test.dart` / `md_table_adversarial_test.dart` 把表格放进裸 `Scaffold`、外层没有任何可滚动控件，表格永远赢——这正是缺陷被长期漏掉的原因。新增 `issue33_wide_table_swipe_test.dart` 复刻真实层级（`SelectionArea → 纵向 ListView → 表格`），断言两个 Scrollable 的偏移；已做红/绿双向验证（回退修复即失败）。
+
+### 会话文件浏览与移动端 Git 只读浏览（PR #31，含 PR #28 全部提交）
+
+- 对话操作栏（对话框右上角「三个点」）新增「文件」动作，位于 Git 之后：全屏只读页面，浏览根 = **当前会话的工作目录**；逐级下钻 + 面包屑回跳，夹在会话工作目录内不向上越出；隐藏点开头条目（`.git/` 因此天然不出现）；超上限时渲染前 N 条并显示总数。
+- 点开文件看等宽 + 行号只读预览；二进制（含 NUL）与超限文件明确说明原因，不伪装成空内容；预览在客户端截断，刷新失败保留旧内容并标注取得时间。纯只读：不新建/重命名/删除/上传/下载/编辑，也不依赖 Git。
+- 对话操作栏收纳 `git` / `files` / `session_tools` / `copy` 四项并支持拖动排序；旧设备上持久化的 3 项顺序因长度校验不通过会自动回退到含 `files` 的新默认（只丢一次自定义排序，不会缺项）。
+- 移动端 Git 只读浏览（PR #28）：工作区浏览、分支图（父泳道/悬线/拓扑起点修复）、标签配置、只读操作安全防护、工作区过期竞态修复、Git 配置过滤器禁用。
+- 真机验收中发现并修掉三个问题：打开即报 `No host specified in URI`（误用空 baseUrl 的新实例，改为复用全局单例）、预览返回后偶发 `TimeoutException`（`/files` 缺显式 `connection: close` 与服务端 keep-alive 形成半关竞态，同类流式路由一并处理）、系统返回手势直接退出页面（补 `PopScope` 逐级返回）。
+- **本次合并同时修正了该 PR 新增测试的两处可移植性缺陷**（在 Windows 上必红，与业务逻辑无关）：`sep` 断言写死为 `"/"`（服务端返回的是宿主真实分隔符 `path.sep`，改为断言 `=== path.sep`）；用 `symlinkSync` 构造越界符号链接在 Windows 未开开发者模式/非管理员时抛 `EPERM`（改为识别该宿主权限限制并 `t.skip`）。冲突解决记录见合并提交：`lib/index.js` 卸载清理取两侧并集，`store.dart` 三处取状态归一重构侧（PR 侧会复活内核从不发出的 `waiting` 态，且冲突块外引用了只在该侧定义的变量）。
+
+### 会话列表状态与子代理排序（PR #29 / #30）
+
+- 会话列表新增**运行中标识**（方形虚线指示器：运行时品牌色旋转、空闲不画）、隐藏子代理会话、按 `lastMessageAt`（最近聊了什么）排序；服务端 `/sessions` 透出 `lastMessageAt` / `origin` / `parentSession`。
+- 子代理列表改为按 `createdAt` 倒序（与会话列表有意不同：统一用 `lastMessageAt` 会让子代理一干活就跳最前、顺序抖动），并复用会话列表的实时状态标识；副标题由 `[id, status]` 改为「会话 id · 相对创建时间」，「中断」按钮按实时状态出现。两条数据来源分支统一排序，修掉"内核活跃分支升序、休眠分支降序"的顺序相反缺陷。
+- 状态归一收敛为共享 helper `normalizeAgentStatus()`：内核 `AgentStatus` 是 `idle | running` **二元**联合（ADR 0013），不存在 `waiting`，未知取值一律归一到 `idle`，避免列表出现"永不消失的第三态"。
+- 已知限制（有意保留）：活跃父会话分支从内核内存注册表取 `createdAt`，取不到即省略该字段，后果是活跃父会话下**已结束**的子代理会缺时间 → 排到最后且不显示时间；休眠父会话走持久化 header 不受影响。
+
+### 模型与推理强度修正（PR #27，修 issue #26）
+
+- 模型身份与强度改为读内核 `session/control` 的 `modelSelection.next`（**待生效**选择），不再用可能滞后的 `lastUsed`——此前"改强度"会按上一轮实际使用的模型提交，或退回 DeepSeek/默认提供商。
+- 目录按模型给出 `reasoning.efforts` / `defaultEffort`（不再用一个全局并集），界面只显示当前模型支持的等级，切换模型不继承旧模型的强度；新建会话用独立草稿（`NewSessionModelDraft`），不借用 `store.sessionConfig`。
+- 已持久化但当前未挂载的会话可以通过内核配置接口更新模型选择；确实不存在的会话仍返回明确错误（`session/not-found` → 404）。配置失败显式报错，不再静默改用其他模型或强度。
+- **本次复核补正**：`selected == null`（`next` 为 null 或模型不在目录里）时，强度区域此前会**静默消失**——既无控件也无说明。已改为显式说明「尚未确定当前模型，先在上方选择一个模型」，并补 2 项 widget 回归。
+
+### 扫码连接修复（PR #32 的 `/m/m` 部分）
+
+- 缺陷：`/m/api/qr-config` 返回的 `urls` **已自带挂载路径**（服务端两条分支都拼了 `${basePath}`：LAN 桥 `http://ip:3082/m`、回环 `http://ip:3080/m`），而 `lib/client.js` 又拼了一次 `mount`，二维码载荷遂变成 `/m/m`；App 端 `_pathOf()` 把整段路径原样当作请求前缀 → **扫码连接一律 404**。v3.0.0（`7c1291e` 引入 `+ mount`）以来两种模式都中招，不只是原 PR 描述的 LAN 桥模式。
+- 修复：仅当目标 url 自身不含路径时才补 `mount`；无法解析成 URL 时退回"直接补 mount"的兜底分支。载荷构造抽出具名纯函数 `buildQrPayload(data)` 并导出，新增 `test/qr-payload.test.mjs` 12 项回归（LAN 桥/回环/裸 url/自定义挂载/尾部斜杠/不可解析兜底/首选地址/空 urls/token 缺失/与 App 端正则兼容），已做变异验证（改回旧实现 7 项失败）。
+- **未收该 PR 附带的"二维码首选地址改为优先 Tailscale CGNAT（100.64/10）"**：那是独立的选路策略改动，与 `/m/m` 缺陷无关，且与本仓库既有的明确设计相反——`lib/index.js` 把 Tailscale 排在**最后**并写明理由（"在家扫码时必须给手机可达的局域网地址……避免扫到组网 IP 而手机组网未开 → 黑洞"），CHANGELOG 也记录过同类事故。建议单独讨论（例如仅在没有任何局域网私有地址时才优先组网地址）。
+
+### 文档与门禁修正
+
+- `docs/03-api.md` §6.15：命令描述符字段名 **`images` → `attachments`**（内核 `dsh-commands` 与 PC 端客户端均判定 `input.attachments === true`；旧文档写错会让按文档实现者永远读不到该标志）。另补充：GET 缺 `sessionId` 是 `bad-request` 而 POST 是 `missing-sessionId`（不同码）；两条命令端点都**要求会话已挂载**，休眠会话 404，与 `/send` 的自动 resume 不同；`commands.execute` 的 15s→180s 整体超时语义。
+- `docs/03-api.md` §3.2：修正 `404 session-not-found` 的含义（带 `permissionPreset` 时休眠会话同样 404），并给"同一次 `next`"的保证加上限定条件（仅对已挂载会话成立，休眠会话仍会被 `foldFromEvents` 的 `Object.assign` 覆盖）。
+- 合并 #30/#31 后 `flutter analyze` 从基线的 0 issue 变为 41 项 info（39 项 `curly_braces_in_flow_control_structures` + 2 项 `use_null_aware_elements`），已用 `dart fix --apply` 机械化修回 **0 issue**（纯语法包装，不改变行为）。
+
+### 已知未解决：issue #20（属上游核心）
+
+- 插件侧的降级读取（`degraded/current-surface`、`configDegraded`）在 #21 已落地，本版无改动；**缺陷本体在 DSH 核心**。
+- 本次复核了当前安装的 DSH 打包产物：`dsh-session-query.readSession()` 仍然调用 `Session.create(...)`（新建快照路径）而不是 `Session.fromRestore`，但上游**已加入逃逸口**——报错文案变为 `seeded session constructor seed must equal its inherited prefix or mark its inherited cut`，即当日志中存在 `session/end-seed` 且 `data.inherited === true` 的标记事件时可以跳过等长校验。因此该缺陷是否复现取决于目标会话的日志里有没有这个标记（旧版本 DSH 写入的会话可能没有）。插件侧这套降级仍需保留，直到核心改走 restore 构造路径。
+
+
 ## v3.1.5（2026-09-22，issue #12 / #15 / #19 / #22 / #24，PR #11 / #18 / #21）— 对话时间线 + 用量额度 + 复制对话 + 安全加固
 
 > 版本：插件 `3.1.5` / App `3.1.5+22`。
