@@ -1,43 +1,102 @@
 // 会话列表页（对齐网页端 sessions screen）
 // 支持归档：主列表只显示活跃会话，长按可归档/恢复；顶部筛选切换已归档视图。
+//
+// v3.1.6（issue #14 / ADR 0013）：
+// - 每行图标带状态标识：running 旋转虚线 / waiting 静态警示色虚线 / idle 无标记；
+// - 子代理会话（origin === 'subagent'）不出现，用户 fork 出的会话正常显示；
+// - 排序按最新消息时间（lastMessageAt），打开会话不再改变顺序；
+// - 计数与可见条数同源（都取自过滤后的列表）。
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../l10n.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../models.dart';
+import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../fmt.dart';
+import '../widgets/session_indicator.dart';
 import 'chat_screen.dart';
 
 class SessionsScreen extends StatefulWidget {
   final AppStore store;
   final VoidCallback onOpenSession;
-  const SessionsScreen({super.key, required this.store, required this.onOpenSession});
+
+  /// 本页当前是否可见（IndexedStack 下三个页面同时活着，需显式告知以暂停动效）。
+  final bool visible;
+  const SessionsScreen({
+    super.key,
+    required this.store,
+    required this.onOpenSession,
+    this.visible = true,
+  });
 
   @override
   State<SessionsScreen> createState() => _SessionsScreenState();
 }
 
-class _SessionsScreenState extends State<SessionsScreen> {
+class _SessionsScreenState extends State<SessionsScreen>
+    with SingleTickerProviderStateMixin {
   bool _showArchived = false;
+  late final SessionIndicatorDriver _indicator;
+  bool _reducedMotion = false;
 
   @override
   void initState() {
     super.initState();
+    // 每个列表页共享一个动画控制器，只在存在运行中会话时运行（ADR 0013）
+    _indicator = SessionIndicatorDriver(vsync: this)
+      ..setVisible(widget.visible);
     widget.store.addListener(_onStore);
     widget.store.refreshSessions();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 「减弱动态效果」在系统设置里可以随时改，跟随 MediaQuery 而不只读一次。
+    // 这里也承担 initState 之后的首轮同步（此时才有可用的 MediaQuery）。
+    _reducedMotion = prefersReducedMotion(context);
+    _syncIndicator();
+  }
+
+  @override
+  void didUpdateWidget(SessionsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.visible != widget.visible) {
+      _indicator.setVisible(widget.visible);
+    }
+  }
+
+  @override
   void dispose() {
     widget.store.removeListener(_onStore);
+    _indicator.dispose();
     super.dispose();
   }
 
   void _onStore() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      _syncIndicator();
+    }
+  }
+
+  /// 只在「确有运行中会话、且未开启减弱动效」时启动动画；
+  /// 页面可见性由 driver 单独持有（setVisible），两者正交，避免可见性成为两处状态。
+  /// 规则本身收敛在 session_list.dart，首页与本页共用同一份判定。
+  void _syncIndicator() {
+    _indicator.setNeeded(
+      shouldAnimateIndicators(
+        hasRunningSessions: widget.store.hasRunningSessions(
+          _showArchived
+              ? widget.store.archivedSessions
+              : widget.store.activeSessions,
+        ),
+        reducedMotion: _reducedMotion,
+      ),
+    );
   }
 
   Future<void> _open(Session s) async {
@@ -105,11 +164,13 @@ class _SessionsScreenState extends State<SessionsScreen> {
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
-    final sessions = _showArchived ? store.archivedSessions : store.activeSessions;
+    final active = store.activeSessions;
+    final archived = store.archivedSessions;
+    final sessions = _showArchived ? archived : active;
     final ink2 = DshColors.ink2(context);
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
-    final brand = DshColors.brand(context);
+    final reducedMotion = prefersReducedMotion(context);
 
     return Column(
       children: [
@@ -143,26 +204,32 @@ class _SessionsScreenState extends State<SessionsScreen> {
               ),
             ),
           ),
-        // 活跃 / 已归档 筛选
+        // 活跃 / 已归档 筛选（计数与可见条数同源：都来自过滤后的列表）
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
           child: Row(
             children: [
               _FilterChip(
-                label: '${L10n.t('活跃', 'Active')} ${store.activeSessions.length}',
+                label: '${L10n.t('活跃', 'Active')} ${active.length}',
                 selected: !_showArchived,
-                onTap: () => setState(() => _showArchived = false),
+                onTap: () => setState(() {
+                  _showArchived = false;
+                  _syncIndicator();
+                }),
               ),
               const SizedBox(width: 8),
               _FilterChip(
-                label: '${L10n.t('已归档', 'Archived')} ${store.archivedSessions.length}',
+                label: '${L10n.t('已归档', 'Archived')} ${archived.length}',
                 selected: _showArchived,
-                onTap: () => setState(() => _showArchived = true),
+                onTap: () => setState(() {
+                  _showArchived = true;
+                  _syncIndicator();
+                }),
               ),
             ],
           ),
         ),
-        if (_showArchived && store.archivedSessions.isEmpty)
+        if (_showArchived && archived.isEmpty)
           Expanded(
             child: Center(child: Text(L10n.t('暂无归档会话', 'No archived sessions'), style: TextStyle(fontSize: 13, color: ink3))),
           )
@@ -181,24 +248,19 @@ class _SessionsScreenState extends State<SessionsScreen> {
                     itemBuilder: (context, i) {
                       final s = sessions[i];
                       return InkWell(
+                        // 稳定行标识：列表复用（回收重建）时动效状态不能跟错会话
+                        key: ValueKey('session-row-${s.id}'),
                         onTap: () => _open(s),
                         onLongPress: () => _showActions(s),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 2),
                           child: Row(
                             children: [
-                              Container(
-                                width: 30,
-                                height: 30,
-                                decoration: BoxDecoration(
-                                  color: s.archived ? line : DshColors.brandSoft(context),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  s.archived ? Icons.archive_outlined : Icons.description_outlined,
-                                  size: 15,
-                                  color: s.archived ? ink2 : brand,
-                                ),
+                              SessionIcon(
+                                state: store.rowStateOf(s.id),
+                                archived: s.archived,
+                                // 减弱动态效果：旋转降级为静态虚线（状态仍靠颜色可见）
+                                animation: reducedMotion ? null : _indicator.animation,
                               ),
                               const SizedBox(width: 12),
                               Expanded(
@@ -208,6 +270,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                                     Text(s.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
                                     const SizedBox(height: 1),
                                     Text(
+                                      // 显示时间与排序依据一致（sortKey = lastMessageAt 优先）
                                       '${relTime(s.sortKey)}${s.cwd != null ? ' · ${s.cwd}' : ''}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,

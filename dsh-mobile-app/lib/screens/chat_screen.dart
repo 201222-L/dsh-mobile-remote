@@ -4754,7 +4754,8 @@ class _StatusDot extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = switch (status) {
       'running' => DshColors.ok(context),
-      'waiting' => DshColors.warn(context),
+      // 内核 AgentStatus 只有 idle/running（ADR 0013）；等待用户在列表页另有标识，
+      // 这里不再保留 v2.1 的防御性 'waiting' 分支（内核从未产生过该取值）。
       _ => DshColors.ink3(context),
     };
     return Container(

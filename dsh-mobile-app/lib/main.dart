@@ -526,12 +526,22 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
       body: IndexedStack(
         index: _index,
         children: [
-          HomeScreen(store: store, onOpenSession: () {
-            if (mounted) setState(() {});
-          }),
-          SessionsScreen(store: store, onOpenSession: () {
-            if (mounted) setState(() {});
-          }),
+          // v3.1.6（issue #14）：IndexedStack 让三个页面同时活着，所以"本页是否可见"
+          // 必须显式告知——列表页据此暂停状态标识的旋转动效（页面不可见不耗电）。
+          HomeScreen(
+            store: store,
+            visible: _index == 0,
+            onOpenSession: () {
+              if (mounted) setState(() {});
+            },
+          ),
+          SessionsScreen(
+            store: store,
+            visible: _index == 1,
+            onOpenSession: () {
+              if (mounted) setState(() {});
+            },
+          ),
           SettingsScreen(store: store, onReconfigure: _reconfigure),
         ],
       ),
