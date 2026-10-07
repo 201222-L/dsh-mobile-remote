@@ -631,9 +631,9 @@ class AppStore extends ChangeNotifier {
   }
 
   /// 拉取模型目录（新建会话弹层懒加载用），成功返回目录、失败返回 null。
-  Future<Catalog?> refreshCatalog() async {
+  Future<Catalog?> refreshCatalog({bool force = false}) async {
     try {
-      catalog = await api.catalog();
+      catalog = await api.catalog(refresh: force);
       notifyListeners();
       return catalog;
     } catch (_) {
