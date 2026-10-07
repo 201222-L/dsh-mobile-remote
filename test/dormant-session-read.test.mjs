@@ -57,7 +57,7 @@ class FakeRequest extends EventEmitter {
 	}
 }
 
-function createHarness({ liveSession, query, agents, agentPresets } = {}) {
+function createHarness({ liveSession, query, agents, agentPresets, commands } = {}) {
 	const routes = [];
 	const provided = new Map([
 		["sessions", { get: () => liveSession }],
@@ -65,6 +65,7 @@ function createHarness({ liveSession, query, agents, agentPresets } = {}) {
 	]);
 	if (agents !== undefined) provided.set("agents", agents);
 	if (agentPresets !== undefined) provided.set("agentPresets", agentPresets);
+	if (commands !== undefined) provided.set("commands", commands);
 	const ctx = {
 		webServer: { host: "127.0.0.1", port: 43120, register(spec) { routes.push(spec); return () => {}; } },
 		logger: { warn() {}, info() {} },
@@ -390,6 +391,89 @@ test("/send：seeded 缺陷且宿主无 listEvents/readEvent → 默认配置 + 
 		assert.equal(body.configDegraded, true, "配置回退默认时必须显式标记");
 		assert.equal(resumeCalls.length, 1);
 		assert.equal(resumeCalls[0].agentOptions, undefined, "无恢复能力时使用默认模型");
+	} finally {
+		harness.clean();
+	}
+});
+
+// ── v3.2.0 真机验收（issue #25）：命令端点此前对休眠会话直接 404 ──
+// 现象：App 会列出全部持久化会话（本机 171 条，其中 only 1 条已挂载），用户在旧会话里点命令，
+// 只看到「命令列表加载失败：session not found: …」。根因是 GET/POST /commands 用
+// `agents.get(sessionId)` 判定存在性，未命中即 404，而 /send 会自动 resume。
+// 修复：抽出 resumeDormantAgent，命令端点复用同一条恢复路径。
+
+async function commandsGet(route, sessionId) {
+	const req = new FakeRequest(`/m/api/commands?sessionId=${encodeURIComponent(sessionId)}`);
+	const res = new FakeResponse();
+	const finished = new Promise((resolve) => res.once("finish", resolve));
+	route(req, res);
+	await finished;
+	return { status: res.statusCode, body: JSON.parse(res.chunks.join("") || "{}") };
+}
+
+async function commandsPost(route, sessionId, line) {
+	const payload = { sessionId, line };
+	const req = new FakeRequest("/m/api/commands", "POST", payload);
+	const res = new FakeResponse();
+	const finished = new Promise((resolve) => res.once("finish", resolve));
+	route(req, res);
+	queueMicrotask(() => {
+		req.emit("data", Buffer.from(JSON.stringify(payload)));
+		req.emit("end");
+	});
+	await finished;
+	return { status: res.statusCode, body: JSON.parse(res.chunks.join("") || "{}") };
+}
+
+test("GET /commands：休眠会话先恢复再列命令（此前 404 session-not-found）", async () => {
+	const resumeCalls = [];
+	const harness = createHarness({
+		query: { readSession: async () => ({ events: [] }) },
+		agents: dormantAgents("s", resumeCalls),
+		agentPresets: { defaultId: "standard", resolve: async (id) => ({ id }), mount: async () => {} },
+		commands: {
+			list: () => [
+				{ name: "compact", description: "Compact older conversation history" },
+				{ name: "goal", description: "set or view the goal", input: { hint: "<objective>", attachments: true } },
+			],
+		},
+	});
+	try {
+		const { status, body } = await commandsGet(harness.route, "s");
+		assert.equal(status, 200, "休眠会话不应再 404");
+		assert.equal(body.unavailable, undefined);
+		assert.equal(body.commands.length, 2);
+		assert.equal(resumeCalls.length, 1, "休眠会话应触发恢复");
+		assert.deepEqual(
+			body.commands[1].input,
+			{ hint: "<objective>", attachments: true },
+			"命令描述符原样透传（input 字段名是 attachments，不是 images）",
+		);
+	} finally {
+		harness.clean();
+	}
+});
+
+test("POST /commands：休眠会话先恢复再执行（此前 404 session-not-found）", async () => {
+	const resumeCalls = [];
+	const executed = [];
+	const harness = createHarness({
+		query: { readSession: async () => ({ events: [] }) },
+		agents: dormantAgents("s", resumeCalls),
+		agentPresets: { defaultId: "standard", resolve: async (id) => ({ id }), mount: async () => {} },
+		commands: {
+			execute: async (_agent, line) => {
+				executed.push(line);
+				return { commandId: "cmd-1", result: { kind: "success", text: "done" } };
+			},
+		},
+	});
+	try {
+		const { status, body } = await commandsPost(harness.route, "s", "/compact");
+		assert.equal(status, 200, "休眠会话不应再 404");
+		assert.equal(body.result.result.kind, "success");
+		assert.deepEqual(executed, ["/compact"]);
+		assert.equal(resumeCalls.length, 1, "休眠会话应触发恢复");
 	} finally {
 		harness.clean();
 	}
