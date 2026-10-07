@@ -212,7 +212,9 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
   Widget build(BuildContext context) {
     return SafeArea(
       child: Align(
-        alignment: Alignment.centerRight,
+        // 位置：右上角顶部——与触发它的「对话操作」按钮同侧、同一高度带。
+        // 2026-10-07 真机反馈：垂直居中（Alignment.centerRight）与触发按钮脱节，观感突兀。
+        alignment: Alignment.topRight,
         child: Material(
           elevation: 12,
           color: Theme.of(context).colorScheme.surface,
@@ -222,8 +224,7 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
           child: SizedBox(
             width: 56,
             // 修复：原为 height: double.infinity —— 白条会撑满整屏，而 4 个动作只有 224dp，
-            // 下面一大片空白（用户反馈"白条太长"）。改为按动作数取高，由外层
-            // Align(centerRight) 负责垂直居中。
+            // 下面一大片空白（用户反馈"白条太长"）。改为按动作数取高。
             height: 56.0 * _order.length,
             child: ReorderableListView(
               buildDefaultDragHandles: false,
