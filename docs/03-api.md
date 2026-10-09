@@ -17,6 +17,8 @@
 | 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
 | GET | `/m/api/bootstrap` | 初始状态：地址、认证要求、agent 摘要、会话列表 | 是 |
+| GET | `/m/api/update/manifest` | App 自动更新（主机源）：`updateDir` 里的 `manifest.json`（仅含元数据，不含 APK 本体） | 是 |
+| GET | `/m/api/update/apk` | 按 manifest 指定文件流式下发 APK（服务端先按 manifest 的 sha256 校验再下发） | 是 |
 | POST | `/m/api/send` | 向指定/默认 agent 注入消息（v2.7.2 支持 `mode: "steer"` 插队） | 是 |
 | GET | `/m/api/queue` | 排队消息列表（对齐 PC 端 Queue Dock；`placement: "queued"` 可插话、`"steering"` 不可，v2.7.2） | 是 |
 | POST | `/m/api/messages` | 排队消息操作：`{ sessionId, itemId, action: { kind: "edit"|"remove"|"steer", content? } }`（转发内核 `session.updateQueue`；错误码如 `queue-item-not-found`/`steer-unavailable` 透传，v2.7.2） | 是 |
@@ -56,6 +58,31 @@
 | POST | `/m/api/subagents/interrupt` | 中断子代理（v2.7，`subagent.interrupt`） | 是 |
 | GET/POST | `/m/api/goal` | 当前目标 / 创建·暂停·继续·完成（v2.7，goal RPC 同源） | 是 |
 | GET/POST | `/m/api/commands` | 斜杠命令目录/执行（v2.8.0；v2.8.2 适配内核 0.1.1-rc.2 四参签名，服务缺失优雅降级） | 是 |
+
+### 2.1 App 自动更新（主机源，v3.x）
+
+**概念**：插件配置 `updateDir`（如 `~/.dsh/mobile-remote/update/`）里放发布脚本产出的 APK 与 `manifest.json`。**manifest 是唯一权威**——App 只读 manifest，不枚举目录。
+
+**`manifest.json` 契约**（由 `tools/gen-manifest.js` 统一生成，双端发布脚本共用）：
+
+```json
+{ "version": "3.0.0+8", "apk": "DSH-Remote-v3.0.0.apk", "sha256": "<小写hex>", "size": 72026882, "notes": "CHANGELOG 最新条目全文（可为空）" }
+```
+
+- `version`：`X.Y.Z` + 可选 `+build`（App 端精确到 build 判定更新/防降级）。
+- `sha256`：APK 字节 SHA-256（小写 hex）；`size`：APK 字节数；`notes`：更新说明（可选）。
+
+**GET `/m/api/update/manifest`**：返回 `{ ok: true, manifest: {...} }`。错误码：
+- `503 update-not-configured`：未配置 `updateDir`；
+- `404 update-dir-missing` / `404 update-manifest-missing`：目录或 manifest 不存在；
+- `404 update-manifest-invalid`：manifest 缺字段/非 JSON。
+
+**GET `/m/api/update/apk`**：按 manifest `apk` 字段流式下发（`application/vnd.android.package-archive`，含 `content-length`）。**服务端先按 manifest 的 sha256 校验 APK 字节**再下发（防目录内文件被替换/损坏）。错误码：
+- 继承 manifest 阶段各错误码；`404 update-apk-missing`：文件不存在（含路径越界防御）；
+- `500 update-apk-checksum-mismatch`：文件与 manifest sha256 不符（拒发）；
+- `500 update-apk-read-failed`：读取失败。
+
+> GitHub 源不经过本插件（App 直连 `api.github.com/repos/201222-L/dsh-mobile-remote/releases/latest`，取首个 `DSH-Remote-*.apk` 资产，`browser_download_url` 直连下载）。
 
 ## 3. 端点详述（v1 既有端点）
 ### 3.1 GET /m/api/bootstrap
