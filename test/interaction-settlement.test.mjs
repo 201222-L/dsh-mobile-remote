@@ -222,7 +222,16 @@ test("subagent.* → 内核 subagents/* 命名空间与 wire 字段", async () =
 	try {
 		const list = await call(harness.route, { url: "/m/api/subagents?parentSessionId=sess-1" });
 		assert.equal(list.status, 200);
-		assert.deepEqual(harness.rpcCalls.at(-1), { endpoint: "subagents/list", args: { parentSessionId: "sess-1" } });
+		assert.ok(Array.isArray(list.body.subagents), "应返回子代理数组");
+		// v3.1.6(issue #21)：**不得**再调用 `subagents/list` —— 该 Remote 端点在宿主 0.2.0
+		// 已被删除（0.1.5 有 4 处声明，0.2.0 为 0）。调用它会让「会话工具 → 子代理」直接报
+		// "no active Remote method exports this endpoint"。列表改为由会话注册表派生：
+		// 子代理会话在会话头里带 origin === "subagent" 与 parentSession（内核提供，两代都有）。
+		assert.equal(
+			harness.rpcCalls.some((call) => call.endpoint === "subagents/list"),
+			false,
+			"不得调用已删除的 subagents/list 端点",
+		);
 
 		const interrupt = await call(harness.route, {
 			url: "/m/api/subagents/interrupt",

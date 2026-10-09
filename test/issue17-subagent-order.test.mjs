@@ -2,10 +2,12 @@
 //
 // 覆盖外部可观察行为：
 //  1. 活跃父会话分支：条目带 `createdAt`，且按 createdAt **降序**输出
-//     （内核 subagent.list 是升序，插件必须显式反转——否则与休眠分支顺序相反）；
+//     （目录/内核列表是升序，插件必须显式反转——否则与休眠分支顺序相反）；
 //  2. 休眠/归档父会话分支：同样带 `createdAt` 且按同一规则降序，与活跃分支一致；
 //  3. 缺 createdAt 的条目排在最后，等值时按 id 升序稳定；
-//  4. `status` 仍原样透传内核 activity/diagnostic reason（本次不改其语义）。
+//  4. `status` 取自**活 agent** 的 AgentStatus（`idle`/`running`，映射为
+//     `running`/`inactive`）：目录条目本身不带状态，issue #21 后不再透传
+//     `subagents/list` 的 activity/diagnostic reason（该 RPC 在宿主 0.2.0 已删除）。
 //
 // 伪宿主 harness 沿用 test/interaction-settlement.test.mjs 的形态。
 import test from "node:test";
@@ -102,12 +104,15 @@ async function call(route, { url, method = "GET", body } = {}) {
  * @param {object} [opts.sessionQuery]    注入 sessionQuery（持久化分支）
  * @param {object} [opts.subagentList]    内核 subagents/list 的返回
  */
-function createHarness({ agents, sessions, sessionQuery, subagentList } = {}) {
+function createHarness({ agents, sessions, sessionQuery, subagentList, catalog } = {}) {
 	const routes = [];
 	const provided = new Map();
 	if (agents !== undefined) provided.set("agents", agents);
 	if (sessions !== undefined) provided.set("sessions", sessions);
 	if (sessionQuery !== undefined) provided.set("sessionQuery", sessionQuery);
+	// issue #21：子代理目录取代 `subagents/list` RPC（该端点在宿主 0.2.0 已删除）。
+	// 目录条目形状 `{ id, createdAt, mode, label? }`，**不含状态**——状态另取活 agent。
+	if (catalog !== undefined) provided.set("subagents", { listChildren: async () => catalog });
 	provided.set("typertGateway", {
 		async invokeRpc(endpoint) {
 			if (endpoint === "subagents/list") {
@@ -118,9 +123,18 @@ function createHarness({ agents, sessions, sessionQuery, subagentList } = {}) {
 		async dispatchRpc() {
 			return { ok: true, value: undefined };
 		},
-		async openWireStream() {
+		// 形参个数即代际（插件按 `.length` 判别取消信号的位次）；3 个 = 旧代签名。
+		async openWireStream(endpoint, payload, signal) {
 			return (async function* () {
 				yield { type: "ready", clientId: "c-1" };
+				// 真实 `$events` 流**不会自行结束**。若让生成器直接返回，插件会（正确地）按
+				// "断开"处理并进入退避重连——而 issue #19 之后"曾经就绪"的通道是**无限**重连，
+				// 于是测试进程永远无法退出（表现为整文件挂住、报 Promise resolution is pending）。
+				if (signal && !signal.aborted) {
+					await new Promise((resolve) => {
+						signal.addEventListener("abort", resolve, { once: true });
+					});
+				}
 			})();
 		},
 	});
@@ -167,11 +181,11 @@ test("活跃分支：按 createdAt 降序输出，并透出 createdAt", async ()
 	const harness = createHarness({
 		agents: ACTIVE_AGENTS,
 		sessions: { get: (id) => ({ header: { id, createdAt: createdAt[id] } }) },
-		subagentList: kernelList([
-			{ id: "child-a", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "A" },
-			{ id: "child-c", kind: "child", activity: "running", hasChildren: false, mode: "one-shot", label: "C" },
-			{ id: "child-b", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "B" },
-		]),
+		catalog: [
+			{ id: "child-a", createdAt: createdAt["child-a"], mode: "one-shot", label: "A" },
+			{ id: "child-c", createdAt: createdAt["child-c"], mode: "one-shot", label: "C" },
+			{ id: "child-b", createdAt: createdAt["child-b"], mode: "one-shot", label: "B" },
+		],
 	});
 	try {
 		const res = await call(harness.route, { url: "/m/api/subagents?parentSessionId=sess-1" });
@@ -184,22 +198,28 @@ test("活跃分支：按 createdAt 降序输出，并透出 createdAt", async ()
 	}
 });
 
-test("活跃分支：保留 status 语义（原样透传 activity / diagnostic reason）", async () => {
+test("活跃分支：状态取自活 agent（AgentStatus），非活回落 inactive", async () => {
 	const harness = createHarness({
-		agents: ACTIVE_AGENTS,
+		agents: {
+			// child-run 在活注册表里：状态应取它的 AgentStatus（内核取值 'idle' | 'running'）
+			get: (id) => (id === "sess-1" ? agentOf("C:\\ws") : (id === "child-run" ? { id, session: { id }, status: "running" } : undefined)),
+			roots: () => [],
+		},
 		sessions: { get: () => undefined },
-		subagentList: kernelList([
-			{ id: "child-run", kind: "child", activity: "running", hasChildren: false, mode: "one-shot", label: "R" },
-			{ id: "child-diag", kind: "diagnostic", reason: "corrupt", hasChildren: false, mode: "one-shot" },
-		]),
+		catalog: [
+			{ id: "child-run", createdAt: 2000, mode: "one-shot", label: "R" },
+			{ id: "child-quiet", createdAt: 1000, mode: "one-shot", label: "Q" },
+		],
 	});
 	try {
 		const res = await call(harness.route, { url: "/m/api/subagents?parentSessionId=sess-1" });
 		const byId = new Map(res.body.subagents.map((s) => [s.id, s]));
+		// 目录条目本身**不带状态**，故状态取自活 agent 的 AgentStatus
+		// （内核取值 'idle' | 'running'）；不在活注册表里的子代理回落 "inactive"。
 		assert.equal(byId.get("child-run").status, "running");
-		assert.equal(byId.get("child-diag").status, "corrupt");
-		// 取不到 createdAt 时不应伪造数值
-		assert.equal(byId.get("child-run").createdAt, undefined);
+		assert.equal(byId.get("child-quiet").status, "inactive");
+		assert.equal(byId.get("child-run").createdAt, 2000);
+		assert.equal(byId.get("child-quiet").createdAt, 1000);
 	} finally {
 		harness.clean();
 	}
@@ -209,11 +229,12 @@ test("活跃分支：缺 createdAt 的排最后，等值时按 id 升序稳定",
 	const harness = createHarness({
 		agents: ACTIVE_AGENTS,
 		sessions: { get: (id) => (id === "child-tie-b" || id === "child-tie-a" ? { header: { id, createdAt: 5000 } } : undefined) },
-		subagentList: kernelList([
-			{ id: "child-notime", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "N" },
-			{ id: "child-tie-b", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "TB" },
-			{ id: "child-tie-a", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "TA" },
-		]),
+		catalog: [
+			// child-notime 刻意**不带** createdAt：应排最后（与 issue #17 的约定一致）
+			{ id: "child-notime", mode: "one-shot", label: "N" },
+			{ id: "child-tie-b", createdAt: 5000, mode: "one-shot", label: "TB" },
+			{ id: "child-tie-a", createdAt: 5000, mode: "one-shot", label: "TA" },
+		],
 	});
 	try {
 		const res = await call(harness.route, { url: "/m/api/subagents?parentSessionId=sess-1" });
@@ -259,14 +280,14 @@ test("休眠分支：与活跃分支同一顺序，并透出 createdAt", async (
 test("两个分支对同一组子代理给出相同顺序（修掉顺序相反的缺陷）", async () => {
 	const times = { "child-a": 1000, "child-b": 3000, "child-c": 2000 };
 	const entries = [
-		{ id: "child-a", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "A" },
-		{ id: "child-c", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "C" },
-		{ id: "child-b", kind: "child", activity: "inactive", hasChildren: false, mode: "one-shot", label: "B" },
+		{ id: "child-a", createdAt: times["child-a"], mode: "one-shot", label: "A" },
+		{ id: "child-c", createdAt: times["child-c"], mode: "one-shot", label: "C" },
+		{ id: "child-b", createdAt: times["child-b"], mode: "one-shot", label: "B" },
 	];
 	const active = createHarness({
 		agents: ACTIVE_AGENTS,
 		sessions: { get: (id) => ({ header: { id, createdAt: times[id] } }) },
-		subagentList: kernelList(entries),
+		catalog: entries,
 	});
 	const dormant = createHarness({
 		agents: DORMANT_AGENTS,

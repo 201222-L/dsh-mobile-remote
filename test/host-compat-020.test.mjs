@@ -23,6 +23,10 @@ import {
 	readSettingsSection,
 	wireStreamTakesControl,
 	capabilityState,
+	codexProxyUrl,
+	safeFailureReason,
+	classifyFetchFailure,
+	readSettingsSectionStrict,
 } from "../lib/index.js";
 
 const CONFIG = {
@@ -98,7 +102,7 @@ const AGENT = { id: "session-A", session: { id: "session-A", header: { cwd: "/tm
  * 所有发往宿主的调用都被记录，断言只针对"插件传出去的东西"与"端点返回的东西"——
  * 不触碰插件内部实现。
  */
-function createHarness({ generation, frames = [], endAfterFrames = false }) {
+function createHarness({ generation, frames = [], endAfterFrames = false, extraSessions = [], liveChildStatus = {}, catalog = null, catalogThrows = false, sessionQuery = null }) {
 	const modern = generation === "0.2.0";
 	const routes = [];
 	const provided = new Map();
@@ -177,8 +181,40 @@ function createHarness({ generation, frames = [], endAfterFrames = false }) {
 		setState: async () => undefined,
 	};
 
-	provided.set("agents", { get: (id) => (id === "session-A" ? AGENT : undefined), list: () => [AGENT], roots: () => [AGENT] });
-	provided.set("sessions", { get: (id) => (id === "session-A" ? { id: "session-A", header: { cwd: "/tmp/proj" } } : undefined), list: () => [{ id: "session-A", header: { cwd: "/tmp/proj" } }] });
+	// 会话注册表：默认只有父会话；`extraSessions` 用来注入子代理会话（issue #21 的用例）。
+	// 子代理在会话头里带 origin === "subagent" 与 parentSession —— 这是内核提供的字段
+	// （两代都有），也是新版 /subagents 派生列表的唯一依据（不再调用任何 RPC）。
+	const sessionList = [
+		{ id: "session-A", header: { id: "session-A", cwd: "/tmp/proj", createdAt: 1000 } },
+		...extraSessions,
+	];
+	const liveChildAgents = new Map(
+		Object.entries(liveChildStatus).map(([id, status]) => [id, { id, session: { id }, status }]),
+	);
+	provided.set("agents", {
+		get: (id) => (id === "session-A" ? AGENT : liveChildAgents.get(id)),
+		list: () => [AGENT, ...liveChildAgents.values()],
+		roots: () => [AGENT],
+	});
+	provided.set("sessions", {
+		get: (id) => sessionList.find((session) => session.id === id),
+		list: () => sessionList,
+	});
+	// 持久子代理目录（`ctx.subagents.listChildren`，两代都提供）。
+	// 评审 BLOCKING 2 的关键：目录**包含已释放的子代理**，而 `sessions.list()` 只有 live 会话——
+	// 夹具必须能表达这个差异，否则测不出"已完成的子代理从列表消失"。
+	// `catalog` 为 null 表示宿主不提供该服务（走注册表兜底路径）。
+	if (catalog !== null) {
+		provided.set("subagents", {
+			async listChildren() {
+				if (catalogThrows) throw new Error("catalog unavailable");
+				return catalog;
+			},
+		});
+	}
+	// 持久化枚举（上游 issue #14 的第二优先级来源）：父会话休眠/归档时，「会话工具 → 子代理」
+	// 入口不能消失。`null` 表示宿主没有 sessionQuery，此时才掉到注册表兜底（issue #21 的第三级）。
+	if (sessionQuery !== null) provided.set("sessionQuery", sessionQuery);
 	provided.set("jobs", jobs);
 	provided.set("settings", settings);
 	provided.set("typertGateway", gateway);
@@ -508,4 +544,222 @@ test("曾就绪的通道在断开后持续重连，且退避等待不泄漏监�
 		h.clean();
 		t.mock.timers.reset();
 	}
+});
+
+// ───────────────────── 7. issue #21 的回归测试 ─────────────────────
+
+const CODEX_MOD = {
+	resolveOpenAICodexSettings: (settings) => settings,
+	resolveOpenAICodexProxyUrl: (settings) => settings?.proxyUrl,
+};
+const CODEX_CFG = { enableProxy: true, proxyUrl: "http://127.0.0.1:1080" };
+
+test("Codex 代理配置：两代设置读取都能读到（issue #21）", () => {
+	// 0.1.x：settings.get(ns)
+	const legacy = { get: (ns) => (ns === "llm-openai-codex" ? CODEX_CFG : undefined) };
+	assert.deepEqual(
+		codexProxyUrl({ get: () => legacy }, CODEX_MOD),
+		{ enabled: true, url: "http://127.0.0.1:1080" },
+	);
+
+	// 0.2.x：**只有 describe()**，get() 已被移除 —— 这正是本次回归的核心。
+	// 旧实现用 settings.get() 读，在 0.2.x 上恒得 undefined → 误判「代理未启用」
+	// → 静默改走直连 chatgpt.com → 连接超时 → 表现为「手机看不到 Codex 余额」。
+	const modern = { describe: () => [{ ns: "llm-openai-codex", value: CODEX_CFG }] };
+	assert.deepEqual(
+		codexProxyUrl({ get: () => modern }, CODEX_MOD),
+		{ enabled: true, url: "http://127.0.0.1:1080" },
+		"0.2.x 必须经 describe() 读到代理配置",
+	);
+});
+
+test("Codex 代理配置：读不到宿主设置必须显式暴露，不得伪装成「未启用」（issue #21）", () => {
+	// 设置服务既无 get 也无 describe ⇒ 插件**读不了**配置。这是接口问题，必须显式失败：
+	// 若伪装成「未启用」，用户只会看到 Codex 余额凭空消失，无从归因。
+	assert.deepEqual(
+		codexProxyUrl({ get: () => ({}) }, CODEX_MOD),
+		{ enabled: true, url: undefined, unreadable: true, reason: "settings-has-no-read-method" },
+		"设置服务无读取方法时必须标记 unreadable",
+	);
+	assert.deepEqual(
+		codexProxyUrl({ get: () => undefined }, CODEX_MOD),
+		{ enabled: true, url: undefined, unreadable: true, reason: "settings-service-missing" },
+		"设置服务不存在时必须标记 unreadable",
+	);
+	// 对照：设置读得到、只是用户没开代理 ⇒ 走直连是**正确**行为，不应算失败
+	assert.deepEqual(
+		codexProxyUrl({ get: () => ({ describe: () => [] }) }, CODEX_MOD),
+		{ enabled: false, url: undefined },
+		"命名空间不存在属正常配置，不得标记 unreadable",
+	);
+});
+
+test("/subagents：目录保留已释放的子代理，不只列 live 会话（评审 BLOCKING 2）", async () => {
+	// `sessions.list()` 只有 live/驻留会话：continuable 子代理结束、flush 并释放 handle 后
+	// 会从注册表移除，而父会话的**持久目录**仍保留其身份。只用注册表会漏掉已完成/已释放者，
+	// 表现为"父会话还活着，列表却成功返回暂无子代理"，丢掉查看已完成结果的入口。
+	const h = createHarness({
+		generation: "0.2.0",
+		// live 注册表只有父会话与 hot-child；cold-child 已结束并释放，**不在**会话注册表里
+		extraSessions: [
+			{ id: "hot-child", header: { id: "hot-child", cwd: "/tmp/proj", createdAt: 2000, origin: "subagent", parentSession: "session-A" } },
+		],
+		liveChildStatus: { "hot-child": "running" },
+		catalog: [
+			{ id: "cold-child", createdAt: 1000, mode: "continuable", label: "Review storage" },
+			{ id: "hot-child", createdAt: 2000, mode: "continuable", label: "Review network" },
+		],
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.equal(res.status, 200);
+		assert.deepEqual(
+			res.body.subagents.map((entry) => entry.id),
+			["hot-child", "cold-child"],
+			"已释放的 cold-child 也必须列出（createdAt 降序）",
+		);
+		assert.equal(res.body.catalogDegraded, undefined, "目录可用时不得标注降级");
+		assert.equal(res.body.subagents[0].status, "running", "live 子代理状态取自活注册表");
+		assert.equal(res.body.subagents[1].status, "inactive", "已释放的子代理回落 inactive");
+	} finally { h.clean(); }
+});
+
+test("/subagents：标题优先取目录 label，不被继承的父标题覆盖（评审 WARNING 4）", async () => {
+	// fork provider 会复制父会话已完成轮次的事件前缀（含父的 session/title），而
+	// sessionTitleOf 从整个快照反查标题、不区分继承事件与子代理自身事件——直接用它会让
+	// 多个不同委派标签的 fork 全部显示父标题，丢掉任务辨识信息。
+	const h = createHarness({
+		generation: "0.2.0",
+		extraSessions: [
+			{ id: "fork-a", header: { id: "fork-a", cwd: "/tmp/proj", createdAt: 1000, origin: "subagent", parentSession: "session-A" } },
+			{ id: "fork-b", header: { id: "fork-b", cwd: "/tmp/proj", createdAt: 2000, origin: "subagent", parentSession: "session-A" } },
+		],
+		catalog: [
+			{ id: "fork-a", createdAt: 1000, mode: "continuable", label: "Review storage" },
+			{ id: "fork-b", createdAt: 2000, mode: "continuable", label: "Review network" },
+		],
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.deepEqual(
+			res.body.subagents.map((entry) => entry.title),
+			["Review network", "Review storage"],
+			"两个 fork 必须各自显示自己的委派标签，而不是同一个父标题",
+		);
+	} finally { h.clean(); }
+});
+
+test("/subagents：目录读不到时退回注册表并显式标注，不让不完整列表冒充完整目录（评审 BLOCKING 2）", async () => {
+	const h = createHarness({
+		generation: "0.2.0",
+		extraSessions: [
+			{ id: "hot-child", header: { id: "hot-child", cwd: "/tmp/proj", createdAt: 2000, origin: "subagent", parentSession: "session-A" } },
+			// fork 出的会话：有 parentSession 但**无** origin，兜底路径不得混入
+			{ id: "fork-1", header: { id: "fork-1", cwd: "/tmp/proj", createdAt: 3000, parentSession: "session-A" } },
+			// 别的父会话的子代理，不得混入
+			{ id: "other-1", header: { id: "other-1", cwd: "/tmp/proj", createdAt: 4000, origin: "subagent", parentSession: "session-B" } },
+		],
+		catalog: [],
+		catalogThrows: true,
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.equal(res.status, 200);
+		assert.equal(res.body.catalogDegraded, true, "目录不可用时必须标注，不能谎称完整");
+		assert.deepEqual(res.body.subagents.map((entry) => entry.id), ["hot-child"], "兜底只列 origin=subagent 且父会话匹配者");
+	} finally { h.clean(); }
+});
+
+test("/subagents：目录读不到但有持久枚举时走上游 #14 路径，并标 catalogDegraded（#14/#17 与 #21 合并语义）", async () => {
+	// 合并语义的关键一条：上游 #14 的持久化枚举必须留在 #21 目录路径**之后**作为第二优先级。
+	// 目录抛错时若直接掉到会话注册表，就会丢掉「父会话休眠/归档 + 子代理已释放」这一组合
+	// （注册表只有 live 会话），也就是上游 #14 要修的那个入口消失问题。
+	const h = createHarness({
+		generation: "0.2.0",
+		catalog: [],
+		catalogThrows: true,
+		sessionQuery: {
+			async listSessions() {
+				return [
+					{ header: { id: "session-A", createdAt: 1000 } },
+					{ header: { id: "released-child", origin: "subagent", parentSession: "session-A", createdAt: 4000 } },
+				];
+			},
+			async readTitleSnapshots(ids) {
+				return ids.map(() => ({ status: "fulfilled", value: { title: { title: "已释放的委派" } } }));
+			},
+		},
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.equal(res.status, 200);
+		assert.deepEqual(
+			res.body.subagents.map((entry) => entry.id),
+			["released-child"],
+			"目录读不到时必须用持久枚举补上已释放的子代理，而不是掉到只有 live 会话的注册表",
+		);
+		assert.equal(res.body.catalogDegraded, true, "第二优先级来源同样不是完整目录，必须标注");
+		assert.equal(res.body.subagents[0].title, "已释放的委派", "标题优先取持久枚举带出的 title");
+	} finally { h.clean(); }
+});
+
+test("Codex 代理配置：读取抛错或形状漂移必须标 unreadable，不得伪装成「未启用」（评审 WARNING 3）", () => {
+	// 宽松读取会把「读取抛错」「describe 形状不合法」「方法缺失」全部折叠成 undefined，
+	// 再由 `?? {}` 伪装成"命名空间不存在"→ enabled:false → 静默改走直连（回到本次的根因）。
+	const mod = { resolveOpenAICodexSettings: (settings) => settings, resolveOpenAICodexProxyUrl: (settings) => settings?.proxyUrl };
+	const expectUnreadable = (settingsSvc, reason) => {
+		assert.deepEqual(codexProxyUrl({ get: () => settingsSvc }, mod), { enabled: true, url: undefined, unreadable: true, reason }, reason);
+	};
+	expectUnreadable({ get: () => { throw new Error("boom"); } }, "settings-get-threw");
+	expectUnreadable({ describe: () => { throw new Error("boom"); } }, "settings-describe-threw");
+	expectUnreadable({ describe: () => ({}) }, "settings-describe-shape-invalid");
+	// 描述符存在但没有 value 字段（语义漂移）同样属"读不到"
+	expectUnreadable({ describe: () => [{ ns: "llm-openai-codex", config: { enableProxy: true } }] }, "settings-descriptor-without-value");
+});
+
+test("/m/api/account-usage：失败原因绝不回传异常原文或凭据（评审 BLOCKING 1）", async () => {
+	// 凭据含内嵌 CR/LF 时，原生 fetch 的 Headers 校验会抛出**带完整密钥**的消息
+	// （`Headers.append: "Bearer sk-…\n…" is an invalid header value.`）。
+	// redactPathText 只脱敏主机路径、不脱敏凭据，所以"脱敏异常消息后回传"并不安全。
+	const SECRET = "sk-synthetic-secret\nvalue";
+	const h = createHarness({ generation: "0.2.0" });
+	try {
+		h.provided.set("credentials", { resolve: async () => ({ value: SECRET }), readRecord: async () => ({ value: SECRET }) });
+		const res = await call(h.route, { url: "/m/api/account-usage" });
+		assert.equal(res.status, 200);
+		const text = JSON.stringify(res.body);
+		assert.equal(text.includes("sk-synthetic-secret"), false, "响应中不得出现凭据本身");
+		assert.equal(text.includes("invalid header value"), false, "响应中不得出现异常原文");
+		for (const failure of res.body.failures ?? []) {
+			// 失败原因只应是「稳定错误码（固定文案）」
+			assert.match(failure.reason, /^[a-z-]+（.+）$/, `原因应为稳定错误码 + 固定文案，实际：${failure.reason}`);
+		}
+	} finally { h.clean(); }
+});
+
+test("safeFailureReason：任意异常都只产出稳定错误码，绝不夹带原文（评审 BLOCKING 1，纯函数路径）", () => {
+	// 这一条**不触网**，把安全性质钉在纯函数上：无论异常消息里有什么（内嵌凭据、
+	// 完整 URL、userinfo），返回值只能是「稳定错误码（固定文案）」。
+	const secret = "sk-synthetic-secret\nvalue";
+	const cases = [
+		{ name: "TypeError", message: `Headers.append: "Bearer ${secret}" is an invalid header value.` },
+		{ name: "TimeoutError", message: "The operation was aborted due to timeout" },
+		{ code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND api.deepseek.com" },
+		{ code: "ECONNREFUSED", message: "connect ECONNREFUSED 127.0.0.1:1080" },
+		{ message: `proxy http://user:${secret}@127.0.0.1:1080 refused` },
+	];
+	for (const err of cases) {
+		const reason = safeFailureReason(err);
+		assert.match(reason, /^[a-z-]+（.+）$/, `应为「错误码（固定文案）」，实际：${reason}`);
+		assert.equal(reason.includes(secret), false, "不得夹带凭据");
+		assert.equal(reason.includes("sk-synthetic-secret"), false, "不得夹带凭据前缀");
+		assert.equal(reason.includes("invalid header value"), false, "不得夹带异常原文");
+	}
+	// 分类要落到具体码，而不是一律 unreachable
+	assert.equal(classifyFetchFailure({ name: "TypeError" }), "invalid-request");
+	assert.equal(classifyFetchFailure({ name: "TimeoutError" }), "timeout");
+	assert.equal(classifyFetchFailure({ code: "ENOTFOUND" }), "dns");
+	assert.equal(classifyFetchFailure({ code: "ECONNREFUSED" }), "connection-refused");
+	assert.equal(classifyFetchFailure({}), "unreachable");
+	assert.equal(classifyFetchFailure(undefined), "unreachable");
 });
