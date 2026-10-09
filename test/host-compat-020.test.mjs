@@ -438,6 +438,44 @@ test("诊断：私有成员缺失时报 drift 并给出可执行原因（不静�
 	} finally { h.clean(); }
 });
 
+test("诊断：settings.read 与真实读取共享判定——读不到就报 drift + allow-list 原因（评审 WARNING 3）", async () => {
+	// 只检查「get/describe 是不是函数」会出现：Codex/配置读取已经失败（严格读取判 unreadable），
+	// 新增的三态诊断却仍报 ok —— 正是 #19 要消灭的"语义漂移不可见"。
+	const cases = [
+		[{ describe() { throw new Error("boom"); } }, "settings-describe-threw"],
+		[{ describe() { return {}; } }, "settings-describe-shape-invalid"],
+		[{ describe() { return [{ ns: "providers", config: { a: 1 } }]; } }, "settings-descriptor-without-value"],
+		[{ get() { throw new Error("boom"); } }, "settings-get-threw"],
+		[{}, "settings-has-no-read-method"],
+	];
+	for (const [settings, reason] of cases) {
+		const h = createHarness({ generation: "0.2.0" });
+		try {
+			h.provided.set("settings", settings);
+			const res = await call(h.route, { url: "/m/api/diagnostics" });
+			assert.equal(res.status, 200);
+			assert.equal(res.body.checks.hostCapabilities["settings.read"], "drift", `${reason} 应报 drift`);
+			assert.equal(res.body.checks.hostCapabilityReasons?.["settings.read"], reason, "必须给出 allow-list 原因码");
+			assert.ok((res.body.notes ?? []).some((n) => String(n).includes(reason)), "notes 里要能看到原因");
+		} finally { h.clean(); }
+	}
+	// 服务缺失仍是 missing；两代正常读取仍为 ok（不得因为更严格而误报）
+	const missing = createHarness({ generation: "0.2.0" });
+	try {
+		missing.provided.set("settings", undefined);
+		const res = await call(missing.route, { url: "/m/api/diagnostics" });
+		assert.equal(res.body.checks.hostCapabilities["settings.read"], "missing");
+	} finally { missing.clean(); }
+	for (const generation of ["0.1.5", "0.2.0"]) {
+		const h = createHarness({ generation });
+		try {
+			const res = await call(h.route, { url: "/m/api/diagnostics" });
+			assert.equal(res.body.checks.hostCapabilities["settings.read"], "ok", `${generation} 正常设置服务应报 ok`);
+			assert.equal(res.body.checks.hostCapabilityReasons, undefined, "全绿时不得出现原因表");
+		} finally { h.clean(); }
+	}
+});
+
 // ───────────────────── 5. apiProxy 死代码清除后的行为 ─────────────────────
 
 test("/respond：待办不在本地清单时返回 404 并说明真实原因（不再归咎于'内核过旧'）", async () => {
@@ -703,6 +741,67 @@ test("/subagents：目录读不到但有持久枚举时走上游 #14 路径，�
 	} finally { h.clean(); }
 });
 
+test("/subagents：目录 mode=unknown 保留 diagnostic/unsupported（评审 WARNING 2）", async () => {
+	// 宿主目录 schema 会产出 `mode: "unknown"`，其 listDescendants 明确映射为 diagnostic/unsupported。
+	// 一律写 kind:"child" 会让消费者分不清"不受支持的历史条目"与"正常闲置子代理"，
+	// 等于删掉 RPC 时顺带静默删掉既有诊断语义（docs/03-api 承诺 status 可为 diagnostic reason）。
+	const h = createHarness({
+		generation: "0.2.0",
+		extraSessions: [
+			{ id: "ok-child", header: { id: "ok-child", cwd: "/tmp/proj", createdAt: 2000, origin: "subagent", parentSession: "session-A" } },
+		],
+		liveChildStatus: { "ok-child": "running" },
+		catalog: [
+			{ id: "odd-child", createdAt: 3000, mode: "unknown" },
+			{ id: "ok-child", createdAt: 2000, mode: "one-shot", label: "正常委派" },
+		],
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.equal(res.status, 200);
+		const byId = new Map(res.body.subagents.map((entry) => [entry.id, entry]));
+		assert.equal(byId.get("odd-child").kind, "diagnostic", "mode=unknown 必须保留诊断语义");
+		assert.equal(byId.get("odd-child").status, "unsupported", "diagnostic 原因按宿主 listDescendants 的口径");
+		assert.equal(byId.get("ok-child").kind, "child", "正常条目不得被误判为 diagnostic");
+		assert.equal(byId.get("ok-child").status, "running", "正常条目状态仍取活 agent");
+		assert.deepEqual(res.body.subagents.map((e) => e.id), ["odd-child", "ok-child"], "ID/排序时间不受影响（createdAt 降序）");
+	} finally { h.clean(); }
+});
+
+test("/subagents：目录无 label 的已释放子代理补读持久标题（评审 WARNING 1）", async () => {
+	// 目录只承诺 `label?`：合法 one-shot 条目可以不带 label；已释放的子代理又不在 live 注册表里
+	// （拿不到会话快照标题）。此时若不补读持久标题就会退化成短 ID —— 而基线在父会话不活跃时
+	// 一直走持久枚举、是能拿到标题的，属新回归。
+	const titleReads = [];
+	const h = createHarness({
+		generation: "0.2.0",
+		catalog: [
+			{ id: "12345678-cold-child", createdAt: 2000, mode: "one-shot" }, // 无 label → 需补读持久标题
+			{ id: "87654321-labeled-child", createdAt: 1000, mode: "one-shot", label: "带标签的委派" }, // 有 label → 不必读
+		],
+		sessionQuery: {
+			async listSessions() {
+				return [{ header: { id: "session-A", createdAt: 1000 } }];
+			},
+			async readTitleSnapshots(ids) {
+				titleReads.push(...ids);
+				return ids.map((id) => ({
+					status: "fulfilled",
+					value: { title: { title: id === "12345678-cold-child" ? "Completed storage review" : undefined } },
+				}));
+			},
+		},
+	});
+	try {
+		const res = await call(h.route, { url: "/m/api/subagents?parentSessionId=session-A" });
+		assert.equal(res.status, 200);
+		const byId = new Map(res.body.subagents.map((entry) => [entry.id, entry]));
+		assert.equal(byId.get("12345678-cold-child").title, "Completed storage review", "有持久标题时不得退化成短 ID");
+		assert.equal(byId.get("87654321-labeled-child").title, "带标签的委派", "有 label 时仍优先 label");
+		assert.deepEqual(titleReads, ["12345678-cold-child"], "只对三个来源都拿不到的条目批量补读一次（有 label 的不读）");
+	} finally { h.clean(); }
+});
+
 test("Codex 代理配置：读取抛错或形状漂移必须标 unreadable，不得伪装成「未启用」（评审 WARNING 3）", () => {
 	// 宽松读取会把「读取抛错」「describe 形状不合法」「方法缺失」全部折叠成 undefined，
 	// 再由 `?? {}` 伪装成"命名空间不存在"→ enabled:false → 静默改走直连（回到本次的根因）。
@@ -762,4 +861,28 @@ test("safeFailureReason：任意异常都只产出稳定错误码，绝不夹带
 	assert.equal(classifyFetchFailure({ code: "ECONNREFUSED" }), "connection-refused");
 	assert.equal(classifyFetchFailure({}), "unreachable");
 	assert.equal(classifyFetchFailure(undefined), "unreachable");
+	// 结构化失败不得落进网络兜底（评审 WARNING 4）：429/401/5xx 已经**收到 HTTP 响应**，
+	// 归到 unreachable 会让用户去排查网络方向。
+	assert.equal(classifyFetchFailure({ code: "OPENAI_CODEX_REAUTH_REQUIRED" }), "reauth-required");
+	assert.equal(classifyFetchFailure({ status: 429 }), "rate-limited");
+	assert.equal(classifyFetchFailure({ status: 401 }), "http-error");
+	assert.equal(classifyFetchFailure({ status: 403 }), "http-error");
+	assert.equal(classifyFetchFailure({ status: 503 }), "http-error");
+	assert.equal(classifyFetchFailure({ cause: { status: 502 } }), "http-error");
+	// 非法/越界 status 不接受：仍按网络兜底，不能凭任意数字造出"http 错误"
+	assert.equal(classifyFetchFailure({ status: 200 }), "unreachable");
+	assert.equal(classifyFetchFailure({ status: "429" }), "unreachable");
+	assert.equal(safeFailureReason({ status: 429 }), "rate-limited（请求被限流）");
+	assert.equal(safeFailureReason({ code: "OPENAI_CODEX_REAUTH_REQUIRED" }), "reauth-required（需重新登录）");
+	assert.equal(safeFailureReason({ status: 503 }), "http-error（服务端返回错误）");
+	// 结构化失败同样不得夹带原文或凭据
+	for (const err of [
+		{ status: 429, message: `HTTP 429: Bearer ${secret}` },
+		{ code: "OPENAI_CODEX_REAUTH_REQUIRED", message: `re-login required for ${secret}` },
+	]) {
+		const reason = safeFailureReason(err);
+		assert.equal(reason.includes("sk-synthetic-secret"), false, "不得夹带凭据前缀");
+		assert.equal(reason.includes("Bearer"), false, "不得夹带异常原文");
+		assert.match(reason, /^[a-z-]+（.+）$/, `应为「错误码（固定文案）」，实际：${reason}`);
+	}
 });

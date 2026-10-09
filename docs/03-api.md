@@ -570,12 +570,16 @@
 
 **GET `/m/api/subagents?parentSessionId=…`** — 子代理列表（按父会话）
 ```json
-{ "ok": true, "parentAvailable": true, "subagents": [
-  { "id": "…", "kind": "child", "status": "running", "title": "…" }
+{ "ok": true, "parentAvailable": true, "catalogDegraded": true, "subagents": [
+  { "id": "…", "kind": "child", "status": "running", "title": "…", "createdAt": 1730000000000 }
 ]}
 ```
-- 映射内核 `subagent.list`（payload `{ parentSessionId }`）；`status` = activity（running/inactive）或 diagnostic reason
-- 缺参数 `400 parentSessionId-required`；会话不存在 `404 session-not-found`
+- 目录来源按优先级取：① 宿主持久目录 `ctx.subagents.listChildren(parentSessionId)` → ② 持久化枚举（父会话休眠/归档时入口不消失）→ ③ 会话注册表派生。
+  **不调用 `subagents/list` Remote 端点**——该端点在宿主 0.2.0 已被删除
+- `kind`：`child`（普通子代理）或 `diagnostic`（目录 `mode: "unknown"` 的不受支持条目，此时 `status` 为原因 `unsupported`）
+- `status`：活 agent 的 AgentStatus 映射（`running`/`inactive`）或 diagnostic reason
+- `createdAt` 可选，用于排序；`catalogDegraded: true` 表示来源 ②/③ 不完整，客户端据此区分"确实没有子代理"与"目录读不到"
+- 缺参数 `400 parentSessionId-required`；三条路径都取不到会话 `404 session-not-found`
 
 **POST `/m/api/subagents/interrupt`** — 中断子代理
 ```json
