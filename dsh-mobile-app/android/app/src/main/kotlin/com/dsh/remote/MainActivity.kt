@@ -1,14 +1,18 @@
 package com.dsh.remote
 
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
@@ -54,6 +58,34 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/update")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "ownSignatureSha256" -> result.success(signatureSha256(packageName))
+                    "apkSignatureSha256" -> {
+                        val path = call.argument<String>("path")
+                        if (path.isNullOrBlank()) {
+                            result.error("bad-args", "missing APK path", null)
+                        } else {
+                            result.success(signatureSha256OfApk(path))
+                        }
+                    }
+                    "installApk" -> {
+                        val path = call.argument<String>("path")
+                        if (path.isNullOrBlank()) {
+                            result.error("bad-args", "missing APK path", null)
+                        } else {
+                            try {
+                                installApkFile(path)
+                                result.success(null)
+                            } catch (e: Exception) {
+                                result.error("install-failed", e.message ?: "无法启动系统安装器", null)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         // 引擎就绪：投递冷启动暂存的面板动作
         deliverPendingAction()
         // v2.7.2 review：Dart 侧 handler 注册可能晚于本回调——延迟再投一次 + consume 兜底
@@ -248,5 +280,49 @@ class MainActivity : FlutterActivity() {
         "zip" -> "application/zip"
         "mp4" -> "video/mp4"
         else -> "application/octet-stream"
+    }
+
+    private fun signatureSha256(pkg: String): String? = try {
+        val pm = packageManager
+        val sigs: Array<android.content.pm.Signature>? = if (Build.VERSION.SDK_INT >= 28) {
+            pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)?.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES)?.signatures
+        }
+        sigs?.firstOrNull()?.let { sha256Hex(it.toByteArray()) }
+    } catch (_: Exception) { null }
+
+    private fun signatureSha256OfApk(path: String): String? = try {
+        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+        val info = packageManager.getPackageArchiveInfo(path, flags) ?: return null
+        val sigs: Array<android.content.pm.Signature>? = if (Build.VERSION.SDK_INT >= 28) {
+            info.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures
+        }
+        sigs?.firstOrNull()?.let { sha256Hex(it.toByteArray()) }
+    } catch (_: Exception) { null }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun installApkFile(path: String) {
+        val updateDir = File(cacheDir, "dsh-update").canonicalFile
+        val file = File(path).canonicalFile
+        if (file.parentFile != updateDir || !file.isFile) {
+            throw IllegalStateException("APK 文件不存在或不在更新临时目录")
+        }
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).setData(Uri.parse("package:$packageName")))
+            throw IllegalStateException("请允许本应用安装未知应用后重试")
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
     }
 }

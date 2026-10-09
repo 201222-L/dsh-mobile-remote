@@ -1,4 +1,5 @@
 // 首页：欢迎 + 最近会话 + 新建会话
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../l10n.dart';
 import '../toast.dart';
@@ -7,6 +8,8 @@ import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../fmt.dart';
+import '../update_core.dart';
+import '../update_flow.dart';
 import '../widgets/session_indicator.dart';
 import 'chat_screen.dart';
 import 'sheets.dart';
@@ -105,6 +108,19 @@ class _HomeScreenState extends State<HomeScreen>
 
     return Column(
       children: [
+        // 3.0.0+8 自动更新：启动静默检查命中后显示的「有新版本」横幅
+        if (store.updateCandidate != null)
+          _UpdateBanner(
+            candidate: store.updateCandidate!,
+            onUpdate: () {
+              final c = store.updateCandidate;
+              if (c != null) {
+                // 取消/失败保留横幅（US22：直到更新或版本变更才消失）
+                unawaited(runUpdateFlow(context, store, c, onInstalled: store.clearUpdateCandidate));
+              }
+            },
+            onDismiss: () => store.clearUpdateCandidate(),
+          ),
         Expanded(
           // 下拉刷新：探测 → 自愈（轮换地址/重建连接）→ 拉数据；仅失败时提示
           child: RefreshIndicator(
@@ -291,6 +307,62 @@ class _SessionRow extends StatelessWidget {
               ),
             ),
             Icon(Icons.chevron_right, size: 18, color: ink3),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 3.0.0+8：自动更新「有新版本」横幅（顶部单行，可更新/可关闭）。
+class _UpdateBanner extends StatelessWidget {
+  final UpdateCandidate candidate;
+  final VoidCallback onUpdate;
+  final VoidCallback onDismiss;
+  const _UpdateBanner({required this.candidate, required this.onUpdate, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final ink2 = DshColors.ink2(context);
+    final line = DshColors.line(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: DshColors.brandSoft(context),
+          border: Border.all(color: line),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.system_update_alt, size: 18, color: Color(0xFF426EFE)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                L10n.t('发现新版本 v${candidate.version}（${candidate.source}）', 'New version v${candidate.version} (${candidate.source})'),
+                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: ink2),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: onUpdate,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 26),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(L10n.t('更新', 'Update'), style: TextStyle(fontSize: 12, color: brand)),
+            ),
+            GestureDetector(
+              onTap: onDismiss,
+              child: const Padding(
+                padding: EdgeInsets.all(4),
+                child: Icon(Icons.close, size: 15, color: Color(0xFF5C6470)),
+              ),
+            ),
           ],
         ),
       ),

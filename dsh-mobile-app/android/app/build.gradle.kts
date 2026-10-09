@@ -50,7 +50,16 @@ android {
                 // storeFile 相对 android/ 项目根（key.properties 里写 app/dsh-release.jks）
                 storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["storePassword"] as String
+                // v3.0.0+8 自动更新：签名预检依赖 getPackageArchiveInfo 读 v1 签名，显式开启 v1+v2
+                // （AGP 9 新 DSL 属性名；旧名 v1/v2SigningEnabled 已移除）
+                enableV1Signing = true
+                enableV2Signing = true
             }
+        }
+        // debug 回退签名同样带 v1（自用分发的 APK 也能被更新签名预检读取）
+        getByName("debug").apply {
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 

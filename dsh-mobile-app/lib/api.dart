@@ -425,6 +425,12 @@ class Api implements GitReadApi {
     await postJson('/api/session-config', {'sessionId': sessionId, ...patch});
   }
 
+  /// 自动更新（主机源）：读取 updateDir 的 manifest。端点 503/404 会抛 ApiException（error code 可供提示）。
+  Future<Map<String, dynamic>> updateManifest() async {
+    final d = await getJson('/api/update/manifest');
+    return (d['manifest'] as Map<String, dynamic>?) ?? const {};
+  }
+
   // ── v2.6：模型提供商（与 PC 端 设置→模型 同一配置通道） ──
   /// 提供商列表（含 dormant 未激活项、baseURL、密钥状态）。
   Future<List<Map<String, dynamic>>> llmProviders() async {

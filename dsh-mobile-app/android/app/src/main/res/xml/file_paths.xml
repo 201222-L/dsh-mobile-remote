@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自动更新（v3.1）：FileProvider 暴露下载的 APK（应用私有临时目录下的 dsh-update-*.apk） -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="update" path="dsh-update/"/>
+</paths>
