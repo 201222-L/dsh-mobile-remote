@@ -103,10 +103,17 @@ function createHarness({ agents, goals, workspaceRegistry, frames = [] } = {}) {
 			rpcDispatch.push({ endpoint, args: payload?.args });
 			return { ok: true, value: undefined };
 		},
-		async openWireStream() {
+		// v3.1.6(issue #19)：必须接收取消信号并**保持流打开**。真实的 $events 流不会自行结束；
+		// 原夹具 yield 完帧就结束，插件会（正确地）按"断开"处理并进入退避重连——那会让
+		// 测试挂着定时器不结束。此处按真实语义：帧发完后一直等到 signal 中止。
+		async openWireStream(endpoint, payload, signal) {
 			return (async function* frames_() {
 				yield { type: "ready", clientId: "c-1" };
 				for (const frame of frames) yield frame;
+				await new Promise((resolve) => {
+					if (!signal || signal.aborted) return resolve();
+					signal.addEventListener("abort", () => resolve(), { once: true });
+				});
 			})();
 		},
 	});
