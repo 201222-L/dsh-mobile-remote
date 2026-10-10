@@ -134,6 +134,8 @@ function createHarness({ records, liveSessions = [], query, noQuery = false, age
 		route: routes.find((route) => route.path === "/m/api").handler,
 		/** 投递一条实时会话事件（走插件真实的 session/event 订阅路径）。 */
 		emit(sessionId, event) { onSessionEvent?.({ id: sessionId }, event); },
+		/** 追加/替换一个内核服务：issue #21 的目录用例用它注入 `subagents`。 */
+		provide(name, value) { provided.set(name, value); },
 		clean() { dispose?.(); },
 	};
 }
@@ -542,24 +544,29 @@ test("会话列表：模型 / reasoning effort 选择不改变排序（F-38 补�
 	}
 });
 
-test("/subagents：父 agent 活跃时走内核 RPC（既有行为不变）", async () => {
-	// 伪内核网关：确定性地断言「活跃父走 subagent.list RPC」而非持久化枚举
+test("/subagents：目录来源优先用 ctx.subagents.listChildren，不再调用已删除的 RPC", async () => {
+	// 宿主 0.2.0 删除了 `subagents/list` Remote 端点（内核树内 0 命中），旧实现走该 RPC 会报
+	// "no active Remote method exports this endpoint"。现改为读宿主的**持久目录**。
+	// 这里替换掉原先断言"活跃父必须走内核 RPC"的用例——那条钉住的正是本次要删掉的行为。
 	const rpcCalls = [];
 	const harness = createHarness({
 		records: [record("session-parent")],
 		liveSessions: [],
-		agents: {
-			get: (id) => (id === "session-parent" ? { id, session: { id } } : undefined),
-			list: () => [],
-		},
+		agents: { get: (id) => (id === "session-parent" ? { id, session: { id } } : undefined), list: () => [] },
 		gateway: {
 			invokeRpc: async (endpoint, { args }) => {
 				rpcCalls.push({ endpoint, args });
-				return {
-					ok: true,
-					value: { parentAvailable: true, entries: [{ id: "live-child", kind: "child", activity: "running", label: "活跃子代理" }] },
-				};
+				return { ok: true, value: {} };
 			},
+		},
+	});
+	harness.provide("subagents", {
+		listChildren: async (parentSessionId) => {
+			assert.equal(parentSessionId, "session-parent", "目录按父会话查询");
+			return [
+				{ id: "cold-child", createdAt: 1000, mode: "continuable", label: "Review storage" },
+				{ id: "live-child", createdAt: 2000, mode: "continuable", label: "活跃子代理" },
+			];
 		},
 	});
 	try {
@@ -567,13 +574,11 @@ test("/subagents：父 agent 活跃时走内核 RPC（既有行为不变）", as
 		assert.equal(status, 200);
 		assert.equal(body.parentAvailable, true);
 		assert.deepEqual(body.subagents, [
-			{ id: "live-child", kind: "child", status: "running", title: "活跃子代理" },
-		]);
-		assert.equal(rpcCalls.length, 1, "活跃父必须走内核 RPC");
-		// subagent.list 的适配器直接传 { parentSessionId }（不经 request 包装，见 RPC_PAYLOAD_ADAPTER）
-		assert.deepEqual(rpcCalls[0].args, { parentSessionId: "session-parent" },
-			"RPC payload 形状不得改变（subagent.list ← parentSessionId）");
-		assert.equal(rpcCalls[0].endpoint, "subagents/list", "RPC 端点名按内核真名映射");
+			{ id: "live-child", kind: "child", status: "inactive", title: "活跃子代理", createdAt: 2000 },
+			{ id: "cold-child", kind: "child", status: "inactive", title: "Review storage", createdAt: 1000 },
+		], "目录条目按 createdAt 降序；标题取 label；无活 agent 时回落 inactive");
+		assert.equal(body.catalogDegraded, undefined, "目录可用时不得标注降级");
+		assert.equal(rpcCalls.some((c) => c.endpoint === "subagents/list"), false, "不得调用宿主已删除的 subagents/list 端点");
 	} finally {
 		harness.clean();
 	}
