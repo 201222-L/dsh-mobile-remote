@@ -70,6 +70,14 @@ void main() {
 
       await tester.tap(find.byTooltip('上移 工作区'));
       await tester.pumpAndSettle();
+      expect(
+        tester
+            .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+            .map((tile) => (tile.title! as Text).data)
+            .toList(),
+        ['分支', '工作区', '图谱'],
+        reason: '设置弹窗应立即按已选标签顺序展示',
+      );
       await tester.tap(find.text('保存'));
       await tester.pumpAndSettle();
       expect(store.gitTabs, ['branches', 'worktree', 'graph']);
@@ -79,4 +87,24 @@ void main() {
       expect(find.byTooltip('上移 工作区'), findsOneWidget);
     },
   );
+
+  testWidgets('keeps unselected tabs below selected tabs', (tester) async {
+    final store = await makeStore();
+    await openPreferenceDialog(tester, store);
+
+    await tester.tap(find.byTooltip('上移 工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('图谱').last);
+    await tester.pumpAndSettle();
+
+    final rows = tester
+        .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+        .toList();
+    expect(rows.map((tile) => (tile.title! as Text).data).toList(), [
+      '分支',
+      '工作区',
+      '图谱',
+    ]);
+    expect(rows.last.value, isFalse);
+  });
 }

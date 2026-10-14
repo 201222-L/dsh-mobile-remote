@@ -244,7 +244,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              for (final id in AppStore.gitTabIds)
+              for (final id in [
+                ...selected,
+                ...AppStore.gitTabIds.where((id) => !selected.contains(id)),
+              ])
                 Builder(
                   builder: (context) {
                     final isSelected = selected.contains(id);
