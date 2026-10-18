@@ -154,7 +154,8 @@ function createHarness({ generation, frames = [], endAfterFrames = false, extraS
 		async dispatchRpc() { return { ok: true, value: undefined }; },
 	};
 	if (modern) {
-		// 0.2.0 真实签名：signal 是第 5 个形参
+		// 0.2.0 真实签名：signal 是第 5 个形参；网关自带 operator Peer 兜底（issue #34）
+		gateway.operatorPeer = () => ({ principal: { kind: "owner" }, interactions: "answer", signal: new AbortController().signal });
 		gateway.openWireStream = async function openWireStream(endpoint, payload, uplink, peer, signal, control) {
 			seen.wireStreamArgs.push({ endpoint, payload, uplink, peer, signal, control });
 			return emitFrames(signal);
@@ -412,13 +413,15 @@ test("诊断：两代都报告宿主能力三态与实际代际选择", async ()
 			assert.equal(res.status, 200);
 			const caps = res.body.checks?.hostCapabilities;
 			assert.ok(caps && typeof caps === "object", `${generation} 应报告 hostCapabilities`);
-			for (const key of ["jobs.callerShape", "jobs.eventsApi", "settings.read", "gateway.wireStream", "permissionPresets.apply", "workspaceRegistry.stateWrite"]) {
+			for (const key of ["jobs.callerShape", "jobs.eventsApi", "settings.read", "gateway.wireStream", "gateway.eventsPeer", "permissionPresets.apply", "workspaceRegistry.stateWrite"]) {
 				assert.equal(caps[key], "ok", `${generation} 的 ${key} 应为 ok（两代都合法）`);
 			}
 			const gen = res.body.checks?.hostGeneration;
 			assert.equal(gen.jobsCaller, generation === "0.2.0" ? "sessionId" : "agent");
 			assert.equal(gen.settingsRead, generation === "0.2.0" ? "describe" : "get");
 			assert.equal(gen.wireStreamArgs, generation === "0.2.0" ? "controlArg" : "legacyArg");
+			// issue #34：旧代 3 参开流不需要 peer（legacy）；0.2.0 靠网关 operatorPeer 兜底
+			assert.equal(gen.eventsPeer, generation === "0.2.0" ? "operatorPeer" : "legacy");
 		} finally { h.clean(); }
 	}
 });

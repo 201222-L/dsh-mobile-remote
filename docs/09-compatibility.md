@@ -10,7 +10,7 @@
 
 | 组件 | 要求 |
 |---|---|
-| 桌面端 DSH（Harness） | **v3.1.6 起同时适配两代宿主 API：`0.1.x` 与 `0.2.x`**（见 §2.5）。机制基线：`0.1.2-rc.1` 服务包 = DSH Desktop v2.0.5（approval/request 瀑布 answerer + `$events` 远程事件双端审批 + RPC 网关，见 §2）；更早的 `0.1.1-rc.2` 基线 = v2.0.2 起适配。**不按宿主版本号硬拦截**，按能力探测适配（ADR 0017） |
+| 桌面端 DSH（Harness） | **v3.1.6 起同时适配两代宿主 API：`0.1.x` 与 `0.2.x`**（见 §2.5）；**`0.2.1` 起进程内网关调用强制 Peer，由 §2.6 适配（issue #34）**。机制基线：`0.1.2-rc.1` 服务包 = DSH Desktop v2.0.5（approval/request 瀑布 answerer + `$events` 远程事件双端审批 + RPC 网关，见 §2）；更早的 `0.1.1-rc.2` 基线 = v2.0.2 起适配。**不按宿主版本号硬拦截**，按能力探测适配（ADR 0017） |
 | dsh-mobile-remote 插件 | **v3.0.0 基线；v3.2.0+ 才提供用量与额度**；`/m/api/diagnostics` 可自检 |
 | 手机 App（Android） | v3.0.0 基线（用量与额度需 v3.2.0+；与插件同版本 = 完美配对）；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」；Android 7.0+、64 位机型 |
 | 字段级兼容（v3.1.0 候选） | `reasoning`/`title` 为纯增量字段：新插件+旧 App 无影响（忽略新字段）；新 App+旧插件自动回退（不渲染折叠块 / 悬浮球标题兜底短码）——任意组合均可使用 |
@@ -25,8 +25,8 @@
 
 **v3.1.6+ 新增两项宿主能力自检**（ADR 0017）：
 
-- `checks.hostCapabilities`：逐项给出三态——`ok` / `drift` / `missing`。`drift` 是**能力语义漂移**（服务在、调用不报错，但成员形状不是插件认识的样子），这正是 0.2.0 四处变更的形态，旧的两分法看不见它们。
-- `checks.hostGeneration`：插件**实际走了哪条代际路径**（`jobsCaller` / `settingsRead` / `wireStreamArgs`），排查"为什么同一功能在两台机器上表现不同"时先看这里。
+- `checks.hostCapabilities`：逐项给出三态——`ok` / `drift` / `missing`。`drift` 是**能力语义漂移**（服务在、调用不报错，但成员形状不是插件认识的样子），这正是 0.2.0 四处变更与 0.2.1 peer 收紧的形态，旧的两分法看不见它们。**`gateway.eventsPeer`（issue #34）** 专门覆盖"网关入口都在、但进程内 Peer 来源缺失"这一种漂移，原因码为 `gateway-peer-source-missing`。
+- `checks.hostGeneration`：插件**实际走了哪条代际路径**（`jobsCaller` / `settingsRead` / `wireStreamArgs` / `eventsPeer`），排查"为什么同一功能在两台机器上表现不同"时先看这里。`eventsPeer` 取值：`createPeer`（0.2.1+）/ `operatorPeer`（0.2.0 网关兜底）/ `legacy`（旧代 3 参开流不需要 peer）/ `none`（必失败）。
 
 `services.apiProxy` / `checks.respondBridge` / `checks.frameBridge` **已随 v3.1.6 删除**：该服务自 `0.1.2-rc.1` 起就不存在，保留它们只会让人以为有一条可用的旧代降级通道。同样地，`/m/api/respond` 在待办不在本地清单时返回 `404 respond-not-pending`（此前返回 `503` 并归咎于"内核过旧"，属误导——真实原因通常是"另一端已先答"或"已超时"）。
 
@@ -49,7 +49,7 @@
 | `credentials` | DeepSeek 余额查询 | 可选 | 回退环境变量 `DEEPSEEK_API_KEY`；都没有则余额不可用 |
 | `userQuestions` | （间接）问询链路 | 可选 | 无弹窗（同上） |
 | `approval/request`·`user-questions/request` 瀑布（0.1.2-rc.1+） | Agent 作用域 Cordis 瀑布，插件 answerer 应答（0.1.2 移除了 apiProxy 后的新机制） | 软依赖 | 手机弹窗功能不受影响；该机制是问询/审批的**唯一**现行路径 |
-| `typertGateway` `$events` 远程事件（0.1.2-rc.1+，`both` 模式） | 插件进程内 $events 客户端：瀑布经内核转发到网关后与桌面 GUI 同收事件副本、先答生效（issue #9 双端呈现） | 可选（v3.1.3） | `approvalMode: both` 自动降级为 mobile（手机在线独占），日志与诊断 notes 说明 |
+| `typertGateway` `$events` 远程事件（0.1.2-rc.1+，`both` 模式） | 插件进程内 $events 客户端：瀑布经内核转发到网关后与桌面 GUI 同收事件副本、先答生效（issue #9 双端呈现） | 可选（v3.1.3） | `approvalMode: both` 自动降级为 mobile（手机在线独占），日志与诊断 notes 说明；**0.2.1+ 还要求显式进程内 Peer（§2.6）** |
 
 > ⚠ **approvalMode（v3.1.3，issue #9）语义**：`both`（默认）= 桌面 GUI 与手机同时弹卡、任一端先答即生效、另一端自动收卡（对齐 v3.1.1 帧桥体验；仅 0.1.2-rc.1+ 网关可用，旧宿主自动降级 mobile）；`mobile` = 手机在线独占应答（v3.1.2 行为），离线交桌面 GUI；`desktop` = 一律交桌面 GUI（手机不弹卡）。手机在场时待办 120s 无应答 fail-close（`unavailable` / 问询跳过），与 v3.1.2 一致。配置于 `cordis.patch.yml` → mobile-remote 行 `config.approvalMode`，重启生效。
 >
@@ -62,6 +62,7 @@
 | `ctx.on("session/event")` | 消息流/通知聚合/上下文窗口/Conversation timeline | 事件形态随版本演进；未知类型进入通用事件卡，能力缺失时 App 回退摘要模式 |
 | `sessionQuery.readEvent`（可选） | Tool activity 与未知 Visible event 的按需无损详情 | 不存在时回退快照；旧历史详情明确显示不可用，不猜测重建 |
 | `ctx.on("agent/status")` | 状态点（绿/橙） | 同上 |
+| `typertGateway`（`invokeRpc` / `stream` / `openWireStream` / `dispatchRpc`） | 全部内核 RPC 与 `$events` 双端审批通道 | **0.2.1 起必须显式传活 Peer（§2.6）**；漏传/传错时返回 `gateway/internal: …reading 'signal'`，由错误映射转成业务错误码（不再静默） |
 | `session.models` RPC | 模型目录（App 模型选择器） | 失败 → 目录为空，App 隐藏模型胶囊 |
 | `settings.update`（`agent-presets` / `permission` 命名空间） | 默认预设修改 | 与 PC 端同一写入通道；命名空间变更会导致设置失败（App 报错提示） |
 | `session.fork` | 消息分支 | 内核接口变化 → fork 失败提示 |
@@ -95,13 +96,34 @@
 | 任务查询/终止的 caller | **Agent 对象**（实现内部取其 `.id`） | **SessionId 字符串** | `jobs.events.subscribe` 是否存在（两处差异同版发生） | 列表恒返回空（像"确实没有任务"）；终止报"任务属于另一个会话" |
 | 任务事件订阅 | `onJobsChanged` + `onJobDone` 两个回调 | 统一的 `events.subscribe(filter, listener)` | 同上 | 实时推送静默退化为轮询 |
 | 设置读取 | `get(ns)` 返回配置节 | `describe()` 返回描述符数组（取 `value`） | `typeof settings.get === "function"` | 抛出的类型错误被 `try/catch` 吞掉，提供商配置页字段凭空消失 |
-| 事件流打开的参数位次 | `(端点, 载荷, 取消信号)` | `(端点, 载荷, uplink, peer, 取消信号, 控制)` | 形参个数（3 vs 6） | 信号落进 `uplink`、真 signal 为 `undefined`，宿主在 `AbortSignal.any` 处抛错并被重试吞掉 → `approvalMode: both` 的双端呈现**永远不就绪** |
+| 事件流打开的参数位次 | `(端点, 载荷, 取消信号)` | `(端点, 载荷, uplink, peer, 取消信号, 控制)`；**0.2.1 末尾又加 `uplinkWindow`（7 参）** | 形参个数（3 vs ≥5 判 control 位次） | 信号落进 `uplink`、真 signal 为 `undefined`，宿主在 `AbortSignal.any` 处抛错并被重试吞掉 → `approvalMode: both` 的双端呈现**永远不就绪**。peer 从 0.2.1 起必填，见 §2.6 |
 
 **另有一类风险单独处理**：插件依赖的若干宿主成员是 **TS-private**（无契约保证）——权限预设的 `names`/`presets`/`apply`，以及工作区注册表的 `enqueueOperation`/`requireState`/`setState`（后者此前**完全无守卫**）。v3.1.6 起这些成员缺失时**显式报错**（503）或显式降级，不再让 `TypeError` 在深处被吞成"按了没反应"。**不迁移**到公开 API——那是行为改变，与本次兼容修复分开评估。
 
 **`$events` 流断开改为退避重连**：原实现"就绪后一旦断开即永久放弃"，使 `approvalMode: both` 在首次断流后永久退化为手机独占，直到重启宿主——而桌面 GUI 每次开关浏览器都会断流。现语义：**就绪前**失败 = 事件源尚未注册（有界重试 ≈15s）；**就绪后**断开 = 瞬时断开（3s 起退避、上限 60s、无限重连，仅插件卸载才停止）。重新就绪后退避复位。
 
 **验证范围（如实标注）**：只对 **`0.2.x` 做真实宿主端到端验证**（本机宿主即 0.2.x）。`0.1.x` 那条路径的真实宿主验不到，**靠两代假宿主夹具保护**（`test/host-compat-020.test.mjs`：按真实签名复刻两代差异，让两条分支都被实际执行到）。因此 0.1.x 一侧属于"夹具已验证、真实宿主未验证"。
+
+---
+
+### 2.6 `0.2.1`：进程内网关调用强制 Peer（issue #34）
+
+宿主 `0.2.1-rc.2` 把 `0.2.0` 的"peer 可省"收紧为"**每个进程内网关调用都必须显式传一个活着的 Peer**"。与 §2.5 同类：**服务在、成员在、调用不报参数错，但内部先解引用 `peer.signal`**——漏传只会得到 `gateway/internal: Cannot read properties of undefined (reading 'signal')`，或在插件的重试循环里被吞成"通道不可用"。插件按能力探测（不按版本号）选择 peer 来源：
+
+| 差异 | `0.2.0` | `0.2.1-rc.2` | 插件如何判别 | 传错的后果 |
+|---|---|---|---|---|
+| 进程内 Peer 来源 | 网关自带 `operatorPeer()` 兜底（`connection.operator` 单例） | **兜底删除**；改由 `ctx.connection.createPeer({ principal, interactions })` 现造 | `typeof connection.createPeer === "function"` → `createPeer`；否则看 `gateway.operatorPeer` → `operatorPeer`；都没有 → `none` | unary RPC 恒返回 `gateway/internal`；`$events` 永不就绪、`approvalMode: both` 静默降级 mobile |
+| 网关四入口的 peer 实参 | 可省 | `invokeRpc(e,p,s,**peer**)` / `stream({…,**peer**})` / `openWireStream(e,p,uplink,**peer**,s,…)` / `dispatchRpc(e,p,s,**peer**)` 均要求必填 | 同上一行（`hostPeerSource`） | 同上 |
+| `$events/result` 结算身份 | peer 不参与 | `assertPeerLive` + `requireInteractions` + owner + **`client.peer !== peer` 拒绝** | 插件把**开流用的同一个 Peer 实例**用于结算 | 结算被 `gateway/interactions-forbidden` 拒绝，手机答了却"没生效" |
+
+**插件做法（v3.2.1 基线起，本分支实现）**：
+
+- 插件级**单例** Peer：首次真正调用网关时惰性创建（`owner` + `interactions: "answer"`），跨 RPC 与 `$events` 开流共用；**开流与结算同一个实例**（宿主按 Peer 身份匹配），插件卸载时 `dispose()`。
+- `connection` 服务可能晚于插件挂载（0.2.1 实测首次 `ctx.get("connection")` 为 `undefined`）——首次取不到就不缓存，交给既有 `$events` 有界重试/下次调用再建。
+- `0.2.0`/`0.1.x` 不改变行为：没有 `createPeer` 时继续传 `undefined`，由网关兜底 / 旧代 3 参开流不需要 peer。
+- 诊断显式化：`checks.hostCapabilities["gateway.eventsPeer"]`（`ok`/`drift`）+ `checks.hostGeneration.eventsPeer`（`createPeer`/`operatorPeer`/`legacy`/`none`），`drift` 时附原因码 `gateway-peer-source-missing`；`approvalMode: both` 的降级文案不再归咎"宿主版本过低"。
+
+**验证范围（如实标注）**：`0.2.1-rc.2` 路径已在**隔离宿主**（`HOME`/`DSH_HOME` 独立、`--profile compat`、端口 3099）完成端到端验证：`checks.remoteEvents=true`、`POST /m/api/defaults {"permissionPreset":…}` 返回 `200 {"ok":true}`；三代的实参位次与 peer 同源/释放由 `test/host-compat-021.test.mjs` 夹具钉住；`0.2.0`/`0.1.x` 回归由既有 `test/host-compat-020.test.mjs` 保护（其 0.2.0 夹具补了真实网关的 `operatorPeer`）。
 
 ---
 
@@ -135,7 +157,7 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 
 | # | 问题 | 影响 | 状态/缓解 |
 |---|---|---|---|
-| 1 | 宿主 API 存在**静默语义漂移**（服务在、不报错、行为已变） | 升级宿主后功能"没反应"，且旧的两分法探测看不见 | 能力三态报告（`checks.hostCapabilities` / `checks.hostGeneration`）+ 两代假宿主夹具；见 §2.5 |
+| 1 | 宿主 API 存在**静默语义漂移**（服务在、不报错、行为已变） | 升级宿主后功能"没反应"，且旧的两分法探测看不见 | 能力三态报告（`checks.hostCapabilities` / `checks.hostGeneration`）+ 两代假宿主夹具；见 §2.5、§2.6 |
 | 2 | 自定义权限预设名在 App 显示「…」 | 纯展示 | 后续拉取预设清单 |
 | 3 | 国产 ROM 杀后台导致通知延迟（App 内角标） | 通知不及时 | 推送桥不受影响；App 重连后补拉 |
 | 4 | Impeller 在极老 GPU 的潜在渲染问题（未实测） | 少数旧机可能花屏 | manifest 一行回退 Skia |
@@ -148,6 +170,7 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 | 11 | 与 dsh-web 移动端远程（`@linxin666/dsh-remote-web-ui`）同装冲突 | 两者抢 `/m` 路由前缀（对方写死不可配），可能异常/崩溃 | 本插件 `path` 改 `/mr` 等非 `/m` 单段即可共存（App 自动适配，无需重装）；详见 FAQ |
 | 12 | 手机在线时桌面端不弹审批/问询框（v3.1.2，issue #9） | 桌面用户无法在 PC 审批/应答（只能手机答或 120s fail-close） | **v3.1.3 修复**：默认 `approvalMode: both` 双端同卡、先答生效（0.1.2-rc.1+）；旧宿主/历史版本可用 `approvalMode: mobile \| desktop` 明确策略 |
 | 13 | `approvalMode: both` 依赖内核 `$events` 通道 | 旧宿主（0.1.1-rc.2 及更早）无法双端同卡 | 自动降级 mobile 并写日志；诊断 `notes` 可查 |
+| 14 | `0.2.1-rc.2` 起进程内网关调用强制显式 Peer（§2.6） | 未适配的插件版本上：RPC 功能报 `gateway/internal`，`$events` 双端审批静默降级 | 已按能力探测适配（`connection.createPeer`）；诊断 `gateway.eventsPeer` 可归因；旧代行为不变 |
 
 ## 6. 内置常量与"写死"数据速查
 

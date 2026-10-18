@@ -507,6 +507,17 @@
 
 **响应**：`200 { "ok": true }`；失败 `400 { "error": "update-failed", "detail": "<原因>" }`
 
+### 6.11b GET /m/api/diagnostics（宿主能力自检字段）
+
+环境诊断在 `checks` 下提供宿主兼容自检（ADR 0017，**纯增量字段，旧 App 忽略即可**）：
+
+- `checks.hostCapabilities`：逐项三态 `ok` / `drift` / `missing`。`drift` = 能力语义漂移（服务在、调用不报错、成员形状或实参语义已变）。包含 `jobs.callerShape`、`jobs.eventsApi`、`settings.read`、`gateway.wireStream`、`gateway.eventsPeer`（issue #34，0.2.1 的进程内 Peer 来源）、`permissionPresets.apply`、`permissionPresets.catalog`、`workspaceRegistry.stateWrite`。
+- `checks.hostCapabilityReasons`：仅对 `drift` 项给出的允许清单原因码（如 `settings.read` 的 `settings-get-threw`；`gateway.eventsPeer` 的 `gateway-peer-source-missing`）。
+- `checks.hostGeneration`：插件实际走到的代际路径——`jobsCaller`（`sessionId` / `agent`）、`settingsRead`（`describe` / `get`）、`wireStreamArgs`（`controlArg` / `legacyArg`）、`eventsPeer`（`createPeer` / `operatorPeer` / `legacy` / `none`）。
+- `checks.remoteEvents` / `checks.approvalMode`：`$events` 双端审批通道是否就绪与实际生效的审批呈现策略。
+
+详见 `docs/09-compatibility.md` §2.5/§2.6。
+
 ### 6.12 错误码补全
 | HTTP | error 值 | 场景 |
 |---|---|---|
