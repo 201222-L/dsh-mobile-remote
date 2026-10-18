@@ -132,6 +132,15 @@ function createHarness({ generation, withConnection = true, frames = [] } = {}) 
 	// 宿主侧的"当前 $events 流的 peer"——dispatchRpc 用它复刻 `client.peer !== peer` 校验
 	let streamPeer = null;
 	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	/** 轮询等待条件成立（比固定 sleep 稳；predicate 可为 async）。 */
+	const until = async (predicate, timeoutMs = 3000, stepMs = 15) => {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			if (await predicate()) return true;
+			if (Date.now() >= deadline) return false;
+			await wait(stepMs);
+		}
+	};
 
 	// 0.2.1 才有 connection.createPeer；旧代真实宿主没有，夹具不得凭空提供
 	const connection = generation === "0.2.1" && withConnection
@@ -292,7 +301,7 @@ function createHarness({ generation, withConnection = true, frames = [] } = {}) 
 	const dispose = apply(ctx, CONFIG);
 	return {
 		route: routes.find((route) => route.path === "/m/api").handler,
-		seen, logs, provided, wait,
+		seen, logs, provided, wait, until,
 		clean() {
 			// 模拟 Cordis 卸载：先跑 effect 清理（Peer dispose 等），再调 apply 的返回值
 			for (const disposer of effectDisposers.splice(0)) {
@@ -329,8 +338,7 @@ test("createInProcessPeer：只认 createPeer；旧代返回 undefined（让网�
 test("0.2.1：$events 开流收到 connection.createPeer 造的活 Peer（第 4 实参）", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
-		assert.ok(h.seen.wire, "approvalMode=both 应尝试开 $events 流");
+		assert.ok(await h.until(() => h.seen.wire !== null), "approvalMode=both 应尝试开 $events 流");
 		assert.equal(h.seen.wire.endpoint, "$events");
 		assert.equal(h.seen.wire.uplink, undefined, "第 3 位必须仍是 uplink");
 		const peer = h.seen.wire.peer;
@@ -346,7 +354,7 @@ test("0.2.1：$events 开流收到 connection.createPeer 造的活 Peer（第 4 
 test("0.2.1：$events 就绪后 remoteEvents=true（双端审批通道真的可用）", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
+		assert.ok(await h.until(() => h.seen.wire !== null && h.seen.wire.peer !== undefined));
 		const res = await call(h.route, { url: "/m/api/diagnostics" });
 		assert.equal(res.status, 200);
 		assert.equal(res.body.checks.remoteEvents, true);
@@ -357,7 +365,7 @@ test("0.2.1：$events 就绪后 remoteEvents=true（双端审批通道真的可�
 test("0.2.1：RPC 调用带同一个 Peer，且与 $events 开流同源（结算身份匹配的前提）", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
+		assert.ok(await h.until(() => h.seen.wire !== null));
 		const res = await call(h.route, { url: "/m/api/defaults", method: "POST", body: { permissionPreset: "workspace-write" } });
 		assert.equal(res.status, 200, `0.2.1 上 default 写入应成功，实际：${JSON.stringify(res.body)}`);
 		assert.equal(h.seen.invokeCalls.length, 1);
@@ -371,10 +379,11 @@ test("0.2.1：RPC 调用带同一个 Peer，且与 $events 开流同源（结算
 test("0.2.1：基线流 stream() 的 request.peer 也必须是同一个 Peer", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
+		assert.ok(await h.until(() => h.seen.wire !== null));
 		const res = await call(h.route, { url: "/m/api/session-config?sessionId=session-A" });
 		assert.equal(res.status, 200, `session-config 应成功，实际：${JSON.stringify(res.body)}`);
 		assert.ok(h.seen.streamRequest, "session.control 走 stream 基线流");
+		assert.ok(h.seen.streamRequest.peer, "request.peer 必填：漏传会被宿主 assertPeerLive 拒绝（readSessionConfig 吞错，200 也看不见）");
 		assert.equal(h.seen.streamRequest.peer, h.seen.wire.peer);
 	} finally { h.clean(); }
 });
@@ -414,13 +423,44 @@ test("0.2.1：取不到 peer 来源时显式报 drift（不再把必失败报成
 	} finally { h.clean(); }
 });
 
+test("0.2.1：$events/result 结算必须走通，且用开流那一个 Peer（宿主按 client.peer 匹配）", async () => {
+	const h = createHarness({
+		generation: "0.2.1",
+		frames: [{
+			type: "waterfall",
+			eventId: "evt-1",
+			event: "approval/request",
+			agentId: "session-A",
+			request: { callId: "call-1", toolName: "Bash", reason: "run tests" },
+		}],
+	});
+	try {
+		// 等到网关把 waterfall 转成待办（诊断的 pendingApprovals 即该条目）
+		assert.ok(await h.until(async () => {
+			const probe = await call(h.route, { url: "/m/api/diagnostics" });
+			return (probe.body.checks?.pendingApprovals ?? 0) > 0;
+		}), "waterfall 帧应生成待办条目");
+		const res = await call(h.route, {
+			url: "/m/api/respond",
+			method: "POST",
+			body: { kind: "approval", approvalId: "session-A:call-1", rpcId: "evt-1", sessionId: "session-A", outcome: "allowed-once" },
+		});
+		assert.equal(res.status, 200);
+		assert.equal(h.seen.dispatchCalls.length, 1, "结算必须走 $events/result，且只走一次");
+		assert.equal(h.seen.dispatchCalls[0].endpoint, "$events/result");
+		assert.equal(h.seen.dispatchCalls[0].payload.args.clientId, "client-1");
+		assert.equal(h.seen.dispatchCalls[0].payload.args.outcome.kind, "result");
+		assert.ok(h.seen.dispatchPeer, "dispatchRpc 第 4 实参必须是活 Peer");
+		assert.equal(h.seen.dispatchPeer, h.seen.wire.peer, "结算与开流必须同一个 Peer 实例（否则宿主以 client.peer !== peer 拒绝）");
+	} finally { h.clean(); }
+});
+
 // ───────────────────── 3. 0.2.0（回归：不得被本次适配改坏） ─────────────────────
 
 test("0.2.0：仍不传 peer（网关自带 operatorPeer 兜底），并如实报告该代际", async () => {
 	const h = createHarness({ generation: "0.2.0" });
 	try {
-		await h.wait(40);
-		assert.ok(h.seen.wire, "0.2.0 也应开 $events 流");
+		assert.ok(await h.until(() => h.seen.wire !== null), "0.2.0 也应开 $events 流");
 		assert.equal(h.seen.wire.peer, undefined, "0.2.0 没有 createPeer，必须保持旧行为（传 undefined）");
 		assert.ok(h.seen.wireSignal instanceof AbortSignal);
 		const res = await call(h.route, { url: "/m/api/diagnostics" });
@@ -438,8 +478,7 @@ test("0.2.0：仍不传 peer（网关自带 operatorPeer 兜底），并如实�
 test("0.1.5：仍走 3 参 openWireStream，不引入 peer 语义", async () => {
 	const h = createHarness({ generation: "0.1.5" });
 	try {
-		await h.wait(40);
-		assert.ok(h.seen.wire, "0.1.5 也应开 $events 流");
+		assert.ok(await h.until(() => h.seen.wire !== null), "0.1.5 也应开 $events 流");
 		assert.ok(h.seen.wire.signal instanceof AbortSignal, "signal 是第 3 个形参");
 		assert.equal(h.seen.wire.peer, undefined);
 		const res = await call(h.route, { url: "/m/api/diagnostics" });
@@ -454,7 +493,7 @@ test("0.1.5：仍走 3 参 openWireStream，不引入 peer 语义", async () => 
 test("0.2.1：缓存的 Peer 被外部 dispose（connection 服务重启）后自动重建，不永久失效", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
+		assert.ok(await h.until(() => h.seen.peers.length === 1));
 		const first = h.seen.peers[0];
 		assert.ok(first, "首次调用应已创建 Peer");
 		await first.dispose(); // 模拟 connection 作用域销毁：Peer 的 signal 被 abort
@@ -470,8 +509,7 @@ test("0.2.1：缓存的 Peer 被外部 dispose（connection 服务重启）后�
 test("插件卸载时释放进程内 Peer（不随重连/重载累积）", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
-		await h.wait(40);
-		assert.equal(h.seen.peers.length, 1);
+		assert.ok(await h.until(() => h.seen.peers.length === 1));
 		const peer = h.seen.peers[0];
 		assert.equal(peer.disposed, false);
 		h.clean();

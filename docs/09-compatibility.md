@@ -26,7 +26,7 @@
 **v3.1.6+ 新增两项宿主能力自检**（ADR 0017）：
 
 - `checks.hostCapabilities`：逐项给出三态——`ok` / `drift` / `missing`。`drift` 是**能力语义漂移**（服务在、调用不报错，但成员形状不是插件认识的样子），这正是 0.2.0 四处变更与 0.2.1 peer 收紧的形态，旧的两分法看不见它们。**`gateway.eventsPeer`（issue #34）** 专门覆盖"网关入口都在、但进程内 Peer 来源缺失"这一种漂移，原因码为 `gateway-peer-source-missing`。
-- `checks.hostGeneration`：插件**实际走了哪条代际路径**（`jobsCaller` / `settingsRead` / `wireStreamArgs` / `eventsPeer`），排查"为什么同一功能在两台机器上表现不同"时先看这里。`eventsPeer` 取值：`createPeer`（0.2.1+）/ `operatorPeer`（0.2.0 网关兜底）/ `legacy`（旧代 3 参开流不需要 peer）/ `none`（必失败）。
+- `checks.hostGeneration`：插件**实际走了哪条代际路径**（`jobsCaller` / `settingsRead` / `wireStreamArgs` / `eventsPeer`），排查"为什么同一功能在两台机器上表现不同"时先看这里。`eventsPeer` 取值：`createPeer`（0.2.1+）/ `operatorPeer`（0.2.0 网关兜底）/ `legacy`（旧代 3 参开流不需要 peer）/ `none`（必失败）/ `unknown`（网关服务缺失，无法判定）。
 
 `services.apiProxy` / `checks.respondBridge` / `checks.frameBridge` **已随 v3.1.6 删除**：该服务自 `0.1.2-rc.1` 起就不存在，保留它们只会让人以为有一条可用的旧代降级通道。同样地，`/m/api/respond` 在待办不在本地清单时返回 `404 respond-not-pending`（此前返回 `503` 并归咎于"内核过旧"，属误导——真实原因通常是"另一端已先答"或"已超时"）。
 
@@ -116,12 +116,12 @@
 | 网关四入口的 peer 实参 | 可省 | `invokeRpc(e,p,s,**peer**)` / `stream({…,**peer**})` / `openWireStream(e,p,uplink,**peer**,s,…)` / `dispatchRpc(e,p,s,**peer**)` 均要求必填 | 同上一行（`hostPeerSource`） | 同上 |
 | `$events/result` 结算身份 | peer 不参与 | `assertPeerLive` + `requireInteractions` + owner + **`client.peer !== peer` 拒绝** | 插件把**开流用的同一个 Peer 实例**用于结算 | 结算被 `gateway/interactions-forbidden` 拒绝，手机答了却"没生效" |
 
-**插件做法（v3.2.1 基线起，本分支实现）**：
+**插件做法（issue #34 实现）**：
 
 - 插件级**单例** Peer：首次真正调用网关时惰性创建（`owner` + `interactions: "answer"`），跨 RPC 与 `$events` 开流共用；**开流与结算同一个实例**（宿主按 Peer 身份匹配），插件卸载时 `dispose()`。
 - `connection` 服务可能晚于插件挂载（0.2.1 实测首次 `ctx.get("connection")` 为 `undefined`）——首次取不到就不缓存，交给既有 `$events` 有界重试/下次调用再建。
 - `0.2.0`/`0.1.x` 不改变行为：没有 `createPeer` 时继续传 `undefined`，由网关兜底 / 旧代 3 参开流不需要 peer。
-- 诊断显式化：`checks.hostCapabilities["gateway.eventsPeer"]`（`ok`/`drift`）+ `checks.hostGeneration.eventsPeer`（`createPeer`/`operatorPeer`/`legacy`/`none`），`drift` 时附原因码 `gateway-peer-source-missing`；`approvalMode: both` 的降级文案不再归咎"宿主版本过低"。
+- 诊断显式化：`checks.hostCapabilities["gateway.eventsPeer"]`（`ok`/`drift`）+ `checks.hostGeneration.eventsPeer`（`createPeer`/`operatorPeer`/`legacy`/`none`/`unknown`），`drift` 时附原因码 `gateway-peer-source-missing`；`approvalMode: both` 的降级文案不再归咎"宿主版本过低"。
 
 **验证范围（如实标注）**：`0.2.1-rc.2` 路径已在**隔离宿主**（`HOME`/`DSH_HOME` 独立、`--profile compat`、端口 3099）完成端到端验证：`checks.remoteEvents=true`、`POST /m/api/defaults {"permissionPreset":…}` 返回 `200 {"ok":true}`；三代的实参位次与 peer 同源/释放由 `test/host-compat-021.test.mjs` 夹具钉住；`0.2.0`/`0.1.x` 回归由既有 `test/host-compat-020.test.mjs` 保护（其 0.2.0 夹具补了真实网关的 `operatorPeer`）。
 
