@@ -451,6 +451,22 @@ test("0.1.5：仍走 3 参 openWireStream，不引入 peer 语义", async () => 
 
 // ───────────────────── 5. Peer 生命周期 ─────────────────────
 
+test("0.2.1：缓存的 Peer 被外部 dispose（connection 服务重启）后自动重建，不永久失效", async () => {
+	const h = createHarness({ generation: "0.2.1" });
+	try {
+		await h.wait(40);
+		const first = h.seen.peers[0];
+		assert.ok(first, "首次调用应已创建 Peer");
+		await first.dispose(); // 模拟 connection 作用域销毁：Peer 的 signal 被 abort
+		assert.equal(first.signal.aborted, true);
+		const res = await call(h.route, { url: "/m/api/defaults", method: "POST", body: { permissionPreset: "workspace-write" } });
+		assert.equal(res.status, 200, "aborted 缓存必须被识别并重建，否则会永久 gateway/peer-disposed");
+		assert.equal(h.seen.createPeerCalls.length, 2);
+		assert.notEqual(h.seen.invokePeer, first);
+		assert.equal(h.seen.invokePeer.signal.aborted, false);
+	} finally { h.clean(); }
+});
+
 test("插件卸载时释放进程内 Peer（不随重连/重载累积）", async () => {
 	const h = createHarness({ generation: "0.2.1" });
 	try {
