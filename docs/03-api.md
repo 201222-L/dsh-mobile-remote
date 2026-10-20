@@ -23,6 +23,7 @@
 | GET | `/m/api/sessions` | 会话列表 | 是 |
 | GET | `/m/api/history` | 指定会话的 Conversation timeline 历史（按 seq 分页） | 是 |
 | GET | `/m/api/event-detail` | 单个 Visible event 无损详情（按 seq） | 是 |
+| GET | `/m/api/turn-outline` | 会话轮次大纲（只读投影；轮次号 / 起始序号 / 提示词与回复预览，轮次导航） | 是 |
 | GET | `/m/api/events` | SSE 事件流（session/event 摘要） | 是 |
 | GET | `/m/api/catalog` | 模型/推理/权限/预设目录 | 是 |
 | GET/POST | `/m/api/session-config` | 会话配置（读写） | 是 |
@@ -78,7 +79,8 @@
       "detail": true,
       "unknownEvents": true,
       "callCorrelation": true
-    }
+    },
+    "turnOutline": { "version": 1, "supported": true, "unloaded": true, "truncated": true }
   },
   "agents": [
     { "id": "session-abc", "status": "running", "hasPending": false }
@@ -91,6 +93,7 @@
 
 - `urls`：按优先级排列——首个非 internal IPv4（含蒲公英/Tailscale 等虚拟组网段）在前，loopback 最后；`port` 来自 `ctx.webServer.port`。v3.0.0：`lanBridge` 监听成功时首选地址为桥地址（`http://<IP>:<lanBridge.port>`，端口默认 3080），回环 webserver 地址仅作本机自连兜底。
 - `agents[].status`：`"running" | "idle"`（映射自 agent 状态与最近事件推断）。
+- `capabilities.turnOutline`：轮次大纲能力位（轮次导航）。宿主**真的注册了** `turnOutline` 投影单元、且投影感知观察面（`sessionQuery.observeSession`）可用时，返回 `{ "version": 1, "supported": true, "unloaded": true, "truncated": true }`——`unloaded` 表示未加载轮次也可跳转、`truncated` 表示超过体积上限会显式截断；否则返回 `{ "version": 1, "supported": false }`。**不按宿主版本号推断**：旧宿主/裁剪宿主显式声明不支持，App 据此退回「只用已加载轮次」的降级行为。SSE hello 的同名字段与该处**同判据、同形状**（见 §3.6 与 §6.18）。
 - 未认证：`401`（见通用约定）。
 ### 3.2 POST /m/api/send
 **请求**
@@ -259,7 +262,7 @@
 | `turn/end` | `{ turn: number, reason: object }` |
 | 其他 | 保留 `type`、`seq` 和详情指针；调试模式展开无损数据 |
 
-**控制帧**：连接建立后立即 `data: {"type":"hello","serverTime":...,"capabilities":{"eventTimeline":{...}}}`；每 25s `: ping` 注释行。bootstrap 同样返回 `capabilities.eventTimeline`，客户端应按能力协商而不是按版本号猜测。
+**控制帧**：连接建立后立即 `data: {"type":"hello","serverTime":...,"capabilities":{"eventTimeline":{...},"turnOutline":{...}}}`；每 25s `: ping` 注释行。bootstrap 同样返回这两项能力；`turnOutline` 与 bootstrap 同判据、同形状（见 §6.18），客户端应按能力协商而不是按版本号猜测。
 **错误语义**：鉴权失败在连接建立阶段以 `401` HTTP 状态返回（EventSource 会触发 error 事件，客户端转登录态）。
 
 ### 3.6b SSE 帧类型汇总（v2.3+ 扩展）
@@ -321,6 +324,7 @@
 | GET | `/m/api/diagnostics` | 环境诊断（服务端端点实测，v2.1） |
 | GET | `/m/api/balance` | DeepSeek 官方余额（服务端代查，v2.1） |
 | GET | `/m/api/account-usage` | 用量与额度（服务端代查，v3.2） |
+| GET | `/m/api/turn-outline` | 会话轮次大纲（只读；完整阶梯的轮次摘要，轮次导航） |
 | GET | `/m/api/qr-config` | 桌面二维码数据（loopback only，v2.1） |
 | POST | `/m/api/defaults` | 修改默认 Agent/权限预设（v2.1） |
 
@@ -681,6 +685,88 @@
 ```
 - 目标目录：`sessionId` 对应 agent 的工作目录 → 缺省回退第一个注册工作区根；无法确定 → `503 no-workspace`
 - `name` 不合法（含 `\ / : * ? " < > |`、`.`/`..`/超 255）→ `400 invalid-name`；body 上限 64MB → `413 payload-too-large`
+
+### 6.18 GET /m/api/turn-outline（轮次大纲，轮次导航）
+
+> 只读端点：把宿主 `turnOutline` 投影（电脑端刻度轨消费的同一份轮次摘要）**薄透出**为移动端契约。插件只做投影读取与形状稳定化，**不自己折叠会话日志**——轮次边界与预览文字只有宿主一个权威来源，避免桌面端与手机端在边界条件上出现两种答案。不改变会话内容/轮次边界，不写任何持久状态，不新增会话事件类型。
+
+**查询参数**：`sessionId`（必填；缺 → `400 bad-request`）。
+
+**响应 200（可用态）**
+
+```json
+{
+  "ok": true,
+  "sessionId": "session-abc",
+  "state": "available",
+  "asOfSeq": 12873,
+  "turns": [
+    { "turn": 1, "seq": 2048, "prompt": "帮我跑一下测试", "response": "测试结果……" },
+    { "turn": 2, "seq": 5121, "prompt": "", "response": "纯命令轮的回复" }
+  ],
+  "truncated": false,
+  "dropped": 0
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `state` | string | `available` / `empty` / `capability-missing` / `read-failed`（四态见下） |
+| `asOfSeq` | number \| null | 该投影快照对应的 durable 事件序号；`null` 表示无法确定 |
+| `turns` | array | 轮次摘要，按 `turn` 升序；元素字段见下 |
+| `turns[].turn` | number | 轮次号（从 1 开始） |
+| `turns[].seq` | number | 该轮起始事件（`turn/start`）的 durable 序号，作定位锚点 |
+| `turns[].prompt` | string | 该轮提示词预览；可能为空（纯图片/纯命令轮） |
+| `turns[].response` | string | 该轮回复摘要；可能为空（该轮尚无回复） |
+| `truncated` | boolean | 是否因体积上限截断（仅 `available` 有意义） |
+| `dropped` | number | 被截掉的轮次数；未截断为 `0` |
+
+**四态必须显式区分，空数组不得表示「没有轮次」**（同一份投影在不同宿主/会话上的语义差别很大）：
+
+| `state` | 含义 | 客户端（刻度轨）行为 |
+|---|---|---|
+| `available` | 能力可用且该会话有大纲 | 与「已加载轮次」取并集画完整刻度；未加载轮次可点击（先跨页加载再定位） |
+| `empty` | 能力可用，但该会话暂无大纲（新会话/投影尚未生成） | 退回「只用已加载轮次」的降级行为，不打扰用户 |
+| `capability-missing` | 宿主未注册 `turnOutline` 投影单元，或没有投影感知观察面（**全局能力缺失**） | 同 `empty`；**不得**按宿主版本号自行推断 |
+| `read-failed` | 读取失败；带稳定 `code` 与 `degraded: true` | 退回降级行为，在刻度轨可见时说明一次原因 |
+
+`read-failed` 的稳定 `code`：
+
+| `code` | 场景 |
+|---|---|
+| `turn-outline-timeout` | 有界等待超时（默认 5000 ms，见下「有界与截断」；从请求到达起算、**包含排队时间**） |
+| `turn-outline-busy` | 冷折叠执行槽队列已满（并发 1、队列上限 8），立刻明确降级而不是无限排队 |
+| `turn-outline-unavailable` | 宿主观察面无法回放完整日志（seeded 前缀校验缺陷等已知兼容问题） |
+
+读取失败响应形状（HTTP 仍为 200；这是**明确的降级结果**，不是错误）：
+
+```json
+{ "ok": true, "sessionId": "session-abc", "state": "read-failed", "code": "turn-outline-timeout", "degraded": true, "turns": [] }
+```
+
+> 旧宿主路径（无投影感知观察面）返回的 `capability-missing` 形状为 `{ "ok": true, "sessionId": …, "state": "capability-missing", "turns": [] }`，可能不含 `asOfSeq`/`truncated`/`dropped`；客户端应按 `state` 分支，不依赖字段恒在。
+
+**HTTP 错误码**：
+
+| HTTP | error 值 | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId` |
+| 401 | `auth-required` / `bad-token` | 未提供 / 口令错误（见 §1） |
+| 403 | `host-not-allowed` | Host 不在白名单（见 docs/04） |
+| 404 | `session-not-found` | 会话**明确不存在**（只有这一种情况才 404） |
+| 405 | `method-not-allowed` | 非 GET（HEAD 与其它 GET 端点一致：路由放行、无响应体） |
+| 500 | `session-corrupt` / `event-read-failed` | 会话数据损坏 / 其它读取异常；错误响应不泄露主机路径或原始异常。**明确的超时/繁忙/已知兼容降级不走 5xx**，而是上表的 200 + `read-failed` |
+
+**有界与截断**：
+
+- **有界等待**：配置项 `turnOutlineTimeoutMs`（schema 默认 **5000 ms**；冷折叠单会话最坏实测 1.8 s，约 3× 余量）。截止后立即向仍连接的客户端回 `read-failed`；底层未结束的观察**不强行打断**（同步折叠不可中断），继续占住执行槽直到结束，迟到的投影 lease 随即释放、**不会回写成功**。客户端断开同样取消请求且之后不再写响应。
+- **冷折叠串行**：并发 1 + 队列上限 8（3 路并发实测 RSS 峰值 831 MB、耗时近似叠加，故不允许无界并发）；队列满立刻回 `turn-outline-busy`。
+- **按体积截断**：下发上限 **256 KB**（实测最大 77 KB / 288 轮、p99 29.5 KB）。从**最新**往回保留、至少保留 1 轮；超出部分丢弃并显式标 `truncated: true` / `dropped: N`——绝不静默截断，也不回空数组（回空数组会被读成「没有轮次」）。
+- 实现使用宿主的投影感知观察面 `sessionQuery.observeSession(sessionId, { projectionMode: "all", signal })`；读到即释放 lease（不泄漏 prepared 会话 pin）。
+
+**客户端消费约定（App 刻度轨）**：合并「已加载轮次」与 `turns`——按轮次号升序取并集，两边都有时保留已加载锚点、预览以已加载为准（仅本地为空时用大纲补齐，保证同一轮加载前后文字不跳变）；未加载轮次以短淡刻度呈现，点击后按 **200 条/页**有界跨页加载直至覆盖该轮起始序号，再走既有的按序号跳转定位；`empty` / `capability-missing` 不提示用户，`read-failed` / `truncated` 在刻度轨可见时说明一次。
+
+**能力位**：`GET /m/api/bootstrap` 与 SSE hello 的 `capabilities.turnOutline` 与本节同一判据（见 §3.1、§3.6）：宿主真的注册了投影单元且观察面可用才 `supported: true`，否则 `supported: false`。客户端必须先读能力位再决定是否渲染未加载刻度。
 
 
 
