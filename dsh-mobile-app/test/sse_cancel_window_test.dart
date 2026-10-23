@@ -1,13 +1,6 @@
-// issue #13 侧查（可复核的最小复现）：eventsRaw() 的"取消窗口"连接泄漏。
-//
-// 用法：把本文件复制到 dsh-mobile-app/test/ 下，然后
-//   cd dsh-mobile-app; flutter test test/sse_cancel_window_test.dart
-//
-// 预期（当前 main 未修）：
-//   对照用例通过（total=0）；
-//   "取消窗口"用例失败：Expected 0, Actual 1；
-//   "连续重建"用例失败：Expected 0, Actual 3。
-// 应用两行修法后（api.dart eventsRaw 内加 `cancelled` 标记并在晚到响应分支判断）三条全绿。
+// GitLab #38 回归：取消 SSE 订阅必须释放 TCP socket（响应已到达和仍在等待时都成立）。
+// 不用 HttpServer.connectionsInfo() 计数：未结束的 SSE HttpResponse 会继续被统计为活动连接；
+// 这里直接通过原始 TCP socket 的 peer EOF 观察连接关闭。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -17,87 +10,144 @@ import 'package:dsh_mobile_app/api.dart';
 
 class FakeSse {
   FakeSse._(this.server);
-  final HttpServer server;
-  int responses = 0;
+
+  final ServerSocket server;
+  final Set<Socket> _openSockets = {};
+  final List<Socket> _sockets = [];
   final List<Timer> _timers = [];
+  int requests = 0;
 
   static Future<FakeSse> start({required Duration beforeRespond}) async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final self = FakeSse._(server);
-    server.listen((req) async {
-      self.responses++;
-      await Future<void>.delayed(beforeRespond); // 慢响应窗口（真机：握手/Tailscale 隧道建立）
-      final res = req.response
-        ..statusCode = HttpStatus.ok
-        ..headers.contentType = ContentType('text', 'event-stream')
-        ..bufferOutput = false; // 必须！默认 true 时帧根本不上线
-      res.done.catchError((_) {});
-      void write(String s) {
-        try {
-          res.add(utf8.encode(s));
-          res.flush().catchError((_) {});
-        } catch (_) {}
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final fake = FakeSse._(server);
+    server.listen((socket) {
+      fake._openSockets.add(socket);
+      fake._sockets.add(socket);
+      final request = StringBuffer();
+      var responseStarted = false;
+      var closed = false;
+      Timer? heartbeat;
+
+      void markClosed() {
+        if (closed) return;
+        closed = true;
+        heartbeat?.cancel();
+        fake._openSockets.remove(socket);
       }
 
-      write('data: {"type":"hello","capabilities":{}}\n\n');
-      self._timers
-          .add(Timer.periodic(const Duration(milliseconds: 250), (_) => write(': ping\n\n')));
+      void writeChunk(String text) {
+        if (closed) return;
+        final bytes = utf8.encode(text);
+        try {
+          socket
+            ..add(utf8.encode('${bytes.length.toRadixString(16)}\r\n'))
+            ..add(bytes)
+            ..add([13, 10]);
+          socket.flush().catchError((_) => markClosed());
+        } catch (_) {
+          markClosed();
+        }
+      }
+
+      socket.listen(
+        (bytes) {
+          if (responseStarted) return;
+          request.write(utf8.decode(bytes, allowMalformed: true));
+          if (!request.toString().contains('\r\n\r\n')) return;
+          responseStarted = true;
+          fake.requests++;
+          Future<void>.delayed(beforeRespond).then((_) {
+            if (closed) return;
+            try {
+              socket.add(
+                utf8.encode(
+                  'HTTP/1.1 200 OK\r\n'
+                  'Content-Type: text/event-stream\r\n'
+                  'Transfer-Encoding: chunked\r\n'
+                  'Connection: keep-alive\r\n\r\n',
+                ),
+              );
+            } catch (_) {
+              markClosed();
+              return;
+            }
+            writeChunk('data: {"type":"hello","capabilities":{}}\n\n');
+            heartbeat = Timer.periodic(
+              const Duration(milliseconds: 250),
+              (_) => writeChunk(': ping\n\n'),
+            );
+            fake._timers.add(heartbeat!);
+          });
+        },
+        onError: (_) => markClosed(),
+        onDone: markClosed,
+        cancelOnError: true,
+      );
     });
-    return self;
+    return fake;
   }
 
-  int get openConnections => server.connectionsInfo().total;
+  int get openConnections => _openSockets.length;
+
+  Api api() => Api()
+    ..baseUrl = 'http://127.0.0.1:${server.port}'
+    ..token = '';
 
   Future<void> stop() async {
-    for (final t in _timers) {
-      t.cancel();
+    for (final timer in _timers) {
+      timer.cancel();
     }
-    await server.close(force: true);
+    for (final socket in _sockets) {
+      socket.destroy();
+    }
+    await server.close();
   }
 }
-
-Api mkApi(FakeSse s) => Api()
-  ..baseUrl = 'http://127.0.0.1:${s.server.port}'
-  ..token = '';
 
 void main() {
   test('对照：响应到达后取消（正常路径）→ 连接释放', () async {
     final s = await FakeSse.start(beforeRespond: Duration.zero);
     addTearDown(s.stop);
-    final sub = mkApi(s).eventsRaw().listen((_) {}, onError: (_) {});
+    final sub = s.api().eventsRaw().listen((_) {}, onError: (_) {});
     await Future<void>.delayed(const Duration(milliseconds: 600));
     await sub.cancel();
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await Future<void>.delayed(const Duration(seconds: 1));
     // ignore: avoid_print
-    print('对照: responses=${s.responses} 残留连接=${s.openConnections}');
+    print('对照: requests=${s.requests} 残留连接=${s.openConnections}');
+    expect(s.requests, 1, reason: '必须先建立一条 SSE 连接');
     expect(s.openConnections, 0, reason: '正常取消必须释放连接');
   });
 
   test('取消窗口：响应到达前取消（resume/switchBase/disposeBridge 的动作）', () async {
-    final s = await FakeSse.start(beforeRespond: const Duration(milliseconds: 900));
+    final s = await FakeSse.start(
+      beforeRespond: const Duration(milliseconds: 900),
+    );
     addTearDown(s.stop);
-    final sub = mkApi(s).eventsRaw().listen((_) {}, onError: (_) {});
+    final sub = s.api().eventsRaw().listen((_) {}, onError: (_) {});
     await Future<void>.delayed(const Duration(milliseconds: 150));
-    await sub.cancel(); // bodySub 仍为 null → onCancel 什么也没做
-    await Future<void>.delayed(const Duration(seconds: 3)); // 晚到响应落地
+    await sub.cancel();
+    await Future<void>.delayed(const Duration(seconds: 2));
     // ignore: avoid_print
-    print('取消窗口: responses=${s.responses} 残留连接=${s.openConnections}');
-    expect(s.openConnections, 0,
-        reason: '晚到的响应必须被消费并释放（api.dart:927 的守卫漏判"已取消"）');
+    print('取消窗口: requests=${s.requests} 残留连接=${s.openConnections}');
+    expect(s.requests, 1, reason: '必须在响应窗口内建立一条 SSE 连接');
+    expect(s.openConnections, 0, reason: '取消响应前的请求必须释放连接');
   });
 
-  test('窗口内连续重建 3 次 → 泄漏连接线性累积', () async {
-    final s = await FakeSse.start(beforeRespond: const Duration(milliseconds: 700));
+  test('窗口内连续重建 3 次 → 不累积泄漏连接', () async {
+    final s = await FakeSse.start(
+      beforeRespond: const Duration(milliseconds: 700),
+    );
     addTearDown(s.stop);
-    final a = mkApi(s);
+    final api = s.api();
     for (var i = 0; i < 3; i++) {
-      final sub = a.eventsRaw().listen((_) {}, onError: (_) {});
+      final sub = api.eventsRaw().listen((_) {}, onError: (_) {});
       await Future<void>.delayed(const Duration(milliseconds: 120));
       await sub.cancel();
     }
-    await Future<void>.delayed(const Duration(seconds: 3));
+    await Future<void>.delayed(const Duration(seconds: 2));
     // ignore: avoid_print
-    print('重连 x3: responses=${s.responses} 残留连接=${s.openConnections}');
+    print('重连 x3: requests=${s.requests} 残留连接=${s.openConnections}');
+    expect(s.requests, 3, reason: '必须实际建立三条 SSE 连接');
     expect(s.openConnections, 0, reason: '每次窗口内重建都不该留下半个 socket');
   });
 }
