@@ -176,8 +176,8 @@ test("离线审批：没有手机连接时也建条目（旧行为是立刻 next
 
 // ───────── 2. 离线 + 关掉桌面兜底：独占 ─────────
 
-test("离线审批：offlineAlsoDesktop=false 时独占，不惊动桌面", async () => {
-	const harness = createHarness({ config: { offlineAlsoDesktop: false } });
+test("离线审批：mobile 模式下 with offlineAlsoDesktop=false 时独占，不惊动桌面", async () => {
+	const harness = createHarness({ config: { approvalMode: "mobile", offlineAlsoDesktop: false } });
 	try {
 		let nextCalled = 0;
 		const pending = harness.approval()(approvalRequest(), async () => { nextCalled += 1; return "rejected"; });
@@ -239,7 +239,6 @@ test("离线超时：到点返回 unavailable，不把内核永远挂住", async
 });
 
 // ───────── 5. 网关代际：0.2.x 位置参数形态 ─────────
-
 test("网关代际：0.2.x 四参 invokeRpc 走位置参数并携带 owner Peer", async () => {
 	const harness = createHarness();
 	try {
@@ -254,6 +253,33 @@ test("网关代际：0.2.x 四参 invokeRpc 走位置参数并携带 owner Peer"
 		assert.deepEqual(call0.args, { request: { sessionId: "session-A" } });
 		assert.equal(call0.hasPeer, true, "0.2.x 必须携带 Peer 身份");
 		assert.equal(call0.signal, true, "0.2.x 必须把 signal 放在第三个实参");
+	} finally {
+		harness.clean();
+	}
+});
+
+// ───────── 6. both 模式：手机在线时桌面同样弹卡 ─────────
+
+test("双端同显：approvalMode=both 且手机在线时，桌面仍应收到审批（先答生效）", async () => {
+	const harness = createHarness();
+	try {
+		// 打开一条 SSE 连接 = 手机在线（diagnostics 的 mobileOnline 依赖 connections.size）
+		const res = new FakeResponse();
+		harness.route("/m/api")(new FakeRequest("/m/api/events"), res);
+		assert.equal((await diagnostics(harness)).runtime.metrics.mobileOnline, 1, "SSE 连接后应视为手机在线");
+
+		let nextCalled = 0;
+		const pending = harness.approval()(approvalRequest(), async () => {
+			nextCalled += 1;
+			await sleep(30);
+			return "allowed-once"; // 桌面点了"允许一次"
+		});
+
+		assert.equal(await pending, "allowed-once", "手机在线时桌面答复也必须生效");
+		assert.equal(nextCalled, 1, "both 模式下桌面必须收到卡（这正是 issue #9 的语义）");
+		await sleep(30);
+		assert.equal((await diagnostics(harness)).checks.pendingApprovals, 0, "桌面先答后手机侧条目应清空");
+		res.destroy();
 	} finally {
 		harness.clean();
 	}
