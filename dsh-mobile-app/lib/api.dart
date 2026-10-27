@@ -1,6 +1,7 @@
 // DSH Mobile App — API 客户端（对接 dsh-mobile-remote 插件的 /m 接口）
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -10,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
 import 'models.dart';
 import 'git_models.dart';
+import 'turn_outline.dart';
 
 class ApiException implements Exception {
   final String message;
@@ -90,6 +92,10 @@ class Api implements GitReadApi {
 
   /// 对话时间线能力由服务端显式声明，不能只按 package version 猜测。
   TimelineCapabilities timelineCapabilities = const TimelineCapabilities();
+
+  /// issue #25 二期：轮次大纲能力（宿主未挂该投影时 supported=false，退回一期行为）。
+  TurnOutlineCapabilities turnOutlineCapabilities =
+      const TurnOutlineCapabilities();
 
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
@@ -249,6 +255,15 @@ class Api implements GitReadApi {
                 : null,
           )
         : const TimelineCapabilities();
+    turnOutlineCapabilities = capabilities is Map
+        ? TurnOutlineCapabilities.fromJson(
+            capabilities['turnOutline'] is Map
+                ? Map<String, dynamic>.from(
+                    capabilities['turnOutline'] as Map,
+                  )
+                : null,
+          )
+        : const TurnOutlineCapabilities();
   }
 
   /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
@@ -788,6 +803,39 @@ class Api implements GitReadApi {
       limit: limit,
       timeout: timeout,
     )).events;
+  }
+
+  /// 拉取宿主的轮次大纲（issue #25 二期）。
+  ///
+  /// 三态（可用 / 该会话无大纲 / 能力缺失）与读取失败态都映射为模型返回，
+  /// **不抛异常**：调用方据此退回一期"只用已加载轮次"并给出明确说明。
+  /// 只有请求本身失败（网络、404、500）才在这里降级为 `readFailed`。
+  Future<TurnOutline> turnOutline(
+    String sessionId, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    try {
+      final data = await getJson(
+        '/api/turn-outline?sessionId=${Uri.encodeQueryComponent(sessionId)}',
+        timeout: timeout,
+      );
+      return TurnOutline.fromJson(data);
+    } on ApiException catch (e) {
+      if (e.status == 404 || e.code == 'session-not-found') {
+        return const TurnOutline.readFailed('session-not-found');
+      }
+      return TurnOutline.readFailed(e.code ?? 'turn-outline-read-failed');
+    } on TimeoutException {
+      // 客户端等待超时：必须退回一期并说明，不能让异常逃出后台 Future
+      // （`_refreshTurnOutline` 用 unawaited 调用，逃出去就是未处理异步错误）。
+      return const TurnOutline.readFailed('turn-outline-client-timeout');
+    } on http.ClientException {
+      // 断网 / 连接被重置（http 包对这类失败的统一包装）。
+      return const TurnOutline.readFailed('turn-outline-offline');
+    } on SocketException {
+      // 少数路径直接抛 SocketException（未经过 http 包包装）。
+      return const TurnOutline.readFailed('turn-outline-offline');
+    }
   }
 
   /// 按 seq 读取一条无损事件详情。详情不可用时由调用方显示明确降级状态。

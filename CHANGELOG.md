@@ -1,10 +1,18 @@
 # Changelog
 
-## v3.3.0（2026-10-27，issue #46 / #49）— 在线本地通知 + 二维码组网地址优选
+## v3.3.0（2026-10-27，issue #46 / #49，PR #42）— 在线本地通知 + 轮次导航 + 二维码组网地址优选
 
 > 版本：插件 `3.3.0` / App `3.3.0+25`。
-> 验收门禁：`node --test test/*.mjs`（199 通过 + 1 平台跳过）、`timeline-contract`（77）、`account-usage`（15）、`account-usage-adversarial`（19）、`flutter analyze`（0 issue）、`flutter test`（375）。
+> 验收门禁：`node --test test/*.mjs`（199 通过 + 1 平台跳过）、`timeline-contract`（125）、`account-usage`（15）、`account-usage-adversarial`（19）、`flutter analyze`（0 issue）、`flutter test`（509）。
 > 状态：已合入 `main`，**尚未打 tag / 发布**（等你确认后再出 APK 与 tgz）。
+
+### 对话轮次导航（PR #42）
+
+- **一期**：对话页右侧刻度轨按轮次跳转；长会话里的定位修复（尺寸缓存、有符号估算、尝试次数上界、尾部安全网）。
+- **二期**：接入宿主 `turnOutline` 投影，已加载轮次正常显示、未加载轮次以短淡刻度显示，点它按 **200 条/页**有界跨页加载后定位；用户主动滚动即取消，四种终止结果（覆盖成功 / 到顶不可达 / 页数上限 / 用户取消）都有明确说明。
+- **新增只读端点** `GET /m/api/turn-outline?sessionId=`：四态（`available` / `empty` / `capability-missing` / `read-failed`）+ 稳定错误码、5 秒有界等待、冷折叠串行（并发 1）+ 有界队列（8）、按体积 256 KB 截断并显式标 `truncated`。
+- **能力位** `capabilities.turnOutline`：按宿主是否真的挂载投影判定，不按版本号推断；旧插件/旧 App 双方都能降级到既有行为。
+- 已知限制（如实标注）：轮次特别多的长会话，跨页跳转可能失败或流畅度一般。
 
 ### App 在线本地通知（#46）
 

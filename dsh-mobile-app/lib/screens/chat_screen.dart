@@ -2,8 +2,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart'
+    show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -17,11 +19,14 @@ import '../models.dart';
 import '../store.dart';
 import '../timeline.dart';
 import '../theme.dart';
+import '../turn_navigation.dart';
+import '../turn_outline.dart';
 import '../md.dart';
 import '../fmt.dart';
 import '../git_browser_controller.dart';
 import 'git_browser_sheet.dart';
 import '../widgets/git_logo.dart';
+import '../widgets/turn_navigator_rail.dart';
 import 'sheets.dart';
 import 'session_files_screen.dart';
 import 'session_tools_sheet.dart';
@@ -352,6 +357,45 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
   bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
+
+  // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
+  // 轮次索引是**派生结构**：turn/start 的持久序号 → 轮次号。此前轮次号只用
+  // 来拼一行显示字符串，事后再也取不回来，因此无法按轮次定位。这里只留存，
+  // 不写入任何持久状态。
+  final Map<int, int> _turnOfStartSeq = {};
+  // 每个轮次边界条目的稳定 key，按**边界持久 seq** 分配：同轮号的重试边界各有其键，
+  // 不再共用同一个 GlobalKey（否则真实页面会出现 needsLayout 断言）。定位一律用
+  // anchor.seq 查规范边界。
+  final Map<int, GlobalKey> _turnKeysBySeq = {};
+  // 已构建边界最后一次实测的**内容偏移**（turn → offset）：边界被懒构建回收后，
+  // 仍能用它推断阅读线落在哪一轮（长回复场景不再无条件回退到最新轮）。
+  final Map<int, double> _turnContentOffset = {};
+  /// issue #31（方案 B）：**条目尺寸缓存**——已构建子项的实测高度，按稳定 key
+  /// （`seq` 优先，工具卡用 `latestSeq`）记录。定位时用它算"索引 → 偏移"的估算，
+  /// 这是本体虚拟化列表 `getOffsetForIndex` 的等价物：长跳一步落到目标附近，
+  /// 而不是盲二分十几次（真机上第 2 轮离底部约 2900 个条目）。
+  final Map<int, double> _itemHeights = {};
+  int? _activeTurn; // 当前阅读的轮次（刻度轨高亮）
+  int? _busyTurn; // 跳转进行中的轮次（刻度脉冲）
+  // issue #25 二期：宿主轮次大纲（三态 + 读取失败态）。能力缺失/读取失败时退回一期
+  // 「只用已加载轮次」，但必须把原因说明白（见 turnOutlineNotice）。
+  TurnOutline _turnOutline = const TurnOutline.capabilityMissing();
+  // 是否**已经问过**（能力声明到达 / 请求返回）。没问过之前不得给"能力缺失"结论，
+  // 否则首帧就会对用户说"这台电脑不支持"（issue #25 评审 P2）。
+  bool _turnOutlineResolved = false;
+  // 跨页跳转期间：用户主动滚动即取消（故事 18），说明文字只在他能看到刻度轨时给一次。
+  bool _turnJumpCancelled = false;
+  // 导航世代：连续点选时旧操作不得覆盖新操作的落点 / busy / 提示（issue #25 评审 P2）。
+  int _turnNavGeneration = 0;
+  // 大纲刷新的请求身份：同一会话/同一历史世代下也会重叠多次刷新，迟到结果不得覆盖新结果。
+  int _turnOutlineRefreshId = 0;
+  bool _turnOutlineNoticeShown = false;
+  bool _activeTurnCalibrationScheduled = false; // 滚动期间合并调度几何校准
+  final GlobalKey _liveViewportKey = GlobalKey(); // 阅读线基准：消息流视口
+  // 两条消息流列表（center 前后）的渲染对象：定位时用来遍历**已构建子项**的
+  // 真实索引与几何（长回复会挤掉落点附近的轮次边界，只有子项索引是连续可靠的）。
+  final GlobalKey _olderSliverKey = GlobalKey(); // center 之前：_olderItems
+  final GlobalKey _liveSliverKey = GlobalKey(); // center 之后：_items（+草稿）
   QuestionRequest? _question; // 内核问询弹窗（当前会话，思考中途需要拍板）
   ApprovalRequest? _approval; // 内核权限审批弹窗（当前会话）
   final Set<String> _transientFrameKeys =
@@ -465,6 +509,19 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!nearBottom != _showJumpToLatest) {
       setState(() => _showJumpToLatest = !nearBottom);
     }
+    // issue #24：持续滚动也要校准当前轮。跨 160px 阈值只覆盖显隐切换，
+    // 一直停留在"离开底部"时页面不会重建，高亮就会停在旧值。
+    _scheduleActiveTurnCalibration();
+  }
+
+  /// 合并调度一次「当前轮」几何校准：同一帧内多次滚动只校准一次。
+  void _scheduleActiveTurnCalibration() {
+    if (_activeTurnCalibrationScheduled) return;
+    _activeTurnCalibrationScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _activeTurnCalibrationScheduled = false;
+      if (mounted) _updateActiveTurn();
+    });
   }
 
   /// 一键回到最新消息：近距平滑滚动，远距直接跳（避免超长距离动画卡顿）。
@@ -484,6 +541,426 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOutCubic,
       );
     }
+  }
+
+  // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
+
+  /// 已加载窗口里的轮次锚点（按轮次号升序）。
+  ///
+  /// 两条列表的物理顺序都不是时间序：`_olderItems` 靠近 center 的在前面（远→近），
+  /// `_items` 最新在前。折叠要求时间正序，所以两者都反转后拼接。
+  List<TurnAnchor> get _turnAnchors {
+    final rows = <TurnRow>[];
+    void addItem(_MsgItem item) {
+      final seq = item.seq;
+      final boundary = seq == null ? null : _turnOfStartSeq[seq];
+      if (boundary != null && item.kind == _MsgKind.divider) {
+        rows.add(TurnRow(boundaryTurn: boundary, seq: seq));
+        return;
+      }
+      switch (item.kind) {
+        case _MsgKind.user:
+          // 只有**真人来源**的 user 消息才算提示词：显式非 user 来源
+          // （agent-instructions / plugin / tool…）与旧内核的注入噪声都不占用 prompt，
+          // 判据复用时间线既有的一份（`_MsgItem.injected` + `timelineIsInjectedNoise`），
+          // 不在这里另起一套，也不因普通/调试模式而分叉。
+          final human = !item.injected && !timelineIsInjectedNoise(item.text);
+          rows.add(TurnRow(
+            role: human ? TurnRowRole.user : TurnRowRole.other,
+            text: item.text,
+          ));
+        case _MsgKind.assistant:
+          rows.add(TurnRow(role: TurnRowRole.assistant, text: item.text));
+        default:
+          rows.add(const TurnRow());
+      }
+    }
+
+    for (final item in _olderItems.reversed) {
+      addItem(item);
+    }
+    for (final item in _items.reversed) {
+      addItem(item);
+    }
+    return foldTurnAnchors(rows);
+  }
+
+  /// 给轮次边界条目挂稳定 key，供定位与"当前轮"判定读取真实几何。
+  /// 非边界条目原样构建（不引入额外包装）。
+  ///
+  /// 键身份是**边界持久 seq**，不是轮次号：同一轮号可以有多个相邻的 `turn/start`
+  /// （重试边界），按轮号分配会让它们共用同一个 GlobalKey。
+  Widget _buildItemWithTurnKey(_MsgItem item) {
+    final seq = item.seq;
+    final turn = seq == null ? null : _turnOfStartSeq[seq];
+    if (turn == null || seq == null || item.kind != _MsgKind.divider) {
+      return _buildItem(item);
+    }
+    final key = _turnKeysBySeq.putIfAbsent(seq, () => GlobalKey());
+    return KeyedSubtree(key: key, child: _buildItem(item));
+  }
+
+  /// 当前阅读的轮次。
+  ///
+  /// 懒构建下屏幕外的条目没有渲染对象，因此只用**已构建**的边界几何做选择：
+  /// 取起点不晚于阅读线的最后一个刻度；边界恰好被回收（长回复）时，用阅读线的
+  /// 内容偏移与最后一次实测缓存推断；再不行就**保留上一次判定**，绝不无条件跳最新。
+  void _updateActiveTurn() {
+    if (!mounted) return;
+    final anchors = _turnAnchors;
+    int? next;
+    if (anchors.isNotEmpty) {
+      if (_pinnedToBottom) {
+        next = anchors.last.turn;
+      } else {
+        final viewport =
+            _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+        if (viewport != null && viewport.hasSize) {
+          final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+          final lineOffset = math.min(96.0, viewport.size.height * 0.2);
+          final line = viewportTop + lineOffset;
+          final pixels =
+              _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+          final mountedTurns = <({int turn, double top})>[];
+          for (final anchor in anchors) {
+            final box = _turnKeysBySeq[anchor.seq]?.currentContext
+                ?.findRenderObject() as RenderBox?;
+            if (box == null || !box.hasSize) continue;
+            final top = box.localToGlobal(Offset.zero).dy;
+            mountedTurns.add((turn: anchor.turn, top: top));
+            // 顺手刷新内容偏移缓存——边界一旦被回收就再也量不到了。
+            _turnContentOffset[anchor.turn] = pixels + (top - viewportTop);
+          }
+          if (mountedTurns.isEmpty) {
+            // 目标轮起始边界未构建：用阅读线的内容偏移 + 缓存反查所属轮次。
+            next = _turnAtContentOffset(pixels + lineOffset);
+          } else {
+            next = activeTurnFromMounted(mountedTurns, readingLine: line);
+          }
+        }
+        next ??= _activeTurn;
+        next ??= anchors.last.turn;
+      }
+    }
+    if (next != _activeTurn) setState(() => _activeTurn = next);
+    _pruneTurnOffsets(anchors);
+  }
+
+  /// 阅读线落在哪一轮：取内容偏移不晚于 [contentOffset] 的最大已实测轮次。
+  int? _turnAtContentOffset(double contentOffset) {
+    int? best;
+    var bestOffset = double.negativeInfinity;
+    _turnContentOffset.forEach((turn, offset) {
+      if (offset <= contentOffset && offset > bestOffset) {
+        bestOffset = offset;
+        best = turn;
+      }
+    });
+    return best;
+  }
+
+  /// 丢弃已不在窗口内的轮次缓存，避免陈旧偏移把高亮拉回旧轮。
+  void _pruneTurnOffsets(List<TurnAnchor> anchors) {
+    if (_turnContentOffset.isEmpty) return;
+    final live = anchors.map((a) => a.turn).toSet();
+    _turnContentOffset.removeWhere((turn, _) => !live.contains(turn));
+  }
+
+  /// 已构建轮次边界的实测几何（内容坐标），供定位循环逐帧校正。
+  List<TurnMeasurement> _measureTurnBoundaries() {
+    final viewport =
+        _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (viewport == null || !viewport.hasSize) return const [];
+    final viewTop = viewport.localToGlobal(Offset.zero).dy;
+    final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+    final out = <TurnMeasurement>[];
+    for (final anchor in _turnAnchors) {
+      final box = _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+          as RenderBox?;
+      if (box == null || !box.hasSize) continue;
+      final offset = pixels + (box.localToGlobal(Offset.zero).dy - viewTop);
+      _turnContentOffset[anchor.turn] = offset;
+      out.add(TurnMeasurement(turn: anchor.turn, offset: offset));
+    }
+    return out;
+  }
+
+  /// 目标边界是否与消息流视口相交（"已构建"不等于"看得见"）。
+  bool _turnKeyInViewport(GlobalKey? key) {
+    final box = key?.currentContext?.findRenderObject() as RenderBox?;
+    final viewport =
+        _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || viewport == null || !viewport.hasSize) {
+      return false;
+    }
+    final top = box.localToGlobal(Offset.zero).dy;
+    final bottom = top + box.size.height;
+    final viewTop = viewport.localToGlobal(Offset.zero).dy;
+    final viewBottom = viewTop + viewport.size.height;
+    return bottom > viewTop && top < viewBottom;
+  }
+
+  /// 目标持久 seq 在**内容顺序**里的位置（定位的索引坐标；-1 表示找不到）。
+  ///
+  /// 注意不能用"sliver 内的子项序号"：消息流是 `center` 锚点的 `CustomScrollView`，
+  /// center **之前**那条列表的子项 0 紧贴 center、序号越大越靠**上**（内容偏移越小），
+  /// 与内容顺序正好相反。定位区间必须建立在内容顺序上（索引越大、内容偏移越大），
+  /// 否则"目标在落点之前还是之后"会判反——prepend 后的早期目标正是踩在这个反向上
+  /// （实测：目标被两个实测点夹成 `[0, 0]`，每次落点都被夹回 0，完全不滚动）。
+  ///
+  /// 内容顺序：`_olderItems` 最新在前（`[0]` 紧贴 center），因此内容序号倒序；
+  /// center 之后是「更早」按钮 / 加载条（若有）→ `_items`（最新在前）→ 草稿。
+  int _contentIndexOfSeq(int seq) {
+    for (var i = 0; i < _olderItems.length; i++) {
+      if (_olderItems[i].seq == seq) return _olderItems.length - 1 - i;
+    }
+    final base = _olderItems.length + (_olderButtonVisible ? 1 : 0);
+    for (var i = 0; i < _items.length; i++) {
+      if (_items[i].seq == seq) {
+        return base + (_items.length - 1 - i);
+      }
+    }
+    return -1;
+  }
+
+  /// 内容顺序下的子项总数（比例兜底用）。
+  int get _contentChildCount =>
+      _olderItems.length + (_olderButtonVisible ? 1 : 0) + _items.length;
+
+  /// center 之后那条列表的首项是否为「更早」按钮 / 加载条（与 `_buildChatView` 一致）。
+  bool get _olderButtonVisible =>
+      (!_infiniteMode && _earliestSeq > 0) ||
+      (_infiniteMode && _loadingMore && _earliestSeq > 0);
+
+  /// 已构建**子项**的实测几何（内容顺序索引 + 内容偏移 + 高度），供定位循环判断目标
+  /// 在当前落点的**之前还是之后**并收窄搜索区间。
+  ///
+  /// 为什么不用轮次边界：边界只在恰好被构建时才有 key，长回复会把落点前后变成
+  /// 一大片"没有边界"的区域（复审轨迹里 `measure()` 连续两轮为空）；而 `SliverList`
+  /// 的每个已构建子项都带真实索引与高度，据此维护的上下界收得拢，也能用
+  /// `offset + height` 得到"长回复之后"的有效下界。
+  List<BuiltChildMeasurement> _measureBuiltChildren() {
+    final viewport =
+        _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (viewport == null || !viewport.hasSize) return const [];
+    final viewTop = viewport.localToGlobal(Offset.zero).dy;
+    final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+    final out = <BuiltChildMeasurement>[];
+    void collect(
+      GlobalKey key,
+      int base, {
+      required int count,
+      required bool contentOrderReversed,
+    }) {
+      final sliver = key.currentContext?.findRenderObject();
+      if (sliver is! RenderSliverMultiBoxAdaptor) return;
+      for (var child = sliver.firstChild;
+          child != null;
+          child = sliver.childAfter(child)) {
+        final parentData = child.parentData;
+        if (parentData is! SliverMultiBoxAdaptorParentData) continue;
+        final local = parentData.index;
+        if (local == null || !child.hasSize) continue;
+        final contentIndex = contentOrderReversed ? count - 1 - local : local;
+        final offset = pixels + (child.localToGlobal(Offset.zero).dy - viewTop);
+        final index = base + contentIndex;
+        final height = child.size.height;
+        out.add(BuiltChildMeasurement(
+          index: index,
+          offset: offset,
+          height: height,
+        ));
+        // issue #31（方案 B）：顺手把实测高度回填进尺寸缓存（key 稳定，prepend/
+        // 加载条出现都不会错位）。缓存只增不改，超过上限时整体清空重建。
+        final stableKey = _itemKeyAtIndex(index);
+        if (stableKey != null && height > 0) {
+          if (_itemHeights.length > 6000) _itemHeights.clear();
+          _itemHeights[stableKey] = height;
+        }
+      }
+    }
+
+    // center 之前：`_olderItems` 最新在前，内容顺序与子项序号相反。
+    collect(_olderSliverKey, 0,
+        count: _olderItems.length, contentOrderReversed: true);
+    // center 之后：`SliverMultiBoxAdaptorParentData.index` **已经包含**首项
+    // 「更早」按钮 / 加载条，所以基准只加前一条 sliver 的长度，不能再加一次首项偏移——
+    // 否则加载条显示期间消息的实测 index 会比目标坐标系大 1，定位器把前一条消息当成目标
+    // （第二轮评审 note 1080 的对照复现：同样数据，仅"上翻在途"这一项不同就跳不到）。
+    collect(_liveSliverKey, _olderItems.length,
+        count: _items.length, contentOrderReversed: false);
+    return out;
+  }
+
+  /// 内容索引 → 该子项的**稳定尺寸缓存 key**（`seq` 优先，工具卡用 `latestSeq`）。
+  ///
+  /// 「更早」按钮 / 加载条 / 草稿不是消息，返回 null（它们不参与尺寸缓存）。
+  int? _itemKeyAtIndex(int index) {
+    if (index < 0) return null;
+    _MsgItem? item;
+    if (index < _olderItems.length) {
+      item = _olderItems[_olderItems.length - 1 - index];
+    } else {
+      final base = _olderItems.length + (_olderButtonVisible ? 1 : 0);
+      final local = index - base;
+      if (local < 0) return null; // 首项按钮 / 加载条
+      final i = _items.length - 1 - local;
+      if (i >= 0 && i < _items.length) item = _items[i];
+    }
+    return item == null ? null : (item.seq ?? item.latestSeq);
+  }
+
+  /// 内容索引 → 该子项**顶部的内容偏移估算**（issue #31 方案 B）。
+  ///
+  /// 本体虚拟化列表用 `itemSizeCache + estimateSize` 做 `getOffsetForIndex`；这里用
+  /// 等价的两段式估算：
+  ///   `已缓存条目的实测高度和 + 平均高度 × 未缓存条目数`
+  /// 平均高度优先取缓存实测均值（热缓存下很准），冷缓存退化为
+  /// `(maxScrollExtent - minScrollExtent) / childCount` 的比例估算——**仍远优于盲二分**
+  /// （目标在 20% 处就估 20%，而不是先跳 50%）。返回 null 表示无法估算，定位器会退回
+  /// 区间二分/割线估算。
+  double? _estimateOffsetForIndex(int targetIndex) {
+    if (!_scrollCtrl.hasClients) return null;
+    final childCount = _contentChildCount;
+    if (childCount <= 0) return null;
+
+    // 回退均值：优先用缓存实测均值，冷缓存退化为 extent / childCount 的比例估算。
+    var average = 0.0;
+    if (_itemHeights.isNotEmpty) {
+      var total = 0.0;
+      var count = 0;
+      for (final height in _itemHeights.values) {
+        if (height > 0) {
+          total += height;
+          count += 1;
+        }
+      }
+      if (count > 0) average = total / count;
+    }
+    if (average <= 0) {
+      final extent = _scrollCtrl.position.maxScrollExtent -
+          _scrollCtrl.position.minScrollExtent;
+      if (extent <= 0) return null;
+      average = extent / childCount;
+    }
+    if (!average.isFinite || average <= 0) return null;
+
+    // **有符号**：相对 `CustomScrollView.center` 的坐标（older 侧为负、live 侧为正），
+    // 与定位器实测的 measureBuilt 偏移同一坐标系（复审 P2：非负前缀会整体平移，
+    // 估算永远通不过 (lo, hi) 判据）。center 处的内容索引 = 内容子项数 − live 条数。
+    double? heightOf(int index) {
+      final key = _itemKeyAtIndex(index);
+      final height = key == null ? null : _itemHeights[key];
+      return (height != null && height > 0) ? height : null;
+    }
+
+    final centerIndex = childCount - _items.length;
+    final raw = estimateSignedContentOffset(
+      targetIndex: targetIndex,
+      centerIndex: centerIndex,
+      childCount: childCount,
+      cachedHeight: heightOf,
+      averageHeight: average,
+    );
+    if (raw == null) return null;
+    // **归一化到真实 extent**（复审二轮修订）：未缓存区间用平均高度时，权重总和与真实
+    // 内容高度未必同尺度——实测里热跳的首个估算因此偏小近 2 倍，逼出 3–4 步二分。
+    // 把"已缓存实测高度 + 未缓存均值"的总权重映射到布局给出的真实 extent，缓存只影响
+    // **相对权重**，估算随实际高度分布伸缩而不是随样本均值漂移。
+    final extent = _scrollCtrl.position.maxScrollExtent -
+        _scrollCtrl.position.minScrollExtent;
+    if (extent <= 0) return null;
+    final total = estimateSignedContentOffset(
+      targetIndex: childCount,
+      centerIndex: 0,
+      childCount: childCount,
+      cachedHeight: heightOf,
+      averageHeight: average,
+    );
+    if (total == null || total <= 0) return null;
+    return raw * extent / total;
+  }
+
+  /// 跳转到某一轮：**按实测几何校正的有界迭代定位**。
+  ///
+  /// `Scrollable.ensureVisible` 只能作用于已构建的渲染对象，而消息流是懒构建的
+  /// `SliverList`——屏幕外的轮次根本没有 element。所以先按目标真实子项序号做比例
+  /// 兜底，再用已构建边界的**实测内容偏移**插值/割线外推逐帧校正；重试有界且受
+  /// `kTurnLocateHardCapMs` 绝对安全网，最终必须让目标**与视口相交**才算成功。
+  ///
+  /// [token] 是这次导航的世代（issue #25 评审 P2）：跨页跳转定位到目标、或被新选择
+  /// 取代时旧的定位不得再滚动视口 / 弹提示 / 清 busy。
+  Future<void> _jumpToTurn(TurnAnchor anchor, {int? token}) async {
+    if (!_scrollCtrl.hasClients) return;
+    final generation = token ?? _turnNavGeneration;
+    bool current() => mounted && generation == _turnNavGeneration;
+    // 统一走有界迭代定位：即使边界已构建也由定位器按实测几何落点，并以
+    // "目标与视口相交"复核。此前"已构建就先走 ensureVisible 并直接 return"会在
+    // prepend 等场景下静默不滚动（目标在缓存区、`ensureVisible` 未改变偏移），
+    // 也不复核最终是否真的可见。
+    setState(() => _busyTurn = anchor.turn);
+    try {
+      final childCount = _contentChildCount;
+      final childIndex = _contentIndexOfSeq(anchor.seq);
+      final locator = TurnLocator(
+        scrollTo: (offset) {
+          // 世代失效后一律不得再滚动：这是"旧操作抢落点"的最后一道闸。
+          if (current() && _scrollCtrl.hasClients) _scrollCtrl.jumpTo(offset);
+        },
+        minScrollExtent: () =>
+            _scrollCtrl.hasClients ? _scrollCtrl.position.minScrollExtent : 0,
+        maxScrollExtent: () =>
+            _scrollCtrl.hasClients ? _scrollCtrl.position.maxScrollExtent : 0,
+        currentOffset: () =>
+            _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0,
+        viewportExtent: () => _scrollCtrl.hasClients
+            ? _scrollCtrl.position.viewportDimension
+            : 0,
+        // 目标一律按**边界持久 seq** 绑定：同轮号的重试边界不会误伤规范边界。
+        isTargetLoaded: () => _turnAnchors.any((a) => a.seq == anchor.seq),
+        isTargetBuilt: () =>
+            _turnKeysBySeq[anchor.seq]?.currentContext != null,
+        isTargetInView: () => _turnKeyInViewport(_turnKeysBySeq[anchor.seq]),
+        reveal: () => _revealTurnKey(_turnKeysBySeq[anchor.seq]),
+        measure: _measureTurnBoundaries,
+        measureBuilt: _measureBuiltChildren,
+        // issue #31（方案 B）：尺寸缓存给出的"索引 → 偏移"估算（本体 getOffsetForIndex 的等价物）。
+        estimateOffsetForIndex: _estimateOffsetForIndex,
+        settle: () => WidgetsBinding.instance.endOfFrame,
+      );
+      final outcome = await locator.locate(
+        targetTurn: anchor.turn,
+        targetIndex: childIndex < 0 ? childCount - 1 : childIndex,
+        childCount: childCount,
+      );
+      if (!current() || outcome.ok) return;
+      if (!mounted) return; // 让分析器认得 context 守卫（current() 已含 mounted）
+      final message = switch (outcome.failure) {
+        TurnLocateFailure.notInWindow => L10n.t(
+            '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
+            'Could not locate turn ${anchor.turn}: it is outside the loaded range',
+          ),
+        _ => L10n.t(
+            '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
+            'Could not locate turn ${anchor.turn}: still out of view after several attempts',
+          ),
+      };
+      showToast(context, message);
+    } finally {
+      if (current()) setState(() => _busyTurn = null);
+    }
+  }
+
+  /// 精调：把已构建的目标边界带进视口（不负责判定成功）。
+  Future<void> _revealTurnKey(GlobalKey? key) async {
+    final ctx = key?.currentContext;
+    if (ctx == null) return;
+    await Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.1,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   /// 提交问询答案（answers 顺序与提问一致），失败时弹窗保留可重试。
@@ -632,6 +1109,21 @@ class _ChatScreenState extends State<ChatScreen> {
         _items.clear();
         _olderItems.clear();
         _histItems.clear();
+        _turnOfStartSeq.clear(); // issue #24：条目重建后轮次索引一并失效
+        _turnKeysBySeq.clear();
+        _turnContentOffset.clear();
+        // issue #25 二期：大纲同属"这一条会话"，重建/切换后一并失效，
+        // 否则旧会话的未加载刻度会短暂挂到新会话的刻度轨上（串台）。
+        _turnOutline = const TurnOutline.capabilityMissing();
+        _turnOutlineResolved = false; // 还没问过新会话：不得据此给"能力缺失"结论
+        _turnOutlineNoticeShown = false;
+        // 历史重建作废进行中的跳转：其落点/提示/busy 清理都不再对当前列表有效；
+        // 已在 setState 内，这里直接清 busy（旧 finally 已因世代失效不再收尾）。
+        _turnNavGeneration += 1;
+        _busyTurn = null;
+        // issue #31：条目重建（会话切换/重同步）后尺寸缓存一并失效——同一 seq 的高度
+        // 在新一轮渲染里可能不同（流式结束、折叠状态变化），留着会给出错的估算。
+        _itemHeights.clear();
         _timelineReducer.reset();
         _transientFrameKeys.clear();
         _debugPreviewCache.clear(); // 重建后 rawData 全变，旧预览缓存无意义
@@ -709,6 +1201,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom(force: true); // 初始定位到最新消息
       _refreshUsage();
       widget.store.refreshSessionConfig();
+      // issue #25 二期：会话打开后拉一次轮次大纲（能力缺失/读取失败都退回一期行为）。
+      unawaited(_refreshTurnOutline());
     } catch (e) {
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -735,40 +1229,31 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ── 无限上翻（微信式） ──
-  /// 滑到 live 顶部时静默加载更早一页：追加到 center 之前的旧消息 sliver。
-  /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
-  Future<void> _loadMoreInfinite() async {
+  /// 上翻一页的**共用实现**：页大小由调用方给——滚动上翻用 `_histPageSize`（30），
+  /// 轮次跨页跳转用 `kTurnJumpPageSize`（200，issue #25 要求不改动既有 30 条/页）。
+  Future<_PrependOutcome> _prependOlderPage({required int limit}) async {
     final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) {
-      return;
+      return _PrependOutcome.skipped;
     }
     _loadingMore = true;
     final generation = _loadGeneration;
-    AppLog.instance.log('Chat: 无限上翻 before=$_earliestSeq');
+    AppLog.instance.log('Chat: 上翻一页 before=$_earliestSeq limit=$limit');
     try {
       final page = await _api.historyPage(
         id,
         before: _earliestSeq,
-        limit: _histPageSize,
+        limit: limit,
       );
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
-        return;
+        return _PrependOutcome.skipped;
       }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
       if (events.isEmpty) {
         _noMoreHistory = true;
-        showToast(
-          context,
-          L10n.t(
-            _historyDegraded ? '更早历史不可恢复' : '没有更早的消息了',
-            _historyDegraded
-                ? 'Earlier history unavailable'
-                : 'No earlier messages',
-          ),
-        );
-        return; // 已到最顶：不再查询，_earliestSeq 保持不动
+        return _PrependOutcome.exhausted;
       }
       final pageItems = <_MsgItem>[];
       for (final ev in events) {
@@ -781,23 +1266,201 @@ class _ChatScreenState extends State<ChatScreen> {
         _earliestSeq = events.first.seq ?? _earliestSeq;
       });
       AppLog.instance.log(
-        'Chat: 无限上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq',
+        'Chat: 上翻完成 items=${_items.length + _olderItems.length} firstSeq=$_earliestSeq',
       );
+      return _PrependOutcome.loaded;
     } catch (e) {
-      AppLog.instance.log('Chat: 无限上翻失败 $e');
+      AppLog.instance.log('Chat: 上翻失败 $e');
+      return _PrependOutcome.failed;
     } finally {
       _loadingMore = false;
       if (mounted) setState(() {});
     }
   }
 
+  /// 滑到 live 顶部时静默加载更早一页：追加到 center 之前的旧消息 sliver。
+  /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
+  Future<void> _loadMoreInfinite() async {
+    final outcome = await _prependOlderPage(limit: _histPageSize);
+    if (!mounted || outcome != _PrependOutcome.exhausted) return;
+    showToast(
+      context,
+      L10n.t(
+        _historyDegraded ? '更早历史不可恢复' : '没有更早的消息了',
+        _historyDegraded
+            ? 'Earlier history unavailable'
+            : 'No earlier messages',
+      ),
+    );
+  }
+
+  /// 跨页跳转专用上翻：页大小 200，且**不弹**"没有更早消息"——
+  /// 终止说明统一由 `turnJumpOutcomeMessage` 给出，避免两处口径。
+  Future<TurnPageLoad> _loadOlderForTurnJump() async {
+    // 滚动上翻可能正在加载同一页：先等它结束，避免两次 prepend 竞争同一游标。
+    var waited = 0;
+    while (_loadingMore && waited < 120 && mounted) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      waited += 1;
+    }
+    final outcome = await _prependOlderPage(limit: kTurnJumpPageSize);
+    // 到顶（exhausted）不是失败：如实回报"没有更早历史"，由跳转结果统一说明**不可达**。
+    // 但请求失败或没有取得任何进展（仍在加载）必须**显式失败**——否则跳转循环会
+    // 对着不变的 earliestSeq 一直空转到页数上限（最坏 32 次 × 等待）。
+    if (outcome == _PrependOutcome.failed || outcome == _PrependOutcome.skipped) {
+      throw StateError(L10n.t('未能继续加载更早历史', 'Could not load earlier history'));
+    }
+    return TurnPageLoad(earliestSeq: _earliestSeq, hasMore: !_noMoreHistory);
+  }
+
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
   /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
   bool _onLiveScroll(ScrollNotification n) {
+    // issue #25 二期：跨页跳转进行中，用户主动滚动 = 取消本次跳转（故事 18）——
+    // 只有带 dragDetails 的通知才是用户手势，自动滚动不受影响。
+    // 同时作废导航世代：旧的落点/提示/清理一律不得再动（第二轮评审 P2）。
+    if (_busyTurn != null &&
+        ((n is ScrollStartNotification && n.dragDetails != null) ||
+            (n is ScrollUpdateNotification && n.dragDetails != null))) {
+      _turnJumpCancelled = true;
+      _cancelTurnJumpVisual();
+    }
     if (shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
     }
     return false;
+  }
+
+  /// 作废当前导航世代并**主动清掉它自己的"跳转中"视觉状态**。
+  ///
+  /// 世代守卫保证旧操作不再改落点，但正因为世代失效，旧操作的 `finally` 也不会再清
+  /// `_busyTurn`——取消入口必须自己收尾，否则该齿会一直脉冲（第二轮评审 P2）。
+  void _cancelTurnJumpVisual() {
+    _turnNavGeneration += 1;
+    if (_busyTurn != null) {
+      setState(() => _busyTurn = null);
+    }
+  }
+
+  // ── issue #25 二期：宿主轮次大纲 ───────────────────────────────────
+
+  /// 拉取宿主轮次大纲。**先读能力声明**：声明不支持就不发请求，直接保留"能力缺失"态
+  /// （退回一期行为），而不是把"能力缺失"和"这个会话没有轮次"混成一件事。
+  ///
+  /// 能力是**后到**的（首连/重连时序不定），所以会话打开、能力事件到达、历史重建后
+  /// 都会调用一次；**大纲刷新有独立请求身份**：同一会话、同一历史世代也会重叠多次
+  /// （能力事件与初始刷新并发），迟到的旧响应——无论成功还是失败——都不得覆盖新结果
+  /// （第二轮评审 P2）。历史世代/会话身份仍是第一道守卫。
+  Future<void> _refreshTurnOutline() async {
+    final id = _mySessionId ?? widget.store.sessionId;
+    if (id == null) return;
+    final requestId = ++_turnOutlineRefreshId;
+    if (!_api.turnOutlineCapabilities.supported) {
+      if (!mounted || requestId != _turnOutlineRefreshId) return;
+      setState(() {
+        _turnOutline = const TurnOutline.capabilityMissing();
+        _turnOutlineResolved = true;
+      });
+      return;
+    }
+    final generation = _loadGeneration;
+    final outline = await _api.turnOutline(id);
+    if (!mounted ||
+        generation != _loadGeneration ||
+        id != _mySessionId ||
+        requestId != _turnOutlineRefreshId) {
+      return; // 已有更新的刷新：旧结果（含失败）一律丢弃
+    }
+    setState(() {
+      _turnOutline = outline;
+      _turnOutlineResolved = true;
+      _turnOutlineNoticeShown = false; // 新大纲：允许再说明一次
+    });
+  }
+
+  /// 刻度轨条目 = 已加载轮次 ∪ 宿主大纲（issue #25 两路合并）。
+  ///
+  /// 合并前先看**最新能力声明**：能力被撤销（换宿主 / 宿主降级）时旧大纲必须立刻失效，
+  /// 不能继续把上次连接拿到的大纲当成本机能力（issue #25 评审 P2）。
+  List<TurnTick> get _turnTicks => mergeTurnTicks(
+        loaded: _turnAnchors,
+        outline: _api.turnOutlineCapabilities.supported
+            ? _turnOutline.turns
+            : const [],
+      );
+
+  /// 选中某一轮：已加载的直接定位（一期）；未加载的先跨页加载再定位（二期）。
+  ///
+  /// 每次选择都创建一个**导航世代**（issue #25 评审 P2）：连续点选时，旧操作的
+  /// 完成 / 提示 / 清理不得覆盖新操作的落点与 busy 状态；用户主动滚动与历史重建也会作废它。
+  Future<void> _navigateToTurn(TurnAnchor anchor) async {
+    final token = ++_turnNavGeneration;
+    _turnJumpCancelled = false;
+    final loaded =
+        _turnAnchors.any((a) => a.turn == anchor.turn && a.seq == anchor.seq);
+    if (loaded) {
+      // 一条路径到底：已加载轮次也走同一个世代守卫（#24 修复后 `_jumpToTurn` 支持 token），
+      // 连续点选时旧定位不得再把视口搬走。
+      await _jumpToTurn(anchor, token: token);
+      return;
+    }
+    await _jumpToUnloadedTurn(anchor, token);
+  }
+
+  /// 该导航世代是否仍有效（旧操作一律不得再改落点、状态或弹提示）。
+  bool _turnNavCurrent(int token) => mounted && token == _turnNavGeneration;
+
+  /// 跳到"还没加载"的轮次：按 200 条/页**有界**地向前翻，直到覆盖该轮起始序号，
+  /// 再走一期定位。翻页期间该齿脉冲；到顶/超预算/取消都**明确说明**。
+  Future<void> _jumpToUnloadedTurn(TurnAnchor anchor, int token) async {
+    setState(() => _busyTurn = anchor.turn);
+    try {
+      final pager = TurnPager(
+        loadOlder: _loadOlderForTurnJump,
+        snapshot: () =>
+            TurnPageLoad(earliestSeq: _earliestSeq, hasMore: !_noMoreHistory),
+        // 用户主动滚动，或这次操作已被新选择/历史重建作废 → 取消。
+        isCancelled: () => _turnJumpCancelled || !_turnNavCurrent(token),
+      );
+      final outcome = await pager.jumpTo(targetSeq: anchor.seq);
+      if (!_turnNavCurrent(token) || !mounted) return;
+      if (outcome == TurnJumpOutcome.covered) {
+        final match = _turnAnchors.where((a) => a.turn == anchor.turn);
+        if (match.isNotEmpty) {
+          // 分页刚把更早历史 prepend 进来：先等一帧让布局/极值稳定（`minScrollExtent`
+          // 会向负方向扩展），并复核导航 token，然后才进入定位（issue #31 复审 P1）。
+          await WidgetsBinding.instance.endOfFrame;
+          if (!_turnNavCurrent(token)) return;
+          await _jumpToTurn(match.first, token: token);
+          return;
+        }
+        // 序号已覆盖却取不到该轮边界（历史表面不连续）：如实说明，不静默。
+        showToast(
+          context,
+          L10n.t(
+            '已加载到第 ${anchor.turn} 轮附近，但未能定位到该轮',
+            'Loaded near turn ${anchor.turn} but could not locate it',
+          ),
+        );
+        return;
+      }
+      final message = turnJumpOutcomeMessage(outcome, anchor.turn);
+      if (message != null) {
+        showToast(context, message);
+      }
+    } catch (e) {
+      if (mounted && _turnNavCurrent(token)) {
+        showToast(
+          context,
+          '${L10n.t('跳转失败：', 'Jump failed: ')}$e',
+        );
+      }
+    } finally {
+      // 只有仍是当前操作才清 busy：旧操作的 finally 不得清掉新操作的脉冲。
+      if (mounted && _turnNavCurrent(token)) {
+        setState(() => _busyTurn = null);
+      }
+    }
   }
 
   /// 历史分段浏览 ──
@@ -973,14 +1636,16 @@ class _ChatScreenState extends State<ChatScreen> {
       child: NotificationListener<ScrollNotification>(
         onNotification: _onLiveScroll,
         child: CustomScrollView(
+          key: _liveViewportKey,
           controller: _scrollCtrl,
           center: _liveCenterKey,
           slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
               sliver: SliverList(
+                key: _olderSliverKey,
                 delegate: SliverChildBuilderDelegate(
-                  (context, index) => _buildItem(_olderItems[index]),
+                  (context, index) => _buildItemWithTurnKey(_olderItems[index]),
                   childCount: _olderItems.length,
                 ),
               ),
@@ -992,6 +1657,7 @@ class _ChatScreenState extends State<ChatScreen> {
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               sliver: SliverList(
+                key: _liveSliverKey,
                 delegate: SliverChildBuilderDelegate((context, index) {
                   // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
                   if ((topButton || loadingTail) && index == 0) {
@@ -1014,7 +1680,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   }
                   final dataIndex = index - (topButton || loadingTail ? 1 : 0);
                   if (dataIndex < _items.length) {
-                    return _buildItem(_items[_items.length - 1 - dataIndex]);
+                    return _buildItemWithTurnKey(_items[_items.length - 1 - dataIndex]);
                   }
                   if (hasDraft) {
                     return _AssistantBubble(text: _draft, streaming: true);
@@ -1201,6 +1867,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == '_capabilities') {
       // Bootstrap/SSE hello can arrive after history; rebuild detail affordances.
       setState(() {});
+      // issue #25 评审 P2：能力是**后到**的（首连/重连时序不定）。能力声明到达后补拉一次
+      // 大纲，否则"历史先完成、supported 稍后才变 true"就永远只有本地刻度。
+      unawaited(_refreshTurnOutline());
       return;
     }
     if (ev.type == '_catchup') {
@@ -2182,6 +2851,11 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'todo/write':
         _appendVisibleEvent(out, ev, history: history);
       case 'turn/start':
+        // issue #24：轮次索引的唯一写点（实时与历史回放共用本函数）。
+        final startTurn = d?['turn'];
+        if (startTurn is num && ev.seq != null) {
+          _turnOfStartSeq[ev.seq!] = startTurn.toInt();
+        }
         if (history) {
           out.add(
             _MsgItem.divider(
@@ -3147,6 +3821,45 @@ class _ChatScreenState extends State<ChatScreen> {
     final brand = DshColors.brand(context);
     final surface = DshColors.surface(context);
 
+    // issue #24：刻度轨只在"离开底部且有 ≥2 轮"时出现（复用 160px 判据，
+    // 与"回到底部"圆钮同进同出；见 ADR 0018）。
+    // issue #25 二期：刻度 = 已加载轮次 ∪ 宿主大纲；未加载的刻度短而淡、可跳转。
+    final turnTicks = _turnTicks;
+    final turnAnchors = [
+      for (final tick in turnTicks)
+        TurnAnchor(
+          turn: tick.turn,
+          seq: tick.seq,
+          prompt: tick.prompt,
+          response: tick.response,
+        ),
+    ];
+    final unloadedTurns = {
+      for (final tick in turnTicks)
+        if (!tick.loaded) tick.turn,
+    };
+    final showTurnRail = shouldShowTurnRail(
+      nearBottom: _pinnedToBottom,
+      turnCount: turnTicks.length,
+    );
+    // 阶梯被截断 / 读取失败 / 能力缺失 / 该会话无大纲：在用户**能看到刻度轨**时
+    // 各说明一次（四态文案互不相同，见 `turnOutlineNotice`），绝不静默。
+    // 评审 P2 指出：三态"给出不同说明"是正文与 ADR 的验收项，不能因为"退回一期本身
+    // 完整正确"就把 empty / capabilityMissing 的说明整个吞掉——用户需要知道为什么阶梯短。
+    // 只在**问过之后**才说明：首帧还没拿到能力声明时不得下"能力缺失"结论。
+    if (showTurnRail && _turnOutlineResolved && !_turnOutlineNoticeShown) {
+      final notice = turnOutlineNotice(_turnOutline);
+      if (notice != null) {
+        _turnOutlineNoticeShown = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) showToast(context, notice);
+        });
+      }
+    }
+    // 条目增删/分页会改变几何：本帧结束后校准"当前轮"。
+    // 只在取值变化时 setState，因此会收敛，不会自激。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateActiveTurn());
+
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
@@ -3243,6 +3956,24 @@ class _ChatScreenState extends State<ChatScreen> {
                 Positioned.fill(
                   child: _inHistory ? _buildHistoryView() : _buildLiveView(),
                 ),
+                // issue #24：轮次导航刻度轨。放在消息流之上、右下角圆钮之下；
+                // 只占右侧约 28px，空白区域不吸收命中，消息流照常滚动。
+                if (!_inHistory && showTurnRail)
+                  Positioned.fill(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: TurnNavigatorRail(
+                          anchors: turnAnchors,
+                          unloadedTurns: unloadedTurns,
+                          activeTurn: _activeTurn,
+                          busyTurn: _busyTurn,
+                          onNavigate: (anchor) => unawaited(_navigateToTurn(anchor)),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (!_inHistory)
                   Positioned(
                     bottom: 12,
@@ -4537,6 +5268,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
 // ── 消息模型 ──
 enum _MsgKind { user, assistant, divider, tool, event }
+
+/// 上翻一页的结果（issue #25：滚动上翻与跨页跳转共用同一实现，但提示口径不同）。
+enum _PrependOutcome { loaded, exhausted, skipped, failed }
 
 class _MsgItem {
   final _MsgKind kind;

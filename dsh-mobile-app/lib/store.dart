@@ -1108,6 +1108,13 @@ class AppStore extends ChangeNotifier {
               Map<String, dynamic>.from(capabilities['eventTimeline'] as Map),
             )
           : const TimelineCapabilities();
+      // issue #25 二期：轮次大纲能力同样由服务端显式声明（不按版本推断）。
+      api.turnOutlineCapabilities =
+          capabilities is Map && capabilities['turnOutline'] is Map
+          ? TurnOutlineCapabilities.fromJson(
+              Map<String, dynamic>.from(capabilities['turnOutline'] as Map),
+            )
+          : const TurnOutlineCapabilities();
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _setConnState('connected');
       _catchup();

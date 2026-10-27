@@ -617,6 +617,38 @@ class TimelineCapabilities {
   }
 }
 
+/// issue #25 二期：轮次大纲能力声明（`/bootstrap` 与 SSE hello 的 `capabilities.turnOutline`）。
+///
+/// App **先读声明再决定是否渲染未加载刻度**——不按宿主版本自行推断；宿主没挂该投影时
+/// 服务端显式回 `supported: false`，App 退回一期"只用已加载轮次"。
+class TurnOutlineCapabilities {
+  final int version;
+  final bool supported;
+
+  /// 未加载轮次可跳转（App 以短淡刻度区分）。
+  final bool unloaded;
+
+  /// 超限时服务端会按体积截断并显式标记。
+  final bool truncated;
+
+  const TurnOutlineCapabilities({
+    this.version = 0,
+    this.supported = false,
+    this.unloaded = false,
+    this.truncated = false,
+  });
+
+  factory TurnOutlineCapabilities.fromJson(Map<String, dynamic>? j) {
+    final m = j ?? const <String, dynamic>{};
+    return TurnOutlineCapabilities(
+      version: (m['version'] as num?)?.toInt() ?? 0,
+      supported: m['supported'] == true,
+      unloaded: m['unloaded'] == true,
+      truncated: m['truncated'] == true,
+    );
+  }
+}
+
 // ── 内核问询/审批弹窗（question/requested · approval/requested，与 PC 端同一通道） ──
 
 class AskOption {

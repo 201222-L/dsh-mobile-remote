@@ -44,6 +44,7 @@
 | `sessions` | 会话列表/touch/创建/停止 | 硬依赖（内核核心） | 移动端会话功能不可用 |
 | `agents` | 会话创建、状态 | 硬依赖（内核核心） | 同上 |
 | `workspaceRegistry` | 工作区列表、会话归档（与 PC 端同一份状态） | 软依赖 | 归档/工作区筛选不可用；App 回退为 cwd 前缀分组（旧版兼容路径） |
+| `sessionProjections` | `turnOutline` 投影单元注册探测（轮次导航，决定 `capabilities.turnOutline`） | 软依赖 | 缺失或未注册 → 能力位 `supported: false`，App 退回「只用已加载轮次」，不按宿主机版本推断 |
 | `messageFeedback` | 消息 👍/👎（与 PC 端同一份） | 软依赖 | 反馈菜单隐藏/报错 |
 | `approval` | 权限策略读取（`setPolicy` 仅当存在时调用） | 可选 | 跳过策略写入 |
 | `credentials` | DeepSeek 余额查询 | 可选 | 回退环境变量 `DEEPSEEK_API_KEY`；都没有则余额不可用 |
@@ -61,6 +62,7 @@
 |---|---|---|
 | `ctx.on("session/event")` | 消息流/通知聚合/上下文窗口/Conversation timeline | 事件形态随版本演进；未知类型进入通用事件卡，能力缺失时 App 回退摘要模式 |
 | `sessionQuery.readEvent`（可选） | Tool activity 与未知 Visible event 的按需无损详情 | 不存在时回退快照；旧历史详情明确显示不可用，不猜测重建 |
+| `sessionQuery.observeSession`（可选） | 投影感知的会话观察（轮次大纲，轮次导航） | 不存在时 `/m/api/turn-outline` 显式返回 `capability-missing`；不把「宿主不支持」误报成「该会话没有轮次」 |
 | `ctx.on("agent/status")` | 状态点（绿/橙） | 同上 |
 | `typertGateway`（`invokeRpc` / `stream` / `openWireStream` / `dispatchRpc`） | 全部内核 RPC 与 `$events` 双端审批通道 | **0.2.1 起必须显式传活 Peer（§2.6）**；漏传/传错时返回 `gateway/internal: …reading 'signal'`，由错误映射转成业务错误码（不再静默） |
 | `session.models` RPC | 模型目录（App 模型选择器） | 失败 → 目录为空，App 隐藏模型胶囊 |
@@ -180,7 +182,7 @@ App 为 Flutter 原生 APK（`com.dsh.remote`），渲染后端为 **Impeller（
 |---|---|---|
 | 设计令牌（有意） | 品牌色 `#426EFE` / 深色 `#0E1116` 等（App `theme.dart`）、`com.dsh.remote`、QR 协议 `DSHREMOTE\|地址\|口令`、`EnableImpeller=true` | 产品设计/通信契约，勿随意改 |
 | 内核耦合词（有意） | 系统消息过滤词 `Current runtime context` / `This snapshot supersedes` / `background job `（App `chat_screen.dart`） | 与内核/PC 端保持一致的隐藏规则 |
-| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` / `doneGraceMs`（v2.8.0）/ `lanBridge`（v3.0.0：`{enabled, port, host}`，默认关）/ `approvalMode`（v3.1.3：`both` 默认 \| `mobile` \| `desktop`） | schema 默认值，改配置即可 |
+| 插件可配置项 | `path` / `authToken` / `cookieName` / `sessionTtlMs` / `rechargeUrl` / `maxConnections` / `pushUrls` / `pushCooldownMs` / `pushContent` / `rateLimit` / `trustedHosts` / `doneGraceMs`（v2.8.0）/ `lanBridge`（v3.0.0：`{enabled, port, host}`，默认关）/ `approvalMode`（v3.1.3：`both` 默认 \| `mobile` \| `desktop`）/ `turnOutlineTimeoutMs`（轮次导航：轮次大纲端点有界等待，默认 5000ms，契约门禁可调短） | schema 默认值，改配置即可 |
 | 插件内置常量 | 通知上限 100、catalog 缓存 15s、SSE 心跳 25s、SSE 超时 15s、登录限流默认 10 次/60s（`rateLimit` 可配）、状态文件 `~/.dsh/mobile-remote/` | 合理默认，无需配置 |
 | App 内置常量 | HTTP 超时 15/20s（余额 25s）、连接/探测超时 8s、地址表上限 8、重试退避 1s→15s、看门狗 15s 检查 / 心跳 75s（3 周期）、日志保留 15 天/256KB、聊天初始窗口 50 条、历史分段 30 条、上下文圆环阈值 70%/90%、思维链折叠手动状态键 `dsh_mr_reasoning_overrides`（按会话持久化，每会话软上限 100 条） | 合理默认；修改点集中在各文件顶部常量 |
 | 已消除的写死 | 充值链接（原 App 硬编码 `platform.deepseek.com/top_up`） | v2.4.2 起走 `catalog.rechargeUrl`（插件配置为准） |
