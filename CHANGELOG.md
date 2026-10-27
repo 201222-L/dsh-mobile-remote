@@ -1,5 +1,42 @@
 # Changelog
 
+## v3.2.1（2026-10-27，issue #37 / #39 / #43 / #44 / #47，PR #36 / #38 / #40 / #41 / #45 / #48）— DSH 0.2.x 适配 + 审批双端路由 + 会话列表性能
+
+> 版本：插件 `3.2.1` / App `3.2.1+24`。
+> 验收门禁：`node --test test/*.mjs`（193 通过 + 1 平台跳过）、`node tools/timeline-contract-check.mjs`（77）、`node tools/account-usage-check.mjs`（15）、`node tools/account-usage-adversarial-check.mjs`（19）、`flutter analyze`（0 issue）、`flutter test`（368）。
+
+### DSH 0.2.x 宿主适配（#37 / #44，PR #36 / #41 / #45）
+
+- **网关入口改为位置参数 + Peer 必填**：0.2.1 起 `invokeRpc` / `dispatchRpc` 为 `(endpoint, payload, signal, peer)`、`openWireStream` 为 7 形参，且入口第一行 `assertPeerLive(peer)`。插件此前不带 Peer，四个入口全部抛 `Cannot read properties of undefined (reading 'signal')`，被错误映射成 400——表现为「停止 / 新建会话 / 模型目录」全部不可用。
+- **进程内 Peer 用 `connection.createPeer` 单例**：`{ principal: { kind: "owner" }, interactions: "answer" }`，按存活缓存（`$events/result` 必须由**开流那一个** Peer 结算），卸载时 `dispose()`；0.2.0 及更早没有该 API 时**传 undefined 交给网关 `operatorPeer` 兜底**，不伪造 Peer。
+- **0.2.0 六处静默失效**：`jobs.list/kill` caller 形状、jobs 事件改 `events.subscribe`、`settings.get` 移除改 `describe()`、`subagents/list` 端点删除、`apiProxy` 死代码清理、Codex 余额失败详情脱敏（只回稳定错误码）。
+- **子代理列表三级来源**：宿主持久目录 `subagents.listChildren` → `listPersistedSubagents` → 会话注册表派生（标 `catalogDegraded`），父会话活跃与休眠都能打开，已释放子代理仍可见。
+- **peerDependencies 上界放宽到 `<0.3.0`**：原 `>=0.1.0-rc.6 <0.2.0` 在 0.2.x 宿主上会被 `evaluatePluginCompatibility()` 直接判为不兼容。
+- **诊断显式化**：新增 `checks.hostCapabilities`（`ok`/`drift`/`missing`）、`checks.hostGeneration`（实际代际路径）与 `checks.hostCapabilityReasons`（allow-list 原因码，如 `gateway-peer-source-missing`），不再把「服务在、语义已变」报成绿灯。
+
+### 审批路由（#43，PR #45）
+
+- `approvalMode: both` **始终两端同显、先答生效**；此前 `$events` 不可用时降级成手机独占，桌面一个卡都不弹。
+- 手机离线时**不再把请求让给不在场的桌面**：新增 `offlineHoldMs`（默认 300000，`0` 关闭）与 `offlineAlsoDesktop`（默认 true），`hold()` 与 `next()` 并行竞速，桌面先答则清理手机侧条目与回放帧。
+- 两端都无人应答时按时限 **fail-close 成 `unavailable`**，内核继续执行，不再永久悬挂。
+
+### 会话列表性能（#39，PR #40）
+
+- `GET /m/api/sessions` 不再在响应前同步折叠全部休眠标题：**每请求 ≤1.5 秒标题预算** + 短码兜底立即 200，预算外转后台有界预热。
+- **revision 失效的持久化标题缓存**（`~/.dsh/mobile-remote/session-titles.json`），revision 未变即零日志读取，跨宿主重启命中。
+- **客户端断开即取消**、并发请求 single-flight、折叠串行门与 ≤4 读取宽度；枚举与标题预算解耦（默认 `enumerationBudgetMs` 12 秒 < App 15 秒超时）。
+- 冷启动预热（`warmUpOnStart`，默认 true）把冷扫描代价挪到请求之前。实测 300+ 会话：冷首轮 **82.45 秒 → 1.5–1.8 秒**。
+
+### App（PR #38 / #48）
+
+- **Git 标签页设置**：上移/下移后已选行按调整后的顺序即时显示，未选标签仍按默认顺序排在后面。
+- **SSE 取消回归测试**改用原始 TCP 关闭事件判定连接释放，替代会误报的 `HttpServer.connectionsInfo().total` 统计；三类取消场景（响应前 / 响应后 / 窗口内连续重建）稳定通过。
+
+### 测试与工程
+
+- 修正标题缓存用例在 **Windows** 上的 home 隔离（`os.homedir()` 只认 `USERPROFILE`，不同步会把缓存写进真实用户目录）。
+- 新增 `test/host-compat-020.test.mjs` / `test/host-compat-021.test.mjs`：按真实签名复刻 0.1.5 / 0.2.0 / 0.2.1 三代宿主，钉住四处实参位次、Peer 同源、卸载释放与诊断状态。
+
 ## v3.2.0（2026-10-04，issue #25 / #26 / #33，PR #27 / #28 / #29 / #30 / #31 / #32）— 移动端 Git 与会话文件浏览 + 会话列表状态 + 命令与手势修复
 
 > 版本：插件 `3.2.0` / App `3.2.0+23`。

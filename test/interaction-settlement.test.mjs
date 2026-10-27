@@ -103,10 +103,17 @@ function createHarness({ agents, goals, workspaceRegistry, frames = [] } = {}) {
 			rpcDispatch.push({ endpoint, args: payload?.args });
 			return { ok: true, value: undefined };
 		},
-		async openWireStream() {
+		// v3.1.6(issue #19)：必须接收取消信号并**保持流打开**。真实的 $events 流不会自行结束；
+		// 原夹具 yield 完帧就结束，插件会（正确地）按"断开"处理并进入退避重连——那会让
+		// 测试挂着定时器不结束。此处按真实语义：帧发完后一直等到 signal 中止。
+		async openWireStream(endpoint, payload, signal) {
 			return (async function* frames_() {
 				yield { type: "ready", clientId: "c-1" };
 				for (const frame of frames) yield frame;
+				await new Promise((resolve) => {
+					if (!signal || signal.aborted) return resolve();
+					signal.addEventListener("abort", () => resolve(), { once: true });
+				});
 			})();
 		},
 	});
@@ -215,7 +222,16 @@ test("subagent.* → 内核 subagents/* 命名空间与 wire 字段", async () =
 	try {
 		const list = await call(harness.route, { url: "/m/api/subagents?parentSessionId=sess-1" });
 		assert.equal(list.status, 200);
-		assert.deepEqual(harness.rpcCalls.at(-1), { endpoint: "subagents/list", args: { parentSessionId: "sess-1" } });
+		assert.ok(Array.isArray(list.body.subagents), "应返回子代理数组");
+		// v3.1.6(issue #21)：**不得**再调用 `subagents/list` —— 该 Remote 端点在宿主 0.2.0
+		// 已被删除（0.1.5 有 4 处声明，0.2.0 为 0）。调用它会让「会话工具 → 子代理」直接报
+		// "no active Remote method exports this endpoint"。列表改为由会话注册表派生：
+		// 子代理会话在会话头里带 origin === "subagent" 与 parentSession（内核提供，两代都有）。
+		assert.equal(
+			harness.rpcCalls.some((call) => call.endpoint === "subagents/list"),
+			false,
+			"不得调用已删除的 subagents/list 端点",
+		);
 
 		const interrupt = await call(harness.route, {
 			url: "/m/api/subagents/interrupt",
