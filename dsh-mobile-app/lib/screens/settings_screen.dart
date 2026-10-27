@@ -59,6 +59,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final canOverlay = await Floating.canDrawOverlay();
     // v2.7.2：偏好是开但服务没跑（清理后台/重启后）→ 自动拉起，开关保持开
     if (want && !on && canOverlay) {
+      await Floating.setPetConfig(
+        height: widget.store.petHeight,
+        reducedMotion: widget.store.petReducedMotion,
+        edgeHide: widget.store.petEdgeHide,
+      );
       await Floating.start();
       unawaited(
         Floating.setBalanceAlert(
@@ -71,7 +76,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _bubbleOn = on || (want && canOverlay));
   }
 
-  /// 悬浮球开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
+  /// 桌面宠物开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
   Future<void> _toggleBubble(bool v) async {
     if (v) {
       final ok = await Floating.canDrawOverlay();
@@ -83,8 +88,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text(L10n.t('需要悬浮窗权限', 'Overlay permission needed')),
             content: Text(
               L10n.t(
-                '开启悬浮球需要在系统设置中允许「显示在其他应用上层」。\n点击【去开启】跳转系统设置。',
-                'The floating bubble needs the "display over other apps" permission.\nTap Open Settings to grant it.',
+                '开启桌面宠物需要在系统设置中允许「显示在其他应用上层」。\n点击【去开启】跳转系统设置。',
+                'The desktop pet needs the "display over other apps" permission.\nTap Open Settings to grant it.',
               ),
             ),
             actions: [
@@ -105,13 +110,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return; // 授权后由用户重新打开开关（或重进页面状态同步）
       }
       try {
+        await Floating.setPetConfig(
+          height: widget.store.petHeight,
+          reducedMotion: widget.store.petReducedMotion,
+          edgeHide: widget.store.petEdgeHide,
+        );
         await Floating.start();
       } catch (e) {
         if (mounted) {
           setState(() => _bubbleOn = false);
           showToast(
             context,
-            '${L10n.t('悬浮球启动失败：', 'Bubble start failed: ')}$e',
+            '${L10n.t('桌面宠物启动失败：', 'Pet start failed: ')}$e',
           );
         }
         return;
@@ -1081,17 +1091,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           _row(
-            leading: const Icon(Icons.bubble_chart_outlined),
-            title: L10n.t('悬浮球', 'Floating bubble'),
+            leading: const Icon(Icons.pets_outlined),
+            title: L10n.t('桌面宠物（大肥鱼）', 'Desktop pet (BigFish)'),
             sub: L10n.t(
-              '桌面悬浮球：agent 运行/通知/余额低时亮起，单击展开面板（默认关）',
-              'Floating bubble: lights up on activity, tap to open panel (off by default)',
+              '显示任务状态/通知/余额，点它互动，长按打开面板（默认关）',
+              'Shows task status / notifications / balance; tap to interact, long-press for panel (off by default)',
             ),
             trailing: DshSwitch(value: _bubbleOn, onChanged: _toggleBubble),
           ),
           _row(
+            leading: const Icon(Icons.straighten_outlined),
+            title: L10n.t('宠物大小', 'Pet size'),
+            sub: L10n.t('迷你 / 标准 / 大', 'Mini / Standard / Large'),
+            trailing: Text(
+              _petSizeLabel(widget.store.petHeight),
+              style: TextStyle(fontSize: 12, color: brand),
+            ),
+            onTap: () => _pickPetSize(widget.store),
+          ),
+          _row(
+            leading: const Icon(Icons.motion_photos_off_outlined),
+            title: L10n.t('减少动态', 'Reduce motion'),
+            sub: L10n.t(
+              '固定姿势，关闭待机与点击动画',
+              'Freeze the pose; disable idle and tap animations',
+            ),
+            trailing: DshSwitch(
+              value: widget.store.petReducedMotion,
+              onChanged: (v) => widget.store.setPetReducedMotion(v),
+            ),
+          ),
+          _row(
+            leading: const Icon(Icons.vertical_align_bottom_outlined),
+            title: L10n.t('贴边自动躲藏', 'Auto-hide at edge'),
+            sub: L10n.t(
+              '5 秒无操作后缩到屏幕边缘并虚化',
+              'Tuck into the edge and fade after 5s idle',
+            ),
+            trailing: DshSwitch(
+              value: widget.store.petEdgeHide,
+              onChanged: (v) => widget.store.setPetEdgeHide(v),
+            ),
+          ),
+          _row(
             leading: const Icon(Icons.help_outline),
-            title: L10n.t('悬浮球操作说明', 'Bubble guide'),
+            title: L10n.t('桌面宠物操作说明', 'Pet guide'),
             sub: L10n.t('状态含义与手势操作', 'Status meaning and gestures'),
             trailing: Text(
               L10n.t('查看 ▸', 'View ▸'),
@@ -1107,6 +1151,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub:
                 'App v${_appVersion.isEmpty ? '…' : _appVersion}'
                 ' · ${L10n.t('插件', 'plugin')} v${api.pluginVersion.isEmpty ? '…' : api.pluginVersion}',
+          ),
+          _row(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: L10n.t('角色素材', 'Character assets'),
+            sub: L10n.t(
+              'PC2005-cloud/dsh-pet · MIT（经 dsh-dafeiyu 转码）',
+              'PC2005-cloud/dsh-pet · MIT (encoded via dsh-dafeiyu)',
+            ),
           ),
           _row(
             leading: const Icon(Icons.monitor_heart_outlined),
@@ -1196,13 +1248,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// 悬浮球操作说明弹窗（状态含义 + 手势操作）。
+  String _petSizeLabel(int height) {
+    if (height <= 80) return L10n.t('迷你', 'Mini');
+    if (height >= 106) return L10n.t('大', 'Large');
+    return L10n.t('标准', 'Standard');
+  }
+
+  void _pickPetSize(AppStore store) {
+    showChoiceSheet(
+      context,
+      title: L10n.t('宠物大小', 'Pet size'),
+      items: [
+        (id: '76', name: L10n.t('迷你', 'Mini'), sub: '76dp'),
+        (id: '96', name: L10n.t('标准', 'Standard'), sub: '96dp'),
+        (id: '116', name: L10n.t('大', 'Large'), sub: '116dp'),
+      ],
+      selectedId: '${store.petHeight}',
+      onPick: (id) async {
+        await store.setPetHeight(int.parse(id));
+      },
+    );
+  }
+
+  /// 桌面宠物操作说明弹窗（状态含义 + 手势操作）。
   void _showBubbleGuide() {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(
-          L10n.t('悬浮球操作说明', 'Floating bubble guide'),
+          L10n.t('桌面宠物操作说明', 'Desktop pet guide'),
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
         ),
         content: SingleChildScrollView(
@@ -1212,38 +1286,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               _guideSection(L10n.t('状态', 'Status'), [
                 (
-                  L10n.t('灰色鲸鱼', 'Gray whale'),
-                  L10n.t('一切正常，空闲', 'All good, idle'),
-                ),
-                (
-                  L10n.t('蓝色鲸鱼', 'Blue whale'),
+                  L10n.t('动作跟随任务', 'Animation follows the task'),
                   L10n.t(
-                    'agent 运行中 / 有新通知 / 余额不足',
-                    'Agent running / new notification / low balance',
+                    '空闲 / 思考 / 处理 / 待确认 / 完成 / 出错',
+                    'Idle / thinking / working / waiting / done / error',
                   ),
                 ),
                 (
                   L10n.t('红色角标', 'Red badge'),
                   L10n.t('未读通知数（60 秒后自动消退）', 'Unread count (clears after 60s)'),
                 ),
+                (
+                  L10n.t('状态气泡', 'Status bubble'),
+                  L10n.t('显示当前任务与进度，点它打开面板', 'Shows the task and progress; tap for panel'),
+                ),
               ]),
               const SizedBox(height: 10),
               _guideSection(L10n.t('手势', 'Gestures'), [
                 (
-                  L10n.t('单击', 'Tap'),
-                  L10n.t('展开 / 收起面板', 'Open / close panel'),
+                  L10n.t('点头部 / 身体 / 尾巴', 'Tap head / body / tail'),
+                  L10n.t('摸头 / 戳一下 / 碰尾巴', 'Head pat / poke / tail'),
+                ),
+                (
+                  L10n.t('双击', 'Double tap'),
+                  L10n.t('摸头（专属台词）', 'Head pat (special line)'),
                 ),
                 (
                   L10n.t('拖动', 'Drag'),
                   L10n.t(
-                    '移动位置，松手贴边，5 秒无操作自动缩进',
-                    'Move; snaps to edge, auto-hides after 5s',
+                    '悬空，松手落地并吸附到最近边缘',
+                    'Lift, then land and snap to the nearest edge',
                   ),
                 ),
-                (L10n.t('双击', 'Double tap'), L10n.t('打开 App', 'Open the app')),
                 (
                   L10n.t('长按', 'Long press'),
-                  L10n.t('退出悬浮球', 'Exit the bubble'),
+                  L10n.t('打开 / 收起面板', 'Open / close panel'),
+                ),
+                (
+                  L10n.t('贴边 5 秒', '5s at the edge'),
+                  L10n.t('缩进边缘并虚化，点一下滑出', 'Tucks in and fades; tap to slide out'),
                 ),
               ]),
               const SizedBox(height: 10),
@@ -1258,6 +1339,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 (
                   L10n.t('关闭', 'Close'),
                   L10n.t('点面板外任意位置', 'Tap anywhere outside'),
+                ),
+                (
+                  L10n.t('关闭宠物', 'Turn off pet'),
+                  L10n.t('面板底部的「关闭宠物」', 'Use "Turn off pet" at the bottom of the panel'),
                 ),
               ]),
             ],

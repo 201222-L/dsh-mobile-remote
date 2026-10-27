@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "canvas": {
+    "width": 288,
+    "height": 229
+  },
+  "clips": {
+    "idle": {
+      "file": "idle.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "waiting": {
+      "file": "waiting.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "thinking": {
+      "file": "thinking.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "working": {
+      "file": "working.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "working_search": {
+      "file": "working_search.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "working_command": {
+      "file": "working_command.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": true
+    },
+    "success": {
+      "file": "success.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "error": {
+      "file": "error.webp",
+      "frames": 60,
+      "frameMs": 84,
+      "loop": false
+    },
+    "dragging": {
+      "file": "dragging.webp",
+      "frames": 73,
+      "frameMs": 84,
+      "loop": true
+    },
+    "dragging_release": {
+      "file": "dragging_release.webp",
+      "frames": 25,
+      "frameMs": 84,
+      "loop": false
+    },
+    "head_pat": {
+      "file": "head_pat.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "poke": {
+      "file": "poke.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "tail": {
+      "file": "tail.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "eat_token": {
+      "file": "eat_token.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "idle_stretch": {
+      "file": "idle_stretch.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    },
+    "idle_yawn": {
+      "file": "idle_yawn.webp",
+      "frames": 121,
+      "frameMs": 84,
+      "loop": false
+    }
+  },
+  "stateMap": {
+    "IDLE": "idle",
+    "THINKING": "thinking",
+    "WORKING": "working",
+    "WAITING": "waiting",
+    "SUCCESS": "success",
+    "ERROR": "error",
+    "DISCONNECTED": "idle"
+  },
+  "workingActivityMap": {
+    "searching": "working_search",
+    "commanding": "working_command",
+    "editing": "working",
+    "testing": "working_command",
+    "using-tool": "working"
+  },
+  "idleMicroClips": [
+    "idle_stretch",
+    "idle_yawn",
+    "eat_token"
+  ],
+  "idleMicroIntervalsMs": {
+    "quiet": [
+      45000,
+      90000
+    ],
+    "normal": [
+      25000,
+      45000
+    ],
+    "lively": [
+      12000,
+      22000
+    ]
+  },
+  "interactionCooldownMs": 1200,
+  "source": {
+    "project": "QCYTSN/dsh-dafeiyu",
+    "upstream": "PC2005-cloud/dsh-pet",
+    "license": "MIT",
+    "scale": 0.7,
+    "step": 2,
+    "quality": 50
+  }
+}

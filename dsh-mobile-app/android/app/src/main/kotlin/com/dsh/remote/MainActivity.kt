@@ -19,6 +19,10 @@ class MainActivity : FlutterActivity() {
     // v2.7.2 review(FS1)：悬浮球面板动作可能发生在冷启动（进程已被系统杀死时点"打开会话/充值/通知"），
     // 此时走 onCreate 而非 onNewIntent；Flutter 引擎未就绪前先暂存，configureFlutterEngine 后再投递。
     private var pendingOpenAction: String? = null // "charge" | "usage" | "notifs" | "session:<id>"
+    // 桌面宠物配置（App 设置页推送；服务未运行时暂存，start 时带上）
+    private var petHeight = 96
+    private var petReducedMotion = false
+    private var petEdgeHide = true
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +66,16 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "start" -> {
                     startBubbleService()
+                    result.success(true)
+                }
+                // 宠物大小 / 减少动态 / 贴边躲藏（设置页变更后实时同步）
+                "setPetConfig" -> {
+                    petHeight = (call.argument<Int>("height") ?: 88).coerceIn(56, 160)
+                    petReducedMotion = call.argument<Boolean>("reducedMotion") ?: false
+                    petEdgeHide = call.argument<Boolean>("edgeHide") ?: true
+                    if (FloatingBubbleService.running) {
+                        startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
+                    }
                     result.success(true)
                 }
                 "stop" -> {
@@ -139,9 +153,13 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startBubbleService() {
-        val i = Intent(this, FloatingBubbleService::class.java)
-        startServiceCompat(i)
+        startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
     }
+
+    private fun petIntent(i: Intent): Intent = i
+        .putExtra("pet_height", petHeight)
+        .putExtra("pet_reduced_motion", petReducedMotion)
+        .putExtra("pet_edge_hide", petEdgeHide)
 
     private fun startServiceCompat(i: Intent) {
         if (Build.VERSION.SDK_INT >= 26) {

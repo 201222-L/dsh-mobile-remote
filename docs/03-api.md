@@ -274,7 +274,7 @@
 | `session/context` | `{ sessionId, contextWindow }`——模型上下文窗口（`request/context` 事件，PC 端圆环同源） |
 | `agent/status` | `{ agentId, sessionId, status, child }`——running / waiting / idle；`sessionId` 为去 `session:` 前缀的会话 id，`child` 标记子代理会话（v2.7.2 起携带后两字段） |
 | `notifications/changed` | 通知记录增删（如移动端删除后），客户端刷新列表与角标 |
-| `mobile/notify` | `{ notification: { id, kind, sessionId, title, detail, time } }`——插件"真结束"判定后推送的通知（completed / failed / needs-answer），悬浮球/App 与通知中心同源渲染（v2.7.2） |
+| `mobile/notify` | `{ notification: { id, kind, sessionId, title, detail, time } }`——插件"真结束"判定后推送的通知（completed / failed / needs-answer），桌面宠物/App 与通知中心同源渲染（v2.7.2） |
 | `mobile/frame` | 内核瞬态帧（问询/审批）。`frame` 字段为 `question/requested`（含 `rpcId`、`questions[]`）、`question/resolved`（`questionRpcId`）、`approval/requested`（`rpcId`、`approvalId`、`toolName`、`reason?`）、`approval/resolved`（`approvalId`）。**App 断线重连时服务端补发挂起的待答帧**（`pendingFrames` 回放） |
 | `mobile/queue` | `{ sessionId, rows: [{ id, text, placement }] }`——内核队列快照（`agent/inbox/spliced` 即时镜像，v3.0.2）：认领/删除/编辑实时反映，App 端 dock 以此为权威源（`placement`: `queued` / `steering` / `context`，与 GET /queue 同款形状）；断线重连时 mux 回放当前队列 |
 
@@ -685,7 +685,7 @@
 - 查询快照在电脑进程内缓存 60 秒并共享并发请求；手动 `refresh=1` 的连点在 2 秒内复用快照；不写手机或电脑持久化文件。配额窗口不相加，有限 Credits 和个人消费上限分别展示。
 - HTTP 错误只返回通用 `502 account-usage-failed`（单来源失败不会使整体请求失败）。
 
-**悬浮球面板消费语义（v3.2）**：原生悬浮球面板把本端点当作「展开时按需读取」的快照——每次展开面板最多触发一次查询（客户端 2 分钟节流，不并入面板打开期间的 5 秒轮询，也不做后台周期轮询）；成功快照在进程内保留，失败时沿用旧值并标注相对时间；投影不可用（旧插件 404 / 未配置 / 全部失败）时，面板整体降级为原有的单行 DeepSeek 余额。面板按「一个来源一行」渲染：金额来源保留文字（CNY 优先），配额来源只显示主 bucket 窗口的细条与颜色、不出百分比数字，每个进度条上方居中显示窗口短标签（5h / 每周 / 每月，与详情页窗口语义一致）；附加 bucket（服务端命名的 `名称 · 5h`）与账户身份不出现 overlay 面板，详情页仍是完整信息入口（`displayName`/`maskedEmail`、Credits、个人消费上限、重置时间）。
+**桌面宠物面板消费语义（v3.2）**：原生桌面宠物面板把本端点当作「展开时按需读取」的快照——每次展开面板最多触发一次查询（客户端 2 分钟节流，不并入面板打开期间的 5 秒轮询，也不做后台周期轮询）；成功快照在进程内保留，失败时沿用旧值并标注相对时间；投影不可用（旧插件 404 / 未配置 / 全部失败）时，面板整体降级为原有的单行 DeepSeek 余额。面板按「一个来源一行」渲染：金额来源保留文字（CNY 优先），配额来源只显示主 bucket 窗口的细条与颜色、不出百分比数字，每个进度条上方居中显示窗口短标签（5h / 每周 / 每月，与详情页窗口语义一致）；附加 bucket（服务端命名的 `名称 · 5h`）与账户身份不出现 overlay 面板，详情页仍是完整信息入口（`displayName`/`maskedEmail`、Credits、个人消费上限、重置时间）。
 
 ### 6.17 文件传输（v3.1.2，B站 csborbbnc 反馈）
 

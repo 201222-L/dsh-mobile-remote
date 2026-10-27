@@ -24,6 +24,18 @@ class Floating {
   static Future<void> notifyBalance(double total) =>
       _channel.invokeMethod('notifyBalance', {'value': total.toStringAsFixed(2)});
 
+  /// 桌面宠物配置：高度 dp / 减少动态 / 贴边自动躲藏。服务未运行时暂存，启动时带上。
+  static Future<void> setPetConfig({
+    required int height,
+    required bool reducedMotion,
+    required bool edgeHide,
+  }) =>
+      _channel.invokeMethod('setPetConfig', {
+        'height': height,
+        'reducedMotion': reducedMotion,
+        'edgeHide': edgeHide,
+      });
+
   /// 余额预警配置同步给悬浮球（开关 + 阈值；悬浮球的报警判定完全以此为准，
   /// 开关关闭 → 悬浮球不因余额报警/亮起，仅常驻显示余额数值）。
   static Future<void> setBalanceAlert(bool enabled, double threshold) =>

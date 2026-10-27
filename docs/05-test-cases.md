@@ -164,8 +164,8 @@
 
 | 项目 | 内容 |
 |---|---|
-| 步骤 | 带 token 请求 `/m/api/bootstrap` → 检查 agents/sessions 条目；App 回桌面点悬浮球看「运行中的会话」面板 |
-| 预期 | ① agents/sessions 条目含 `title`（`sessionTitleOf ?? shortSessionId` 兜底）；② 悬浮球面板显示会话标题（超宽省略号截断），而非 session id 短码；③ 旧版插件（无 title）时 App 回退显示 id 短码 |
+| 步骤 | 带 token 请求 `/m/api/bootstrap` → 检查 agents/sessions 条目；App 回桌面点桌面宠物看「运行中的会话」面板 |
+| 预期 | ① agents/sessions 条目含 `title`（`sessionTitleOf ?? shortSessionId` 兜底）；② 桌面宠物面板显示会话标题（超宽省略号截断），而非 session id 短码；③ 旧版插件（无 title）时 App 回退显示 id 短码 |
 | 实测 | ✅ 端到端通过（真机：面板显示会话标题） |
 
 ### F-22 思维链折叠状态持久化（v3.1.0 候选，App 真机）
@@ -225,22 +225,22 @@
 | 步骤 | 快速连续进入设置和详情页；点击详情页顶部刷新；观察服务端上游请求与 App 显示 |
 | 预期 | 普通进入请求复用 60 秒成功快照且并发请求共享一轮上游查询；手动刷新请求 `?refresh=1` 并发查询全部来源；不产生本地持久化额度文件，不周期轮询上游 |
 
-### F-29 悬浮球面板三来源区块（#18 用量与额度）
+### F-29 桌面宠物面板三来源区块（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
-| 前置 | 插件 v3.2+（含 `/account-usage`）、App 开启悬浮球，DeepSeek / Codex / OpenCode Go 至少各一个来源可用 |
-| 步骤 | 展开悬浮球面板，等待用量与额度区块渲染 |
+| 前置 | 插件 v3.2+（含 `/account-usage`）、App 开启桌面宠物，DeepSeek / Codex / OpenCode Go 至少各一个来源可用 |
+| 步骤 | 展开桌面宠物面板，等待用量与额度区块渲染 |
 | 预期 | 出现「用量与额度」区块（含「详情 ▸」）；每来源一行：DeepSeek 出金额文字（CNY ¥），Codex / OpenCode Go 配额行每个进度条上方居中显示窗口短标签（Codex：5h / 每周；OpenCode Go：5h / 每周 / 每月），条只出细条与颜色、不出百分比数字；主 bucket 窗口按 5h → 周 → 月排列；金额行在低余额时变红；点击区块或「详情 ▸」打开 App 用量页；底部「去充值」保留 |
 
-### F-30 悬浮球展开时按需获取与节流（#18 用量与额度）
+### F-30 桌面宠物展开时按需获取与节流（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
-| 步骤 | 反复快速展开/收起悬浮球面板；观察服务端 account-usage 调用次数 |
+| 步骤 | 反复快速展开/收起桌面宠物面板；观察服务端 account-usage 调用次数 |
 | 预期 | 每次展开最多触发一次查询；2 分钟节流窗内重复展开复用在途/缓存结果，不反复打上游；首次展开区块先显示「查询中…」再异步就地更新；App 被杀后展开面板仍能拉到数据 |
 
-### F-31 悬浮球面板降级与陈值（#18 用量与额度）
+### F-31 桌面宠物面板降级与陈值（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
@@ -248,12 +248,12 @@
 | 步骤 | 展开面板，分别观察 A / B / C |
 | 预期 | A/B/C 下区块整体不出现、不显示任何报错，原有单行余额原位显示且点击仍=去充值（A 不退化现有功能）；C 曾成功过 → 区块保留旧值并以小灰字标注相对时间（超过 10 分钟才标注）；C 从未成功过 → 退回单行余额；不产生本地持久化额度文件 |
 
-### F-32 悬浮球面板隐私边界（#18 用量与额度）
+### F-32 桌面宠物面板隐私边界（#18 用量与额度）
 
 | 项目 | 内容 |
 |---|---|
-| 步骤 | 展开面板，检查区块、球体与操作说明弹窗 |
-| 预期 | 区块不显示 Codex 账户身份（displayName/maskedEmail）；球体自身不常驻金额；配额窗口与来源永不相加、不换算；附加 Codex bucket（服务端命名「名称 · 5h」）不出现在面板；设置 → 悬浮球操作说明的面板内容已包含「用量与额度」 |
+| 步骤 | 展开面板，检查区块、宠物与操作说明弹窗 |
+| 预期 | 区块不显示 Codex 账户身份（displayName/maskedEmail）；宠物自身不常驻金额；配额窗口与来源永不相加、不换算；附加 Codex bucket（服务端命名「名称 · 5h」）不出现在面板；设置 → 桌面宠物操作说明的面板内容已包含「用量与额度」 |
 
 ### F-33 对话时间线能力与历史/实时一致（PR #24 时间线）
 
@@ -287,6 +287,16 @@
 |---|---|
 | 步骤 | 生成超过 100 条未读 Visible event，断开 SSE，恢复连接并向上翻历史 |
 | 预期 | catch-up 持续读取 `hasMore` 直到 durable cursor 收敛；重复帧不重复渲染；加载更早事件不改变当前 viewport 锚点 |
+
+### F-36 桌面宠物：动作 / 互动 / 贴边（v3.2.2 build 26）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | App 已授权悬浮窗，设置开启桌面宠物；准备一条可触发完成/失败/审批的任务 |
+| 步骤 | 观察空闲；发消息看思考/处理；触发审批看等待；完成/失败看 pulse；点头部/身体/尾巴、双击、拖拽、长按；静置 5 秒；改大小/减少动态/贴边开关 |
+| 预期 | 动作随状态切换（思考/搜索/命令/等待/完成/出错）；完成/失败 pulse 后回到最新状态；互动有台词与 1.2 秒冷却；拖拽播放悬空、松手落地并吸附最近边缘；长按打开旧面板；贴边 5 秒后只露 45% 并降低透明度/模糊，点露出部分滑出；完成/等待/出错自动探头；旧面板保留运行中会话/通知/用量/余额/打开 App/去充值；减少动态固定姿势；三档大小即时生效；App 被杀后宠物仍工作 |
+| 变体 | Android 8 以下无 animated WebP 解码 → 静态首帧，互动与状态文字仍工作 |
+| 单测 | `./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.PetAnimationModelTest" --tests "com.dsh.remote.PetStateReducerTest"`（状态机、pulse、互动冷却、拖拽保护、空闲微动作、SSE 状态收敛） |
 
 ## 3. 安全测试用例
 
@@ -323,4 +333,4 @@
 
 - 每次修改插件源码后：`cd C:\Users\<用户>\.dsh\profiles\desktop && corepack pnpm install`（同步 file: 副本）→ 重启 DSH Desktop → 跑 `tools/e2e-check.mjs` 与 `node tools/account-usage-check.mjs` → 手机 App 冒烟（连接/发消息/通知/新建会话/图片发送/用量与额度）。
 - 修改 App 后：`flutter analyze` → `flutter test`（新增 `test/usage_model_test.dart`；另含 `test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单）→ `flutter build apk --release` → 覆盖安装。
-- 修改原生悬浮球后：`cd dsh-mobile-app/android && ./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.UsagePanelModelTest"`（面板模型 seam 纯 JVM 单测：节流/降级/主 bucket/分档/过期/CNY）→ 真机冒烟（F-29~F-32：三来源区块、展开节流、降级与陈值标注、隐私边界）。
+- 修改原生桌面宠物后：`cd dsh-mobile-app/android && ./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.PetAnimationModelTest" --tests "com.dsh.remote.PetStateReducerTest" --tests "com.dsh.remote.UsagePanelModelTest"`（动画状态机 / SSE 状态收敛 / 面板模型）→ 真机冒烟（F-29~F-32 面板区块；F-36 动作、互动、贴边与大小）。

@@ -13,10 +13,10 @@
 | 桌面端 DSH（Harness） | **v3.1.6 起同时适配两代宿主 API：`0.1.x` 与 `0.2.x`**（见 §2.5）；**`0.2.1` 起进程内网关调用强制 Peer，由 §2.6 适配（issue #34）**。机制基线：`0.1.2-rc.1` 服务包 = DSH Desktop v2.0.5（approval/request 瀑布 answerer + `$events` 远程事件双端审批 + RPC 网关，见 §2）；更早的 `0.1.1-rc.2` 基线 = v2.0.2 起适配。**不按宿主版本号硬拦截**，按能力探测适配（ADR 0017） |
 | dsh-mobile-remote 插件 | **v3.0.0 基线；v3.2.0+ 才提供用量与额度**；`/m/api/diagnostics` 可自检 |
 | 手机 App（Android） | v3.0.0 基线（用量与额度需 v3.2.0+；与插件同版本 = 完美配对）；不同版本可用但"谁旧谁吃亏"，详见 README「版本与兼容」；Android 7.0+、64 位机型 |
-| 字段级兼容（v3.1.0 候选） | `reasoning`/`title` 为纯增量字段：新插件+旧 App 无影响（忽略新字段）；新 App+旧插件自动回退（不渲染折叠块 / 悬浮球标题兜底短码）——任意组合均可使用 |
+| 字段级兼容（v3.1.0 候选） | `reasoning`/`title` 为纯增量字段：新插件+旧 App 无影响（忽略新字段）；新 App+旧插件自动回退（不渲染折叠块 / 桌面宠物标题兜底短码）——任意组合均可使用 |
 | 字段级兼容（v3.1.1） | `/m/api/directories` 根视图新增 `sep`（服务端路径分隔符）；新插件+旧 App 忽略该字段即可（旧 App 在 WSL 上仍按 `\` 拼接，由服务端`normalizeServerPath` 归一化兜底，浏览/建夹/建会话均可用）；新 App+旧插件缺少 `sep` 时按根视图推断分隔符——任意组合均可使用 |
 | 用量与额度（v3.2） | 新插件+新 App 通过 `/m/api/account-usage` 显示 DeepSeek/Codex/OpenCode Go；旧 App 忽略新端点。新 App+旧插件进入该入口会显示“电脑端插件版本过旧”，不影响其它功能；升级插件后无需重新配置凭据 |
-| 悬浮球面板用量与额度（v3.2） | 新 App+新插件：面板展开时按需展示三来源区块（金额行文字 + 配额行细条/颜色），整块可点进详情页。新 App+旧插件：区块整体降级为原有单行余额（点击仍=去充值），其余面板功能不受影响；旧 App 忽略新端点。无新增服务端契约 |
+| 桌面宠物面板用量与额度（v3.2） | 新 App+新插件：面板展开时按需展示三来源区块（金额行文字 + 配额行细条/颜色），整块可点进详情页。新 App+旧插件：区块整体降级为原有单行余额（点击仍=去充值），其余面板功能不受影响；旧 App 忽略新端点。无新增服务端契约 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
 **声明式兼容范围（`peerDependencies`）**：`@deepseek-ai/dsh-{credentials,llm,sandbox-policy,scope}` 声明 `>=0.1.0-rc.6 <0.3.0`。宿主 `@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility()` 用 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })` 判定（**prerelease 参与比较**），因此该范围同时覆盖 `0.1.x`、`0.2.0-rc.*` 与 `0.2.x` 正式版，而 `0.3.0+` 会被判为不兼容。上界**只用于声明可安装边界**，功能路径仍按能力探测（ADR 0017），不按版本号做功能门禁。
@@ -72,7 +72,7 @@
 
 > ⚠ **子代理通知判定需要 `session.header.origin`（DSH ≥ 0.1.1-rc.2）**：通知聚合对子代理会话（`origin === "subagent"`）抑制完成/失败通知（与内核自身通知一致）。旧内核 header 无 `origin` 字段时，子代理完成/失败通知会被放行（不影响功能正确性，仅通知噪音）；fork 出的独立会话（无 origin）照常通知。
 >
-> ⚠ **v3.1.0 候选新增字段（纯增量，无协议破坏）**：`assistant/message` 摘要的 `reasoning`（思维链正文，仅非空时下发，≤20000 字符）与 `/m/api/bootstrap` 的 `agents[*].title` / `sessions[*].title`（会话标题，空则兜底短码）。旧版 App 按 key 取值、忽略未知字段；旧版插件缺少这些字段时新版 App 自动回退（不渲染折叠块 / 悬浮球显示 id 短码）。两端任意组合均可正常使用。
+> ⚠ **v3.1.0 候选新增字段（纯增量，无协议破坏）**：`assistant/message` 摘要的 `reasoning`（思维链正文，仅非空时下发，≤20000 字符）与 `/m/api/bootstrap` 的 `agents[*].title` / `sessions[*].title`（会话标题，空则兜底短码）。旧版 App 按 key 取值、忽略未知字段；旧版插件缺少这些字段时新版 App 自动回退（不渲染折叠块 / 桌面宠物显示 id 短码）。两端任意组合均可正常使用。
 
 > ⚠ **Issue #1 时间线能力协商（纯增量）：** `/bootstrap` 与 SSE `hello` 的 `capabilities.eventTimeline` 声明 `detail`、`unknownEvents`、`callCorrelation` 等能力。新版 App 只在 `capabilities.eventTimeline.detail` 且事件摘要带 `detail.available` 时请求 `/event-detail`；能力是端点级声明，单事件仍可能因旧日志/离线而不可用。旧插件没有声明时继续使用已有摘要/历史路径，并把详情显示为不可用，不按插件版本号猜测能力。
 >

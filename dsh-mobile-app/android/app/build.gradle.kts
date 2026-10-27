@@ -29,6 +29,11 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
+    // 宠物动画 WebP 不压缩：运行时直接 mmap/流式解码，避免每次启动解压 14MB 素材。
+    androidResources {
+        noCompress += "webp"
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.dsh.remote"

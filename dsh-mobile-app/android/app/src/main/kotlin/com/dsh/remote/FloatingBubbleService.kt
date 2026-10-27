@@ -50,9 +50,25 @@ class FloatingBubbleService : Service() {
     private var wm: WindowManager? = null
     private var bubble: View? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
-    private var logoImg: BubbleView? = null
+    private var petView: PetView? = null
+    private var petManifest: PetManifest? = null
+    private var petModel: PetAnimationModel? = null
+    private val petReducer = PetStateReducer()
+    private var petHeightDp = 96
+    private var petReducedMotion = false
+    private var petEdgeHide = true
+    private var petRenderedVersion = -1L
+    private var petLastClip: String? = null
+    private var petTucked = false
+    private var petIdleNextAt = 0L
+    private var petStatusShownAt = 0L
+    private var petStatusState = ""
+    private var latestSessionTitle: String? = null
+    private var latestProgress: Pair<Int, Int>? = null
     private var badge: TextView? = null
-    private var tip: TextView? = null
+    private var tip: LinearLayout? = null
+    private var tipTitle: TextView? = null
+    private var tipDetail: TextView? = null
     private var tipParams: WindowManager.LayoutParams? = null
 
     // 迷你面板
@@ -65,6 +81,8 @@ class FloatingBubbleService : Service() {
     private var panelNotifsBadge: TextView? = null
     private var panelCharge: View? = null
     private var panelBalance: TextView? = null
+    private var panelStatus: TextView? = null
+    private var panelExit: TextView? = null
     // 用量与额度区块（v3.2）：展开面板时按需获取 + 客户端节流；
     // 不可用时整块消失，降级为上方/下方单行余额（点击语义不变）。
     private var panelUsage: LinearLayout? = null
@@ -106,7 +124,6 @@ class FloatingBubbleService : Service() {
     private var lastNotifKey = ""
     private var lastNotifAt = 0L
     @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
-    private var bubbleDp = 52
     // v2.7.2 review：已弹通知 id 集合（去重，上限 200）
     private val seenNotifIds = java.util.LinkedHashSet<String>()
 
@@ -128,7 +145,7 @@ class FloatingBubbleService : Service() {
             // 5 分钟无任何活动且无通知 → 回暗态（兜底：事件断档时球不常亮）
             if (agentsRunning && notifCount == 0 && System.currentTimeMillis() - lastActivity > 5 * 60 * 1000L) {
                 agentsRunning = false
-                postState()
+                applyPetChange(petReducer.onAgentStatus("idle", false))
             }
             mainHandler.postDelayed(this, 60000)
         }
@@ -141,15 +158,27 @@ class FloatingBubbleService : Service() {
     private var startY = 0
     private var moved = false
     private var lastTap = 0L
-    private val longPressRunnable = Runnable { exitBubble("long-press") }
     /** 贴边后 5 秒无操作才缩进（用户反馈：松手立即缩进导致点击不稳定）。 */
     private val autoHideRunnable = Runnable { autoHideToEdge() }
+    /** 宠物脉冲/overlay 终点与空闲微动作调度（250ms 一次，不逐帧驱动）。 */
+    private val petTickRunnable = object : Runnable {
+        override fun run() {
+            if (petModel == null) return
+            val now = System.currentTimeMillis()
+            if (petModel?.tick(now) == true) renderPet(animate = true)
+            maybePlayIdleMicro(now)
+            mainHandler.postDelayed(this, 250)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         running = true
+        petHeightDp = prefsInt("flutter.dsh_mr_pet_height", 96).coerceIn(56, 160)
+        petReducedMotion = prefsBool("flutter.dsh_mr_pet_reduced_motion", false)
+        petEdgeHide = prefsBool("flutter.dsh_mr_pet_edge_hide", true)
         createChannel()
         // v2.9.0 review(A1)：Android 14+ 显式传 FGS 类型（SPECIAL_USE，manifest 已声明子类型；
         // 2 参形式已废弃且依赖 manifest 推断）。低版本不识别 SPECIAL_USE 位 → 保持 2 参。
@@ -159,15 +188,19 @@ class FloatingBubbleService : Service() {
             @Suppress("DEPRECATION")
             startForeground(NOTIF_ID, buildNotification())
         }
-        addBubble()
-        addTipView()
-        addScrim()   // z 序：球 < scrim < 面板
+        addPet()
+        addStatusBubble()
+        showStatus(PetCopy.onboarding(language()), statusDetail(), 6000, false)
+        addScrim()   // z 序：宠物 < 状态气泡 < scrim < 面板
         addPanel()
         startSse()
         // 余额定时自查（30 分钟一次，不依赖 App 打开设置页触发）
         mainHandler.postDelayed(balanceCheckRunnable, 30 * 60 * 1000L)
         // 未读增量对比（60 秒一次，补重连/离线期间的通知提示）
         mainHandler.postDelayed(unreadCheckRunnable, 20000)
+        // 宠物 pulse / overlay 终点与空闲微动作
+        mainHandler.postDelayed(petTickRunnable, 250)
+        petIdleNextAt = System.currentTimeMillis() + randomIdleInterval()
     }
 
     /** 余额自查：每 30 分钟拉一次 /m/api/balance，低余额时亮起 + 气泡 + 面板按钮变红。 */
@@ -201,29 +234,47 @@ class FloatingBubbleService : Service() {
         // v3.0.0：面板展开/收起是 ViewPropertyAnimator（Choreographer 驱动，removeCallbacksAndMessages
         // 取消不了），销毁时显式取消——配 placePanel 判空双保险，杜绝 after-destroy NPE
         panel?.let { runCatching { it.animate().cancel() } }
+        petView?.release()
+        petView = null
         mainHandler.removeCallbacksAndMessages(null)
         bubble?.let { runCatching { wm?.removeView(it) } }
         tip?.let { runCatching { wm?.removeView(it) } }
         panel?.let { runCatching { wm?.removeView(it) } }
         scrim?.let { runCatching { wm?.removeView(it) } }
         bubble = null; tip = null; panel = null; panelParams = null; scrim = null
+        petModel = null
         super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.getStringExtra("balance")?.let { onBalance(it) }
-        // 余额预警配置（App 端推送：开关 + 阈值，悬浮球判定以此为准）
+        // 余额预警配置（App 端推送：开关 + 阈值，宠物面板的充值按钮以此为准）
         intent?.getBooleanExtra("alert_enabled", alertEnabled)?.let { alertEnabled = it }
         intent?.getDoubleExtra("alert_threshold", alertThreshold)?.let { alertThreshold = it }
+        if (intent?.hasExtra("pet_height") == true) {
+            val next = intent.getIntExtra("pet_height", petHeightDp).coerceIn(56, 160)
+            if (next != petHeightDp) {
+                petHeightDp = next
+                resizePet()
+            }
+        }
+        if (intent?.hasExtra("pet_reduced_motion") == true) {
+            petReducedMotion = intent.getBooleanExtra("pet_reduced_motion", false)
+            petView?.setAnimationRunning(!petReducedMotion && !petTucked)
+        }
+        if (intent?.hasExtra("pet_edge_hide") == true) {
+            petEdgeHide = intent.getBooleanExtra("pet_edge_hide", true)
+            if (!petEdgeHide && petTucked) slideOut()
+        }
         // NOT_STICKY：只有用户主动开开关才启动；App 被杀/覆盖安装后系统不自动复活
-        // （修复：设置页开关是"关"但悬浮球却出现的现象）
+        // （修复：设置页开关是"关"但宠物却出现的现象）
         return START_NOT_STICKY
     }
 
     // ── 前台通知 ──
     private fun createChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val ch = NotificationChannel(CHANNEL_ID, "DSH Remote 悬浮球", NotificationManager.IMPORTANCE_LOW)
+        val ch = NotificationChannel(CHANNEL_ID, "DSH Remote 桌面宠物", NotificationManager.IMPORTANCE_LOW)
         ch.setShowBadge(false)
         nm.createNotificationChannel(ch)
     }
@@ -232,39 +283,12 @@ class FloatingBubbleService : Service() {
         // Phase 2(K3)：Intent 构造与 openApp 共用（mainIntent 收敛）
         val pi = PendingIntent.getActivity(this, 0, mainIntent(), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(text("DSH Remote 悬浮球运行中", "DSH Remote bubble is running"))
+            .setContentTitle(text("DSH Remote 桌面宠物运行中", "DSH Remote pet is running"))
             .setContentText(text("点击回到 App", "Tap to open the app"))
             .setSmallIcon(R.drawable.deepseek_logo)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
-    }
-
-    // ── 悬浮球视图（圆形，白底蓝鲸官方图标样式）──
-    /** 自绘圆形鲸鱼球：透明背景（无白底圆），圆形裁剪显示鲸鱼。 */
-    inner class BubbleView(context: android.content.Context) : View(context) {
-        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-        private val bmp = android.graphics.BitmapFactory.decodeResource(resources, R.drawable.deepseek_logo)
-        private val shader = bmp?.let { android.graphics.BitmapShader(it, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP) }
-
-        fun setGray(gray: Boolean) {
-            paint.colorFilter = if (gray) {
-                android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply { setSaturation(0f) })
-            } else null
-            invalidate()
-        }
-
-        override fun onDraw(canvas: android.graphics.Canvas) {
-            if (shader == null || bmp == null) return
-            val c = width / 2f
-            val r = minOf(width, height) / 2f
-            // 位图缩放到直径 2r，鲸鱼（占位图 75%）完整落在圆内
-            val m = android.graphics.Matrix()
-            m.setScale(r * 2f / bmp.width, r * 2f / bmp.height)
-            shader.setLocalMatrix(m)
-            paint.shader = shader
-            canvas.drawCircle(c, c, r, paint)
-        }
     }
 
     /** 当前屏幕尺寸（v2.7.2，API 30+ 用 currentWindowMetrics——旋转后最可靠）。 */
@@ -330,45 +354,63 @@ class FloatingBubbleService : Service() {
         val wm = this.wm ?: return
         val size = screenSize()
         if (lastScreenW <= 0) lastScreenW = size.x
-        val bd = dp(bubbleDp)
+        val petW = petWidthPx()
+        val petH = petHeightPx()
         val offX = overlayInsetLeft()
         // 无条件贴边（v2.7.2 修正）：按旋转前渲染位置判断贴左/贴右，保持隐藏状态——
-        // 不再保留"自由位置"，竖屏↔横屏/翻转 180°/页面跳转后球都自动回到边上
-        val center = lastRenderX + bd / 2
+        // 不再保留"自由位置"，竖屏↔横屏/翻转 180°/页面跳转后宠物都自动回到边上
+        val center = lastRenderX + petW / 2
         edgeSide = if (center < lastScreenW / 2) -1 else 1
         val newRenderX = if (edgeSide < 0) {
-            if (edgeHidden) -bd + dp(16) else 0
+            if (edgeHidden) -petW + edgePeekPx() else 0
         } else {
-            if (edgeHidden) size.x - dp(16) else size.x - bd
+            if (edgeHidden) size.x - edgePeekPx() else size.x - petW
         }
         p.x = newRenderX - offX
         val offY = overlayInsetTop()
         val ry = p.y + offY
-        p.y = ry.coerceIn(0, size.y - bd) - offY
+        p.y = ry.coerceIn(0, size.y - petH) - offY
         lastScreenW = size.x
         lastScreenH = size.y
         lastRenderX = newRenderX
         wm.updateViewLayout(root, p)
-        positionTip()
+        positionStatusBubble()
+        updateBadgePosition()
         if (panelVisible) placePanel()
     }
 
-    private fun addBubble() {
+    private fun addPet() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
         // v2.9.0 review(A9)：悬浮窗权限兜底——运行时被收回/绕过检查时优雅退出，
         // 不再抛 BadTokenException 崩掉前台服务
         if (!android.provider.Settings.canDrawOverlays(this)) {
-            android.util.Log.w("DSHRemote", "bubble: overlay permission missing/revoked; stopping")
+            android.util.Log.w("DSHRemote", "pet: overlay permission missing/revoked; stopping")
             stopSelf()
             return
         }
-        val size = dp(bubbleDp)
+        val manifest = runCatching {
+            assets.open("pet-manifest.json").use {
+                PetManifest.parse(it.bufferedReader(Charsets.UTF_8).readText())
+            }
+        }.getOrElse {
+            android.util.Log.e("DSHRemote", "pet: manifest load failed", it)
+            null
+        }
+        if (manifest == null) {
+            stopSelf()
+            return
+        }
+        petManifest = manifest
+        petModel = PetAnimationModel(manifest)
+        val petW = petWidthPx()
+        val petH = petHeightPx()
         val root = FrameLayout(this)
-        root.layoutParams = FrameLayout.LayoutParams(size, size)
+        root.layoutParams = FrameLayout.LayoutParams(petW, petH)
 
-        val img = BubbleView(this)
-        root.addView(img, FrameLayout.LayoutParams(size, size))
+        val view = PetView(this)
+        root.addView(view, FrameLayout.LayoutParams(petW, petH))
+        petView = view
 
         val bd = TextView(this)
         bd.text = "0"
@@ -392,66 +434,75 @@ class FloatingBubbleService : Service() {
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(
-            size, size, type,
+            petW, petH, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, // 允许越出屏幕（贴边半隐藏必需）
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
-        // 启动即贴右边缘（完全露出，无需手动拖动吸附）
+        // 启动即贴右边缘（完全露出），垂直落在屏幕中下部，避开状态栏
         val initSize = screenSize()
         lastScreenW = initSize.x
         lastScreenH = initSize.y
         edgeSide = 1
         edgeHidden = false
-        params.x = initSize.x - size
-        lastRenderX = initSize.x - size
-        params.y = dp(240)
+        params.x = initSize.x - petW
+        lastRenderX = initSize.x - petW
+        params.y = (initSize.y * 0.58f).toInt().coerceIn(0, (initSize.y - petH).coerceAtLeast(0))
         wm.addView(root, params)
         // 启动后 5 秒无操作自动缩进（贴边常驻，无需先拖动）
         mainHandler.postDelayed(autoHideRunnable, 5000)
 
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                android.util.Log.i("DSHRemote", "bubble: tap confirmed")
-                // 半隐藏状态先滑出（不触发面板），完全露出后再单击才展开面板
                 if (isEdgeHidden()) {
                     slideOut()
                     return true
                 }
-                togglePanel()
+                handlePetTap(e.x, e.y, doubleTap = false)
                 return true
             }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                if (isEdgeHidden()) slideOut()
-                else { hidePanel(); openMain() }
+                if (isEdgeHidden()) {
+                    slideOut()
+                    return true
+                }
+                handlePetTap(e.x, e.y, doubleTap = true)
                 return true
             }
+
             override fun onLongPress(e: MotionEvent) {
-                exitBubble("long-press")
+                if (isEdgeHidden()) {
+                    slideOut()
+                    mainHandler.postDelayed({ if (petModel != null && !panelVisible) showPanel() }, 260)
+                } else {
+                    togglePanel()
+                }
             }
         })
-        root.setOnTouchListener { v, ev ->
+        root.setOnTouchListener { _, ev ->
             if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-                // 用户操作：取消自动缩进
                 mainHandler.removeCallbacks(autoHideRunnable)
             }
             gd.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    // v2.7.2 review(M2)：开始拖动前取消进行中的贴边/缩进动画（否则动画下一帧会覆盖拖动位置）
+                    // 开始拖动前取消进行中的贴边/缩进动画（否则动画下一帧会覆盖拖动位置）
                     bubbleAnim?.cancel()
-                    // v2.7.2：自愈——若球因旋转等落在越界位置，先钳回允许范围再开始拖
-                    // （按渲染坐标钳制，扣除系统 inset 偏移后写回 attrs）
+                    // 自愈：若宠物因旋转等落在越界位置，先钳回允许范围再开始拖
                     val size = screenSize()
-                    val bd = dp(bubbleDp)
+                    val w = petWidthPx()
+                    val h = petHeightPx()
                     val offX = overlayInsetLeft()
                     val offY = overlayInsetTop()
-                    val minX = -bd + dp(16)
-                    val maxX = maxOf(minX, size.x - dp(16))
+                    val minX = -w + edgePeekPx()
+                    val maxX = maxOf(minX, size.x - edgePeekPx())
                     val cx = (params.x + offX).coerceIn(minX, maxX) - offX
-                    val cy = (params.y + offY).coerceIn(0, size.y - bd) - offY
+                    val cy = (params.y + offY).coerceIn(0, (size.y - h).coerceAtLeast(0)) - offY
                     if (cx != params.x || cy != params.y) {
                         params.x = cx
                         params.y = cy
@@ -460,53 +511,59 @@ class FloatingBubbleService : Service() {
                     downX = ev.rawX; downY = ev.rawY
                     startX = params.x; startY = params.y
                     moved = false
-                    mainHandler.postDelayed(longPressRunnable, 600)
-                    // 按压反馈：球轻微缩小（"捏一下"）
-                    root.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).start()
+                    root.animate().scaleX(0.96f).scaleY(0.96f).setDuration(80).start()
+                    root.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = ev.rawX - downX; val dy = ev.rawY - downY
-                    if (Math.abs(dx) > dp(12f) || Math.abs(dy) > dp(12f)) {
+                    val dx = ev.rawX - downX
+                    val dy = ev.rawY - downY
+                    if (!moved && (Math.abs(dx) > dp(12f) || Math.abs(dy) > dp(12f))) {
                         moved = true
-                        mainHandler.removeCallbacks(longPressRunnable)
+                        beginDrag()
                     }
                     if (moved) {
-                        // v2.7.2：拖动钳制——永远拖不出屏（允许贴边半隐藏的 16dp 探出；
-                        // 按渲染坐标钳制，扣除系统 inset 偏移后写回 attrs）
+                        // 拖动钳制：允许贴边半隐藏的 24dp 探出，按渲染坐标扣 inset 后写回
                         val size = screenSize()
-                        val bd = dp(bubbleDp)
+                        val w = petWidthPx()
+                        val h = petHeightPx()
                         val offX = overlayInsetLeft()
                         val offY = overlayInsetTop()
-                        val minX = -bd + dp(16)
-                        val maxX = maxOf(minX, size.x - dp(16))
+                        val minX = -w + edgePeekPx()
+                        val maxX = maxOf(minX, size.x - edgePeekPx())
                         val rx = (startX + dx.toInt() + offX).coerceIn(minX, maxX)
-                        val ry = (startY + dy.toInt() + offY).coerceIn(0, size.y - bd)
+                        val ry = (startY + dy.toInt() + offY).coerceIn(0, (size.y - h).coerceAtLeast(0))
                         params.x = rx - offX
                         params.y = ry - offY
                         lastRenderX = rx // 拖动中旋转也能按当前渲染位置贴边
                         wm.updateViewLayout(root, params)
-                        // 拖动时收起面板；气泡若在显示中则跟随
                         if (panelVisible) hidePanel()
-                        positionTip()
+                        positionStatusBubble()
+                        updateBadgePosition()
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    mainHandler.removeCallbacks(longPressRunnable)
-                    // 回弹到原尺寸（overshoot 手感）
                     root.animate().scaleX(1f).scaleY(1f).setDuration(140)
                         .setInterpolator(android.view.animation.OvershootInterpolator(1.6f)).start()
                     if (moved) {
-                        android.util.Log.i("DSHRemote", "bubble: drag end, snap + schedule auto-hide")
+                        moved = false
+                        endDrag()
                         snapToEdgeVisible()
-                        mainHandler.postDelayed(autoHideRunnable, 5000)
+                    } else {
+                        scheduleAutoHide()
                     }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    mainHandler.removeCallbacks(longPressRunnable)
                     root.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    if (moved) {
+                        moved = false
+                        endDrag()
+                        snapToEdgeVisible()
+                    } else {
+                        scheduleAutoHide()
+                    }
                     true
                 }
                 else -> false
@@ -514,21 +571,38 @@ class FloatingBubbleService : Service() {
         }
         bubble = root
         bubbleParams = params
-        logoImg = img
         badge = bd
-        setState()
+        renderPet(animate = false)
     }
 
-    /** 事件气泡（悬浮球上方，5 秒自动收起）。 */
-    private fun addTipView() {
+    /** 宠物状态气泡：标题 + 详情，点开面板；出现数秒后自动收起。 */
+    private fun addStatusBubble() {
         val wm = this.wm ?: return
-        val tv = TextView(this)
-        tv.setTextColor(Color.WHITE)
-        tv.textSize = 12f
-        tv.setPadding(dp(12), dp(7), dp(12), dp(7))
-        tv.background = roundedRect(Color.parseColor("#E61A1D24"), 8f)
-        tv.visibility = View.GONE
-        tv.setOnClickListener { openMain() }
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setPadding(dp(11), dp(8), dp(11), dp(8))
+        root.background = roundedRect(Color.parseColor("#F21A1D24"), 12f)
+        root.visibility = View.GONE
+        val title = TextView(this)
+        title.setTextColor(Color.WHITE)
+        title.textSize = 12f
+        title.maxLines = 2
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        title.maxWidth = dp(230)
+        val detail = TextView(this)
+        detail.setTextColor(Color.parseColor("#9AA3AF"))
+        detail.textSize = 10.5f
+        detail.maxLines = 2
+        detail.ellipsize = android.text.TextUtils.TruncateAt.END
+        detail.maxWidth = dp(230)
+        detail.setPadding(0, dp(2), 0, 0)
+        root.addView(title, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(detail, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.setOnClickListener {
+            if (isEdgeHidden()) slideOut() else if (panelVisible) hidePanel() else togglePanel()
+        }
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(
@@ -537,45 +611,63 @@ class FloatingBubbleService : Service() {
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
-        wm.addView(tv, params)
-        tip = tv
+        wm.addView(root, params)
+        tip = root
+        tipTitle = title
+        tipDetail = detail
         tipParams = params
     }
 
-    private fun showTip(text: String) {
+    private fun showStatus(title: String, detail: String, ttlMs: Long, important: Boolean) {
         val tv = tip ?: return
-        tv.text = text
+        // 贴边藏起来时不弹普通状态；等待/出错等重要状态仍提示（气泡贴在可见边缘）。
+        if (petTucked && !important) return
+        tipTitle?.text = title
+        tipDetail?.text = detail
+        tipDetail?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
         tv.visibility = View.VISIBLE
-        positionTip()
+        positionStatusBubble()
         mainHandler.removeCallbacks(hideTipRunnable)
-        mainHandler.postDelayed(hideTipRunnable, 5000)
+        mainHandler.postDelayed(hideTipRunnable, ttlMs)
+        petStatusShownAt = System.currentTimeMillis()
     }
 
-    /** 气泡定位：球正上方紧贴（8dp），水平居中于球可见部分；顶部空间不足放球下方。
-     *  使用气泡实际测量宽度定位（修复：硬编码 170dp 与实际内容宽度不符 → 窄气泡
-     *  被按宽气泡钳制，飘到屏幕中间）。 */
-    private fun positionTip() {
+    /** 旧调用点（通知/余额）保留：标题 + 当前任务详情，5 秒收起。 */
+    private fun showTip(text: String) {
+        showStatus(text, statusDetail(), 5000, false)
+    }
+
+    private fun hideStatus() {
+        tip?.visibility = View.GONE
+        mainHandler.removeCallbacks(hideTipRunnable)
+    }
+
+    /** 气泡定位：宠物正上方紧贴，水平居中于可见部分；顶部空间不足放下方。 */
+    private fun positionStatusBubble() {
         val tv = tip ?: return
         if (tv.visibility != View.VISIBLE) return
         val p = tipParams ?: return
         val bp = bubbleParams ?: return
         val wm = this.wm ?: return
         val size = screenSize()
-        val bd = dp(bubbleDp)
-        // 实际宽度（首次显示未测量时用估算，布局完成后重定位）
-        val tipW = if (tv.width > 0) tv.width else dp(170)
-        // 水平：居中于球可见部分（渲染坐标），钳制屏内
+        val petW = petWidthPx()
+        val petH = petHeightPx()
+        // 实际宽高（首次显示未测量时用估算，布局完成后重定位）
+        val tipW = if (tv.width > 0) tv.width else dp(180)
+        val tipH = if (tv.height > 0) tv.height else dp(46)
         val bx = bp.x + overlayInsetLeft()
-        val visCenter = (maxOf(0, bx) + minOf(size.x, bx + bd)) / 2
-        p.x = (visCenter - tipW / 2).coerceIn(dp(4), size.x - tipW - dp(4))
-        // 垂直：球上方紧贴（气泡高约 30dp + 8dp 间距）；顶部空间不足放球下方
         val by = bp.y + overlayInsetTop()
-        val above = by - dp(38)
-        p.y = if (above >= dp(6)) above else by + bd + dp(6)
+        val visCenter = (maxOf(0, bx) + minOf(size.x, bx + petW)) / 2
+        p.x = (visCenter - tipW / 2).coerceIn(dp(4), (size.x - tipW - dp(4)).coerceAtLeast(dp(4)))
+        val above = by - tipH - dp(6)
+        p.y = if (above >= dp(6)) {
+            above
+        } else {
+            (by + petH + dp(6)).coerceAtMost((size.y - tipH - dp(4)).coerceAtLeast(dp(4)))
+        }
         wm.updateViewLayout(tv, p)
-        // 首次测量前定位：布局完成后按实际宽度重新定位
         if (tv.width == 0) {
-            tv.post { if (tip?.visibility == View.VISIBLE) positionTip() }
+            tv.post { if (tip?.visibility == View.VISIBLE) positionStatusBubble() }
         }
     }
 
@@ -601,37 +693,53 @@ class FloatingBubbleService : Service() {
         scrim = v
     }
 
+    private fun scheduleAutoHide() {
+        mainHandler.removeCallbacks(autoHideRunnable)
+        if (petEdgeHide && !panelVisible) {
+            mainHandler.postDelayed(autoHideRunnable, 5000)
+        }
+    }
+
     /** 松手后吸附到边缘（完全露出），供 5 秒无操作后的缩进做基线。 */
     private fun snapToEdgeVisible() {
         val p = bubbleParams ?: return
         val size = screenSize()
-        val bd = dp(bubbleDp)
-        val center = bubbleRenderX() + bd / 2
+        val petW = petWidthPx()
+        val center = bubbleRenderX() + petW / 2
         edgeSide = if (center < size.x / 2) -1 else 1
         edgeHidden = false
+        petTucked = false
+        petView?.setDimmed(false)
+        petView?.setAnimationRunning(!petReducedMotion)
         lastScreenW = size.x
         lastScreenH = size.y
-        val renderX = if (edgeSide < 0) 0 else size.x - bd
+        val renderX = if (edgeSide < 0) 0 else size.x - petW
         lastRenderX = renderX
         animateX(renderX - overlayInsetLeft())
+        updateBadgePosition()
+        scheduleAutoHide()
     }
 
-    /** 5 秒无操作后缩进：只露 16dp，其余藏进屏幕边缘。 */
+    /** 5 秒无操作后缩进：只露 24dp，并降低透明度 + 去饱和/轻度模糊，尽量不挡屏幕。 */
     private fun autoHideToEdge() {
+        if (!petEdgeHide || panelVisible || bubble == null) return
         val p = bubbleParams ?: return
         val size = screenSize()
-        val edgePeek = dp(16)
-        val bd = dp(bubbleDp)
-        val center = bubbleRenderX() + bd / 2
+        val edgePeek = edgePeekPx()
+        val petW = petWidthPx()
+        val center = bubbleRenderX() + petW / 2
         edgeSide = if (center < size.x / 2) -1 else 1
         edgeHidden = true
+        petTucked = true
+        hideStatus()
+        petView?.setDimmed(true)
+        petView?.setAnimationRunning(false)
         lastScreenW = size.x
         lastScreenH = size.y
-        val renderX = if (edgeSide < 0) -bd + edgePeek else size.x - edgePeek
+        val renderX = if (edgeSide < 0) -petW + edgePeek else size.x - edgePeek
         lastRenderX = renderX
-        val target = renderX - overlayInsetLeft()
-        android.util.Log.i("DSHRemote", "bubble: auto-hide to renderX=$renderX target=$target")
-        animateX(target)
+        animateX(renderX - overlayInsetLeft())
+        updateBadgePosition()
     }
 
     /** 水平滑动动画（吸附/缩进/滑出统一用）；球移动时气泡同步跟随。
@@ -653,7 +761,8 @@ class FloatingBubbleService : Service() {
             p.x = it.animatedValue as Int
             wm.updateViewLayout(root, p)
             if (panelVisible) placePanel()
-            positionTip() // 气泡跟随球移动（缩进/滑出期间不错位）
+            positionStatusBubble() // 气泡跟随宠物移动（缩进/滑出期间不错位）
+            updateBadgePosition()
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -666,28 +775,32 @@ class FloatingBubbleService : Service() {
         anim.start()
     }
 
-    /** 球是否处于贴边半隐藏状态（x 为负 = 左缩进；右侧越出屏幕 = 右缩进）。
-     *  完全露出时 x=0（左）或 x=sw-bd（右，x+bd==sw 正好贴边不算隐藏）。按渲染坐标判断。 */
+    /** 宠物是否处于贴边半隐藏状态（按渲染坐标判断）。 */
     private fun isEdgeHidden(): Boolean {
         val p = bubbleParams ?: return false
         val size = screenSize()
-        val bd = dp(bubbleDp)
+        val petW = petWidthPx()
         val rx = p.x + overlayInsetLeft()
-        return rx < -dp(2) || rx + bd > size.x + dp(2)
+        return rx < -dp(2) || rx + petW > size.x + dp(2)
     }
 
     /** 从半隐藏滑出到完全可见。 */
     private fun slideOut() {
         val p = bubbleParams ?: return
         val size = screenSize()
-        val bd = dp(bubbleDp)
+        val petW = petWidthPx()
         edgeHidden = false
+        petTucked = false
+        petView?.setDimmed(false)
+        petView?.setAnimationRunning(!petReducedMotion)
         lastScreenW = size.x
         lastScreenH = size.y
         val rx = p.x + overlayInsetLeft()
-        val renderX = if (rx < size.x / 2) 0 else size.x - bd
+        val renderX = if (rx < size.x / 2) 0 else size.x - petW
         lastRenderX = renderX
         animateX(renderX - overlayInsetLeft())
+        updateBadgePosition()
+        scheduleAutoHide()
     }
 
     // ── 迷你面板（单击展开，球旁小卡片）──
@@ -705,7 +818,7 @@ class FloatingBubbleService : Service() {
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
         val title = TextView(this)
-        title.text = text("DSH Remote", "DSH Remote")
+        title.text = text("DSH 大肥鱼", "DSH BigFish")
         title.setTextColor(Color.WHITE)
         title.textSize = 13f
         title.setTypeface(null, android.graphics.Typeface.BOLD)
@@ -719,6 +832,17 @@ class FloatingBubbleService : Service() {
         close.setOnClickListener { hidePanel() }
         head.addView(close, LinearLayout.LayoutParams(dp(30), dp(26)))
         root.addView(head)
+
+        // 当前宠物状态（一行，随 SSE 状态更新）
+        val status = TextView(this)
+        status.setTextColor(Color.parseColor("#9AA3AF"))
+        status.textSize = 10.5f
+        status.maxLines = 1
+        status.ellipsize = android.text.TextUtils.TruncateAt.END
+        status.setPadding(0, 0, 0, dp(4))
+        root.addView(status, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
+        panelStatus = status
 
         // 运行中会话
         val secSessions = sectionLabel(text("运行中的会话", "Active sessions"))
@@ -846,6 +970,18 @@ class FloatingBubbleService : Service() {
         root.addView(btnRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(36)))
         panelCharge = chargeBtn
 
+        // 关闭宠物入口（旧的"长按退出"已改为长按开面板）
+        val exit = TextView(this)
+        exit.text = text("关闭宠物", "Turn off pet")
+        exit.setTextColor(Color.parseColor("#5C6470"))
+        exit.textSize = 10.5f
+        exit.gravity = Gravity.CENTER
+        exit.setPadding(0, dp(6), 0, 0)
+        exit.setOnClickListener { hidePanel(); exitBubble("panel") }
+        root.addView(exit, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(24)))
+        panelExit = exit
+
         val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val params = WindowManager.LayoutParams(
@@ -873,9 +1009,18 @@ class FloatingBubbleService : Service() {
     }
 
     private fun showPanel() {
+        if (petTucked || isEdgeHidden()) {
+            // 贴边藏着时先把宠物滑出来，再展开面板
+            slideOut()
+            mainHandler.postDelayed({ if (!panelVisible && petModel != null) showPanel() }, 260)
+            return
+        }
         val p = panel ?: return
         val pp = panelParams ?: return
         panelVisible = true
+        mainHandler.removeCallbacks(autoHideRunnable)
+        hideStatus()
+        updatePanelStatus()
         placePanel()
         scrim?.visibility = View.VISIBLE // 拦截面板外点击（透明，不遮挡视觉）
         p.visibility = View.VISIBLE
@@ -940,20 +1085,23 @@ class FloatingBubbleService : Service() {
         val size = screenSize()
         val pw = dp(248)
         // 用面板实际高度（首次打开前未测量时用估算值）
-        val ph = if ((view.height ?: 0) > 0) view.height else dp(300)
+        val ph = if ((view.height ?: 0) > 0) view.height else dp(340)
         val sw = size.x
         val sh = size.y
-        // 用渲染坐标（球实际显示位置）计算面板位置
+        // 用渲染坐标（宠物实际显示位置）计算面板位置
         val bx = bp.x + overlayInsetLeft()
         val by = bp.y + overlayInsetTop()
-        val ballRight = bx + dp(bubbleDp)
-        val ballBottom = by + dp(bubbleDp)
-        // 水平：球在左半 → 面板放球右侧；右半 → 面板放球左侧（贴边）
-        val onLeftSide = bx < sw / 2
-        pp.x = if (onLeftSide) ballRight + dp(4) else bx - pw - dp(4)
+        val petW = petWidthPx()
+        val petH = petHeightPx()
+        val visLeft = maxOf(0, bx)
+        val visRight = minOf(sw, bx + petW)
+        val ballBottom = by + petH
+        // 水平：宠物可见部分在左半 → 面板放右侧；否则放左侧
+        val onLeftSide = (visLeft + visRight) / 2 < sw / 2
+        pp.x = if (onLeftSide) visRight + dp(4) else visLeft - pw - dp(4)
         if (pp.x < 0) pp.x = 0
         if (pp.x + pw > sw) pp.x = sw - pw
-        // 垂直：球在上半 → 面板顶部对齐球顶部；下半 → 面板底部对齐球底部
+        // 垂直：宠物在上半 → 面板顶部对齐；下半 → 面板底部对齐
         val onTop = by < sh / 2
         if (onTop) {
             pp.y = by
@@ -970,9 +1118,8 @@ class FloatingBubbleService : Service() {
         panelVisible = false
         scrim?.visibility = View.GONE
         mainHandler.removeCallbacks(panelRefreshRunnable)
-        // 面板关闭后 5 秒无操作自动缩进（球保持可见便于再次操作）
-        mainHandler.removeCallbacks(autoHideRunnable)
-        mainHandler.postDelayed(autoHideRunnable, 5000)
+        // 面板关闭后 5 秒无操作自动缩进（宠物保持可见便于再次操作）
+        scheduleAutoHide()
         // 收起动画：淡出 + 缩小（动画期间若重新打开则不隐藏）
         p.animate().alpha(0f).scaleX(0.9f).scaleY(0.9f).setDuration(120)
             .withEndAction { if (!panelVisible) p.visibility = View.GONE }
@@ -1051,6 +1198,14 @@ class FloatingBubbleService : Service() {
     private fun renderPanel(running: List<Triple<String, String, String>>, notifs: List<Map<String, Any>>, unreadCount: Int) {
         val box = panelSessions ?: return
         box.removeAllViews()
+        if (running.isNotEmpty()) {
+            latestSessionTitle = running.first().third
+        } else if (notifs.isNotEmpty()) {
+            (notifs.first()["title"] as? String)?.takeIf { it.isNotBlank() }?.let {
+                latestSessionTitle = it
+            }
+        }
+        updatePanelStatus()
         val secS = panelSessionsSec
         if (running.isEmpty()) {
             // 无运行中会话 → 区块保留，显示占位文案（面板不空）
@@ -1140,19 +1295,31 @@ class FloatingBubbleService : Service() {
         renderUsageBlock(currentUsageModel())
     }
 
-    // ── 状态渲染 ──
+    // ── 宠物状态渲染 ──
     private fun setState() {
-        val img = logoImg ?: return
-        // 亮态：任务/通知/余额报警中（余额报警为事件式：60s 消退，不因余额低常亮）
-        if (agentsRunning || balanceAlerting || notifCount > 0) {
-            // 亮态：原色 + 过渡到全不透明
-            animateAlpha(img, 1f)
-            img.setGray(false)
-        } else {
-            // 暗态：灰度 + 过渡到半透明（亮暗切换不瞬变）
-            animateAlpha(img, 0.55f)
-            img.setGray(true)
+        updateBadge()
+        renderPet(animate = false)
+    }
+
+    /** 把状态机的 active 片段交给 PetView；同一段不重复解码。 */
+    private fun renderPet(animate: Boolean) {
+        val model = petModel ?: return
+        val view = petView ?: return
+        if (model.activeVersion == petRenderedVersion) {
+            updateBadge()
+            return
         }
+        petRenderedVersion = model.activeVersion
+        val clip = model.activeClip
+        val fade = animate && model.crossfadeMs(petLastClip, clip.name) != null
+        view.showClip(clip, fade)
+        petLastClip = clip.name
+        view.setAnimationRunning(!petReducedMotion && !petTucked)
+        updateBadge()
+        updatePanelStatus()
+    }
+
+    private fun updateBadge() {
         val bd = badge ?: return
         if (notifCount > 0) {
             bd.text = if (notifCount > 99) "99+" else "$notifCount"
@@ -1160,15 +1327,156 @@ class FloatingBubbleService : Service() {
         } else {
             bd.visibility = View.GONE
         }
+        updateBadgePosition()
     }
 
-    /** 亮度过渡（180ms）：亮/暗切换不瞬变。 */
-    private fun animateAlpha(view: View, target: Float) {
-        if (view.alpha == target) return
-        val anim = android.animation.ValueAnimator.ofFloat(view.alpha, target)
-        anim.duration = 180
-        anim.addUpdateListener { view.alpha = it.animatedValue as Float }
-        anim.start()
+    /** 贴边缩进时红点跟着移到露出的那一侧，否则会藏到屏幕外。 */
+    private fun updateBadgePosition() {
+        val bd = badge ?: return
+        val lp = bd.layoutParams as? FrameLayout.LayoutParams ?: return
+        val hidden = isEdgeHidden()
+        lp.gravity = when {
+            !hidden -> Gravity.TOP or Gravity.END
+            edgeSide < 0 -> Gravity.TOP or Gravity.END
+            else -> Gravity.TOP or Gravity.START
+        }
+        lp.topMargin = if (hidden) dp(4) else -dp(3)
+        lp.rightMargin = if (!hidden) -dp(2) else if (edgeSide < 0) dp(2) else 0
+        lp.leftMargin = if (hidden && edgeSide > 0) dp(2) else 0
+        bd.layoutParams = lp
+    }
+
+    private fun updatePanelStatus() {
+        val tv = panelStatus ?: return
+        val lang = language()
+        tv.text = PetCopy.stateLabel(petReducer.state, lang) + " · " +
+            PetCopy.status(petReducer.state, petReducer.activity, lang)
+    }
+
+    private fun statusDetail(): String {
+        val lang = language()
+        val title = latestSessionTitle
+            ?.takeIf { it.isNotBlank() }
+            ?.let { if (it.length > 24) it.take(24) + "…" else it }
+        val progress = latestProgress
+        val parts = mutableListOf<String>()
+        if (title != null) parts.add(title)
+        if (progress != null && progress.second > 0) {
+            parts.add(
+                if (lang == "en") "Completed ${progress.first}/${progress.second}"
+                else "已完成 ${progress.first}/${progress.second} 步",
+            )
+        }
+        return if (parts.isEmpty()) PetCopy.waitingDetail(lang) else parts.joinToString(" · ")
+    }
+
+    private fun language(): String = prefs("flutter.dsh_mr_language") ?: "zh"
+
+    private fun applyPetChange(change: PetStateChange?) {
+        if (change == null) return
+        val model = petModel ?: return
+        val now = System.currentTimeMillis()
+        if (change.pulse) {
+            val clipName = model.manifest.stateMap[change.state]
+            val ttl = model.manifest.clips[clipName]?.durationMs ?: 5000L
+            model.applyPulse(change.state, ttl, now, change.resumeState, change.resumeActivity)
+        } else {
+            model.applyState(change.state, change.activity)
+        }
+        agentsRunning = petReducer.state == "WORKING" ||
+            petReducer.state == "THINKING" ||
+            petReducer.state == "WAITING"
+        renderPet(animate = true)
+        announceState(change, now)
+    }
+
+    private fun announceState(change: PetStateChange, now: Long) {
+        if (change.state == "IDLE") return
+        val important = !change.pulse && (change.state == "WAITING" || change.state == "ERROR")
+        if (!important && change.state == petStatusState && now - petStatusShownAt < 4000) return
+        // 贴边藏起来时，完成/等待/出错短暂探头，播完再缩回去；普通工作状态不打扰。
+        if (petTucked && (important || change.state == "SUCCESS")) {
+            slideOut()
+            mainHandler.removeCallbacks(autoHideRunnable)
+            mainHandler.postDelayed(
+                autoHideRunnable,
+                if (change.state == "SUCCESS") 6000L else 8000L,
+            )
+        }
+        petStatusState = change.state
+        val lang = language()
+        val ttl = when (change.state) {
+            "SUCCESS" -> 5000L
+            "WAITING", "ERROR" -> 8000L
+            else -> 4500L
+        }
+        showStatus(PetCopy.status(change.state, change.activity, lang), statusDetail(), ttl, important)
+    }
+
+    private fun maybePlayIdleMicro(now: Long) {
+        val model = petModel ?: return
+        if (petReducedMotion || petTucked || panelVisible) return
+        if (model.baseState != "IDLE" || model.hasOverlay || model.pulseState != null) {
+            petIdleNextAt = now + 10_000
+            return
+        }
+        if (now < petIdleNextAt) return
+        val clip = model.pickIdleMicro()
+        if (clip != null && model.playIdleMicro(clip, now)) {
+            renderPet(animate = true)
+        }
+        petIdleNextAt = now + randomIdleInterval()
+    }
+
+    private fun randomIdleInterval(): Long {
+        val (lower, upper) = petModel?.idleMicroInterval("normal") ?: (25_000L to 45_000L)
+        if (upper <= lower) return lower
+        return lower + (Math.random() * (upper - lower)).toLong()
+    }
+
+    private fun handlePetTap(x: Float, y: Float, doubleTap: Boolean) {
+        val model = petModel ?: return
+        val lang = language()
+        val clip: String
+        val message: String
+        if (doubleTap) {
+            clip = "head_pat"
+            message = PetCopy.interaction(clip, true, lang)
+        } else {
+            val w = petWidthPx().toFloat()
+            val h = petHeightPx().toFloat()
+            clip = when {
+                y < h * 0.45f -> "head_pat"
+                x > w * 0.72f -> "tail"
+                else -> "poke"
+            }
+            message = PetCopy.interaction(clip, false, lang)
+        }
+        if (!petReducedMotion) {
+            if (!model.playInteraction(clip, System.currentTimeMillis())) return
+            renderPet(animate = true)
+        }
+        showStatus(message, statusDetail(), 1800, false)
+        bubble?.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+        scheduleAutoHide()
+    }
+
+    private fun beginDrag() {
+        val model = petModel ?: return
+        petTucked = false
+        petView?.setDimmed(false)
+        petView?.setAnimationRunning(!petReducedMotion)
+        model.playOverlay("dragging", System.currentTimeMillis())
+        renderPet(animate = false)
+        hideStatus()
+        mainHandler.removeCallbacks(autoHideRunnable)
+        if (panelVisible) hidePanel()
+    }
+
+    private fun endDrag() {
+        val model = petModel ?: return
+        model.playOverlay("dragging_release", System.currentTimeMillis())
+        renderPet(animate = false)
     }
 
     /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
@@ -1264,13 +1572,14 @@ class FloatingBubbleService : Service() {
             "agent/status" -> {
                 if (!o.optBoolean("child")) {
                     val st = o.optString("status")
+                    val now = System.currentTimeMillis()
                     if (st == "running") {
                         agentsRunning = true
-                        lastActivity = System.currentTimeMillis()
-                        postState()
-                    } else if (st == "idle" && System.currentTimeMillis() - lastActivity > 3000) {
+                        lastActivity = now
+                        applyPetChange(petReducer.onAgentStatus("running", false))
+                    } else if (st == "idle" && now - lastActivity > 3000) {
                         agentsRunning = false
-                        postState()
+                        applyPetChange(petReducer.onAgentStatus("idle", false))
                     }
                 }
             }
@@ -1300,30 +1609,61 @@ class FloatingBubbleService : Service() {
             }
         }
         markNotif(nid, "$label · $short")
+        applyPetChange(petReducer.onNotify(kind))
     }
 
     private fun handleSessionEvent(o: JSONObject) {
         val ev = o.optJSONObject("event") ?: return
         val type = ev.optString("type")
-        when {
-            // 轮次开始/工具/思考 → 亮（轮次边界驱动，不靠超时猜，避免时亮时暗）
-            type == "turn/start" ||
-                type.contains("tool/") || type == "thinking/start" ||
-                type == "agent/status" && ev.optJSONObject("data")?.optString("status") == "running" -> {
+        val data = ev.optJSONObject("data")
+        val now = System.currentTimeMillis()
+        when (type) {
+            "turn/start" -> {
                 agentsRunning = true
-                lastActivity = System.currentTimeMillis()
-                postState()
+                lastActivity = now
+                applyPetChange(petReducer.onTurnStart())
             }
-            type == "turn/end" -> {
-                // v2.7.2：通知改由插件端"真结束"判定后推 mobile/notify 帧，这里不再按轮次弹
-                // 轮次结束 → 回到暗态（无通知时）；等下一轮 turn/start 再亮
+            "thinking/start", "step/start", "assistant/chunk", "assistant/message" -> {
+                lastActivity = now
+                // 高频 chunk 只在非 THINKING/WORKING 时切换，避免反复重绘
+                applyPetChange(petReducer.onThinking())
+            }
+            "tool/call" -> {
+                agentsRunning = true
+                lastActivity = now
+                applyPetChange(petReducer.onToolCall(data?.optString("name")))
+            }
+            "tool/result" -> {
+                lastActivity = now
+                applyPetChange(
+                    petReducer.onToolResult(
+                        data?.optString("name"),
+                        data?.optBoolean("isError") == true,
+                    ),
+                )
+            }
+            "turn/end" -> {
                 agentsRunning = false
-                lastActivity = System.currentTimeMillis()
-                postState()
+                lastActivity = now
+                val reasonKind = data?.optJSONObject("reason")?.optString("kind")
+                // 完成提示以插件端 mobile/notify 的"真结束"为准；这里只处理错误/阻塞
+                applyPetChange(petReducer.onTurnEnd(reasonKind))
             }
+            "todo/write" -> updateProgress(data)
         }
         // 面板打开时即时刷新（会话状态变化同步）
         refreshPanelIfOpen()
+    }
+
+    private fun updateProgress(data: JSONObject?) {
+        val todos = data?.optJSONArray("todos") ?: return
+        var completed = 0
+        for (i in 0 until todos.length()) {
+            val status = todos.optJSONObject(i)?.optString("status")
+            if (status == "completed") completed++
+        }
+        latestProgress = if (todos.length() > 0) completed to todos.length() else null
+        updatePanelStatus()
     }
 
     private fun handleJobs(o: JSONObject) {
@@ -1371,7 +1711,15 @@ class FloatingBubbleService : Service() {
                     balanceAlerting = true
                     mainHandler.removeCallbacks(clearBalanceAlertRunnable)
                     mainHandler.postDelayed(clearBalanceAlertRunnable, 60000)
-                    showTip(text("余额不足 ¥" + String.format(Locale.ROOT, "%.2f", total) + "，点我去充值", "Low balance ¥" + String.format(Locale.ROOT, "%.2f", total) + " — tap to top up"))
+                    showStatus(
+                        text(
+                            "余额不足 ¥" + String.format(Locale.ROOT, "%.2f", total) + "，点我去充值",
+                            "Low balance ¥" + String.format(Locale.ROOT, "%.2f", total) + " — tap to top up",
+                        ),
+                        statusDetail(),
+                        6000,
+                        true,
+                    )
                 }
             }
         }
@@ -1679,10 +2027,65 @@ class FloatingBubbleService : Service() {
         stopSelf()
     }
 
+    private fun petHeightPx(): Int = dp(petHeightDp)
+
+    private fun petWidthPx(): Int {
+        val manifest = petManifest ?: return (petHeightPx() * 288f / 229f).toInt()
+        return (petHeightPx().toFloat() * manifest.canvasWidth / manifest.canvasHeight).toInt()
+    }
+
+    /** 贴边缩进时保留的可见宽度：至少 24dp，且不小于宠物画布的 45%（避免只露出透明边）。 */
+    private fun edgePeekPx(): Int = maxOf(dp(24), (petWidthPx() * 0.45f).toInt())
+
+    /** 设置页改大小后原地缩放，不重建窗口。 */
+    private fun resizePet() {
+        val p = bubbleParams ?: return
+        val root = bubble ?: return
+        val wm = this.wm ?: return
+        val w = petWidthPx()
+        val h = petHeightPx()
+        val size = screenSize()
+        val minX = -w + edgePeekPx()
+        val maxX = maxOf(minX, size.x - edgePeekPx())
+        val renderX = bubbleRenderX().coerceIn(minX, maxX)
+        val renderY = bubbleRenderY().coerceIn(0, (size.y - h).coerceAtLeast(0))
+        p.width = w
+        p.height = h
+        p.x = renderX - overlayInsetLeft()
+        p.y = renderY - overlayInsetTop()
+        root.layoutParams = FrameLayout.LayoutParams(w, h)
+        petView?.layoutParams = FrameLayout.LayoutParams(w, h)
+        lastRenderX = renderX
+        lastScreenW = size.x
+        lastScreenH = size.y
+        wm.updateViewLayout(root, p)
+        positionStatusBubble()
+        updateBadgePosition()
+        if (panelVisible) placePanel()
+    }
+
     private fun prefs(key: String): String? {
         val sp = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         return sp.getString(key, null)
     }
+
+    private fun prefsInt(key: String, fallback: Int): Int {
+        val sp = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        // Flutter shared_preferences 在 Android 上把 Dart int 存成 Long；getInt 会 ClassCastException。
+        return try {
+            sp.getInt(key, fallback)
+        } catch (_: ClassCastException) {
+            try {
+                sp.getLong(key, fallback.toLong()).toInt()
+            } catch (_: ClassCastException) {
+                fallback
+            }
+        }
+    }
+
+    private fun prefsBool(key: String, fallback: Boolean): Boolean =
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .getBoolean(key, fallback)
 
     private fun text(zh: String, en: String): String {
         val lang = prefs("flutter.dsh_mr_language") ?: "zh"

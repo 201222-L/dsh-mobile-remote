@@ -57,9 +57,15 @@ void main() async {
   };
   await api.load();
   await store.loadPrefs();
-  // v2.7.1：启动即把余额预警配置同步给悬浮球（可能已在后台运行，判定以 App 端设置为准）
+  // v2.7.1：启动即把余额预警配置同步给宠物面板（可能已在后台运行，判定以 App 端设置为准）
   unawaited(Floating.setBalanceAlert(store.balanceAlert, store.balanceThreshold));
-  // v2.7.2：上次开过悬浮球 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
+  // 桌面宠物配置（大小/减少动态/贴边躲藏）同步给原生服务
+  unawaited(Floating.setPetConfig(
+    height: store.petHeight,
+    reducedMotion: store.petReducedMotion,
+    edgeHide: store.petEdgeHide,
+  ));
+  // v2.7.2：上次开过宠物 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
   unawaited(store.restoreFloating());
   runApp(const DshApp());
 }
