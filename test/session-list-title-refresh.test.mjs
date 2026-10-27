@@ -10,12 +10,19 @@ import test from "node:test";
 
 import { LARGE_FIXTURE_BYTES, writeSessionCorpusFixtures, writeSessionLogFixture } from "./helpers/session-log-fixtures.mjs";
 
+// Windows 的 os.homedir() 只认 USERPROFILE、不认 HOME：不同步改会让缓存落到真实用户目录，
+// 测试则去临时目录等文件，必然超时（且污染真实 ~/.dsh/mobile-remote）。
+const setHome = (dir) => {
+	process.env.HOME = dir;
+	if (process.platform === "win32") process.env.USERPROFILE = dir;
+};
+
 let apply;
 let testHome;
 
 test.before(async () => {
 	testHome = await mkdtemp(join(tmpdir(), "dsh-session-title-refresh-home-"));
-	process.env.HOME = testHome;
+	setHome(testHome);
 	({ apply } = await import("../lib/index.js"));
 });
 
@@ -313,7 +320,7 @@ const request = async (route, url) => startRequest(route, url).finished;
 test("真实 V3/V4 日志与 20 MiB 会话：首屏有界，预热后重启仍命中且不重读日志", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-real-logs-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -388,7 +395,7 @@ test("真实 V3/V4 日志与 20 MiB 会话：首屏有界，预热后重启仍�
 test("354 个 V3/V4 会话冷请求仍完整返回且只取一次批量 revision 快照", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-scale-354-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -411,7 +418,7 @@ test("354 个 V3/V4 会话冷请求仍完整返回且只取一次批量 revision
 test("跨重启标题缓存按 JSONL 根目录隔离", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-root-scope-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -442,7 +449,7 @@ test("跨重启标题缓存按 JSONL 根目录隔离", async (t) => {
 test("/sessions 标题预算包含完整语料枚举耗时", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-list-budget-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -465,7 +472,7 @@ test("/sessions 标题预算包含完整语料枚举耗时", async (t) => {
 test("/subagents 标题预算同样包含完整语料枚举耗时", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-subagent-budget-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -492,7 +499,7 @@ test("/subagents 标题预算同样包含完整语料枚举耗时", async (t) =>
 test("语料枚举超过**枚举预算**时 /sessions 与 /subagents 明确返回超时", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-enumeration-timeout-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -523,7 +530,7 @@ test("冷启动枚举慢于标题预算、但快于枚举预算时 /sessions 仍
 	// 现在枚举用**自己的**预算，必须返回 200 + N（标题可以是短码，随后后台预热）。
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-enumeration-budget-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -553,7 +560,7 @@ test("冷启动枚举慢于标题预算、但快于枚举预算时 /sessions 仍
 test("并发 /sessions 共享同一标题折叠；一个客户端断开不取消另一个", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-concurrent-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -597,7 +604,7 @@ test("语料枚举次数不随会话数/标题批次增长（N 放大用例）",
 	for (const count of [8, 40]) {
 		const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 		const root = await mkdtemp(join(tmpdir(), `session-title-scale-${count}-`));
-		process.env.HOME = home;
+		setHome(home);
 		let harness;
 		try {
 			const fixtures = writeSessionCorpusFixtures(root, { count: count - 1, largePayloadBytes: 0 });
@@ -622,7 +629,7 @@ test("语料枚举次数不随会话数/标题批次增长（N 放大用例）",
 test("最后一个 /sessions 等待者断开后取消上游标题读取", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-cancel-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -655,7 +662,7 @@ test("最后一个 /sessions 等待者断开后取消上游标题读取", async 
 test("取消清理尚未结束时重试不复用死 run：新会话本次就被折叠", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-retire-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -708,7 +715,7 @@ test("取消清理尚未结束时重试不复用死 run：新会话本次就被�
 test("休眠父会话的子代理列表复用 revision 标题缓存", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-subagents-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -732,7 +739,7 @@ test("初始化预热（issue #28）：没有任何请求也会跑一遍枚举 +
 	// 与请求**同一条**路径，把冷代价挪到用户请求之前。
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-warmup-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -757,7 +764,7 @@ test("初始化预热（issue #28）：没有任何请求也会跑一遍枚举 +
 test("关闭预热（warmUpOnStart: false）：初始化后不发起任何枚举（issue #28）", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-warmup-off-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -776,7 +783,7 @@ test("预热与请求重叠：共享同一次在途枚举，只枚举一次（is
 	// 修法是 owner 共享：请求必须加入预热那次在途枚举。
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-warmup-shared-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -801,7 +808,7 @@ test("预热挂住后恢复：健康请求能重新读取真实标题（issue #2
 	// HTTP 200 仅短码）。修法是预热用**自己的有限生命期**且不提升为永久后台，到点退休坏 run。
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-warmup-hung-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
@@ -836,7 +843,7 @@ test("预热挂起 + HTTP 先到响应预算：warm 截止仍须退休坏源（i
 	// 修法必须是 **run 级**硬截止：到点即中止并退休，不看 background。
 	const home = await mkdtemp(join(tmpdir(), "session-title-refresh-home-"));
 	const root = await mkdtemp(join(tmpdir(), "session-title-warmup-promotion-"));
-	process.env.HOME = home;
+	setHome(home);
 	let harness;
 	t.after(async () => {
 		harness?.clean();
