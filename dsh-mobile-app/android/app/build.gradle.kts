@@ -25,6 +25,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications（issue #46）要求开启 core library desugaring
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -77,6 +79,8 @@ flutter {
 }
 
 dependencies {
+    // flutter_local_notifications 依赖的 Java 8+ API 脱糖支持
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     // 悬浮球面板模型 seam 的纯 JVM 单测（UsagePanelModelTest）：
     // org.json 在 Android 与 JVM 同规范，测试类路径单独引入即可。
     testImplementation("junit:junit:4.13.2")

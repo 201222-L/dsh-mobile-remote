@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.3.0（2026-10-27，issue #46 / #49）— 在线本地通知 + 二维码组网地址优选
+
+> 版本：插件 `3.3.0` / App `3.3.0+25`。
+> 验收门禁：`node --test test/*.mjs`（199 通过 + 1 平台跳过）、`timeline-contract`（77）、`account-usage`（15）、`account-usage-adversarial`（19）、`flutter analyze`（0 issue）、`flutter test`（375）。
+> 状态：已合入 `main`，**尚未打 tag / 发布**（等你确认后再出 APK 与 tgz）。
+
+### App 在线本地通知（#46）
+
+- SSE 在线且 App **不在前台**时，`approval/requested` 与 `question/requested` 直接弹系统本地通知（Android 13+ 首次启动请求通知权限）；点通知直达该会话的待办卡。
+- 文案：`需要授权：<工具名>` + 理由；`需要你回答` + 首个问题；同一 `rpcId` 5 分钟内只提醒一次（SSE 重连/回放会重放未结算帧）。
+- 回到前台自动清掉系统通知（App 内已有卡片与横幅，避免重复打扰）；`pushUrls` 退为「App 被杀/离线」时的兜底。
+- Android 构建开启 core library desugaring（`desugar_jdk_libs 2.1.5`），这是该通知库的硬性要求。
+
+### 二维码地址优选（#49）
+
+- 新增纯函数 `orderQrAddresses`：默认仍是「局域网私有地址优先」；**仅当机器上没有任何 `10./192.168.x/172.16-31` 地址时**，才把 Tailscale CGNAT（`100.64/10`）提到最前，避免校园网/热点等场景首选到不可达地址。
+- 7 项回归覆盖排序与端到端载荷选择；`docs/03-api.md` 同步。
+
 ## v3.2.1（2026-10-27，issue #37 / #39 / #43 / #44 / #47，PR #36 / #38 / #40 / #41 / #45 / #48）— DSH 0.2.x 适配 + 审批双端路由 + 会话列表性能
 
 > 版本：插件 `3.2.1` / App `3.2.1+24`。

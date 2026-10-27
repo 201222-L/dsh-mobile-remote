@@ -211,6 +211,17 @@ class AppStore extends ChangeNotifier {
   /// （v2.7.1：悬浮球跳转/回前台时"错过的也提醒"）。
   void Function(int count, {bool force})? onNewNotifications;
 
+  /// 审批/问询帧到达回调（issue #46）：参数 = (kind, sessionId, rpcId, toolName, reason, prompt)。
+  /// 由 main.dart 接到系统本地通知；只在 App 不在前台时真正弹通知。
+  void Function(
+    String kind,
+    String sessionId,
+    String rpcId,
+    String? toolName,
+    String? reason,
+    String? prompt,
+  )? onAttention;
+
   // ── SSE 内部 ──
   StreamSubscription<Map<String, dynamic>>? _sub;
   int _retry = 0;
@@ -1193,6 +1204,14 @@ class AppStore extends ChangeNotifier {
             data: {'rpcId': request.rpcId, 'sessionId': request.sessionId},
           ),
         );
+        onAttention?.call(
+          'question',
+          request.sessionId,
+          request.rpcId,
+          null,
+          null,
+          request.questions.isEmpty ? null : request.questions.first.question,
+        );
         return;
       }
       if (ftype == 'question/resolved') {
@@ -1234,6 +1253,14 @@ class AppStore extends ChangeNotifier {
             sessionId: request.sessionId,
             data: {'rpcId': request.rpcId, 'sessionId': request.sessionId},
           ),
+        );
+        onAttention?.call(
+          'approval',
+          request.sessionId,
+          request.rpcId,
+          request.toolName,
+          request.reason,
+          null,
         );
         return;
       }

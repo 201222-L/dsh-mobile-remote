@@ -9,6 +9,7 @@ import 'l10n.dart';
 import 'api.dart';
 import 'store.dart';
 import 'floating.dart';
+import 'local_notifications.dart';
 import 'theme.dart';
 import 'logger.dart';
 import 'scan_screen.dart';
@@ -70,7 +71,7 @@ class DshApp extends StatefulWidget {
   State<DshApp> createState() => _DshAppState();
 }
 
-class _DshAppState extends State<DshApp> {
+class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
   // v2.7.1：通知横幅全局状态（MaterialApp.builder 渲染在所有 route 之上；
   // 页面内 Stack 会被 push 的聊天页/通知页遮挡，OverlayEntry 又有 remove 残留 bug）
   int? _bannerCount;
@@ -83,6 +84,32 @@ class _DshAppState extends State<DshApp> {
     store.addListener(_onStore);
     // 新增未读通知 → 全局顶部横幅
     store.onNewNotifications = _onNewNotifications;
+    // issue #46：连接状态下的系统本地通知（pushUrls 仅作离线兜底）。
+    // 只在 App 不在前台时真正弹出；点击通知走统一 openChat 入口。
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(LocalNotifier.instance.init());
+    LocalNotifier.instance.onOpenSession = (id) =>
+        _handleFloatingAction('session:$id');
+    store.onAttention = (kind, sessionId, rpcId, toolName, reason, prompt) {
+      String? title;
+      for (final s in store.sessions) {
+        if (s.id == sessionId) {
+          title = s.title;
+          break;
+        }
+      }
+      unawaited(
+        LocalNotifier.instance.showAttention(
+          kind: kind,
+          rpcId: rpcId,
+          sessionId: sessionId,
+          toolName: toolName,
+          reason: reason,
+          prompt: prompt,
+          sessionTitle: title,
+        ),
+      );
+    };
     // 悬浮球迷你面板动作（原生 → Flutter）：打开会话 / 去充值
     const MethodChannel('dsh/floating').setMethodCallHandler((call) async {
       final nav = rootNavigatorKey.currentState;
@@ -149,9 +176,19 @@ class _DshAppState extends State<DshApp> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final resumed = state == AppLifecycleState.resumed;
+    LocalNotifier.instance.foreground = resumed;
+    // 回到前台：App 内已有卡片/横幅，清掉可能过时的系统通知
+    if (resumed) unawaited(LocalNotifier.instance.clearAll());
+  }
+
+  @override
   void dispose() {
     _bannerTimer?.cancel();
     _bannerTimer = null;
+    WidgetsBinding.instance.removeObserver(this);
+    store.onAttention = null;
     store.removeListener(_onStore);
     super.dispose();
   }
