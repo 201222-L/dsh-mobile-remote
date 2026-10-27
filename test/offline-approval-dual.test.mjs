@@ -235,6 +235,30 @@ test("双端竞速：桌面先答时手机侧条目被收掉，不残留可点�
 	}
 });
 
+// ───────── 3b. 无桌面客户端：下游 unavailable 不能抢答 ─────────
+
+test("双端竞速：没有桌面客户端（下游 unavailable）时仍等手机作答，不提前收卡", async () => {
+	const harness = createHarness();
+	try {
+		// 模拟只有手机在线、没有任何桌面 $events 客户端：内核转发立刻给 unavailable
+		const pending = harness.approval()(approvalRequest(), async () => "unavailable");
+
+		await sleep(20);
+		const before = await diagnostics(harness);
+		assert.equal(before.checks.pendingApprovals, 1, "下游 unavailable 不应清掉手机侧待答条目");
+		assert.equal(before.checks.pendingFrames, 1, "回放帧同样不能被提前清掉");
+
+		// 手机作答后，最终结果必须是手机的值，而不是 unavailable
+		const answered = await respond(harness, "session-A", "session-A:call-1", "allowed-once");
+		assert.equal(answered.status, 200, `手机应答应被接受：${JSON.stringify(answered.body)}`);
+		assert.equal(await pending, "allowed-once", "手机作答应胜过下游的 unavailable");
+		await sleep(30);
+		assert.equal((await diagnostics(harness)).checks.pendingApprovals, 0);
+	} finally {
+		harness.clean();
+	}
+});
+
 // ───────── 4. 超时 fail-close：内核不会悬挂 ─────────
 
 test("离线超时：到点返回 unavailable，不把内核永远挂住", async () => {
