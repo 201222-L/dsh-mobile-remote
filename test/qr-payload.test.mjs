@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import vm from "node:vm";
 
+import { orderQrAddresses } from "../lib/index.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -139,4 +141,40 @@ test("二维码图片地址仍使用挂载路径前缀", () => {
 	// 组件里 qrSrc = mount + "/qr.png?text=..."，挂载路径不得变成 /m/m
 	const mount = String("/m").replace(/\/+$/, "");
 	assert.equal(`${mount}/qr.png?text=x`, "/m/qr.png?text=x");
+});
+
+// ── issue #49：地址排序（Tailscale 只在「没有局域网私有地址」时优先）──────────
+
+test("地址排序：存在局域网私有地址时，Tailscale 仍排在后面（保持原设计）", () => {
+	// 同档（rank 0）保持输入相对次序，不额外重排
+	assert.deepEqual(
+		orderQrAddresses(["100.101.102.103", "192.168.1.5", "10.0.0.7", "172.20.0.3"]),
+		["192.168.1.5", "10.0.0.7", "172.20.0.3", "100.101.102.103"],
+	);
+});
+
+test("地址排序：没有任何局域网私有地址时，Tailscale 提到最前（issue #49）", () => {
+	assert.deepEqual(
+		orderQrAddresses(["203.0.113.9", "100.101.102.103"]),
+		["100.101.102.103", "203.0.113.9"],
+	);
+});
+
+test("地址排序：只有公网地址时保持输入相对次序（不臆造可达性）", () => {
+	assert.deepEqual(orderQrAddresses(["203.0.113.9", "198.51.100.7"]), ["203.0.113.9", "198.51.100.7"]);
+});
+
+test("地址排序：空列表与非法项不崩", () => {
+	assert.deepEqual(orderQrAddresses([]), []);
+	assert.deepEqual(orderQrAddresses(["not-an-ip", "192.168.1.5"]), ["192.168.1.5", "not-an-ip"]);
+});
+
+test("扫码首选：有局域网私有地址时，二维码仍选局域网地址", () => {
+	const urls = orderQrAddresses(["100.101.102.103", "192.168.1.5"]).map((ip) => `http://${ip}:3080/m`);
+	assert.equal(targetOf(buildQrPayload({ urls, token: "t", basePath: "/m" })), "http://192.168.1.5:3080/m");
+});
+
+test("扫码首选：没有局域网私有地址时，二维码选 Tailscale 地址", () => {
+	const urls = orderQrAddresses(["203.0.113.9", "100.101.102.103"]).map((ip) => `http://${ip}:3080/m`);
+	assert.equal(targetOf(buildQrPayload({ urls, token: "t", basePath: "/m" })), "http://100.101.102.103:3080/m");
 });
