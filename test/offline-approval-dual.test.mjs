@@ -102,6 +102,20 @@ function createHarness(overrides = {}) {
 	});
 
 	if (overrides.services) for (const [k, v] of Object.entries(overrides.services)) provided.set(k, v);
+	// 0.2.1 的进程内 Peer 来源：插件的网关调用必须携带它造的活 Peer。
+	// （0.2.0 没有 createPeer 时插件应传 undefined，由网关 operatorPeer 兜底。）
+	if (!overrides.services || !("connection" in overrides.services)) {
+		provided.set("connection", {
+			createPeer() {
+				return {
+					signal: new AbortController().signal,
+					principal: { kind: "owner" },
+					interactions: "answer",
+					dispose() {},
+				};
+			},
+		});
+	}
 	dispose = apply(ctx, { ...CONFIG, ...(overrides.config ?? {}) });
 
 	return {
