@@ -1,5 +1,19 @@
 # Changelog
 
+## 未发布（issue #50）— 未注册工作区目录建会话导致宿主 fatal
+
+> 版本号未定（待维护者按发布流程三处 bump）。
+
+### 建会话前确保 cwd 有归属工作区（#50）
+
+- **问题**：App 目录选择器可选到任意目录（含新建文件夹），若该目录不在 `workspaceRegistry` 里，会话会带着「无归属工作区」的 `cwd` 落盘。内核 `WorkspaceEntity.attachSession()` 要求 `header.cwd` 与工作区根**完全相等**，于是：
+  - 本次 attach 走「向上找祖先工作区」分支必然抛错，且原实现 `workspace?.attachSession(...)` **未 await**，异常逃过 `try/catch`；
+  - 会话成为孤儿，**下次 dsh 启动** bootstrap 再 attach 时抛错 → `dsh: fatal load failure` → 进程 exit 1（web/SSH/IM 全部入口下线，反代侧 502）。
+- **修复**：`POST /m/api/sessions` 在建会话**之前**解析工作区归属——已注册则复用，未注册则 `workspaceRegistry.create(cwd)` 注册成新工作区，并用工作区的 realpath 规范路径作为 `cwd`；`create` 抛错（目录不存在/非目录）时返回 `400 cwd-not-a-directory`，不再产生孤儿会话。
+- **兼容**：旧宿主未暴露 `registry.create` 时保留原「逐级向上找最近已注册工作区」的尽力而为路径，且不改写 `cwd`。
+- **顺带**：attach 改为 `await` + `catch` 记 warn，避免未处理的 Promise rejection。
+- **新增回归**：`test/issue50-cwd-workspace.test.mjs`（未注册→注册并 attach；已注册→复用；目录不可用→400 且不建会话；旧宿主→回落且不改写 cwd）。
+
 ## v3.2.2（2026-10-27，issue #46 / #49，PR #42）— 在线本地通知 + 轮次导航 + 二维码组网地址优选 + 审批兜底修复
 
 > 版本：插件 `3.2.2` / App `3.2.2+25`。
