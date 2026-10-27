@@ -89,7 +89,7 @@
 }
 ```
 
-- `urls`：按优先级排列——首个非 internal IPv4（含蒲公英/Tailscale 等虚拟组网段）在前，loopback 最后；`port` 来自 `ctx.webServer.port`。v3.0.0：`lanBridge` 监听成功时首选地址为桥地址（`http://<IP>:<lanBridge.port>`，端口默认 3080），回环 webserver 地址仅作本机自连兜底。
+- `urls`：按优先级排列——默认「局域网私有地址优先」（`10./192.168.x` → `172.16-31` → Tailscale CGNAT `100.64/10` → 其他），首个非 internal IPv4 在前，loopback 最后；**仅当机器上没有任何局域网私有地址时**，才把 Tailscale CGNAT 提到最前（issue #49，避免校园网/热点等场景选出不可达地址）；`port` 来自 `ctx.webServer.port`。v3.0.0：`lanBridge` 监听成功时首选地址为桥地址（`http://<IP>:<lanBridge.port>`，端口默认 3080），回环 webserver 地址仅作本机自连兜底。
 - `agents[].status`：`"running" | "idle"`（映射自 agent 状态与最近事件推断）。
 - 未认证：`401`（见通用约定）。
 ### 3.2 POST /m/api/send
