@@ -36,6 +36,11 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  List<String?> displayedGitTabNames(WidgetTester tester) => tester
+      .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+      .map((tile) => (tile.title! as Text).data)
+      .toList();
+
   testWidgets('selects one tab and disables removing the last tab', (
     tester,
   ) async {
@@ -70,13 +75,56 @@ void main() {
 
       await tester.tap(find.byTooltip('上移 工作区'));
       await tester.pumpAndSettle();
+      expect(displayedGitTabNames(tester), [
+        '分支',
+        '工作区',
+        '图谱',
+      ], reason: '设置弹窗应立即按已选标签顺序展示');
       await tester.tap(find.text('保存'));
       await tester.pumpAndSettle();
       expect(store.gitTabs, ['branches', 'worktree', 'graph']);
 
-      await openPreferenceDialog(tester, store);
+      final restored = await makeStore();
+      await openPreferenceDialog(tester, restored);
+      expect(restored.gitTabs, ['branches', 'worktree', 'graph']);
       expect(find.text('分支 · 工作区 · 图谱'), findsOneWidget);
+      expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱']);
       expect(find.byTooltip('上移 工作区'), findsOneWidget);
     },
   );
+
+  testWidgets('reorders tabs down and updates displayed row order', (
+    tester,
+  ) async {
+    final store = await makeStore();
+    await openPreferenceDialog(tester, store);
+
+    await tester.tap(find.byTooltip('下移 图谱'));
+    await tester.pumpAndSettle();
+
+    expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱']);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(store.gitTabs, ['branches', 'worktree', 'graph']);
+  });
+
+  testWidgets('keeps unselected tabs below selected tabs', (tester) async {
+    final store = await makeStore();
+    await openPreferenceDialog(tester, store);
+
+    await tester.tap(find.byTooltip('上移 工作区'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('图谱').last);
+    await tester.pumpAndSettle();
+
+    final rows = tester
+        .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+        .toList();
+    expect(rows.map((tile) => (tile.title! as Text).data).toList(), [
+      '分支',
+      '工作区',
+      '图谱',
+    ]);
+    expect(rows.last.value, isFalse);
+  });
 }
