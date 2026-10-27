@@ -1,10 +1,15 @@
 # Changelog
 
-## v3.3.0（2026-10-27，issue #46 / #49，PR #42）— 在线本地通知 + 轮次导航 + 二维码组网地址优选
+## v3.2.2（2026-10-27，issue #46 / #49，PR #42）— 在线本地通知 + 轮次导航 + 二维码组网地址优选 + 审批兜底修复
 
-> 版本：插件 `3.3.0` / App `3.3.0+25`。
-> 验收门禁：`node --test test/*.mjs`（199 通过 + 1 平台跳过）、`timeline-contract`（125）、`account-usage`（15）、`account-usage-adversarial`（19）、`flutter analyze`（0 issue）、`flutter test`（509）。
-> 状态：已合入 `main`，**尚未打 tag / 发布**（等你确认后再出 APK 与 tgz）。
+> 版本：插件 `3.2.2` / App `3.2.2+25`。
+> 验收门禁：`node --test test/*.mjs`（200 通过 + 1 平台跳过）、`timeline-contract`（125）、`account-usage`（15）、`account-usage-adversarial`（19）、`flutter analyze`（0 issue）、`flutter test`（509）。
+
+### 审批兜底：下游 unavailable 不再抢答（真机验收发现）
+
+- `dualRoute` 原来把「下游返回 `unavailable`」也当成先答：没有任何桌面 `$events` 客户端时，内核转发立刻给 `unavailable`，插件会同时收掉手机侧卡片——手机根本来不及作答。
+- 现在只在桌面给出**真实答复**时才收手机卡；下游是 `unavailable` 时保留手机条目，等 `/respond` 或手机侧 fail-close 超时给出最终结果。
+- 新增回归：下游立即 `unavailable`，手机仍可作答且结果以手机为准；把修复回退该用例即变红。
 
 ### 对话轮次导航（PR #42）
 
