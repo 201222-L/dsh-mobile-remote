@@ -40,6 +40,8 @@ const CONFIG = {
 	sessionTtlMs: 60_000,
 	rechargeUrl: "https://example.test/top-up",
 	maxConnections: 4,
+	// issue #28：预热默认开启；无关用例一律显式关掉，避免 1 秒后自动跑的预热打乱计数断言。
+	warmUpOnStart: false,
 	pushUrls: [],
 	pushCooldownMs: 1,
 	doneGraceMs: 1,
@@ -65,6 +67,9 @@ class FakeResponse extends EventEmitter {
 	}
 	end(chunk = "") {
 		if (chunk !== "") this.chunks.push(String(chunk));
+		// 与真实 ServerResponse 一致：end() 之后 writableEnded 为 true，
+		// 于是随后的 close 不会被插件误判成"客户端断开"。
+		this.writableEnded = true;
 		this.emit("finish");
 	}
 	destroy() {
@@ -116,9 +121,10 @@ function createHarness({ records, liveSessions = [], query, noQuery = false, age
 	if (!noQuery) provided.set("sessionQuery", query ?? { listSessions: async () => records ?? [] });
 	if (agents) provided.set("agents", agents);
 	if (gateway) provided.set("typertGateway", gateway);
+	const logs = [];
 	const ctx = {
 		webServer: { host: "127.0.0.1", port: 43120, register(spec) { routes.push(spec); return () => {}; } },
-		logger: { warn() {}, info() {} },
+		logger: { warn(...a) { logs.push(a.join(" ")); }, info() {} },
 		get(name) { return provided.get(name); },
 		provide(name, value) { provided.set(name, value); },
 		on(event, handler) { handlers.push([event, handler]); return () => {}; },
@@ -134,6 +140,10 @@ function createHarness({ records, liveSessions = [], query, noQuery = false, age
 		route: routes.find((route) => route.path === "/m/api").handler,
 		/** 投递一条实时会话事件（走插件真实的 session/event 订阅路径）。 */
 		emit(sessionId, event) { onSessionEvent?.({ id: sessionId }, event); },
+		/** 追加/替换一个内核服务（取消用例要用可取消的 sessionQuery 换掉默认实现）。 */
+		provide(name, value) { provided.set(name, value); },
+		/** 捕获到的 warn 日志（断言"取消不记为失败"用）。 */
+		logs,
 		clean() { dispose?.(); },
 	};
 }
@@ -765,3 +775,268 @@ test("剪枝：观测过旧时不剪枝，并清空陈旧待确认（避免下�
 		"必须清空陈旧待确认，否则下轮新鲜观测会把它当成第二次确认而误删",
 	);
 });
+
+// ───────────────── 4. 请求取消（issue #20）─────────────────
+
+/** 假宿主的可取消枚举：挂住直到 signal 中止——与 `dsh-session-query` 的真实语义一致。 */
+function cancellableQuery(state) {
+	return {
+		listSessions(signal) {
+			state.signal = signal;
+			return new Promise((resolve, reject) => {
+				const fail = () => {
+					state.settled = "aborted";
+					reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+				};
+				if (signal?.aborted) return fail();
+				signal?.addEventListener("abort", fail, { once: true });
+			});
+		},
+	};
+}
+
+/** 直接驱动处理器，以便在扫描进行中手动 destroy 响应（模拟客户端超时/关页）。 */
+function drive(harness, url) {
+	const req = new FakeRequest(url);
+	const res = new FakeResponse();
+	harness.route(req, res);
+	return res;
+}
+
+test("客户端断开即取消：中止枚举、不写响应、不记为失败（issue #20）", async () => {
+	const state = { signal: null, settled: "pending" };
+	const harness = createHarness({ records: [], noQuery: true });
+	harness.provide("sessionQuery", cancellableQuery(state));
+	try {
+		const res = drive(harness, "/m/api/sessions");
+		await new Promise((r) => setTimeout(r, 20));
+		assert.ok(state.signal instanceof AbortSignal, "插件必须把取消信号传给 listSessions（宿主支持，此前没传）");
+		assert.equal(state.signal.aborted, false, "尚未断开时不应已取消");
+
+		res.destroy(); // 客户端超时/关页
+		await new Promise((r) => setTimeout(r, 20));
+
+		assert.equal(state.settled, "aborted", "断开必须立刻中止枚举，而不是把语料读完");
+		assert.equal(res.chunks.length, 0, "取消后不得再写响应（socket 已关闭）");
+		assert.deepEqual(harness.logs, [], "取消不是失败：不得打 warn");
+	} finally { harness.clean(); }
+});
+
+test("正常完成不触发取消：writableEnded 之后到达的 close 必须被忽略（issue #20）", async () => {
+	// 这是最容易做反的一处：`close` 在**正常完成**时同样会触发，
+	// 少了 writableEnded 判断，每一次成功响应都会被当成取消。
+	//
+	// 评审 WARNING 2：本用例原先建了 state 却没接进假 listSessions，也不观察信号，
+	// 于是把 abort 改成无条件调用它**仍然通过**——是假绿。现在捕获真实信号并显式断言。
+	const state = { signal: null };
+	const harness = createHarness({
+		records: [{ header: { id: "session-a", createdAt: 1, cwd: "/tmp" } }],
+		liveSessions: [liveSession("session-a", [])],
+		query: {
+			async listSessions(signal) {
+				state.signal = signal;
+				return [{ header: { id: "session-a", createdAt: 1, cwd: "/tmp" } }];
+			},
+		},
+	});
+	try {
+		const res = drive(harness, "/m/api/sessions");
+		await new Promise((r) => setTimeout(r, 20));
+
+		assert.ok(state.signal instanceof AbortSignal, "插件必须把取消信号传进来（否则本用例没有观测点）");
+		assert.equal(res.statusCode, 200, "正常请求应成功返回");
+		assert.equal(JSON.parse(res.chunks.join("")).sessions.length, 1);
+		// 关键断言：正常完成时**信号不得被取消**
+		assert.equal(state.signal.aborted, false, "正常完成不得取消请求信号");
+
+		res.destroy(); // 响应完成之后才断开（真实客户端收完即关）
+		await new Promise((r) => setTimeout(r, 10));
+		// close 在完成后到达——writableEnded 已为 true，信号仍不得被取消
+		assert.equal(state.signal.aborted, false, "完成之后到达的 close 不得触发取消");
+		assert.deepEqual(harness.logs, [], "完成后的断开不得产生任何告警");
+	} finally { harness.clean(); }
+});
+
+test("/subagents：断开同样中止持久化枚举（issue #20）", async () => {
+	const state = { signal: null, settled: "pending" };
+	const harness = createHarness({ records: [], noQuery: true, agents: { get: () => undefined, roots: () => [] } });
+	harness.provide("sessionQuery", cancellableQuery(state));
+	try {
+		const res = drive(harness, "/m/api/subagents?parentSessionId=session-parent");
+		await new Promise((r) => setTimeout(r, 20));
+		assert.ok(state.signal instanceof AbortSignal, "子代理路径也要把取消信号传下去");
+
+		res.destroy();
+		await new Promise((r) => setTimeout(r, 20));
+
+		assert.equal(state.settled, "aborted", "断开必须中止枚举");
+		assert.equal(res.chunks.length, 0, "取消后不得写响应（尤其不得误报 404 session-not-found）");
+		assert.deepEqual(harness.logs, [], "取消不是失败");
+	} finally { harness.clean(); }
+});
+
+/** 假宿主的可取消单次标题读取：挂住直到 signal 中止。 */
+function cancellableTitleRead(state) {
+	return (sessionId, signal) => {
+		state.signal = signal;
+		state.sessionId = sessionId;
+		return new Promise((resolve, reject) => {
+			const fail = () => {
+				state.settled = "aborted";
+				reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+			};
+			if (signal?.aborted) return fail();
+			signal?.addEventListener("abort", fail, { once: true });
+		});
+	};
+}
+
+const DORMANT_RECORD = { header: { id: "session-dormant", createdAt: 1, cwd: "/tmp" } };
+
+test("逐个标题兜底（宿主无批量接口）：断开会取消**在途**的那次标题读取（评审 WARNING 1）", async () => {
+	// 只在循环前查 signal.aborted 拦不住**已经开始**的那次读取——它仍会把日志读完。
+	// 必须把信号传进 readTitleSnapshot(sessionId, signal)。
+	const state = { signal: null, settled: "pending" };
+	const harness = createHarness({ records: [], noQuery: true });
+	harness.provide("sessionQuery", {
+		async listSessions() { return [DORMANT_RECORD]; },
+		readTitleSnapshot: cancellableTitleRead(state),
+		// 刻意不提供 readTitleSnapshots → 走 else-if 的逐个循环
+	});
+	try {
+		const res = drive(harness, "/m/api/sessions");
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(state.sessionId, "session-dormant", "应进入逐个标题读取路径");
+		assert.ok(state.signal instanceof AbortSignal, "单个标题读取也必须收到取消信号");
+
+		res.destroy();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(state.settled, "aborted", "在途的标题读取必须被中止，而不是读完整个日志");
+		assert.equal(res.chunks.length, 0, "取消后不得写响应");
+		assert.deepEqual(harness.logs, [], "取消不是失败");
+	} finally { harness.clean(); }
+});
+
+test("逐个标题兜底（批量接口抛错后）：断开会取消**在途**的那次标题读取（评审 WARNING 1）", async () => {
+	const state = { signal: null, settled: "pending" };
+	const harness = createHarness({ records: [], noQuery: true });
+	harness.provide("sessionQuery", {
+		async listSessions() { return [DORMANT_RECORD]; },
+		// 批量接口抛错 → 落到 catch 里的逐个兜底
+		async readTitleSnapshots() { throw new Error("batch unavailable"); },
+		readTitleSnapshot: cancellableTitleRead(state),
+	});
+	try {
+		const res = drive(harness, "/m/api/sessions");
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(state.sessionId, "session-dormant", "应进入批量失败后的逐个兜底路径");
+		assert.ok(state.signal instanceof AbortSignal, "逐个兜底也必须收到取消信号");
+
+		res.destroy();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(state.settled, "aborted", "在途的标题读取必须被中止");
+		assert.equal(res.chunks.length, 0, "取消后不得写响应");
+		assert.deepEqual(harness.logs, [], "取消不是失败");
+	} finally { harness.clean(); }
+});
+
+test("逐个标题兜底（宿主无批量接口）：并发读取仍有界（≤4），不把 N 个点读一次性扇出", async () => {
+	// 真实宿主上逐个 readTitleSnapshot 每次都会自带一轮全语料枚举，Promise.all(ids)
+	// 会让 N 个枚举同时开跑（issue #20 评审 note 904 的同类放大）。
+	const dormant = Array.from({ length: 12 }, (_, i) => ({ header: { id: `session-${i}`, createdAt: i + 1, cwd: "/tmp" } }));
+	let active = 0;
+	let maxActive = 0;
+	const harness = createHarness({ records: [], noQuery: true });
+	harness.provide("sessionQuery", {
+		async listSessions() { return dormant; },
+		readTitleSnapshot: async (sessionId, signal) => {
+			signal?.throwIfAborted();
+			active += 1;
+			maxActive = Math.max(maxActive, active);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 2));
+				return { session: { id: sessionId }, title: { title: `标题 ${sessionId}` } };
+			} finally {
+				active -= 1;
+			}
+		},
+		// 刻意不提供 readTitleSnapshots → 走逐个兜底
+	});
+	try {
+		const result = await sessions(harness.route);
+		assert.equal(result.status, 200);
+		assert.equal(result.body.sessions.length, dormant.length);
+		for (const row of result.body.sessions) assert.equal(row.title, `标题 ${row.id}`);
+		assert.ok(maxActive <= 4, `observed ${maxActive} concurrent fallback title reads`);
+	} finally { harness.clean(); }
+});
+
+/** 评审 note 908 的两个兜底入口：宿主无批量接口 / 批量接口抛错。 */
+const TITLE_FALLBACK_ENTRIES = [
+	{ name: "宿主无批量接口", batch: {} },
+	{ name: "批量接口抛错", batch: { async readTitleSnapshots() { throw new Error("batch unavailable"); } } },
+];
+
+for (const entry of TITLE_FALLBACK_ENTRIES) {
+	test(`逐个标题兜底（${entry.name}）：一路先拒、三路清理挂住时立即 retry，并发仍 ≤4`, async () => {
+		// 评审 note 908：`Promise.all` 首拒即返回 → 折叠串行门在其余三路仍在清理时被释放，
+		// 重试随即再开四路 → 实测 maxActive=7（旧 3 + 新 4），突破 ≤4 的读取宽度。
+		// 注意"一路先拒"指**worker 拒绝**（逐个兜底把单条失败降级为无标题，只有取消才会
+		// 向上抛），因此本用例用取消后的 AbortError 制造这一路，另三路挂住模拟清理未结束。
+		const dormant = Array.from({ length: 8 }, (_, i) => ({ header: { id: `session-${i}`, createdAt: i + 1, cwd: "/tmp" } }));
+		const abortError = () => Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+		let active = 0;
+		let maxActive = 0;
+		let dispatches = 0;
+		const hung = new Map();
+		let markFourDispatched;
+		const fourDispatched = new Promise((resolve) => { markFourDispatched = resolve; });
+		const harness = createHarness({ records: [], noQuery: true });
+		harness.provide("sessionQuery", {
+			async listSessions() { return dormant; },
+			...entry.batch,
+			readTitleSnapshot: async (sessionId, signal) => {
+				const order = dispatches;
+				dispatches += 1;
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				if (dispatches === 4) markFourDispatched();
+				try {
+					// 旧轮（前四路）挂住，由测试决定各自何时结束；后继轮正常返回。
+					if (order <= 3) {
+						await new Promise((resolve, reject) => hung.set(order, { resolve, reject }));
+						signal?.throwIfAborted();
+					}
+					return { session: { id: sessionId }, title: { title: `标题 ${sessionId}` } };
+				} finally {
+					active -= 1;
+				}
+			},
+		});
+		try {
+			const first = drive(harness, "/m/api/sessions");
+			await fourDispatched;
+			first.destroy(); // 客户端断开 → 旧轮取消
+			await new Promise((resolve) => setImmediate(resolve));
+
+			// 旧四路里"一路先拒（结束）"：它观察到取消而抛出，另外三路仍在清理。
+			hung.get(1).reject(abortError());
+			await new Promise((resolve) => setImmediate(resolve));
+
+			// 立即重试：旧轮尚未全部 settle，重试不得再派发任何新读取。
+			const retry = call(harness.route, "/m/api/sessions");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.equal(hung.size, 4, "旧轮应已派出四路（本用例的场景前提）");
+			assert.equal(dispatches, 4, "旧轮清理未结束前重试不得开新读取（Promise.all 首拒即返回时会开）");
+			assert.ok(maxActive <= 4, `observed ${maxActive} concurrent fallback title reads`);
+
+			// 放行旧轮其余三路 → 后继轮才能开工，并自行补齐全部标题。
+			for (const order of [0, 2, 3]) hung.get(order).reject(abortError());
+			const result = await retry;
+			assert.equal(result.status, 200);
+			assert.equal(result.body.sessions.length, dormant.length);
+			for (const row of result.body.sessions) assert.equal(row.title, `标题 ${row.id}`);
+			assert.ok(maxActive <= 4, `observed ${maxActive} concurrent fallback title reads`);
+		} finally { harness.clean(); }
+	});
+}
