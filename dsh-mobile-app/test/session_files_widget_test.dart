@@ -61,6 +61,13 @@ class _Backend {
       if (path.endsWith('big.txt')) {
         return http.Response.bytes(List<int>.filled(300 * 1024, 0x61), 200);
       }
+      if (path.endsWith('big.md')) {
+        final sb = StringBuffer();
+        for (var i = 0; i < 400; i++) {
+          sb.write('## heading $i\n\nparagraph $i\n\n');
+        }
+        return http.Response.bytes(utf8.encode(sb.toString()), 200);
+      }
       return http.Response.bytes(utf8.encode('line one\nline two\n'), 200);
     }
     return http.Response('unexpected ${request.url}', 500);
@@ -166,7 +173,7 @@ void main() {
     expect(find.text('README.md'), findsOneWidget);
   });
 
-  testWidgets('点文件进入预览并显示行号内容', (tester) async {
+  testWidgets('Markdown 默认渲染，可切到源码看行号', (tester) async {
     final b = _Backend();
     await _pump(tester, _store(), b.api);
 
@@ -174,10 +181,57 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('sf-preview')), findsOneWidget);
+    // .md 默认走渲染：整段文本，不是逐行 + 行号
+    expect(find.byKey(const Key('sf-preview-md')), findsOneWidget);
+    expect(find.textContaining('line one'), findsOneWidget);
+
+    // 切到源码：出现行号视图
+    await tester.tap(find.byKey(const Key('sf-mode-source')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sf-preview-source')), findsOneWidget);
     expect(find.text('line one'), findsOneWidget);
     expect(find.text('line two'), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     expect(find.text('2'), findsOneWidget);
+  });
+
+  testWidgets('非 Markdown 文本没有渲染/源码切换，直接给行号', (tester) async {
+    final b = _Backend();
+    b.listing['/work'] = (dirs: [], files: ['notes.txt']);
+    await _pump(tester, _store(), b.api);
+
+    await tester.tap(find.byKey(const Key('sf-file-notes.txt')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sf-preview-source')), findsOneWidget);
+    expect(find.byKey(const Key('sf-preview-md')), findsNothing);
+    expect(find.byKey(const Key('sf-preview-mode')), findsNothing);
+  });
+
+  testWidgets('大 Markdown 分片渲染：只建可见分片，滚动后能看到后面的内容', (tester) async {
+    final b = _Backend();
+    b.listing['/work'] = (dirs: [], files: ['big.md']);
+    await _pump(tester, _store(), b.api);
+
+    await tester.tap(find.byKey(const Key('sf-file-big.md')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sf-preview-md')), findsOneWidget);
+    expect(find.textContaining('heading 0'), findsOneWidget);
+    // 末尾的标题在首屏之外，尚未建树（证明不是一次性全渲染）
+    expect(find.textContaining('heading 399'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.textContaining('heading 399'),
+      400,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('sf-preview-md')),
+        matching: find.byType(Scrollable),
+      ),
+      maxScrolls: 120,
+    );
+    expect(find.textContaining('heading 399'), findsOneWidget);
   });
 
   testWidgets('二进制文件显示不可预览而不是乱码', (tester) async {
