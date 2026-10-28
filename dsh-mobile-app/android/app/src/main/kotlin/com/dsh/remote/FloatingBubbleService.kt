@@ -2045,9 +2045,14 @@ class FloatingBubbleService : Service() {
         val w = petWidthPx()
         val h = petHeightPx()
         val size = screenSize()
-        val minX = -w + edgePeekPx()
-        val maxX = maxOf(minX, size.x - edgePeekPx())
-        val renderX = bubbleRenderX().coerceIn(minX, maxX)
+        // 改大小后如果正处于贴边隐藏，立即按新宽度重新缩进；否则保持原可见位置。
+        val renderX = if (petTucked) {
+            if (edgeSide < 0) -w + edgePeekPx() else size.x - edgePeekPx()
+        } else {
+            val minX = -w + edgePeekPx()
+            val maxX = maxOf(minX, size.x - edgePeekPx())
+            bubbleRenderX().coerceIn(minX, maxX)
+        }
         val renderY = bubbleRenderY().coerceIn(0, (size.y - h).coerceAtLeast(0))
         p.width = w
         p.height = h
