@@ -61,11 +61,11 @@ class FakeResponse extends EventEmitter {
 }
 
 class FakeRequest extends EventEmitter {
-	constructor(url, method = "GET") {
+	constructor(url, method = "GET", headers = {}) {
 		super();
 		this.url = url;
 		this.method = method;
-		this.headers = { host: "127.0.0.1", "x-mobile-token": CONFIG.authToken };
+		this.headers = { host: "127.0.0.1", "x-mobile-token": CONFIG.authToken, ...headers };
 		this.socket = { remoteAddress: "127.0.0.1" };
 	}
 }
@@ -93,8 +93,8 @@ function createHarness() {
 	};
 }
 
-async function call(route, { url, method = "GET" } = {}) {
-	const req = new FakeRequest(url, method);
+async function call(route, { url, method = "GET", headers = {} } = {}) {
+	const req = new FakeRequest(url, method, headers);
 	const res = new FakeResponse();
 	const finished = new Promise((resolve) => res.once("finish", resolve));
 	route(req, res);
@@ -302,6 +302,106 @@ test("files：当前不校验工作区包含（符号链接可越界，记录现
 		const res = await call(route, { url: `/m/api/files?path=${encodeURIComponent(join(root, "link.txt"))}` });
 		assert.equal(res.status, 200, "现状：符号链接会被跟随");
 		assert.equal(res.raw.toString("utf8"), "outside\n");
+	} finally {
+		clean();
+	}
+});
+
+// ── v3.2.3：Range / HEAD / ETag（大文件续传与前缀预览的底座） ──
+
+test("directories：返回 fileEntries（name/size/mtimeMs/mime），files 仍为纯字符串", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const res = await call(route, {
+			url: `/m/api/directories?path=${encodeURIComponent(root)}`,
+		});
+		assert.equal(res.status, 200);
+		assert.ok(res.body.files.includes("README.md"), "files 仍是纯字符串数组");
+		assert.equal(typeof res.body.files[0], "string");
+		const entry = (res.body.fileEntries ?? []).find((e) => e.name === "README.md");
+		assert.ok(entry, "应带上 README.md 的元数据");
+		assert.equal(entry.size, Buffer.byteLength("hello 世界\n", "utf8"));
+		assert.equal(typeof entry.mtimeMs, "number");
+		assert.match(entry.mime, /^text\//);
+		// 点开头文件不应出现在元数据里（与 files 同一规则）
+		assert.ok(!(res.body.fileEntries ?? []).some((e) => e.name === ".hidden-file"));
+	} finally {
+		clean();
+	}
+});
+
+test("files：Range 命中返回 206 + content-range + 精确字节", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const res = await call(route, {
+			url: `/m/api/files?path=${encodeURIComponent(join(root, "README.md"))}`,
+			headers: { range: "bytes=0-4" },
+		});
+		assert.equal(res.status, 206);
+		assert.equal(res.raw.toString("utf8"), "hello");
+		assert.match(String(res.headers["content-range"]), /^bytes 0-4\/\d+$/);
+		assert.equal(res.headers["accept-ranges"], "bytes");
+	} finally {
+		clean();
+	}
+});
+
+test("files：Range 越界返回 416 + content-range bytes */size", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const file = join(root, "README.md");
+		const size = Buffer.byteLength("hello 世界\n", "utf8");
+		const res = await call(route, {
+			url: `/m/api/files?path=${encodeURIComponent(file)}`,
+			headers: { range: "bytes=99999-" },
+		});
+		assert.equal(res.status, 416);
+		assert.equal(res.headers["content-range"], `bytes */${size}`);
+		assert.equal(res.raw.length, 0);
+	} finally {
+		clean();
+	}
+});
+
+test("files：HEAD 返回与 GET 一致的头但没有 body", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const file = join(root, "README.md");
+		const size = Buffer.byteLength("hello 世界\n", "utf8");
+		const res = await call(route, {
+			url: `/m/api/files?path=${encodeURIComponent(file)}`,
+			method: "HEAD",
+		});
+		assert.equal(res.status, 200);
+		assert.equal(Number(res.headers["content-length"]), size);
+		assert.ok(res.headers.etag, "HEAD 也应带 etag");
+		assert.equal(res.raw.length, 0, "HEAD 不应有 body");
+	} finally {
+		clean();
+	}
+});
+
+test("files：If-None-Match 命中返回 304", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const file = join(root, "README.md");
+		const first = await call(route, {
+			url: `/m/api/files?path=${encodeURIComponent(file)}`,
+			method: "HEAD",
+		});
+		const etag = String(first.headers.etag);
+		assert.ok(etag, "首次响应应带 etag");
+		const second = await call(route, {
+			url: `/m/api/files?path=${encodeURIComponent(file)}`,
+			headers: { "if-none-match": etag },
+		});
+		assert.equal(second.status, 304);
+		assert.equal(second.raw.length, 0);
 	} finally {
 		clean();
 	}
