@@ -4182,24 +4182,24 @@ class _ChatScreenState extends State<ChatScreen> {
                                       width: 10,
                                       height: 10,
                                       decoration: BoxDecoration(
-                                        color: Colors.white,
+                                        color: DshColors.onBrand(context),
                                         borderRadius: BorderRadius.circular(2),
                                       ),
                                     ),
                                   )
                                 : _sending
-                                ? const SizedBox(
+                                ? SizedBox(
                                     width: 15,
                                     height: 15,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      color: Colors.white,
+                                      color: DshColors.onBrand(context),
                                     ),
                                   )
-                                : const Icon(
+                                : Icon(
                                     Icons.arrow_upward,
                                     size: 17,
-                                    color: Colors.white,
+                                    color: DshColors.onBrand(context),
                                   ),
                           ),
                         ),

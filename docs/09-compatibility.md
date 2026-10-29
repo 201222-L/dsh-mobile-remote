@@ -17,6 +17,10 @@
 | 字段级兼容（v3.1.1） | `/m/api/directories` 根视图新增 `sep`（服务端路径分隔符）；新插件+旧 App 忽略该字段即可（旧 App 在 WSL 上仍按 `\` 拼接，由服务端`normalizeServerPath` 归一化兜底，浏览/建夹/建会话均可用）；新 App+旧插件缺少 `sep` 时按根视图推断分隔符——任意组合均可使用 |
 | 用量与额度（v3.2） | 新插件+新 App 通过 `/m/api/account-usage` 显示 DeepSeek/Codex/OpenCode Go；旧 App 忽略新端点。新 App+旧插件进入该入口会显示“电脑端插件版本过旧”，不影响其它功能；升级插件后无需重新配置凭据 |
 | 桌面宠物面板用量与额度（v3.2） | 新 App+新插件：面板展开时按需展示三来源区块（金额行文字 + 配额行细条/颜色），整块可点进详情页。新 App+旧插件：区块整体降级为原有单行余额（点击仍=去充值），其余面板功能不受影响；旧 App 忽略新端点。无新增服务端契约 |
+| 外观：皮肤与图标（v3.2.2 build 27） | **纯 App 侧，无服务端契约变化**。皮肤是 `ThemeExtension` 令牌，旧插件照常工作；默认皮肤令牌与旧版逐值一致。App 图标用 8 个 `activity-alias`，只在 Android 生效（其它平台隐藏入口） |
+| 图标入口迁移（build 27） | 启动入口从 `com.dsh.remote.MainActivity` 改为 `com.dsh.remote.IconDefault`：**升级后桌面旧快捷方式可能失效一次**（组件名变化，桌面固定的是组件名），首次启动有一次性说明引导重拖。抽屉入口不受影响 |
+| 桌面宠物前台联动（build 27） | `MainActivity.onStart/onStop` → 服务根视图 `GONE`：App 在前台时收起宠物与状态气泡/迷你面板；`设置 → 桌面宠物 → App 在前台时收起` 可关。旧系统不涉及（仅原生层行为） |
+| 图标主题化与圆形图标 | **已知缺口**：`mipmap-anydpi-v26` 未提供 `<monochrome>` 层，Android 13 主题图标不生效；未声明 `android:roundIcon`，圆形图标机型退化为方形。计划在后续版本补齐，不影响功能 |
 | Flutter 构建环境 | Flutter 3.35+（Dart SDK ^3.13） |
 
 **声明式兼容范围（`peerDependencies`）**：`@deepseek-ai/dsh-{credentials,llm,sandbox-policy,scope}` 声明 `>=0.1.0-rc.6 <0.3.0`。宿主 `@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility()` 用 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })` 判定（**prerelease 参与比较**），因此该范围同时覆盖 `0.1.x`、`0.2.0-rc.*` 与 `0.2.x` 正式版，而 `0.3.0+` 会被判为不兼容。上界**只用于声明可安装边界**，功能路径仍按能力探测（ADR 0017），不按版本号做功能门禁。

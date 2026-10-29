@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'l10n.dart';
 import 'api.dart';
+import 'app_icon_switcher.dart';
 import 'store.dart';
 import 'floating.dart';
 import 'local_notifications.dart';
@@ -57,13 +58,16 @@ void main() async {
   };
   await api.load();
   await store.loadPrefs();
+  // 桌面图标：把上次选择同步给系统（原生侧已是目标 alias 时不会重复切换）
+  unawaited(AppIconSwitcher.sync(store.appIcon));
   // v2.7.1：启动即把余额预警配置同步给宠物面板（可能已在后台运行，判定以 App 端设置为准）
   unawaited(Floating.setBalanceAlert(store.balanceAlert, store.balanceThreshold));
-  // 桌面宠物配置（大小/减少动态/贴边躲藏）同步给原生服务
+  // 桌面宠物配置（大小/减少动效/贴边躲藏/前台收起）同步给原生服务
   unawaited(Floating.setPetConfig(
     height: store.petHeight,
     reducedMotion: store.petReducedMotion,
     edgeHide: store.petEdgeHide,
+    hideInApp: store.petHideInApp,
   ));
   // v2.7.2：上次开过宠物 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
   unawaited(store.restoreFloating());
@@ -239,8 +243,8 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
       title: 'DSH Remote',
       debugShowCheckedModeBanner: false,
       navigatorKey: rootNavigatorKey,
-      theme: DshTheme.light(),
-      darkTheme: DshTheme.dark(),
+      theme: DshTheme.forSkin(store.skin, Brightness.light),
+      darkTheme: DshTheme.forSkin(store.skin, Brightness.dark),
       themeMode: mode,
       home: const RootScreen(),
       // 全局横幅：渲染在 Navigator（所有 route）之上
@@ -289,7 +293,7 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
                           decoration: BoxDecoration(
                             // 跟随主题：浅色=白底深字，深色=深底浅字
-                            color: Theme.of(context).brightness == Brightness.dark ? DshTheme.surfaceDark : Colors.white,
+                            color: DshColors.surface(context),
                             borderRadius: BorderRadius.circular(DshTheme.radiusMd),
                             boxShadow: const [
                               BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
@@ -349,6 +353,44 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     if (_configured) {
       _boot();
     }
+    // v3.2.2 build 27：升级后一次性说明「图标入口已换成 alias」——
+    // 老桌面快捷方式指向的是旧组件名，会点不开一次，提前说比让用户自己猜好。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowIconMigrationTip());
+  }
+
+  /// 首次启动弹一次图标入口迁移说明；已提示过则直接返回。
+  Future<void> _maybeShowIconMigrationTip() async {
+    if (store.iconMigrationTipShown) return;
+    // 只在支持切换图标的平台提示（Android）；其它平台不涉及 alias 迁移
+    if (!AppIconSwitcher.supported) {
+      await store.markIconMigrationTipShown();
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('桌面图标入口已更新', 'Launcher entry updated')),
+        content: Text(
+          L10n.t(
+            '这一版把启动图标换成了可切换的入口。抽屉里的 App 图标正常；'
+            '但如果桌面上的旧快捷方式点开提示「应用未安装」，'
+            '把它删掉、从抽屉里重新拖一个出来即可，之后切换图标不会再出现。',
+            'This build moved the launcher entry so icons can be switched. '
+            'The app in your drawer still works; if an old home-screen shortcut '
+            'says "App isn\'t installed", remove it and drag a fresh one from the '
+            'drawer. It will not happen again after that.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(L10n.t('知道了', 'Got it')),
+          ),
+        ],
+      ),
+    );
+    await store.markIconMigrationTipShown();
   }
 
   void _onStore() {
@@ -481,6 +523,9 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 fontSize: _index == 0 ? 20 : 17,
                 fontWeight: FontWeight.w700,
                 fontFamily: _index == 0 ? 'Georgia' : null,
+                color: _index == 0 && DshColors.skin(context).isBigFish
+                    ? DshColors.accent(context)
+                    : null,
               ),
             ),
           ],

@@ -1,6 +1,8 @@
 package com.dsh.remote
 
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -13,6 +15,7 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
     private var filesChannel: MethodChannel? = null
+    private var iconChannel: MethodChannel? = null
     // v3.1.2（csborbbnc 反馈）：系统文件选择器（ACTION_OPEN_DOCUMENT）结果回传暂存
     private var pendingPick: MethodChannel.Result? = null
     private val pickFileRequestCode = 2001
@@ -23,6 +26,8 @@ class MainActivity : FlutterActivity() {
     private var petHeight = 96
     private var petReducedMotion = false
     private var petEdgeHide = true
+    // v3.2.2 build 27：App 在前台时收起桌面宠物
+    private var petHideInApp = true
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,6 +63,17 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        // v3.3.0：桌面图标切换（activity-alias）
+        iconChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/app_icon")
+        iconChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setIcon", "syncIcon" -> {
+                    val id = call.argument<String>("id") ?: "default"
+                    result.success(applyIcon(id))
+                }
+                else -> result.notImplemented()
+            }
+        }
         // 引擎就绪：投递冷启动暂存的面板动作
         deliverPendingAction()
         // v2.7.2 review：Dart 侧 handler 注册可能晚于本回调——延迟再投一次 + consume 兜底
@@ -68,11 +84,12 @@ class MainActivity : FlutterActivity() {
                     startBubbleService()
                     result.success(true)
                 }
-                // 宠物大小 / 减少动态 / 贴边躲藏（设置页变更后实时同步）
+                // 宠物大小 / 减少动态 / 贴边躲藏 / 前台隐藏（设置页变更后实时同步）
                 "setPetConfig" -> {
                     petHeight = (call.argument<Int>("height") ?: 88).coerceIn(56, 160)
                     petReducedMotion = call.argument<Boolean>("reducedMotion") ?: false
                     petEdgeHide = call.argument<Boolean>("edgeHide") ?: true
+                    petHideInApp = call.argument<Boolean>("hideInApp") ?: true
                     if (FloatingBubbleService.running) {
                         startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
                     }
@@ -125,6 +142,19 @@ class MainActivity : FlutterActivity() {
         handleIntentExtras(intent)
     }
 
+    // v3.2.2 build 27：App 前后台切换时通知桌宠收起/恢复。
+    // 用 onStart/onStop 而不是 onResume/onPause：权限弹窗、系统对话框不应算"离开 App"；
+    // onStop 而非 onDestroy：进程被杀时 onDestroy 不保证回调，onStop 一定会到。
+    override fun onStart() {
+        super.onStart()
+        FloatingBubbleService.onAppVisibilityChanged(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        FloatingBubbleService.onAppVisibilityChanged(false)
+    }
+
     /** 解析悬浮球面板动作 extra；onCreate（冷启动）与 onNewIntent（热启动）共用。 */
     private fun handleIntentExtras(intent: Intent?) {        if (intent == null) return
         when {
@@ -156,10 +186,67 @@ class MainActivity : FlutterActivity() {
         startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
     }
 
+    // ── v3.3.0：桌面图标切换 ──────────────────────────────────────────────
+    /** id → manifest alias 类名后缀；顺序与设置页一致。 */
+    private val iconAliases = linkedMapOf(
+        "default" to "IconDefault",
+        "deepsea" to "IconDeepsea",
+        "shell" to "IconShell",
+        "moon" to "IconMoon",
+        "sticker" to "IconSticker",
+        "stamp" to "IconStamp",
+        "neon" to "IconNeon",
+        "mono" to "IconMono",
+    )
+
+    private fun aliasComponent(id: String): ComponentName =
+        ComponentName(packageName, "$packageName.${iconAliases.getValue(id)}")
+
+    private fun isAliasEnabled(cn: ComponentName): Boolean {
+        return when (packageManager.getComponentEnabledSetting(cn)) {
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED -> false
+            else -> try {
+                packageManager.getActivityInfo(cn, 0).enabled
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    /** 只启用目标 alias、禁用其余；已是目标状态时直接返回，避免每次启动都触发桌面刷新。 */
+    private fun applyIcon(rawId: String): Boolean {
+        val id = if (iconAliases.containsKey(rawId)) rawId else "default"
+        return try {
+            val target = aliasComponent(id)
+            val othersEnabled = iconAliases.keys
+                .filter { it != id }
+                .any { isAliasEnabled(aliasComponent(it)) }
+            if (isAliasEnabled(target) && !othersEnabled) return true
+            for (key in iconAliases.keys) {
+                val cn = aliasComponent(key)
+                val state =
+                    if (key == id) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                packageManager.setComponentEnabledSetting(
+                    cn,
+                    state,
+                    PackageManager.DONT_KILL_APP,
+                )
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun petIntent(i: Intent): Intent = i
         .putExtra("pet_height", petHeight)
         .putExtra("pet_reduced_motion", petReducedMotion)
         .putExtra("pet_edge_hide", petEdgeHide)
+        .putExtra("pet_hide_in_app", petHideInApp)
 
     private fun startServiceCompat(i: Intent) {
         if (Build.VERSION.SDK_INT >= 26) {

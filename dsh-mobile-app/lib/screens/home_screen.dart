@@ -7,9 +7,12 @@ import '../session_list.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../fmt.dart';
+import '../widgets/dsh_dynamic_background.dart';
+import '../widgets/home_pet.dart';
 import '../widgets/session_indicator.dart';
 import 'chat_screen.dart';
 import 'sheets.dart';
+import 'usage_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final AppStore store;
@@ -94,6 +97,185 @@ class _HomeScreenState extends State<HomeScreen>
         onReturn: () => widget.store.refreshSessions());
   }
 
+  /// 大肥鱼皮肤的首页 Hero：左边一句问候，右边角色（点她/长按都会回应）。
+  Widget _bigFishHero(BuildContext context) {
+    final en = L10n.lang == 'en';
+    final skin = DshColors.skin(context);
+    final (String kicker, String title, String sub) = switch (skin) {
+      DshSkin.abyss => (
+          'ABYSS NIGHT / 01',
+          en ? 'What are we writing tonight?' : '今晚写点什么？',
+          en ? 'Below the surface, nobody is rushing you.' : '海面以下，没人催你。',
+        ),
+      DshSkin.soda => (
+          'SODA POP / 02',
+          en ? "Drop today's idea into the soda." : '把想法丢进汽水里。',
+          en ? 'Fizz fizz — it will pop up soon.' : '咕嘟咕嘟，一会儿就冒出来。',
+        ),
+      DshSkin.whale => (
+          'WHALE FALL / 03',
+          en ? 'Take your time, in the star sea.' : '在星海里，慢慢想。',
+          en ? 'No idea is fine. Drift with me.' : '想不出来也没关系，我陪你漂一会儿。',
+        ),
+      DshSkin.dsh => (
+          'DEEP SEA / 00',
+          en ? 'What are you designing today?' : '今天打算设计什么？',
+          '',
+        ),
+    };
+    return SizedBox(
+      height: 224,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            left: 2,
+            top: 6,
+            right: 168,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  kicker,
+                  style: TextStyle(
+                    fontSize: 9,
+                    letterSpacing: 1.8,
+                    fontWeight: FontWeight.w700,
+                    color: DshColors.accent(context),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 27,
+                    height: 1.16,
+                    fontWeight: FontWeight.w700,
+                    color: DshColors.ink(context),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  sub,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.6,
+                    color: DshColors.ink2(context),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Positioned(
+            right: -8,
+            bottom: 4,
+            child: HomePet(
+              store: widget.store,
+              // 固定 132dp：不跟随桌面宠物大小设置，避免首页角色跟着变大变糊
+              height: 132,
+              onLongPress: () => _openPetPanel(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 长按角色 → 迷你面板（运行中的会话 / 未读通知 / 桌面宠物状态 + 用量入口）。
+  Future<void> _openPetPanel(BuildContext context) async {
+    final store = widget.store;
+    final en = L10n.lang == 'en';
+    final running = store.activeSessions
+        .where((s) => store.agentStatusForSession(s.id) == 'running')
+        .length;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    ClipOval(
+                      child: Image.asset(
+                        'assets/pet/static-idle.png',
+                        width: 40,
+                        height: 40,
+                        fit: BoxFit.cover,
+                        alignment: const Alignment(0, -0.25),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'DSH 大肥鱼',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: DshColors.ink(ctx),
+                            ),
+                          ),
+                          Text(
+                            en ? 'Idle · waiting for a new task' : '空闲 · 我在这儿等新任务哦',
+                            style: TextStyle(fontSize: 11, color: DshColors.ink2(ctx)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Divider(height: 1, color: DshColors.line(ctx)),
+                _petPanelRow(ctx, en ? 'Running sessions' : '运行中的会话',
+                    running == 0 ? (en ? 'None' : '暂无运行中的会话') : '$running'),
+                _petPanelRow(ctx, en ? 'Unread notifications' : '最近通知',
+                    store.unread == 0 ? (en ? 'None' : '暂无通知') : '${store.unread}'),
+                _petPanelRow(ctx, en ? 'Desktop pet' : '桌面宠物',
+                    store.floatingEnabled ? (en ? 'On' : '已开启') : (en ? 'Off' : '未开启')),
+                const SizedBox(height: 14),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => UsageScreen(store: store),
+                    ));
+                  },
+                  child: Text(en ? 'Usage & balance' : '用量与额度'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _petPanelRow(BuildContext c, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          Text(label, style: TextStyle(fontSize: 12.5, color: DshColors.ink2(c))),
+          const Spacer(),
+          Text(value,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: DshColors.ink(c),
+              )),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
@@ -102,8 +284,9 @@ class _HomeScreenState extends State<HomeScreen>
     // v3.1.6（issue #14）：与会话列表页共用同一份过滤 + 排序投影（隐藏子代理、按消息时间）
     final recent = store.activeSessions;
     final reducedMotion = prefersReducedMotion(context);
+    final bigFish = DshColors.skin(context).isBigFish;
 
-    return Column(
+    final body = Column(
       children: [
         Expanded(
           // 下拉刷新：探测 → 自愈（轮换地址/重建连接）→ 拉数据；仅失败时提示
@@ -122,33 +305,38 @@ class _HomeScreenState extends State<HomeScreen>
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: constraints.maxHeight),
                   child: Align(
-                    alignment: const Alignment(0, -0.6),
+                    alignment: bigFish ? const Alignment(0, -0.35) : const Alignment(0, -0.6),
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // 官方 logo（DeepSeek 官网 favicon 转 PNG，蓝鲸标志）
-                          Image.asset(
-                            'assets/deepseek-logo.png',
-                            width: 84,
-                            height: 84,
-                          ),
-                          const SizedBox(height: 10),
-                          // 欢迎
-                          Text(
-                            L10n.t('今天打算设计什么？', 'What are you designing today?'),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 30,
-                              height: 1.35,
-                              fontWeight: FontWeight.w700,
-                              fontFamily: 'Georgia',
-                              color: Theme.of(context).colorScheme.onSurface,
+                          if (bigFish) ...[
+                            _bigFishHero(context),
+                            const SizedBox(height: 18),
+                          ] else ...[
+                            // 官方 logo（DeepSeek 官网 favicon 转 PNG，蓝鲸标志）
+                            Image.asset(
+                              'assets/deepseek-logo.png',
+                              width: 84,
+                              height: 84,
                             ),
-                          ),
-                          const SizedBox(height: 24),
+                            const SizedBox(height: 10),
+                            // 欢迎
+                            Text(
+                              L10n.t('今天打算设计什么？', 'What are you designing today?'),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 30,
+                                height: 1.35,
+                                fontWeight: FontWeight.w700,
+                                fontFamily: 'Georgia',
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                          ],
                           // 最近会话卡
                           Container(
                             decoration: BoxDecoration(
@@ -220,6 +408,18 @@ class _HomeScreenState extends State<HomeScreen>
                             },
                             child: Text(L10n.t('＋ 新建会话', '+ New Session')),
                           ),
+                          if (bigFish) ...[
+                            const SizedBox(height: 16),
+                            Center(
+                              child: Text(
+                                L10n.t(
+                                  '点她、戳她，或长按打开面板',
+                                  'Tap, poke, or long-press the pet',
+                                ),
+                                style: TextStyle(fontSize: 10.5, color: ink3),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -229,6 +429,14 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
         ),
+      ],
+    );
+    if (!bigFish) return body;
+    // 大肥鱼皮肤：动态背景铺在内容下方，角色再叠在背景之上（内容层不拦背景触摸）
+    return Stack(
+      children: [
+        DshDynamicBackground(store: store, visible: widget.visible),
+        Positioned.fill(child: body),
       ],
     );
   }
