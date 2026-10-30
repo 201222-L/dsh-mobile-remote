@@ -11,6 +11,7 @@
 // 边界：只读；路径夹在会话工作目录内；不做写操作。
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'api.dart';
 import 'models.dart';
@@ -30,6 +31,15 @@ enum BrowseStage {
 
   /// 无法浏览（拿不到会话工作目录，或读取失败）。
   error,
+}
+
+/// 预览的呈现方式。
+enum PreviewMode {
+  /// Markdown 渲染（仅对 `.md` / `.markdown` 可用）。
+  rendered,
+
+  /// 带行号的纯文本源码视图（对所有文本文件可用）。
+  source,
 }
 
 class SessionFilesController extends ChangeNotifier {
@@ -76,6 +86,27 @@ class SessionFilesController extends ChangeNotifier {
   /// 预览中的文件。
   String previewPath = '';
   PreviewVerdict? preview;
+
+  /// 预览呈现方式：Markdown 文件默认渲染，其余默认源码。
+  PreviewMode previewMode = PreviewMode.source;
+
+  /// Markdown 渲染分片（[PreviewMode.rendered] 时使用），加载时算好，
+  /// 避免每帧 build 把 256KB 文本重切一遍。
+  List<String> previewChunks = const [];
+
+  /// 源码视图的行（[PreviewMode.source] 时使用），同样在加载时算好。
+  List<String> previewSourceLines = const [];
+
+  /// 当前预览是否可按 Markdown 渲染。
+  bool get previewIsMarkdown => isMarkdownPath(previewPath);
+
+  /// 切换预览方式（仅当两者都可用时有意义）。
+  void setPreviewMode(PreviewMode mode) {
+    if (previewMode == mode) return;
+    previewMode = mode;
+    _rebuildPreviewCaches();
+    notifyListeners();
+  }
 
   /// 错误原因；`stage == BrowseStage.error` 时有效。
   String errorReason = '';
@@ -191,9 +222,34 @@ class SessionFilesController extends ChangeNotifier {
     stage = BrowseStage.loading;
     notifyListeners();
     try {
-      final bytes = await _api.downloadFile(path);
-      preview = buildPreview(bytes);
+      final prefix = await _api.downloadFilePrefix(path, kPreviewByteLimit);
+      final bytes = prefix.bytes;
+      final encoding = detectPreviewEncoding(bytes);
+      if (encoding == PreviewEncoding.gb18030) {
+        try {
+          final text = await _filesChannel.invokeMethod<String>('decodeText', {
+            'bytes': bytes,
+            'charset': 'GB18030',
+          });
+          if (text == null) throw StateError('empty decode result');
+          preview = PreviewText(
+            text: text,
+            truncated: prefix.truncated,
+            bytesShown: bytes.length,
+          );
+        } catch (_) {
+          preview = const PreviewUnavailable('GB18030 文件：系统解码失败');
+        }
+      } else {
+        preview = buildPreview(
+          bytes,
+          encoding: encoding,
+          truncated: prefix.truncated,
+        );
+      }
       previewPath = path;
+      previewMode = isMarkdownPath(path) ? PreviewMode.rendered : PreviewMode.source;
+      _rebuildPreviewCaches();
       lastLoadedAt = DateTime.now();
       stage = BrowseStage.preview;
     } catch (e) {
@@ -203,10 +259,33 @@ class SessionFilesController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 依据当前 [preview] 重算渲染分片与源码行。
+  ///
+  /// 放在这里（而不是 UI 的 build 里）是因为两者都是 O(n)：256KB 的 md
+  /// 在 60fps 下每帧重切一遍等于直接卡死。
+  void _rebuildPreviewCaches() {
+    final v = preview;
+    if (v is! PreviewText) {
+      previewChunks = const [];
+      previewSourceLines = const [];
+      return;
+    }
+    previewSourceLines = previewLines(v.text);
+    previewChunks =
+        previewMode == PreviewMode.rendered && previewIsMarkdown
+            ? chunkMarkdownText(v.text)
+            : const [];
+  }
+
+  static const MethodChannel _filesChannel = MethodChannel('dsh/files');
+
   /// 从预览返回所在目录。
   Future<void> closePreview() async {
     preview = null;
     previewPath = '';
+    previewMode = PreviewMode.source;
+    previewChunks = const [];
+    previewSourceLines = const [];
     await loadDir(currentPath);
   }
 

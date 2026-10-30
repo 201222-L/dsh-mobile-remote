@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'download.dart';
 import 'logger.dart';
 import 'models.dart';
 import 'git_models.dart';
@@ -96,6 +97,12 @@ class Api implements GitReadApi {
   /// issue #25 二期：轮次大纲能力（宿主未挂该投影时 supported=false，退回一期行为）。
   TurnOutlineCapabilities turnOutlineCapabilities =
       const TurnOutlineCapabilities();
+
+  /// v3.2.3：普通文件下载是否支持 Range/HEAD/ETag。
+  ///
+  /// 旧插件不声明该能力位时为 false，下载回退整文件 GET（原有行为），
+  /// 预览也不发 Range（由调用方判断）。
+  bool fileRangeSupported = false;
 
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
@@ -264,6 +271,11 @@ class Api implements GitReadApi {
                 : null,
           )
         : const TurnOutlineCapabilities();
+    // v3.2.3：普通文件下载是否支持 Range/HEAD/ETag（旧插件不声明 → App 回退整文件）。
+    fileRangeSupported =
+        capabilities is Map &&
+        capabilities['fileRange'] is Map &&
+        (capabilities['fileRange'] as Map)['supported'] == true;
   }
 
   /// 连接成功后收集电脑全部地址（/api/bootstrap 的 server.urls 含 Tailscale/ZeroTier 等虚拟网段 IP）。
@@ -378,6 +390,220 @@ class Api implements GitReadApi {
       AppLog.instance.log('GET /api/files 失败: $e');
       rethrow;
     }
+  }
+
+  /// v3.2.3：流式下载到临时文件（大文件不整块进内存）。
+  ///
+  /// - [startOffset] > 0 时发 `Range: bytes=N-`，服务端回 206 则追加；
+  ///   旧插件回 200 则从头写（自动降级）；
+  /// - [onProgress] 每个 chunk 回调一次；[cancel] 取消后删除半成品并抛
+  ///   [DownloadCancelled]。
+  ///
+  /// 注意：这里刻意**不用** `resp.stream.timeout(...)` —— 它内部的定时器不在
+  /// 调用方 zone，widget 测试推进假时钟时事件永远不派发（表现为界面一直转圈）。
+  /// 需要空闲超时请用 [downloadFilePrefix] 里那套手动 Timer。
+  Future<DownloadResult> downloadFileToFile(
+    String remotePath,
+    File target, {
+    DownloadCancelToken? cancel,
+    void Function(DownloadProgress)? onProgress,
+    int startOffset = 0,
+    Duration connectTimeout = const Duration(seconds: 15),
+    http.Client? downloadClient,
+  }) async {
+    final client = downloadClient ?? http.Client();
+    final ownsClient = downloadClient == null;
+    IOSink? sink;
+    try {
+      final req = http.Request(
+        'GET',
+        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+      );
+      req.headers.addAll(_headers);
+      req.headers.remove('content-type');
+      if (startOffset > 0) req.headers['range'] = 'bytes=$startOffset-';
+      final resp = await client.send(req).timeout(connectTimeout);
+      if (resp.statusCode != 200 && resp.statusCode != 206) {
+        String detail = 'HTTP ${resp.statusCode}';
+        try {
+          final text = await resp.stream.bytesToString();
+          final body = jsonDecode(text);
+          if (body is Map && body['detail'] is String) {
+            detail = body['detail'] as String;
+          }
+        } catch (_) {}
+        throw ApiException(detail, status: resp.statusCode);
+      }
+      final resumed = startOffset > 0 && resp.statusCode == 206;
+      if (resumed) {
+        final contentRange = resp.headers['content-range'] ?? '';
+        if (!contentRange.startsWith('bytes $startOffset-')) {
+          throw ApiException('服务端 Range 响应不连续：$contentRange');
+        }
+      }
+      final remaining = resp.contentLength;
+      final total = remaining == null
+          ? null
+          : (resumed ? startOffset + remaining : remaining);
+      final out = target.openWrite(
+        mode: resumed ? FileMode.append : FileMode.write,
+      );
+      sink = out;
+      var received = resumed ? startOffset : 0;
+      onProgress?.call(DownloadProgress(received: received, total: total));
+      await for (final chunk in resp.stream) {
+        if (cancel?.cancelled ?? false) break;
+        out.add(chunk);
+        received += chunk.length;
+        onProgress?.call(DownloadProgress(received: received, total: total));
+      }
+      await out.flush();
+      await out.close();
+      sink = null;
+      if (cancel?.cancelled ?? false) {
+        try {
+          await target.delete();
+        } catch (_) {}
+        throw const DownloadCancelled();
+      }
+      if (!resumed && remaining != null && received != remaining) {
+        throw ApiException('下载不完整：$received/$remaining');
+      }
+      return DownloadResult(
+        file: target,
+        bytes: received,
+        contentType: resp.headers['content-type'],
+      );
+    } on TimeoutException {
+      throw ApiException('下载超时（长时间无数据）');
+    } catch (e) {
+      AppLog.instance.log('GET /api/files（流式）失败: $e');
+      rethrow;
+    } finally {
+      try {
+        await sink?.close();
+      } catch (_) {}
+      if (ownsClient) client.close();
+    }
+  }
+
+  /// v3.2.3：只取文件前 [maxBytes] 字节（预览用）。
+  ///
+  /// - `fileRangeSupported` 为 true 时发 Range，服务端回 206；
+  /// - 旧插件回 200 时最多读 [maxBytes] 后主动断开，避免整文件进内存；
+  /// - [DownloadPrefix.total] 来自 `Content-Range`（206）或 `Content-Length`（200）。
+  Future<DownloadPrefix> downloadFilePrefix(
+    String remotePath,
+    int maxBytes, {
+    Duration connectTimeout = const Duration(seconds: 15),
+    Duration idleTimeout = const Duration(seconds: 30),
+    http.Client? downloadClient,
+  }) async {
+    if (maxBytes <= 0) throw ArgumentError.value(maxBytes, 'maxBytes');
+    final client = downloadClient ?? _client;
+    try {
+      final req = http.Request(
+        'GET',
+        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+      );
+      req.headers.addAll(_headers);
+      req.headers.remove('content-type');
+      if (fileRangeSupported) {
+        req.headers['range'] = 'bytes=0-${maxBytes - 1}';
+      }
+      final resp = await client.send(req).timeout(connectTimeout);
+      if (resp.statusCode != 200 && resp.statusCode != 206) {
+        String detail = 'HTTP ${resp.statusCode}';
+        try {
+          final text = await resp.stream.bytesToString();
+          final body = jsonDecode(text);
+          if (body is Map && body['detail'] is String) {
+            detail = body['detail'] as String;
+          }
+        } catch (_) {}
+        throw ApiException(detail, status: resp.statusCode);
+      }
+      int? total;
+      if (resp.statusCode == 206) {
+        final match = RegExp(
+          r'bytes \d+-\d+/(\d+)',
+        ).firstMatch(resp.headers['content-range'] ?? '');
+        if (match != null) total = int.tryParse(match.group(1)!);
+      } else {
+        total = resp.contentLength;
+      }
+      final bytes = await _readPrefixBytes(resp.stream, maxBytes, idleTimeout);
+      return DownloadPrefix(bytes: bytes, total: total);
+    } on TimeoutException {
+      throw ApiException('预览超时（长时间无数据）');
+    } catch (e) {
+      AppLog.instance.log('GET /api/files（前缀）失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 读取 [stream] 的前 [maxBytes] 字节；空闲超过 [idleTimeout] 抛 [TimeoutException]。
+  ///
+  /// 刻意不用 `Stream.timeout`：它内部的定时器不在调用方 zone 里，widget 测试
+  /// 用 `pumpAndSettle` 推进假时钟时事件永远不派发（测试会一直转圈直到超时），
+  /// 而真机上又看不出来。这里用调用方 zone 的 [Timer]，语义相同且可被假时钟驱动。
+  static Future<Uint8List> _readPrefixBytes(
+    Stream<List<int>> stream,
+    int maxBytes,
+    Duration idleTimeout,
+  ) {
+    final completer = Completer<Uint8List>();
+    final builder = BytesBuilder(copy: false);
+    var received = 0;
+    Timer? idle;
+    late StreamSubscription<List<int>> sub;
+
+    void stopIdle() {
+      idle?.cancel();
+      idle = null;
+    }
+
+    void succeed() {
+      if (completer.isCompleted) return;
+      stopIdle();
+      unawaited(sub.cancel());
+      completer.complete(builder.takeBytes());
+    }
+
+    void fail(Object e) {
+      if (completer.isCompleted) return;
+      stopIdle();
+      unawaited(sub.cancel());
+      completer.completeError(e);
+    }
+
+    void armIdle() {
+      stopIdle();
+      idle = Timer(idleTimeout, () {
+        if (completer.isCompleted) return;
+        unawaited(sub.cancel());
+        completer.completeError(TimeoutException('idle timeout', idleTimeout));
+      });
+    }
+
+    sub = stream.listen(
+      (chunk) {
+        if (chunk.isEmpty) return;
+        final take = min(chunk.length, maxBytes - received);
+        builder.add(take == chunk.length ? chunk : chunk.sublist(0, take));
+        received += take;
+        if (received >= maxBytes) {
+          succeed();
+          return;
+        }
+        armIdle();
+      },
+      onDone: succeed,
+      onError: fail,
+      cancelOnError: true,
+    );
+    armIdle();
+    return completer.future;
   }
 
   /// 上传文件到会话工作目录（base64，服务端写盘；返回 {path, bytes}）。

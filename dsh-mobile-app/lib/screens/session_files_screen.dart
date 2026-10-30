@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 
 import '../l10n.dart';
+import '../md.dart';
 import '../session_files_controller.dart';
 import '../session_files_logic.dart';
 import '../store.dart';
@@ -276,6 +277,7 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
                   style: TextStyle(fontSize: 12.5, color: DshColors.ink2(context)),
                 ),
               ),
+              if (_c.previewIsMarkdown) _viewModeToggle(),
             ],
           ),
         ),
@@ -302,65 +304,121 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
     if (v is! PreviewText) {
       return const Center(child: CircularProgressIndicator());
     }
-    final lines = previewLines(v.text);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (v.truncated)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: DshColors.brandSoft(context),
+        if (v.truncated) _truncatedNotice(v),
+        Expanded(
+          child: _c.previewMode == PreviewMode.rendered && _c.previewIsMarkdown
+              ? _markdownBody()
+              : _sourceBody(),
+        ),
+      ],
+    );
+  }
+
+  Widget _truncatedNotice(PreviewText v) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: DshColors.brandSoft(context),
+      child: Text(
+        L10n.t(
+          '文件较大，仅显示前 ${v.bytesShown ~/ 1024} KiB',
+          'File is large: showing first ${v.bytesShown ~/ 1024} KiB',
+        ),
+        key: const Key('sf-preview-truncated'),
+        style: TextStyle(fontSize: 12, color: DshColors.ink2(context)),
+      ),
+    );
+  }
+
+  /// Markdown 渲染：按分片懒加载，只有可见分片才会真正建 Widget。
+  ///
+  /// 不能把 256KB 的全文一次交给 `renderMarkdownBlocks`——它会一口气返回上万个
+  /// Widget（`md.dart:64`），手机直接卡死。分片在控制器里按块边界切好。
+  Widget _markdownBody() {
+    final chunks = _c.previewChunks;
+    return ListView.builder(
+      key: const Key('sf-preview-md'),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
+      itemCount: chunks.length,
+      itemBuilder: (ctx, i) => Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: renderMarkdownBlocks(chunks[i], ctx),
+        ),
+      ),
+    );
+  }
+
+  /// 源码视图：行号 + 自动换行 + 按行懒加载（6 万行也只建可见的那几行）。
+  Widget _sourceBody() {
+    final lines = _c.previewSourceLines;
+    return ListView.builder(
+      key: const Key('sf-preview-source'),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      itemCount: lines.length,
+      itemBuilder: (ctx, i) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 48,
             child: Text(
-              L10n.t(
-                '文件较大，仅显示前 ${v.bytesShown ~/ 1024} KiB',
-                'File is large: showing first ${v.bytesShown ~/ 1024} KiB',
+              '${i + 1}',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                color: DshColors.ink3(ctx),
               ),
-              key: const Key('sf-preview-truncated'),
-              style: TextStyle(fontSize: 12, color: DshColors.ink2(context)),
             ),
           ),
-        Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (var i = 0; i < lines.length; i++)
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(
-                            width: 48,
-                            child: Text(
-                              '${i + 1}',
-                              textAlign: TextAlign.right,
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 12,
-                                color: DshColors.ink3(context),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            lines[i],
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
-              ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              lines[i],
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「预览 / 源码」切换：仅对 Markdown 文件出现。
+  Widget _viewModeToggle() {
+    Widget item(PreviewMode mode, String zh, String en, Key key) {
+      final active = _c.previewMode == mode;
+      return TextButton(
+        key: key,
+        onPressed: () => _c.setPreviewMode(mode),
+        style: TextButton.styleFrom(
+          minimumSize: const Size(0, 32),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(
+          L10n.t(zh, en),
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+            color: active
+                ? DshColors.ink(context)
+                : DshColors.ink3(context),
+            decoration: active ? TextDecoration.underline : null,
           ),
         ),
+      );
+    }
+
+    return Row(
+      key: const Key('sf-preview-mode'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        item(PreviewMode.rendered, '预览', 'Preview', const Key('sf-mode-rendered')),
+        item(PreviewMode.source, '源码', 'Source', const Key('sf-mode-source')),
       ],
     );
   }
