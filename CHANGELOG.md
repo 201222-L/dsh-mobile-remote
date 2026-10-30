@@ -1,8 +1,9 @@
 # Changelog
 
-## v3.2.3（未发布）— 修复 #50：未注册工作区目录建会话导致宿主 fatal
+## v3.2.3（2026-10-30，issue #50 / #52，PR #51 / #53 / #54）— 工作区归属修复 + 大文件流式下载 + Markdown 预览
 
-> 版本：插件 `3.2.3` / App `3.2.3+28`（发版时统一 bump 三处）。
+> 版本：插件 `3.2.3` / App `3.2.3+28`。
+> 验收门禁：`node --test test/*.mjs`（208 通过 + 1 平台跳过，`interaction-settlement` 单跑 13/13）、`flutter analyze`（0 issue）、`flutter test`（555）、`flutter build apk --debug` 通过。
 
 ### 建会话前确保 cwd 有归属工作区（#50）
 
@@ -13,6 +14,29 @@
 - **兼容**：旧宿主未暴露 `registry.create` 时保留原「逐级向上找最近已注册工作区」的尽力而为路径，且不改写 `cwd`。
 - **顺带**：attach 改为 `await` + `catch` 记 warn，避免未处理的 Promise rejection。
 - **新增回归**：`test/issue50-cwd-workspace.test.mjs`（未注册→注册并 attach；已注册→复用；目录不可用→400 且不建会话；旧宿主→回落且不改写 cwd）。
+
+### 插件：`/files` 支持 Range / HEAD / ETag（#52 / PR #53）
+
+- 单区间 `Range: bytes=...` → `206` + `Content-Range`；越界或格式错 → `416` + `bytes */size`（多区间仍不支持，避免响应放大）。
+- `ETag`（size + mtime）与 `Last-Modified`，`If-None-Match` 命中回 `304`。
+- `HEAD` 只回头（content-length / etag / accept-ranges），不读文件体；客户端断开时销毁读流，避免 fd 泄漏。
+- `/directories` 增加 `fileEntries: [{name,size,mtimeMs,mime}]`，`files` 仍保持纯字符串数组，旧 App 不受影响。
+- `hello` 与 `/api/bootstrap` 的 `capabilities` 增加 `fileRange`；旧插件不声明时 App 自动退回整文件下载。
+
+### App：流式下载（#52 / PR #54）
+
+- 下载改为 `StreamedResponse` → 临时文件：进度回调、可取消、`Range` 续传（旧插件返回 200 时自动从头写）；取消/失败清理半成品。
+- 完成后由原生按路径保存到 `Download/DSH-Remote`（MediaStore `IS_PENDING`，I/O 不在主线程），完成弹窗给「查看 / 关闭」两个出口。
+- 失败文案人话化（401/403、404、5xx、断网、超时、中断、证书、保存失败各有表述），原始异常折叠进可复制的技术详情。
+- `MainActivity` 新增 `saveFileFromPath` / `openFile` / `shareFile` / `decodeText`；旧保存路径不再写死包名，改用 `packageName`。
+
+### App：预览编码识别 + Markdown 渲染（#52 / PR #54）
+
+- 预览只取前 256 KiB：`fileRange` 可用时发 `Range`，否则读满主动断开。
+- 编码判定改为「BOM → 无 BOM UTF-16 双向试解打分 → 严格 UTF-8（容忍采样末尾被截断的多字节字符）→ GB18030」，GB18030 走原生 `Charset` 解码；修掉真 UTF-8 中文被误判成 GB18030 的整篇乱码。
+- `.md` / `.markdown` 默认渲染：按块边界分片（围栏内不切）+ `ListView.builder` 懒渲染，顶部可切「预览 / 源码」；源码模式也改为按行懒加载 + 自动换行。
+- 修 `isWithinRoot` 的分隔符判断（Windows 下 `root\sub` 曾被判成越界）。
+- 测试：`flutter test` 555（基线 509 + 新增 46：download_stream、download_error、session_files_logic、session_files_widget）。
 
 ## v3.2.2（2026-10-29，build 27 重发）— 外观：三套皮肤 + 8 款图标 + 宠物联动
 
