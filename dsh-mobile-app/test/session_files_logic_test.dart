@@ -202,7 +202,7 @@ void main() {
     });
 
     test('四字节 emoji 被切开也不误判', () {
-      final bytes = utf8.encode('${'😀' * 1200}');
+      final bytes = utf8.encode('😀' * 1200);
       expect(detectPreviewEncoding(bytes), PreviewEncoding.utf8);
     });
 

@@ -4402,6 +4402,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final target = File(
       '${tempDir.path}/dsh-dl-${DateTime.now().microsecondsSinceEpoch}-$name',
     );
+    if (!mounted) return; // 取临时目录期间页面可能已被销毁
     final progress = ValueNotifier<DownloadProgress>(
       const DownloadProgress(received: 0),
     );
@@ -4416,7 +4417,7 @@ class _ChatScreenState extends State<ChatScreen> {
           title: Text(L10n.t('下载中', 'Downloading')),
           content: ValueListenableBuilder<DownloadProgress>(
             valueListenable: progress,
-            builder: (_, p, __) => Column(
+            builder: (_, p, _) => Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
