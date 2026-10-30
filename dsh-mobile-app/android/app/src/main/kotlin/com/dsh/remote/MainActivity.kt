@@ -1,28 +1,43 @@
 package com.dsh.remote
 
+import android.content.ComponentName
+import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
     private var filesChannel: MethodChannel? = null
+    private var iconChannel: MethodChannel? = null
     // v3.1.2（csborbbnc 反馈）：系统文件选择器（ACTION_OPEN_DOCUMENT）结果回传暂存
     private var pendingPick: MethodChannel.Result? = null
     private val pickFileRequestCode = 2001
     // v2.7.2 review(FS1)：悬浮球面板动作可能发生在冷启动（进程已被系统杀死时点"打开会话/充值/通知"），
     // 此时走 onCreate 而非 onNewIntent；Flutter 引擎未就绪前先暂存，configureFlutterEngine 后再投递。
     private var pendingOpenAction: String? = null // "charge" | "usage" | "notifs" | "session:<id>"
+    // v3.2.3：按路径保存（流式下载先落临时文件），I/O 不占主线程。
+    private val fileIoExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     // 桌面宠物配置（App 设置页推送；服务未运行时暂存，start 时带上）
     private var petHeight = 96
     private var petReducedMotion = false
     private var petEdgeHide = true
+    // v3.2.2 build 27：App 在前台时收起桌面宠物
+    private var petHideInApp = true
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,6 +70,51 @@ class MainActivity : FlutterActivity() {
                     saveToDownloads(name, bytes, result)
                 }
                 "pickFile" -> pickFile(result)
+                // v3.2.3：流式下载落盘后按路径保存（不再把整个文件经 base64 传一遍）
+                "saveFileFromPath" -> {
+                    val path = call.argument<String>("path")
+                    val name = call.argument<String>("name") ?: "file"
+                    if (path == null) {
+                        result.error("bad-args", "missing path", null)
+                        return@setMethodCallHandler
+                    }
+                    saveFileFromPath(path, name, result)
+                }
+                "openFile" -> {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val mime = call.argument<String>("mime") ?: "application/octet-stream"
+                    openFile(uri, mime, result)
+                }
+                "shareFile" -> {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val mime = call.argument<String>("mime") ?: "application/octet-stream"
+                    shareFile(uri, mime, result)
+                }
+                // v3.2.3：GB18030 等非 UTF-8 文本交给系统解码（预览用）
+                "decodeText" -> {
+                    val bytes = call.argument<ByteArray>("bytes")
+                    val charset = call.argument<String>("charset") ?: "GB18030"
+                    if (bytes == null) {
+                        result.error("bad-args", "missing bytes", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        result.success(String(bytes, Charset.forName(charset)))
+                    } catch (e: Exception) {
+                        result.error("decode-failed", e.message ?: "decode failed", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+        // v3.3.0：桌面图标切换（activity-alias）
+        iconChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/app_icon")
+        iconChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setIcon", "syncIcon" -> {
+                    val id = call.argument<String>("id") ?: "default"
+                    result.success(applyIcon(id))
+                }
                 else -> result.notImplemented()
             }
         }
@@ -68,11 +128,12 @@ class MainActivity : FlutterActivity() {
                     startBubbleService()
                     result.success(true)
                 }
-                // 宠物大小 / 减少动态 / 贴边躲藏（设置页变更后实时同步）
+                // 宠物大小 / 减少动态 / 贴边躲藏 / 前台隐藏（设置页变更后实时同步）
                 "setPetConfig" -> {
                     petHeight = (call.argument<Int>("height") ?: 88).coerceIn(56, 160)
                     petReducedMotion = call.argument<Boolean>("reducedMotion") ?: false
                     petEdgeHide = call.argument<Boolean>("edgeHide") ?: true
+                    petHideInApp = call.argument<Boolean>("hideInApp") ?: true
                     if (FloatingBubbleService.running) {
                         startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
                     }
@@ -125,6 +186,19 @@ class MainActivity : FlutterActivity() {
         handleIntentExtras(intent)
     }
 
+    // v3.2.2 build 27：App 前后台切换时通知桌宠收起/恢复。
+    // 用 onStart/onStop 而不是 onResume/onPause：权限弹窗、系统对话框不应算"离开 App"；
+    // onStop 而非 onDestroy：进程被杀时 onDestroy 不保证回调，onStop 一定会到。
+    override fun onStart() {
+        super.onStart()
+        FloatingBubbleService.onAppVisibilityChanged(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        FloatingBubbleService.onAppVisibilityChanged(false)
+    }
+
     /** 解析悬浮球面板动作 extra；onCreate（冷启动）与 onNewIntent（热启动）共用。 */
     private fun handleIntentExtras(intent: Intent?) {        if (intent == null) return
         when {
@@ -156,10 +230,67 @@ class MainActivity : FlutterActivity() {
         startServiceCompat(petIntent(Intent(this, FloatingBubbleService::class.java)))
     }
 
+    // ── v3.3.0：桌面图标切换 ──────────────────────────────────────────────
+    /** id → manifest alias 类名后缀；顺序与设置页一致。 */
+    private val iconAliases = linkedMapOf(
+        "default" to "IconDefault",
+        "deepsea" to "IconDeepsea",
+        "shell" to "IconShell",
+        "moon" to "IconMoon",
+        "sticker" to "IconSticker",
+        "stamp" to "IconStamp",
+        "neon" to "IconNeon",
+        "mono" to "IconMono",
+    )
+
+    private fun aliasComponent(id: String): ComponentName =
+        ComponentName(packageName, "$packageName.${iconAliases.getValue(id)}")
+
+    private fun isAliasEnabled(cn: ComponentName): Boolean {
+        return when (packageManager.getComponentEnabledSetting(cn)) {
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED -> false
+            else -> try {
+                packageManager.getActivityInfo(cn, 0).enabled
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    /** 只启用目标 alias、禁用其余；已是目标状态时直接返回，避免每次启动都触发桌面刷新。 */
+    private fun applyIcon(rawId: String): Boolean {
+        val id = if (iconAliases.containsKey(rawId)) rawId else "default"
+        return try {
+            val target = aliasComponent(id)
+            val othersEnabled = iconAliases.keys
+                .filter { it != id }
+                .any { isAliasEnabled(aliasComponent(it)) }
+            if (isAliasEnabled(target) && !othersEnabled) return true
+            for (key in iconAliases.keys) {
+                val cn = aliasComponent(key)
+                val state =
+                    if (key == id) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                packageManager.setComponentEnabledSetting(
+                    cn,
+                    state,
+                    PackageManager.DONT_KILL_APP,
+                )
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun petIntent(i: Intent): Intent = i
         .putExtra("pet_height", petHeight)
         .putExtra("pet_reduced_motion", petReducedMotion)
         .putExtra("pet_edge_hide", petEdgeHide)
+        .putExtra("pet_hide_in_app", petHideInApp)
 
     private fun startServiceCompat(i: Intent) {
         if (Build.VERSION.SDK_INT >= 26) {
@@ -203,10 +334,96 @@ class MainActivity : FlutterActivity() {
                 val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 val f = File(dir, name)
                 f.writeBytes(bytes)
-                result.success("Android/data/com.dsh.remote/files/Download/$name")
+                result.success("Android/data/${packageName}/files/Download/$name")
             }
         } catch (e: Exception) {
             result.error("save-failed", e.message ?: "save failed", null)
+        }
+    }
+
+    /**
+     * v3.2.3：把 App 临时目录里的文件保存到系统下载目录（流式下载的落盘环节）。
+     *
+     * Android 10+ 用 MediaStore（`IS_PENDING` 防止半成品对其它 App 可见）；
+     * 更早版本写应用下载目录。I/O 在单线程池执行，不占主线程。
+     */
+    private fun saveFileFromPath(sourcePath: String, name: String, result: MethodChannel.Result) {
+        fileIoExecutor.execute {
+            var inserted: Uri? = null
+            try {
+                val source = File(sourcePath)
+                if (!source.isFile) throw IllegalStateException("源文件不存在")
+                val saved: String
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeOf(name))
+                        put(
+                            MediaStore.MediaColumns.RELATIVE_PATH,
+                            Environment.DIRECTORY_DOWNLOADS + "/DSH-Remote",
+                        )
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("MediaStore insert failed")
+                    inserted = uri
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        source.inputStream().use { it.copyTo(out, 64 * 1024) }
+                    } ?: throw IllegalStateException("openOutputStream failed")
+                    val done = ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, done, null, null)
+                    saved = uri.toString()
+                } else {
+                    val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                        ?: throw IllegalStateException("download dir unavailable")
+                    val dest = File(dir, name)
+                    source.inputStream().use { input ->
+                        dest.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                    }
+                    saved = dest.absolutePath
+                }
+                mainHandler.post { result.success(saved) }
+            } catch (e: Exception) {
+                inserted?.let { uri -> runCatching { contentResolver.delete(uri, null, null) } }
+                mainHandler.post { result.error("save-failed", e.message ?: "save failed", null) }
+            }
+        }
+    }
+
+    /** 用系统查看器打开已保存的 MediaStore URI（仅 content://）。 */
+    private fun openFile(uriString: String, mime: String, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            if (uri.scheme != "content") throw IllegalStateException("仅支持 content:// URI")
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("open-failed", e.message ?: "open failed", null)
+        }
+    }
+
+    /** 用系统分享面板分享已保存的 MediaStore URI（仅 content://）。 */
+    private fun shareFile(uriString: String, mime: String, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            if (uri.scheme != "content") throw IllegalStateException("仅支持 content:// URI")
+            val send = Intent(Intent.ACTION_SEND)
+                .setType(mime)
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(
+                Intent.createChooser(send, "分享文件")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("share-failed", e.message ?: "share failed", null)
         }
     }
 

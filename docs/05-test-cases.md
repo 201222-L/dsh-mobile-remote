@@ -293,10 +293,37 @@
 | 项目 | 内容 |
 |---|---|
 | 前置 | App 已授权悬浮窗，设置开启桌面宠物；准备一条可触发完成/失败/审批的任务 |
-| 步骤 | 观察空闲；发消息看思考/处理；触发审批看等待；完成/失败看 pulse；点头部/身体/尾巴、双击、拖拽、长按；静置 5 秒；改大小/减少动态/贴边开关 |
-| 预期 | 动作随状态切换（思考/搜索/命令/等待/完成/出错）；完成/失败 pulse 后回到最新状态；互动有台词与 1.2 秒冷却；拖拽播放悬空、松手落地并吸附最近边缘；长按打开旧面板；贴边 5 秒后只露 45% 并降低透明度/模糊，点露出部分滑出；完成/等待/出错自动探头；旧面板保留运行中会话/通知/用量/余额/打开 App/去充值；减少动态固定姿势；三档大小即时生效；App 被杀后宠物仍工作 |
+| 步骤 | 观察空闲；发消息看思考/处理；触发审批看等待；完成/失败看 pulse；点头部/身体/尾巴、双击、拖拽、长按；静置 5 秒；改大小/减少动效/贴边开关 |
+| 预期 | 动作随状态切换（思考/搜索/命令/等待/完成/出错）；完成/失败 pulse 后回到最新状态；互动有台词与 1.2 秒冷却；拖拽播放悬空、松手落地并吸附最近边缘；长按打开旧面板；贴边 5 秒后只露 45% 并降低透明度/模糊，点露出部分滑出；完成/等待/出错自动探头；旧面板保留运行中会话/通知/用量/余额/打开 App/去充值；减少动效固定姿势；三档大小即时生效；App 被杀后宠物仍工作 |
 | 变体 | Android 8 以下无 animated WebP 解码 → 静态首帧，互动与状态文字仍工作 |
 | 单测 | `./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.PetAnimationModelTest" --tests "com.dsh.remote.PetStateReducerTest"`（状态机、pulse、互动冷却、拖拽保护、空闲微动作、SSE 状态收敛） |
+
+### F-37 外观：四套皮肤 × 明暗（v3.2.2 build 27）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 已连接；进入 `设置 → 外观` |
+| 步骤 | 依次切「默认 / 深潜夜航 / 海盐汽水 / 鲸落星海」，每次回首页看主视觉；再在 `设置 → 显示 → 深色模式`（跟随系统 / 深色 / 浅色）各看一遍 |
+| 预期 | ① 默认皮肤：首页仍是原 DSH logo + 「今天打算设计什么？」欢迎语，与原版逐项一致；② 深潜夜航：墨绿黑底、右上声呐环、冷光气泡、底部潮汐波、角色在右侧、主按钮薄荷绿 + 深色字；③ 海盐汽水：奶油底、可乐蓝主按钮、淡气泡与光束；④ 鲸落星海：靛蓝底、右上月亮 + 星尘星座、金色主按钮（字为深色）；⑤ 每套 × 明暗共 8 组合下文字/卡片/按钮都可读（无白底白字、无黑底黑字）；⑥ 发送按钮在薄荷/金色底上为深色图标 |
+| 变体 | 系统「移除动画」开启 → 首页背景与角色静止，皮肤配色仍生效 |
+| 单测 | `test/skin_home_test.dart`（三套皮肤首页渲染且不溢出 + 默认皮肤保持旧首页）、`test/skin_settings_test.dart`（外观卡在手机宽度不溢出、浅色模式下可切换皮肤） |
+
+### F-38 外观：8 款 App 图标（v3.2.2 build 27）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | Android 真机，已安装 build 27；进入 `设置 → 外观 → App 图标` |
+| 步骤 | 依次点选 深海头像 → 贝壳徽章 → 月夜潮线 → 奶油贴纸 → 鲸邮票 → 霓虹灯牌 → 鲸尾剪影 → DSH 原图标；每次回桌面看图标；最后杀进程重启 App |
+| 预期 | ① 每次切换后桌面图标随之变化（个别启动器需回桌面刷新一次，设置页已有小字提示）；② 桌面上**始终只有一个** DSH Remote 图标（`activity-alias` 同一时刻只启用一个）；③ 重启后保持上次选择；④ 选「DSH 原图标」时与原 `ic_launcher` 外观一致（仅重编码差异）；⑤ 非 Android 平台显示「当前平台不支持切换桌面图标」 |
+| 已知限制 | Android 13 主题图标（monochrome 层）与 `roundIcon` 未提供，圆形图标机型会退化为方形 |
+
+### F-39 外观：图标入口迁移提示与宠物前台联动（v3.2.2 build 27）
+
+| 项目 | 内容 |
+|---|---|
+| 前置 | 从 build 25 或更早版本覆盖安装 build 27；桌面上保留旧快捷方式 |
+| 步骤 | ① 首次启动看是否弹「桌面图标入口已更新」；② 点桌面旧快捷方式；③ 从抽屉打开 App，观察桌面宠物；④ 按 Home 回桌面再切回 App；⑤ 在 `设置 → 桌面宠物` 关闭「App 在前台时收起」后重复③④ |
+| 预期 | ① 首次启动弹一次说明，点「知道了」后不再出现（`dsh_mr_icon_migration_tip`）；② 旧快捷方式可能提示未安装——符合预期，删掉从抽屉重拖即可；③ `onStart` 后桌面宠物**收起**，状态气泡与迷你面板一并收起，首页 hero 角色单独可见，宠物不再盖住「＋ 新建会话」；④ `onStop` 后宠物恢复，回到贴边完全露出再走 5 秒缩进，纵向位置不被重置；⑤ 关闭该开关后第③步宠物保持显示 |
 
 ## 3. 安全测试用例
 
@@ -332,5 +359,6 @@
 ## 4. 回归执行建议
 
 - 每次修改插件源码后：`cd C:\Users\<用户>\.dsh\profiles\desktop && corepack pnpm install`（同步 file: 副本）→ 重启 DSH Desktop → 跑 `tools/e2e-check.mjs` 与 `node tools/account-usage-check.mjs` → 手机 App 冒烟（连接/发消息/通知/新建会话/图片发送/用量与额度）。
-- 修改 App 后：`flutter analyze` → `flutter test`（新增 `test/usage_model_test.dart`；另含 `test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单）→ `flutter build apk --release` → 覆盖安装。
-- 修改原生桌面宠物后：`cd dsh-mobile-app/android && ./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.PetAnimationModelTest" --tests "com.dsh.remote.PetStateReducerTest" --tests "com.dsh.remote.UsagePanelModelTest"`（动画状态机 / SSE 状态收敛 / 面板模型）→ 真机冒烟（F-29~F-32 面板区块；F-36 动作、互动、贴边与大小）。
+- 修改 App 后：`flutter analyze` → `flutter test`（新增 `test/usage_model_test.dart`；另含 `test/api_logic_test.dart`：多地址合并/轮换、回环与链路本地排除，5 用例；`test/md_link_test.dart`：链接 scheme 白名单；外观相关 `test/skin_home_test.dart` / `test/skin_settings_test.dart`）→ `flutter build apk --release` → 覆盖安装。
+- 修改原生桌面宠物后：`cd dsh-mobile-app/android && ./gradlew :app:testDebugUnitTest --tests "com.dsh.remote.PetAnimationModelTest" --tests "com.dsh.remote.PetStateReducerTest" --tests "com.dsh.remote.UsagePanelModelTest"`（动画状态机 / SSE 状态收敛 / 面板模型）→ 真机冒烟（F-29~F-32 面板区块；F-36 动作、互动、贴边与大小；F-37~F-39 皮肤、图标与前台联动）。
+- 修改原生侧（Kotlin/manifest/资源）后至少跑一次 `./gradlew :app:compileDebugKotlin`，确认 alias/资源引用无编译期断裂（图标与前台联动改动即属此类）。

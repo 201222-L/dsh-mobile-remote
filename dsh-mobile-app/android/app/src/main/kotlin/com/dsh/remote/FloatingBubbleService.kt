@@ -44,6 +44,26 @@ class FloatingBubbleService : Service() {
         const val CHANNEL_ID = "dsh_bubble"
         const val NOTIF_ID = 0xDBB
         @Volatile var running = false
+
+        /**
+         * App 是否处于前台（`MainActivity.onStart` / `onStop` 维护）。
+         *
+         * 与服务同进程，所以用静态标记而不是 startService 广播：Android 12+ 禁止从后台
+         * 启动前台服务，`onStop` 之后发 Intent 有 `ForegroundServiceStartNotAllowedException` 风险。
+         */
+        @Volatile var appForeground = false
+            private set
+
+        /** 运行中的服务实例；未运行时为 null，标志位留待下次 onCreate 时消费。 */
+        @Volatile private var instance: FloatingBubbleService? = null
+
+        /** 由 MainActivity 调用（主线程）：记下前后台状态并让运行中的宠物立刻响应。 */
+        fun onAppVisibilityChanged(foreground: Boolean) {
+            appForeground = foreground
+            instance?.let { svc ->
+                svc.mainHandler.post { svc.applyAppVisibility() }
+            }
+        }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,6 +77,8 @@ class FloatingBubbleService : Service() {
     private var petHeightDp = 96
     private var petReducedMotion = false
     private var petEdgeHide = true
+    // v3.2.2 build 27：App 在前台时收起宠物（避免首页 hero 角色与悬浮宠物同屏 + 悬浮窗吃触摸）
+    private var petHideInApp = true
     private var petRenderedVersion = -1L
     private var petLastClip: String? = null
     private var petTucked = false
@@ -176,9 +198,11 @@ class FloatingBubbleService : Service() {
     override fun onCreate() {
         super.onCreate()
         running = true
+        instance = this
         petHeightDp = prefsInt("flutter.dsh_mr_pet_height", 96).coerceIn(56, 160)
         petReducedMotion = prefsBool("flutter.dsh_mr_pet_reduced_motion", false)
         petEdgeHide = prefsBool("flutter.dsh_mr_pet_edge_hide", true)
+        petHideInApp = prefsBool("flutter.dsh_mr_pet_hide_in_app", true)
         createChannel()
         // v2.9.0 review(A1)：Android 14+ 显式传 FGS 类型（SPECIAL_USE，manifest 已声明子类型；
         // 2 参形式已废弃且依赖 manifest 推断）。低版本不识别 SPECIAL_USE 位 → 保持 2 参。
@@ -193,6 +217,8 @@ class FloatingBubbleService : Service() {
         showStatus(PetCopy.onboarding(language()), statusDetail(), 6000, false)
         addScrim()   // z 序：宠物 < 状态气泡 < scrim < 面板
         addPanel()
+        // App 在前台时（用户刚在设置页打开开关就是这种情形）建完立即收起，避免闪一下
+        applyAppVisibility()
         startSse()
         // 余额定时自查（30 分钟一次，不依赖 App 打开设置页触发）
         mainHandler.postDelayed(balanceCheckRunnable, 30 * 60 * 1000L)
@@ -222,6 +248,7 @@ class FloatingBubbleService : Service() {
 
     override fun onDestroy() {
         running = false
+        instance = null
         sseAlive = false
         // v2.7.2 review(FS2/FS4)：interrupt 对阻塞在 socket readLine 的线程无效——
         // 必须 disconnect 连接才能解除阻塞；动画也要取消，否则下一帧 updateViewLayout
@@ -266,10 +293,43 @@ class FloatingBubbleService : Service() {
             petEdgeHide = intent.getBooleanExtra("pet_edge_hide", true)
             if (!petEdgeHide && petTucked) slideOut()
         }
+        if (intent?.hasExtra("pet_hide_in_app") == true) {
+            petHideInApp = intent.getBooleanExtra("pet_hide_in_app", true)
+        }
+        // 配置变化后按当前前后台状态对齐（冷启动时宠物刚建好，这里也会走一次）
+        applyAppVisibility()
         // NOT_STICKY：只有用户主动开开关才启动；App 被杀/覆盖安装后系统不自动复活
         // （修复：设置页开关是"关"但宠物却出现的现象）
         return START_NOT_STICKY
     }
+
+    // ── App 前后台联动（v3.2.2 build 27）──
+    /**
+     * 按 `appForeground` + `petHideInApp` 对齐宠物显隐（幂等，状态一致时直接返回）。
+     *
+     * - 隐藏：根视图置 GONE——窗口不再参与触摸分发，彻底解决悬浮宠物盖住首页按钮的问题；
+     *   同时收掉状态气泡与迷你面板（它们是独立窗口）。
+     * - 恢复：重新可见后回到「贴边完全露出」再走 5 秒自动缩进，不重置用户拖动过的纵向位置。
+     */
+    private fun applyAppVisibility() {
+        val root = bubble ?: return
+        val shouldHide = petHideInApp && appForeground
+        val isHidden = root.visibility != View.VISIBLE
+        if (shouldHide == isHidden) return
+        if (shouldHide) {
+            if (panelVisible) hidePanel()
+            hideStatus()
+            mainHandler.removeCallbacks(autoHideRunnable)
+            petView?.setAnimationRunning(false)
+            root.visibility = View.GONE
+        } else {
+            root.visibility = View.VISIBLE
+            snapToEdgeVisible()
+        }
+    }
+
+    /** 宠物当前是否因「App 在前台」而被收起（气泡/面板等附属窗口据此一并静默）。 */
+    private fun isHiddenForApp(): Boolean = petHideInApp && appForeground
 
     // ── 前台通知 ──
     private fun createChannel() {
@@ -622,6 +682,8 @@ class FloatingBubbleService : Service() {
         val tv = tip ?: return
         // 贴边藏起来时不弹普通状态；等待/出错等重要状态仍提示（气泡贴在可见边缘）。
         if (petTucked && !important) return
+        // App 在前台时宠物整体收起，气泡窗口也要跟着不出现（否则残留一个孤立气泡）
+        if (isHiddenForApp()) return
         tipTitle?.text = title
         tipDetail?.text = detail
         tipDetail?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE

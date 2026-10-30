@@ -7,6 +7,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
+import '../app_icon.dart';
+import '../app_icon_switcher.dart';
 import '../floating.dart';
 import '../l10n.dart';
 import '../logger.dart';
@@ -63,6 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         height: widget.store.petHeight,
         reducedMotion: widget.store.petReducedMotion,
         edgeHide: widget.store.petEdgeHide,
+        hideInApp: widget.store.petHideInApp,
       );
       await Floating.start();
       unawaited(
@@ -114,6 +117,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           height: widget.store.petHeight,
           reducedMotion: widget.store.petReducedMotion,
           edgeHide: widget.store.petEdgeHide,
+          hideInApp: widget.store.petHideInApp,
         );
         await Floating.start();
       } catch (e) {
@@ -736,6 +740,264 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 外观：主题皮肤（4 选 1）+ App 图标（8 选 1，仅 Android）。
+  Widget _appearanceCard() {
+    final en = L10n.lang == 'en';
+    final ink3 = DshColors.ink3(context);
+    return _card(L10n.t('外观', 'Appearance'), [
+      Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(L10n.t('主题皮肤', 'Theme skin'), style: const TextStyle(fontSize: 14)),
+                const Spacer(),
+                Text(
+                  widget.store.skin.labelFor(en),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: DshColors.brand(context),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                for (var i = 0; i < DshSkin.values.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 8),
+                  _skinTile(DshSkin.values[i]),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 10),
+      Divider(height: 1, color: DshColors.line(context)),
+      Padding(
+        padding: const EdgeInsets.only(top: 12, bottom: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(L10n.t('App 图标', 'App icon'), style: const TextStyle(fontSize: 14)),
+                const Spacer(),
+                Text(
+                  AppIconStyle.byId(widget.store.appIcon).labelFor(en),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: DshColors.brand(context),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              L10n.t(
+                '默认是 DSH 原图标；切换后桌面可能需刷新一次',
+                'DSH default is kept; the launcher may need a refresh after switching',
+              ),
+              style: TextStyle(fontSize: 11, color: ink3),
+            ),
+            const SizedBox(height: 10),
+            if (!AppIconSwitcher.supported)
+              Text(
+                L10n.t('当前平台不支持切换桌面图标', 'Icon switching is Android-only'),
+                style: TextStyle(fontSize: 11, color: ink3),
+              )
+            else
+              GridView.count(
+                crossAxisCount: 4,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 8,
+                childAspectRatio: 0.82,
+                children: [for (final icon in AppIconStyle.all) _iconTile(icon)],
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 10),
+      Divider(height: 1, color: DshColors.line(context)),
+      // v3.2.2 build 27：从「桌面宠物」卡挪来——它同时管桌宠、首页角色与首页背景，属于外观。
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: _row(
+          leading: const Icon(Icons.motion_photos_off_outlined),
+          title: L10n.t('减少动效', 'Reduce motion'),
+          sub: L10n.t(
+            '桌面宠物、首页角色与背景动画一起静止（系统「移除动画」始终优先）',
+            'Freezes the desktop pet, home character and background (system setting wins)',
+          ),
+          trailing: DshSwitch(
+            value: widget.store.petReducedMotion,
+            onChanged: (v) => widget.store.setPetReducedMotion(v),
+          ),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _skinTile(DshSkin s) {
+    final en = L10n.lang == 'en';
+    final selected = widget.store.skin == s;
+    // 预览用「签名色」：深潜/星海展示暗色，汽水/默认展示亮色，避免四张卡都发白。
+    final previewBrightness =
+        s == DshSkin.abyss || s == DshSkin.whale ? Brightness.dark : Brightness.light;
+    final p = DshPalette.of(s, previewBrightness);
+    return Expanded(
+      child: InkWell(
+        onTap: () async {
+          await widget.store.setSkin(s);
+          if (!mounted) return;
+          showToast(
+            context,
+            L10n.t('已切换皮肤：${s.label}', 'Skin: ${s.labelEn}'),
+          );
+        },
+        borderRadius: BorderRadius.circular(12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+          decoration: BoxDecoration(
+            color: selected ? p.brandSoft : DshColors.surface(context),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? p.brand : DshColors.line(context),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Column(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(7),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [p.gradientTop, p.gradientBottom],
+                      ),
+                      border: Border.all(color: p.line),
+                    ),
+                    child: Align(
+                      alignment: const Alignment(0, 0.6),
+                      child: Container(
+                        width: 18,
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: p.accent,
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    s.labelFor(en),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      color: selected ? p.brand : DshColors.ink2(context),
+                    ),
+                  ),
+                ],
+              ),
+              if (selected)
+                Positioned(
+                  top: -5,
+                  right: -2,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: DshColors.surface(context),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.check_circle, size: 13, color: p.brand),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _iconTile(AppIconStyle icon) {
+    final en = L10n.lang == 'en';
+    final selected = widget.store.appIcon == icon.id;
+    return InkWell(
+      onTap: () => _pickAppIcon(icon),
+      borderRadius: BorderRadius.circular(12),
+      child: Column(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? DshColors.brand(context) : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: Image.asset(icon.asset, fit: BoxFit.cover),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            icon.labelFor(en),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 8.5,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+              color: selected ? DshColors.brand(context) : DshColors.ink2(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickAppIcon(AppIconStyle icon) async {
+    if (!AppIconSwitcher.supported) return;
+    if (widget.store.appIcon == icon.id) return;
+    final ok = await AppIconSwitcher.set(icon.id);
+    if (!mounted) return;
+    if (!ok) {
+      showToast(
+        context,
+        L10n.t('图标切换失败，请稍后再试', 'Failed to switch the icon. Try again later.'),
+      );
+      return;
+    }
+    await widget.store.setAppIcon(icon.id);
+    if (!mounted) return;
+    showToast(
+      context,
+      L10n.t(
+        '已切换桌面图标；若桌面没变，回桌面刷新一下',
+        'Icon changed. Refresh your launcher if it still shows the old one.',
+      ),
+    );
+  }
+
   Widget _card(String title, List<Widget> children) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1013,6 +1275,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ]),
+        _appearanceCard(),
         _card(L10n.t('显示', 'Display'), [
           _row(
             leading: const Icon(Icons.tab_outlined),
@@ -1110,18 +1373,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => _pickPetSize(widget.store),
           ),
           _row(
-            leading: const Icon(Icons.motion_photos_off_outlined),
-            title: L10n.t('减少动态', 'Reduce motion'),
-            sub: L10n.t(
-              '固定姿势，关闭待机与点击动画',
-              'Freeze the pose; disable idle and tap animations',
-            ),
-            trailing: DshSwitch(
-              value: widget.store.petReducedMotion,
-              onChanged: (v) => widget.store.setPetReducedMotion(v),
-            ),
-          ),
-          _row(
             leading: const Icon(Icons.vertical_align_bottom_outlined),
             title: L10n.t('贴边自动躲藏', 'Auto-hide at edge'),
             sub: L10n.t(
@@ -1131,6 +1382,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: DshSwitch(
               value: widget.store.petEdgeHide,
               onChanged: (v) => widget.store.setPetEdgeHide(v),
+            ),
+          ),
+          _row(
+            leading: const Icon(Icons.phone_iphone_outlined),
+            title: L10n.t('App 在前台时收起', 'Hide while the app is open'),
+            sub: L10n.t(
+              '避免和首页角色同屏，也不再挡住按钮',
+              'Avoids doubling with the home character and covering buttons',
+            ),
+            trailing: DshSwitch(
+              value: widget.store.petHideInApp,
+              onChanged: (v) => widget.store.setPetHideInApp(v),
             ),
           ),
           _row(

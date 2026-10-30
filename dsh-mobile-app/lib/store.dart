@@ -11,6 +11,7 @@ import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
 import 'session_list.dart';
+import 'theme.dart';
 
 /// 内核 `AgentStatus` 是 **`idle | running` 二元联合**（ADR 0013）——不存在 `waiting`。
 /// 等待用户审批/作答时驱动仍在跑，属于 `running`；该事实由挂起的问询/审批独立承载。
@@ -44,6 +45,8 @@ class AppStore extends ChangeNotifier {
             agentStatusMap[id] ??
             (id == sessionId ? agentStatus : 'idle');
   String darkMode = 'system'; // system | dark | light
+  DshSkin skin = DshSkin.dsh; // 主题皮肤（默认 / 深潜夜航 / 海盐汽水 / 鲸落星海）
+  String appIcon = 'default'; // 桌面图标样式 id（default/deepsea/shell/moon/sticker/stamp/neon/mono）
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
   bool reasoningDefaultExpanded = false; // 思维链默认展开还是折叠（默认折叠：防英文思考刷屏；单条消息仍可点按切换）
   bool timelineDebug = false; // 普通/调试模式：默认普通，调试显示原始事件详情
@@ -77,8 +80,9 @@ class AppStore extends ChangeNotifier {
   ];
   bool floatingEnabled = false; // 桌面宠物开关（沿用旧悬浮球 key，v2.7.2 起持久化）
   int petHeight = 96; // 宠物画布高度 dp（56~160）
-  bool petReducedMotion = false; // 减少动态：静态姿势
+  bool petReducedMotion = false; // 减少动效：宠物静态姿势 + 首页角色/背景静止
   bool petEdgeHide = true; // 贴边 5 秒后自动躲藏/虚化
+  bool petHideInApp = true; // App 在前台时收起桌面宠物（避免与首页角色同屏 + 挡住按钮）
 
   /// 已注册工作区（PC 端 workspaceRegistry）：[{id, path, title}]。
   List<Map<String, dynamic>> workspaces = [];
@@ -246,13 +250,19 @@ class AppStore extends ChangeNotifier {
   static const _kPetHeight = 'dsh_mr_pet_height';
   static const _kPetReducedMotion = 'dsh_mr_pet_reduced_motion';
   static const _kPetEdgeHide = 'dsh_mr_pet_edge_hide';
+  static const _kPetHideInApp = 'dsh_mr_pet_hide_in_app';
   static const _kGitTabs = 'dsh_mr_git_tabs';
   static const _kConversationActionOrder = 'dsh_mr_conversation_action_order';
+  static const _kSkin = 'dsh_mr_skin';
+  static const _kAppIcon = 'dsh_mr_app_icon';
 
   Future<void> loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     sessionId = prefs.getString(_kSession);
     darkMode = prefs.getString(_kDark) ?? 'system';
+    skin = DshSkin.fromId(prefs.getString(_kSkin));
+    appIcon = prefs.getString(_kAppIcon) ?? 'default';
+    iconMigrationTipShown = prefs.getBool(_kIconMigrationTip) ?? false;
     showReasoning = prefs.getBool(_kReasoning) ?? false;
     reasoningDefaultExpanded =
         prefs.getBool(_kReasoningDefaultExpanded) ?? false;
@@ -278,6 +288,7 @@ class AppStore extends ChangeNotifier {
     petHeight = (prefs.getInt(_kPetHeight) ?? 96).clamp(56, 160).toInt();
     petReducedMotion = prefs.getBool(_kPetReducedMotion) ?? false;
     petEdgeHide = prefs.getBool(_kPetEdgeHide) ?? true;
+    petHideInApp = prefs.getBool(_kPetHideInApp) ?? true;
     gitTabs = List.unmodifiable(_defaultGitTabs);
     try {
       final raw = prefs.getString(_kGitTabs);
@@ -427,6 +438,33 @@ class AppStore extends ChangeNotifier {
     await _persistPrefs(_kDark, v);
   }
 
+  /// 切换主题皮肤（默认 / 深潜夜航 / 海盐汽水 / 鲸落星海），即时重建 Theme。
+  Future<void> setSkin(DshSkin v) async {
+    if (skin == v) return;
+    skin = v;
+    notifyListeners();
+    await _persistPrefs(_kSkin, v.id);
+  }
+
+  /// 记住已选的桌面图标样式（真正的 activity-alias 切换在原生侧完成）。
+  Future<void> setAppIcon(String id) async {
+    if (appIcon == id) return;
+    appIcon = id;
+    notifyListeners();
+    await _persistPrefs(_kAppIcon, id);
+  }
+
+  /// 图标入口迁移提示是否已展示（v3.2.2 build 27：从 MainActivity 换成 IconDefault alias，
+  /// 老桌面快捷方式指向旧组件名会失效一次，需要在首次启动时说清楚，而不是等用户发现点不开）。
+  bool iconMigrationTipShown = false;
+  static const _kIconMigrationTip = 'dsh_mr_icon_migration_tip';
+
+  Future<void> markIconMigrationTipShown() async {
+    if (iconMigrationTipShown) return;
+    iconMigrationTipShown = true;
+    await _persistPrefs(_kIconMigrationTip, true);
+  }
+
   /// 切换界面语言（zh/en），即时生效 + 持久化。
   Future<void> setLanguage(String v) async {
     language = v;
@@ -465,7 +503,7 @@ class AppStore extends ChangeNotifier {
     unawaited(Floating.setBalanceAlert(balanceAlert, balanceThreshold));
   }
 
-  /// 宠物大小/减少动态/贴边躲藏：持久化后实时同步原生服务。
+  /// 宠物大小/减少动效/贴边躲藏/前台收起：持久化后实时同步原生服务。
   Future<void> setPetHeight(int v) async {
     petHeight = v.clamp(56, 160).toInt();
     notifyListeners();
@@ -487,12 +525,21 @@ class AppStore extends ChangeNotifier {
     await _syncPetConfig();
   }
 
+  /// App 在前台时收起桌面宠物（默认开）：既避免与首页角色同屏重复，也避免悬浮窗挡住按钮。
+  Future<void> setPetHideInApp(bool v) async {
+    petHideInApp = v;
+    notifyListeners();
+    await _persistPrefs(_kPetHideInApp, v);
+    await _syncPetConfig();
+  }
+
   Future<void> _syncPetConfig() async {
     if (!floatingEnabled) return;
     await Floating.setPetConfig(
       height: petHeight,
       reducedMotion: petReducedMotion,
       edgeHide: petEdgeHide,
+      hideInApp: petHideInApp,
     );
   }
 

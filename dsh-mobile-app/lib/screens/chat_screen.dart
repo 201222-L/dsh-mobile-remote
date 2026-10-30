@@ -13,6 +13,8 @@ import 'package:path_provider/path_provider.dart';
 import '../toast.dart';
 import '../api.dart';
 import '../chat_copy.dart';
+import '../download.dart';
+import '../download_error.dart';
 import '../logger.dart';
 import '../l10n.dart';
 import '../models.dart';
@@ -4182,24 +4184,24 @@ class _ChatScreenState extends State<ChatScreen> {
                                       width: 10,
                                       height: 10,
                                       decoration: BoxDecoration(
-                                        color: Colors.white,
+                                        color: DshColors.onBrand(context),
                                         borderRadius: BorderRadius.circular(2),
                                       ),
                                     ),
                                   )
                                 : _sending
-                                ? const SizedBox(
+                                ? SizedBox(
                                     width: 15,
                                     height: 15,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      color: Colors.white,
+                                      color: DshColors.onBrand(context),
                                     ),
                                   )
-                                : const Icon(
+                                : Icon(
                                     Icons.arrow_upward,
                                     size: 17,
-                                    color: Colors.white,
+                                    color: DshColors.onBrand(context),
                                   ),
                           ),
                         ),
@@ -4378,29 +4380,244 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// v3.1.2（csborbbnc 反馈）：下载文件——可视化文件选择器（盘符/目录树/点文件）
   /// → 保存到手机「下载」目录。
+  /// v3.2.2：流式下载——临时文件 + 原生按路径保存，大文件不再整块进内存。
   Future<void> _downloadFile() async {
     final path = await showFilePicker(context);
     if (path == null || path.isEmpty || !mounted) return;
+
+    final name =
+        path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ??
+        'file';
+    Directory tempDir;
     try {
-      final bytes = await _api.downloadFile(path);
-      final name =
-          path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).lastOrNull ??
-          'file';
-      final saved = await _filesChannel.invokeMethod<String>(
-        'saveToDownloads',
-        {'name': name, 'bytes': bytes},
-      );
-      if (mounted) {
-        showToast(
-          context,
-          '${L10n.t('已保存到手机：', 'Saved on phone: ')}${saved ?? name}',
-        );
-      }
+      tempDir = await getTemporaryDirectory();
     } catch (e) {
       if (mounted) {
-        showToast(context, '${L10n.t('下载失败：', 'Download failed: ')}$e');
+        // 拿不到临时目录通常是没有可用存储：给一句人话，不丢原始异常
+        final f = describeDownloadError(e);
+        showToast(context, f.summary);
       }
+      return;
     }
+    final target = File(
+      '${tempDir.path}/dsh-dl-${DateTime.now().microsecondsSinceEpoch}-$name',
+    );
+    if (!mounted) return; // 取临时目录期间页面可能已被销毁
+    final progress = ValueNotifier<DownloadProgress>(
+      const DownloadProgress(received: 0),
+    );
+    final cancel = DownloadCancelToken();
+    var dialogVisible = true;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AlertDialog(
+          title: Text(L10n.t('下载中', 'Downloading')),
+          content: ValueListenableBuilder<DownloadProgress>(
+            valueListenable: progress,
+            builder: (_, p, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(value: p.fraction),
+                const SizedBox(height: 10),
+                Text(
+                  p.total == null
+                      ? _formatDownloadBytes(p.received)
+                      : '${_formatDownloadBytes(p.received)} / '
+                            '${_formatDownloadBytes(p.total!)}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: cancel.cancel,
+              child: Text(L10n.t('取消', 'Cancel')),
+            ),
+          ],
+        ),
+      ).then((_) {
+        dialogVisible = false;
+      }),
+    );
+
+    DownloadResult? result;
+    String? saved;
+    Object? failure;
+    var cancelled = false;
+    try {
+      result = await _api.downloadFileToFile(
+        path,
+        target,
+        cancel: cancel,
+        onProgress: (p) => progress.value = p,
+      );
+      saved = await _filesChannel.invokeMethod<String>(
+        'saveFileFromPath',
+        {'path': result.file.path, 'name': name},
+      );
+    } on DownloadCancelled {
+      cancelled = true;
+    } catch (e) {
+      failure = e;
+    } finally {
+      // 先把进度弹窗关掉，再弹结果——否则结果弹窗会盖在"下载中"上面
+      if (mounted && dialogVisible) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      try {
+        await target.delete();
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+    if (cancelled) {
+      showToast(context, L10n.t('已取消下载', 'Download cancelled'));
+      return;
+    }
+    if (failure != null) {
+      await _showDownloadFailure(failure, remotePath: path);
+      return;
+    }
+    final mime = (result?.contentType ?? 'application/octet-stream')
+        .split(';')
+        .first
+        .trim();
+    await _showDownloadSaved(saved ?? name, mime: mime, uri: saved);
+  }
+
+  /// 下载失败：先给「结论 + 下一步」，原始异常折叠在「技术详情」里。
+  ///
+  /// 真机反馈：之前直接把异常 toString 丢进 Toast，用户满屏 status/code 看不懂。
+  Future<void> _showDownloadFailure(
+    Object error, {
+    required String remotePath,
+  }) async {
+    final f = describeDownloadError(error);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('下载失败', 'Download failed')),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(f.summary),
+              if (f.hint != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  f.hint!,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    height: 1.5,
+                    color: DshColors.ink2(ctx),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 4),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: Text(
+                  L10n.t('技术详情', 'Technical details'),
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+                children: [
+                  SelectableText(
+                    '${L10n.t('文件', 'File')}: $remotePath\n${f.detail}',
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(
+                ClipboardData(text: '$remotePath\n${f.detail}'),
+              );
+              showToast(ctx, L10n.t('详情已复制', 'Details copied'));
+            },
+            child: Text(L10n.t('复制详情', 'Copy details')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(L10n.t('关闭', 'Close')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 下载完成：告诉用户存到哪了，并给「查看 / 关闭」两个出口。
+  ///
+  /// 之前用 SnackBar + 单个「打开」按钮，用户反馈"不点它就关不掉"。
+  Future<void> _showDownloadSaved(
+    String saved, {
+    required String mime,
+    String? uri,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(L10n.t('下载完成', 'Download complete')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${L10n.t('已保存到手机：', 'Saved on phone: ')}$saved'),
+            const SizedBox(height: 8),
+            Text(
+              L10n.t(
+                '可在手机「文件」App 的 下载/DSH-Remote 目录里找到。',
+                'Find it in Files › Downloads › DSH-Remote on your phone.',
+              ),
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.5,
+                color: DshColors.ink2(ctx),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (uri != null && uri.startsWith('content://'))
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _filesChannel.invokeMethod<String>('openFile', {
+                  'uri': uri,
+                  'mime': mime,
+                });
+              },
+              child: Text(L10n.t('查看', 'Open')),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(L10n.t('关闭', 'Close')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatDownloadBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   /// v3.0.0 图像链路：选图（原始解析，不压缩）——上限按内核 imageLimits（PC 端同源数字）。

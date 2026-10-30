@@ -1,8 +1,91 @@
 # Changelog
 
-## v3.2.2（2026-10-27，build 26 重发）— 桌面宠物：可互动大肥鱼
+## v3.2.3（2026-10-30，issue #50 / #52，PR #51 / #53 / #54）— 工作区归属修复 + 大文件流式下载 + Markdown 预览
 
-> 版本：插件 `3.2.2` / App `3.2.2+26`。这是对已发布 v3.2.2 的**同版本号重发**，Release 资产会被替换；构建号 +1 以便覆盖安装。
+> 版本：插件 `3.2.3` / App `3.2.3+28`。
+> 验收门禁：`node --test test/*.mjs`（208 通过 + 1 平台跳过，`interaction-settlement` 单跑 13/13）、`flutter analyze`（0 issue）、`flutter test`（555）、`flutter build apk --debug` 通过。
+
+### 建会话前确保 cwd 有归属工作区（#50）
+
+- **问题**：App 目录选择器可选到任意目录（含新建文件夹），若该目录不在 `workspaceRegistry` 里，会话会带着「无归属工作区」的 `cwd` 落盘。内核 `WorkspaceEntity.attachSession()` 要求 `header.cwd` 与工作区根**完全相等**，于是：
+  - 本次 attach 走「向上找祖先工作区」分支必然抛错，且原实现 `workspace?.attachSession(...)` **未 await**，异常逃过 `try/catch`；
+  - 会话成为孤儿，**下次 dsh 启动** bootstrap 再 attach 时抛错 → `dsh: fatal load failure` → 进程 exit 1（web/SSH/IM 全部入口下线，反代侧 502）。
+- **修复**：`POST /m/api/sessions` 在建会话**之前**解析工作区归属——已注册则复用，未注册则 `workspaceRegistry.create(cwd)` 注册成新工作区，并用工作区的 realpath 规范路径作为 `cwd`；`create` 抛错（目录不存在/非目录）时返回 `400 cwd-not-a-directory`，不再产生孤儿会话。
+- **兼容**：旧宿主未暴露 `registry.create` 时保留原「逐级向上找最近已注册工作区」的尽力而为路径，且不改写 `cwd`。
+- **顺带**：attach 改为 `await` + `catch` 记 warn，避免未处理的 Promise rejection。
+- **新增回归**：`test/issue50-cwd-workspace.test.mjs`（未注册→注册并 attach；已注册→复用；目录不可用→400 且不建会话；旧宿主→回落且不改写 cwd）。
+
+### 插件：`/files` 支持 Range / HEAD / ETag（#52 / PR #53）
+
+- 单区间 `Range: bytes=...` → `206` + `Content-Range`；越界或格式错 → `416` + `bytes */size`（多区间仍不支持，避免响应放大）。
+- `ETag`（size + mtime）与 `Last-Modified`，`If-None-Match` 命中回 `304`。
+- `HEAD` 只回头（content-length / etag / accept-ranges），不读文件体；客户端断开时销毁读流，避免 fd 泄漏。
+- `/directories` 增加 `fileEntries: [{name,size,mtimeMs,mime}]`，`files` 仍保持纯字符串数组，旧 App 不受影响。
+- `hello` 与 `/api/bootstrap` 的 `capabilities` 增加 `fileRange`；旧插件不声明时 App 自动退回整文件下载。
+
+### App：流式下载（#52 / PR #54）
+
+- 下载改为 `StreamedResponse` → 临时文件：进度回调、可取消、`Range` 续传（旧插件返回 200 时自动从头写）；取消/失败清理半成品。
+- 完成后由原生按路径保存到 `Download/DSH-Remote`（MediaStore `IS_PENDING`，I/O 不在主线程），完成弹窗给「查看 / 关闭」两个出口。
+- 失败文案人话化（401/403、404、5xx、断网、超时、中断、证书、保存失败各有表述），原始异常折叠进可复制的技术详情。
+- `MainActivity` 新增 `saveFileFromPath` / `openFile` / `shareFile` / `decodeText`；旧保存路径不再写死包名，改用 `packageName`。
+
+### App：预览编码识别 + Markdown 渲染（#52 / PR #54）
+
+- 预览只取前 256 KiB：`fileRange` 可用时发 `Range`，否则读满主动断开。
+- 编码判定改为「BOM → 无 BOM UTF-16 双向试解打分 → 严格 UTF-8（容忍采样末尾被截断的多字节字符）→ GB18030」，GB18030 走原生 `Charset` 解码；修掉真 UTF-8 中文被误判成 GB18030 的整篇乱码。
+- `.md` / `.markdown` 默认渲染：按块边界分片（围栏内不切）+ `ListView.builder` 懒渲染，顶部可切「预览 / 源码」；源码模式也改为按行懒加载 + 自动换行。
+- 修 `isWithinRoot` 的分隔符判断（Windows 下 `root\sub` 曾被判成越界）。
+- 测试：`flutter test` 555（基线 509 + 新增 46：download_stream、download_error、session_files_logic、session_files_widget）。
+
+## v3.2.2（2026-10-29，build 27 重发）— 外观：三套皮肤 + 8 款图标 + 宠物联动
+
+> 版本：插件 `3.2.2` / App `3.2.2+27`。对已发布 v3.2.2（build 25）的**同版本号重发**，Release 资产替换；构建号 25 → 27（26 为本地产物，从未发布）。
+> 插件 `lib/` 无逻辑改动；重新打包只为修掉 `package.json` 的 UTF-8 BOM（带 BOM 的 tgz 安装会被 npm 拒绝）。
+> 验收：`flutter analyze` 0 issue、`flutter test` 515、`node --test test/*.mjs` 200 通过 + 1 平台跳过、`gradlew :app:compileDebugKotlin` 通过。
+
+### 外观：三套皮肤（默认仍是原 DSH）
+
+- `设置 → 外观` 新增皮肤选择：**深潜夜航**（墨绿黑底 / 声呐环 / 冷光气泡 / 潮汐波浪 / 薄荷绿主色 + 深色字）、**海盐汽水**（奶油底 / 可乐蓝按钮 / 光束与气泡）、**鲸落星海**（靛蓝底 / 星尘星座 / 月盘 / 金色主色 + 深色字）。
+- 每套皮肤 × 明暗 = 8 组完整令牌，挂在 `ThemeExtension`（`DshPalette`）上；页面统一走 `DshColors.xxx(context)`，不再逐层传 skin。默认皮肤令牌与旧版逐值一致，老用户视觉不变。
+- 首页在这三套皮肤下换成大肥鱼 Hero：左侧一句问候（按皮肤切换文案），右侧固定 132dp 角色，下方动态背景（30fps 上限、不可见即停、减少动效时只留静态渐变）。
+
+### 外观：8 款 App 图标
+
+- 新增 `深海头像 / 贝壳徽章 / 月夜潮线 / 奶油贴纸 / 鲸邮票 / 霓虹灯牌 / 鲸尾剪影`，加原图标共 8 款，`设置 → 外观 → App 图标` 四列网格选择。
+- 实现用 8 个 `activity-alias`（`PackageManager` 一次只启用一个），`MainActivity` 不再直接持有 `LAUNCHER`；默认 `IconDefault` 的图标与原 `ic_launcher` 逐像素一致（仅重编码差异），**默认外观不变**。
+- 选择持久化在 `dsh_mr_app_icon`，启动时 `syncIcon` 对账；原生侧已是目标 alias 时不重复切换，避免每次启动触发桌面刷新。
+- 已知限制：Android 13 主题图标（monochrome 层）与 `roundIcon` 未提供，下个版本补。
+
+### 首页角色互动
+
+- 点头部摸头、点身体戳一下、点尾部甩尾，各有对应动作与台词气泡（1.8 秒回落）；长按打开迷你面板（运行中会话 / 最近通知 / 桌面宠物状态 / 用量入口）。
+- 角色区域外滑动不被拦截（`GestureDetector` 只吃自己那块）；`减少动效` 或系统「移除动画」时退回静态帧。
+
+### 桌面宠物与 App 联动（行为变化）
+
+- **App 在前台时收起桌面宠物**（默认开，可关）：`MainActivity.onStart/onStop` 把前后台状态告诉服务，宠物根视图置 `GONE`，同时收掉状态气泡与迷你面板。解决两件事——悬浮宠物与首页角色同屏重复；移动窗口盖住「＋ 新建会话」等按钮时**吞掉触摸**。
+- 用 `onStart/onStop` 而非 `onResume/onPause`（权限弹窗不算离开）；`onStop` 而非 `onDestroy`（进程被杀时后者不保证回调）。服务与 Activity 同进程，用静态标记而非 `startService` 广播，规避 Android 12+ 后台启动前台服务的限制。
+- 恢复时回到「贴边完全露出」再走 5 秒自动缩进，不改用户拖过的纵向位置。
+
+### 「减少动态」改为「减少动效」并挪位
+
+- 该开关实际同时管桌面宠物、首页角色与首页背景三处，原来只写在桌面宠物卡里、文案也只提宠物。现改名 **减少动效**，移入 `设置 → 外观`，副标题写明覆盖范围与「系统级移除动画始终优先」。
+- 行为不变：`MediaQuery.disableAnimations`（系统无障碍）优先级最高且不可被 App 覆盖，App 开关只能在此基础上再关。
+
+### 图标入口迁移提示
+
+- 升级后首次启动弹一次说明：启动入口从 `com.dsh.remote.MainActivity` 换成 `com.dsh.remote.IconDefault`，**桌面上的旧快捷方式可能点不开一次**，删掉后从抽屉重新拖一个即可；此后切换图标不再出现。
+- 只在 Android 提示（其它平台不涉及 alias 迁移），结果记在 `dsh_mr_icon_migration_tip`，不会重复打扰。
+
+### 其它
+
+- 对话页发送按钮的硬编码白色改为 `DshColors.onBrand(context)`，薄荷/金色底上会变深色图标，符合对比度要求。
+- APK 体积：宠物动画（原生 14.1 MB）+ 首页动画（9.6 MB）。实测 release 包约 99 MB（上一版 71.8 MB），如需瘦身可把首页那 4 组 webp 降采样或改静态帧。
+
+## v3.2.2（2026-10-27，build 26）— 桌面宠物：可互动大肥鱼
+
+> 版本：插件 `3.2.2` / App `3.2.2+26`。该构建**当时未单独发布**，随 build 27 一并对外（见上一条）。
 > 素材：`QCYTSN/dsh-dafeiyu` 当前 16 组动画（MIT；上游 `PC2005-cloud/dsh-pet`），0.7x / 12fps 转码，共 14.1 MB。
 > 验收：`flutter analyze` 0 issue、`flutter test` 509、`node --test test/*.mjs` 200 通过 + 1 平台跳过、Kotlin `PetAnimationModelTest` / `PetStateReducerTest` / `UsagePanelModelTest` 全绿；真机确认动画播放、状态切换、贴边缩进与面板。
 
@@ -14,8 +97,8 @@
 - 贴边躲藏：5 秒无操作后只露 45% 画布，透明度 0.45 + 去饱和 + 轻度模糊；点露出部分滑出；完成/等待/出错自动探头，普通工作状态不打扰。
 - 状态气泡：标题 + 当前任务/进度（会话标题、已完成步数），点气泡打开面板；未读通知角标沿用旧逻辑，贴边时角标跟随到可见侧。
 - 旧迷你面板完整保留（运行中会话 / 最近通知 / 用量与额度 / 余额 / 打开 App / 去充值），新增当前状态行与「关闭宠物」入口。
-- 设置页新增宠物大小（76 / 96 / 116dp，默认 96）、减少动态、贴边自动躲藏；沿用旧悬浮球开关的持久化 key。
-- 原生 WebP 不压缩打包；APK 约 85.9 MB。
+- 设置页新增宠物大小（76 / 96 / 116dp，默认 96）、减少动效（build 27 起移入「外观」卡）、贴边自动躲藏；沿用旧悬浮球开关的持久化 key。
+- 原生 WebP 不压缩打包。
 
 ## v3.2.2（2026-10-27，issue #46 / #49，PR #42）— 在线本地通知 + 轮次导航 + 二维码组网地址优选 + 审批兜底修复
 
