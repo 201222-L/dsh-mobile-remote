@@ -5,7 +5,7 @@
 > 版本：插件 `3.2.3` / App `3.2.3+30`。对 v3.2.3（build 29）的**同版本号重发**，Release 资产替换；构建号 29 → 30。
 > 验收：`flutter analyze` 0 issue、`flutter test` 593、`node --test test/*.mjs`（审批相关单跑 13/13）、真机 9 项（见下）。
 
-### 真机验收（Xiaomi 17 Pro Max / Android 16，2026-10-31）
+### 真机验收（build 29 的实现，Xiaomi 17 Pro Max / Android 16，2026-10-31）
 
 - 常驻通知模式启动：`KeepAliveService` 前台运行、通道 `dsh_keep_alive`、通知 ID 1041，`ONGOING|ONLY_ALERT_ONCE|NO_CLEAR`。
 - 与桌面宠物互斥：切常驻通知 → 宠物服务停止；切回桌面宠物 → 常驻服务停止。
@@ -14,6 +14,8 @@
 - 按 HOME 退到后台 190 秒：进程 PID 与 ServiceRecord 不变，服务存活。
 - 通知权限被拒时选「常驻通知」→ 弹「需要通知权限」且不启动服务。
 - 端到端：后台收到真实审批帧 → 系统通知出现（`dsh_attention`）；`/respond` 结算后通知自动撤销。
+
+> build 30 并入 PR #56 后，原生保活服务与通知判据换成了其实现（通道 `dsh_keepalive_v2`、ID 3515、启动前 `resolveService` 校验），PR 作者在 MIUI / Android 14 上验过；本机 build 30 的复测待设备重新连上后补。
 
 ### 通知判据与身份（PR #56，合并后以此实现为准）
 
