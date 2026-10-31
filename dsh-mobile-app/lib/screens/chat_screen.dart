@@ -26,6 +26,7 @@ import '../turn_outline.dart';
 import '../md.dart';
 import '../fmt.dart';
 import '../git_browser_controller.dart';
+import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
 import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
@@ -450,6 +451,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     // 进入会话时恢复挂起的问询/审批（例如从"需要你回答"通知点进来）
     _mySessionId = widget.store.sessionId; // v2.7.2 review(M1)：绑定本页会话
+    // v3.3.1：告诉通知层「用户正看着这个会话」——此时不再弹系统通知（应用内已有卡片）。
+    LocalNotifier.instance.visibleSession = _mySessionId;
+    // S1：进入会话即收起横幅，并把该会话的未读通知标为已读（否则未读会积到几十条）。
+    unawaited(widget.store.notifyChatOpened(_mySessionId ?? ''));
     _question = widget.store.questionForSession(_mySessionId);
     _approval = widget.store.approvalForSession(_mySessionId);
     _queue = widget.store.queueOf(_mySessionId ?? ''); // v3.0.0：初始即取镜像快照（帧/缓存）
@@ -490,6 +495,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.removeChatListener(_handleEvent); // v2.7.2 review(M1)
+    // v3.3.1：离开该会话（或页面被回收）后恢复系统通知；只在栈顶仍是自己时清空。
+    if (LocalNotifier.instance.visibleSession == _mySessionId) {
+      LocalNotifier.instance.visibleSession = null;
+    }
     // The modal future owns and disposes its Git controller in _openGit.
     _gitController = null;
     _inputCtrl.dispose();

@@ -6,8 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api.dart';
+import 'attention.dart';
 import 'floating.dart';
-import 'keep_alive.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
@@ -80,9 +80,6 @@ class AppStore extends ChangeNotifier {
     'copy',
   ];
   bool floatingEnabled = false; // 桌面宠物开关（沿用旧悬浮球 key，v2.7.2 起持久化）
-  /// 后台提醒模式（issue #55）：off = 只管前台；service = 常驻通知保活；pet = 桌面宠物保活。
-  /// 三者互斥，服务本体在原生侧，切模式时由设置页启停。
-  String attentionMode = 'off';
   int petHeight = 96; // 宠物画布高度 dp（56~160）
   bool petReducedMotion = false; // 减少动效：宠物静态姿势 + 首页角色/背景静止
   bool petEdgeHide = true; // 贴边 5 秒后自动躲藏/虚化
@@ -222,8 +219,7 @@ class AppStore extends ChangeNotifier {
   /// （v2.7.1：悬浮球跳转/回前台时"错过的也提醒"）。
   void Function(int count, {bool force})? onNewNotifications;
 
-  /// 审批/问询帧到达回调（issue #46 / #55）：参数 = (kind, sessionId, rpcId, toolName, reason, prompt, approvalId)。
-  /// 由 main.dart 接到系统本地通知；只在 App 不在前台时真正弹通知。
+  /// 审批/问询帧到达回调（issue #46 旧签名，保留兼容）。
   void Function(
     String kind,
     String sessionId,
@@ -231,12 +227,46 @@ class AppStore extends ChangeNotifier {
     String? toolName,
     String? reason,
     String? prompt,
-    String? approvalId,
   )? onAttention;
 
-  /// 审批/问询已结算（issue #55）：参数 = (kind, approvalId, rpcId)，用于撤销对应系统通知。
-  void Function(String kind, String? approvalId, String rpcId)?
-      onAttentionResolved;
+  /// M1a：结构化事件（带 approvalId，身份稳定、可精确撤销）。
+  void Function(AttentionEvent event)? onAttentionEvent;
+
+  /// M1a：事件已结算（`approval/resolved` / `question/resolved`），参数是 identity。
+  void Function(String identity)? onAttentionResolved;
+
+  /// S1：用户打开了某个会话——调用方应清掉该会话的横幅并标已读。
+  void Function(String sessionId)? onChatOpened;
+
+  /// 通知用户「进入了某会话」：撤横幅 + 该会话未读标已读。
+  Future<void> notifyChatOpened(String sessionId) async {
+    if (sessionId.isEmpty) return;
+    onChatOpened?.call(sessionId);
+    await markSessionNotifsRead(sessionId);
+  }
+
+  /// 把某会话的未读通知标为已读（S1：现在只有点单条才标已读，所以会积到几十条）。
+  ///
+  /// 优先用缓存列表；缓存为空（还没拉过）时才重新请求一次。
+  Future<void> markSessionNotifsRead(String sessionId) async {
+    try {
+      var items = notifs;
+      if (items.isEmpty) {
+        items = await api.notifications();
+        notifs = items;
+      }
+      final ids = items
+          .where((n) => n.unread && n.sessionId == sessionId)
+          .map((n) => n.id)
+          .toList(growable: false);
+      if (ids.isEmpty) return;
+      await api.markNotifsRead(ids: ids);
+      AppLog.instance.log('通知：进入会话 $sessionId，标记 ${ids.length} 条已读');
+      await refreshNotifs(notify: false);
+    } catch (e) {
+      AppLog.instance.log('通知：标记会话已读失败（$e）');
+    }
+  }
 
   // ── SSE 内部 ──
   StreamSubscription<Map<String, dynamic>>? _sub;
@@ -256,7 +286,6 @@ class AppStore extends ChangeNotifier {
   static const _kBalanceAlert = 'dsh_mr_balance_alert';
   static const _kBalanceThreshold = 'dsh_mr_balance_threshold';
   static const _kFloating = 'dsh_mr_floating';
-  static const _kAttentionMode = 'dsh_mr_attention_mode';
   static const _kPetHeight = 'dsh_mr_pet_height';
   static const _kPetReducedMotion = 'dsh_mr_pet_reduced_motion';
   static const _kPetEdgeHide = 'dsh_mr_pet_edge_hide';
@@ -295,7 +324,6 @@ class AppStore extends ChangeNotifier {
     balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
     balanceThreshold = prefs.getDouble(_kBalanceThreshold) ?? 10;
     floatingEnabled = prefs.getBool(_kFloating) ?? false;
-    attentionMode = prefs.getString(_kAttentionMode) ?? (floatingEnabled ? 'pet' : 'off');
     petHeight = (prefs.getInt(_kPetHeight) ?? 96).clamp(56, 160).toInt();
     petReducedMotion = prefs.getBool(_kPetReducedMotion) ?? false;
     petEdgeHide = prefs.getBool(_kPetEdgeHide) ?? true;
@@ -498,30 +526,6 @@ class AppStore extends ChangeNotifier {
     floatingEnabled = v;
     notifyListeners();
     await _persistPrefs(_kFloating, v);
-  }
-
-  /// 后台提醒模式（off / service / pet）：持久化；启停服务由调用方（设置页）负责。
-  Future<void> setAttentionMode(String v) async {
-    if (v != 'off' && v != 'service' && v != 'pet') return;
-    attentionMode = v;
-    floatingEnabled = v == 'pet';
-    notifyListeners();
-    await _persistPrefs(_kAttentionMode, v);
-    await _persistPrefs(_kFloating, floatingEnabled);
-  }
-
-  /// 启动时恢复后台提醒（issue #55）：只在 App 前台调用（Android 12+ 不允许后台起前台服务）。
-  Future<void> restoreBackgroundAlerts() async {
-    if (attentionMode == 'pet') {
-      await restoreFloating();
-      return;
-    }
-    if (attentionMode != 'service') return;
-    // 通知被拒时服务仍可跑但常驻通知不可见——不启动，避免插件误判"手机在线"
-    if (!await KeepAliveBridge.notificationsEnabled()) return;
-    if (await KeepAliveBridge.isRunning()) return;
-    if (attentionMode != 'service') return; // 异步期间用户可能已切走
-    await KeepAliveBridge.start();
   }
 
   /// App 启动自动恢复桌面宠物（沿用旧悬浮球恢复逻辑）：上次开启过且服务没在跑 → 自动拉起。
@@ -1058,9 +1062,27 @@ class AppStore extends ChangeNotifier {
   int _lastUnread = 0;
   bool _firstUnreadSeen = false;
 
+  /// 最近一次拉到的通知列表（供横幅按会话合并、以及进会话标已读时复用，避免重复请求）。
+  List<AppNotification> notifs = const [];
+
+  /// 最新一条未读通知（横幅用它决定"哪个会话、多少条"）。
+  AppNotification? get latestUnreadNotif {
+    AppNotification? newest;
+    for (final n in notifs) {
+      if (!n.unread) continue;
+      if (newest == null || n.time > newest.time) newest = n;
+    }
+    return newest;
+  }
+
+  /// 某会话的未读条数。
+  int unreadOf(String sessionId) =>
+      notifs.where((n) => n.unread && n.sessionId == sessionId).length;
+
   Future<void> refreshNotifs({bool notify = true}) async {
     try {
       final items = await api.notifications();
+      notifs = items;
       final u = items.where((n) => n.unread).length;
       // 未读增量对比：重连/离线期间新增的通知也能触发提示（不只靠实时事件）
       if (_firstUnreadSeen && u > _lastUnread) {
@@ -1308,6 +1330,14 @@ class AppStore extends ChangeNotifier {
     if (type == 'mobile/notify') {
       // v2.7.2 review(M6)：通知帧（含审批/提问 needs-answer）与悬浮球同源——
       // 即时刷新通知中心/角标，不再等 turn/end 或 notifications/changed 兜底
+      // v3.3.1（可观测性）：真机排查"通知有时不弹"时，先确认帧到底有没有到。
+      final n = frame['notification'];
+      if (n is Map) {
+        AppLog.instance.log(
+          '通知：收到 mobile/notify id=${n['id']} kind=${n['kind']} '
+          'session=${n['sessionId']} approvalId=${n['approvalId'] ?? "无"}',
+        );
+      }
       refreshNotifs();
       return;
     }
@@ -1341,7 +1371,17 @@ class AppStore extends ChangeNotifier {
           null,
           null,
           request.questions.isEmpty ? null : request.questions.first.question,
-          null,
+        );
+        onAttentionEvent?.call(AttentionEvent(
+          kind: AttentionKind.question,
+          sessionId: request.sessionId,
+          identity: request.rpcId,
+          at: DateTime.now(),
+          summary:
+              request.questions.isEmpty ? null : request.questions.first.question,
+        ));
+        AppLog.instance.log(
+          '通知：问询帧到达 rpc=${request.rpcId} session=${request.sessionId}（已交给本地通知）',
         );
         return;
       }
@@ -1356,6 +1396,9 @@ class AppStore extends ChangeNotifier {
             pendingQuestion?.rpcId == rid || matchingQuestion != null;
         _clearPendingQuestion(rid);
         if (hadPending) notifyListeners();
+        if (rid is String && rid.isNotEmpty) {
+          onAttentionResolved?.call(rid);
+        }
         // 无条件转发：即使本地已在提交/取消时提前清空，聊天页也要据此收起卡片
         _emitChatEvent(
           ChatEvent(
@@ -1364,8 +1407,6 @@ class AppStore extends ChangeNotifier {
             data: {'rpcId': rid, 'sessionId': resolvedSessionId},
           ),
         );
-        // issue #55：撤销对应的系统通知（按 rpcId，问题帧没有独立的 approvalId）
-        onAttentionResolved?.call('question', null, rid is String ? rid : '');
         return;
       }
       if (ftype == 'approval/requested') {
@@ -1394,7 +1435,20 @@ class AppStore extends ChangeNotifier {
           request.toolName,
           request.reason,
           null,
-          request.approvalId,
+        );
+        onAttentionEvent?.call(AttentionEvent(
+          kind: AttentionKind.approval,
+          sessionId: request.sessionId,
+          identity: request.approvalId.isEmpty
+              ? request.rpcId
+              : request.approvalId,
+          at: DateTime.now(),
+          toolName: request.toolName,
+          summary: request.reason,
+        ));
+        AppLog.instance.log(
+          '通知：审批帧到达 rpc=${request.rpcId} approvalId=${request.approvalId} '
+          'session=${request.sessionId} tool=${request.toolName}（已交给本地通知）',
         );
         return;
       }
@@ -1410,6 +1464,11 @@ class AppStore extends ChangeNotifier {
         _pendingApprovalsBySession.removeWhere((sid, a) => a.approvalId == aid);
         if (pendingApproval?.approvalId == aid) pendingApproval = null;
         if (hadPending) notifyListeners();
+        // M1a：按 identity 精确撤销对应系统通知（resolved 帧不带 sessionId，
+        // 所以不能靠 sessionId 重建 key）。
+        if (aid is String && aid.isNotEmpty) {
+          onAttentionResolved?.call(aid);
+        }
         // 无条件转发：聊天页据此收起审批卡片
         _emitChatEvent(
           ChatEvent(
@@ -1417,12 +1476,6 @@ class AppStore extends ChangeNotifier {
             sessionId: resolvedSessionId,
             data: {'approvalId': aid, 'sessionId': resolvedSessionId},
           ),
-        );
-        // issue #55：撤销对应的系统通知（按 approvalId）
-        onAttentionResolved?.call(
-          'approval',
-          aid is String ? aid : null,
-          f['rpcId'] as String? ?? '',
         );
         return;
       }

@@ -23,7 +23,6 @@ class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
     private var filesChannel: MethodChannel? = null
     private var iconChannel: MethodChannel? = null
-    // v3.2.4（issue #55）：后台提醒保活通道（与桌面宠物互斥）
     private var keepAliveChannel: MethodChannel? = null
     // v3.1.2（csborbbnc 反馈）：系统文件选择器（ACTION_OPEN_DOCUMENT）结果回传暂存
     private var pendingPick: MethodChannel.Result? = null
@@ -120,22 +119,54 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-        // v3.2.4（issue #55）：后台提醒保活。只起一个前台服务把进程钉住，
-        // SSE 与通知仍在 Flutter 侧；与桌面宠物互斥（先停另一个再起）。
+        // v3.3.1（issue #55）：后台保活服务控制
         keepAliveChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/keepalive")
         keepAliveChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
+                // 返回 Map：失败时把原因带回 Dart，避免"点了没反应"（现场只有开关状态，看不出为什么）。
                 "start" -> {
-                    stopService(Intent(this, FloatingBubbleService::class.java))
-                    startServiceCompat(Intent(this, KeepAliveService::class.java))
-                    result.success(true)
+                    val err = startKeepAlive()
+                    result.success(mapOf("ok" to (err == null), "error" to (err ?: "")))
                 }
                 "stop" -> {
-                    stopService(Intent(this, KeepAliveService::class.java))
-                    result.success(true)
+                    stopKeepAlive()
+                    result.success(mapOf("ok" to true, "error" to ""))
                 }
                 "isRunning" -> result.success(KeepAliveService.running)
-                "notificationsEnabled" -> result.success(areNotificationsEnabled())
+                // 评审教训：服务若未在 manifest 声明，startForegroundService 不抛异常，
+                // 只在 logcat 打 "not found"，于是 UI 显示"启动成功"而服务根本不存在。
+                // 这里把运行态一起回传，Dart 侧不再只看返回值。
+                "status" -> {
+                    val (beatCount, beatAt) = KeepAliveService.beatStats(this)
+                    result.success(
+                        mapOf(
+                            "running" to KeepAliveService.running,
+                            "error" to (KeepAliveService.lastError ?: ""),
+                            "startedAt" to KeepAliveService.startedAt,
+                            "beatCount" to beatCount,
+                            "beatAt" to beatAt,
+                        ),
+                    )
+                }
+                // 多数国产 ROM（MIUI/HyperOS 等）默认会冻结后台应用，连前台服务也照冻。
+                // 用户把本应用设为「不受限制」后才能真正常驻，这里给一个直达入口。
+                "openBatterySettings" -> {
+                    val opts = Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    val app = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(android.net.Uri.parse("package:$packageName"))
+                    val ok = try {
+                        startActivity(app)
+                        true
+                    } catch (e: Exception) {
+                        try {
+                            startActivity(opts)
+                            true
+                        } catch (e2: Exception) {
+                            false
+                        }
+                    }
+                    result.success(ok)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -146,7 +177,6 @@ class MainActivity : FlutterActivity() {
         floatingChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
-                    stopService(Intent(this, KeepAliveService::class.java))
                     startBubbleService()
                     result.success(true)
                 }
@@ -322,16 +352,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** 通知总开关是否开启（13+ 用户拒绝 POST_NOTIFICATIONS 时常驻通知不可见）。 */
-    private fun areNotificationsEnabled(): Boolean {
-        return if (Build.VERSION.SDK_INT >= 24) {
-            val nm = getSystemService(android.app.NotificationManager::class.java)
-            nm?.areNotificationsEnabled() ?: true
-        } else {
-            true
-        }
-    }
-
     private fun openOverlaySettingsPage() {
         try {
             val i = Intent(
@@ -456,6 +476,41 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             result.error("share-failed", e.message ?: "share failed", null)
+        }
+    }
+
+    /** 启动后台保活服务；返回 null 表示成功，否则是失败原因。 */
+    private fun startKeepAlive(): String? {
+        return try {
+            // 先确认组件真的存在（manifest 漏声明时 startForegroundService 不会抛异常，
+            // 只打 logcat，UI 仍显示成功——v3.3.3 之前就是这么被误导了四轮）。
+            val probe = Intent(this, KeepAliveService::class.java)
+            if (packageManager.resolveService(probe, 0) == null) {
+                val msg = "KeepAliveService 未在 AndroidManifest.xml 中声明（构建配置错误）"
+                android.util.Log.e("DSH", msg)
+                return msg
+            }
+            val intent = probe.setAction(KeepAliveService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            null
+        } catch (e: Exception) {
+            // ForegroundServiceStartNotAllowedException 等：不要把异常抛到主线程（会崩 App）。
+            val msg = "${e.javaClass.simpleName}: ${e.message}"
+            android.util.Log.w("DSH", "startKeepAlive failed: $msg")
+            msg
+        }
+    }
+
+    /** 停止后台保活服务。 */
+    private fun stopKeepAlive() {
+        try {
+            stopService(Intent(this, KeepAliveService::class.java))
+        } catch (e: Exception) {
+            android.util.Log.w("DSH", "stopKeepAlive failed: ${e.message}")
         }
     }
 

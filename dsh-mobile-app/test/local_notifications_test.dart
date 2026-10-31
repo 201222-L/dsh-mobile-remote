@@ -78,4 +78,33 @@ void main() {
       expect(dedupe.shouldNotify('a', now: at.add(const Duration(minutes: 3))), isTrue);
     });
   });
+
+  // 回归：payload 从「裸 sessionId」改成 JSON 之后，点击回调忘了跟着改，
+  // 真机上表现为「点了通知打不开会话」。这里锁住解析契约。
+  group('通知 payload 解析', () {
+    final notifier = LocalNotifier.instance;
+
+    test('JSON payload 取 s 字段', () {
+      const payload =
+          '{"s":"session-abc","k":"approval","key":"approval|session-abc|r1","id":123}';
+      expect(notifier.sessionIdFromPayload(payload), 'session-abc');
+    });
+
+    test('兼容旧的裸 sessionId payload', () {
+      expect(notifier.sessionIdFromPayload('session-old'), 'session-old');
+    });
+
+    test('空/异常 payload 返回 null，不抛异常', () {
+      expect(notifier.sessionIdFromPayload(null), isNull);
+      expect(notifier.sessionIdFromPayload(''), isNull);
+      // 不是合法 JSON → 按裸 id 处理（兼容极端输入，不抛）
+      expect(notifier.sessionIdFromPayload('{bad json'), '{bad json');
+      // 合法 JSON 但没有会话 → null，不能把整段 JSON 当会话 id
+      expect(notifier.sessionIdFromPayload('{"k":"approval"}'), isNull);
+    });
+
+    test('s 为空串时返回 null', () {
+      expect(notifier.sessionIdFromPayload('{"s":"","k":"approval"}'), isNull);
+    });
+  });
 }
