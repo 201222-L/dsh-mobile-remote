@@ -11,7 +11,7 @@
     <!-- v2.9.0 review(A4)：LAN/组网地址是动态 IP，无法域限定 network_security_config；
          明文放行为已知权衡（token 走局域网，安全文档已列为残余风险；公网场景须经反代 HTTPS） -->
     <application
-        android:label="DSH Remote"
+        android:label="${appName}"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
@@ -141,6 +141,19 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="floating_bubble_status" />
+        </service>
+        <!-- 后台提醒保活服务（v3.3.3，issue #55）：只续命，不自己发通知。
+             2026-10-31 评审教训：本声明此前从未入库，导致 ka2/ka3/poll/poll2
+             四版 APK 里服务根本不存在，startForegroundService 静默失败，
+             却被误判为「MIUI 冻结 Dart」。改动后用构建脚本断言合并清单。 -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="keep_connection_for_attention" />
         </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

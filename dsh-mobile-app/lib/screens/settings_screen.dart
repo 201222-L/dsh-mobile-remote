@@ -4,14 +4,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
 import '../app_icon.dart';
 import '../app_icon_switcher.dart';
 import '../floating.dart';
+import '../keep_alive.dart';
 import '../l10n.dart';
+import '../local_notifications.dart';
 import '../logger.dart';
+import '../notify_diag.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -44,6 +48,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _diagTime = '';
   String _appVersion = ''; // App 自身版本（package_info_plus，构建时打包）
   bool _bubbleOn = false; // 悬浮球开关状态（与服务实际运行状态同步）
+  bool _keepAliveOn = false; // 后台保活（常驻通知）开关，默认关
+  Timer? _diagTimer; // 设置页打开时每 5s 刷新原生轮询状态
 
   @override
   void initState() {
@@ -51,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _refreshUsage();
     _loadAppVersion();
     _initBubbleState();
+    _initKeepAliveState();
     // 连接状态等 store 变化实时刷新（修复：旧版离开页面重进才能看到状态更新）
     widget.store.addListener(_onStoreChanged);
   }
@@ -80,8 +87,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// 桌面宠物开关：打开需悬浮窗权限（未授权 → 居中弹窗引导），关闭即停止服务。
+  /// 读取后台保活开关（默认关）。
+  Future<void> _initKeepAliveState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final on = prefs.getBool(BackgroundKeepAlive.prefKey) ?? false;
+    if (!mounted) return;
+    setState(() => _keepAliveOn = on);
+    // 开关是"开"但服务没跑（冷启动时 Activity 尚未 resumed、或被系统杀过）：
+    // 设置页在前台，这里补一次启动，失败把原因显示出来。
+    if (on && !BackgroundKeepAlive.instance.running) {
+      final ok = await BackgroundKeepAlive.instance.setEnabled(true, appVisible: true);
+      NotifyDiag.keepAliveRunning = ok;
+      AppLog.instance.log('保活：设置页补启动 → $ok（${BackgroundKeepAlive.instance.lastError ?? "无错误"}）');
+      if (mounted) setState(() {});
+    }
+    // 读一次原生状态（服务是否真在跑、跑了多久），并每 5 秒刷新，便于现场观察。
+    await BackgroundKeepAlive.instance.refreshStatus();
+    if (mounted) setState(() {});
+    _diagTimer?.cancel();
+    _diagTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      await BackgroundKeepAlive.instance.refreshStatus();
+      if (mounted) setState(() {});
+    });
+  }
+
+  /// 后台保活开关：与桌面宠物互斥（同时开会有两条常驻通知）。
+  Future<void> _toggleKeepAlive(bool v) async {
+    if (v) {
+      // 评审 P1-4：通知权限被拒时服务能跑但提醒看不见，插件还会误判"在线"。
+      // 先把权限要到，拿不到就不启动，并说明原因。
+      final granted = await LocalNotifier.instance.ensurePermission();
+      if (!granted) {
+        if (!mounted) return;
+        setState(() => _keepAliveOn = false);
+        showToast(
+          context,
+          L10n.t('需要通知权限才能后台提醒，请在系统设置中允许', 'Notification permission is required for background alerts'),
+        );
+        return;
+      }
+      if (_bubbleOn) {
+        // 互斥：先停掉宠物服务（它会自己管理前台服务与 SSE）。
+        await Floating.stop();
+        if (!mounted) return;
+        setState(() => _bubbleOn = false);
+        showToast(context, L10n.t('已关闭桌面宠物（两者互斥）', 'Desktop pet turned off (mutually exclusive)'));
+      }
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(BackgroundKeepAlive.prefKey, v);
+    final ok = await BackgroundKeepAlive.instance.setEnabled(v, appVisible: true);
+    if (!mounted) return;
+    setState(() => _keepAliveOn = v);
+    if (v && !ok) {
+      // 失败就把开关退回去：之前是"点了开着、实际没跑"，用户无从判断。
+      await prefs.setBool(BackgroundKeepAlive.prefKey, false);
+      if (!mounted) return;
+      setState(() => _keepAliveOn = false);
+      showToast(
+        context,
+        '${L10n.t('启动失败：', 'Start failed: ')}'
+        '${BackgroundKeepAlive.instance.lastError ?? L10n.t('请回到前台后再试', 'try again in the foreground')}',
+      );
+    }
+  }
+
   Future<void> _toggleBubble(bool v) async {
     if (v) {
+      // 互斥的另一半（评审 P1-7）：开宠物要先停保活，否则两条常驻通知并存。
+      if (_keepAliveOn) {
+        await BackgroundKeepAlive.instance.setEnabled(false, appVisible: true);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(BackgroundKeepAlive.prefKey, false);
+        if (mounted) {
+          setState(() => _keepAliveOn = false);
+          showToast(context, L10n.t('已关闭后台提醒（两者互斥）', 'Background alerts turned off (mutually exclusive)'));
+        }
+      }
       final ok = await Floating.canDrawOverlay();
       if (!ok) {
         if (!mounted) return;
@@ -141,6 +223,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _diagTimer?.cancel();
     widget.store.removeListener(_onStoreChanged);
     super.dispose();
   }
@@ -1363,6 +1446,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: DshSwitch(value: _bubbleOn, onChanged: _toggleBubble),
           ),
           _row(
+            leading: const Icon(Icons.notifications_paused_outlined),
+            title: L10n.t('后台提醒（常驻通知）', 'Background alerts (persistent notice)'),
+            sub: NotifyDiag.summary(
+              keepAliveEnabled: _keepAliveOn,
+              keepAliveError: BackgroundKeepAlive.instance.lastError,
+            ),
+            trailing: DshSwitch(value: _keepAliveOn, onChanged: _toggleKeepAlive),
+          ),
+          if (_keepAliveOn)
+            _row(
+              leading: const Icon(Icons.battery_saver_outlined),
+              title: L10n.t('系统省电设置', 'Battery settings'),
+              // 真机结论：开了前台服务仍会被 ROM 冻结（后台 90 秒零日志），
+              // 必须把应用设为「不受限制/允许后台运行」才能真正常驻。
+              sub: L10n.t(
+                '国产 ROM 默认会冻结后台应用，请把本应用设为「不受限制」',
+                'Some ROMs freeze background apps; set this app to "Unrestricted"',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final ok = await BackgroundKeepAlive.instance.openBatterySettings();
+                if (!mounted) return;
+                if (!ok) {
+                  showToast(this.context, L10n.t('打不开系统设置，请手动进入「电池 → 应用省电策略」', 'Cannot open settings; go to Battery → App battery usage'));
+                }
+              },
+            ),
+          _row(
             leading: const Icon(Icons.straighten_outlined),
             title: L10n.t('宠物大小', 'Pet size'),
             sub: L10n.t('迷你 / 标准 / 大', 'Mini / Standard / Large'),
@@ -1746,8 +1857,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(width: 10),
           Expanded(
             child: FilledButton(
-              onPressed: () => _copy(text),
-              child: Text(L10n.t('复制', 'Copy')),
+              // 复制时也按倒序：否则用户"看到的是最新、粘出去的是最旧"（排查时反复踩到）。
+              onPressed: () => _copy(text.isEmpty ? text : _reverseLog(text)),
+              child: Text(L10n.t('复制（最新在上）', 'Copy (newest first)')),
             ),
           ),
         ],
