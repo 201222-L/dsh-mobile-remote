@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.2.4（未发布，issue #55）— 后台提醒保活 + 通知精确撤销
+
+> 版本：插件 `3.2.4` / App `3.2.4+29`（发版时统一 bump）。
+
+### 后台提醒：三选一模式（#55 步骤 4）
+
+- 设置 → 后台提醒：`关闭 / 常驻通知 / 桌面宠物` 三选一，互斥（切换时先停另一个服务，不会出现两条常驻通知）。
+- 新增 `KeepAliveService`（`specialUse` 前台服务）：一条低干扰常驻通知把进程钉住，让 Dart 侧 SSE 在后台不被冻结；不自己连 SSE，也不碰宠物渲染。
+- 默认关闭；启动时按上次模式恢复。常驻通知不可见（用户拒绝 `POST_NOTIFICATIONS`）时不启动——否则插件会误判手机在线，把等待从 300s 压到 120s。
+- `onTaskRemoved → stopSelf()`：划掉最近任务时诚实退出，避免"通知还在、进程已死"的假在线。
+- 切到「桌面宠物」沿用原悬浮窗权限引导与失败提示。
+
+### 通知身份与撤销（#55 步骤 1）
+
+- 审批通知的 id 与去重键改用 `approvalId`（问题帧退回 `rpcId`）：SSE 重连重放同一审批帧不再堆叠多条通知。
+- `approval/resolved` / `question/resolved` 到达时按 id 精确撤销对应系统通知。
+- 回到前台不再 `cancelAll()`——旧行为会把仍未处理的审批提醒一起抹掉。
+- 插件：`approval/resolved` 帧补 `sessionId` 与 `outcome`，`question/resolved` 补 `sessionId`。
+
+### 插件（#55 步骤 3）
+
+- `pendingTimeoutMs` 改为可配置（默认仍 120s），`offlineHoldMs` 保持原默认 300s。
+- `hello` 与 `/api/bootstrap` 的 `capabilities` 增加 `hold: { onlineMs, offlineMs }`，手机端只用它展示剩余时间，结算仍以服务端为准。
+
+### 未包含（按 issue 约定后置）
+
+- 首次连接后的保活引导弹窗、进会话即已读与横幅合并（issue 步骤 2），下一版做。
+
 ## v3.2.3（2026-10-30，issue #50 / #52，PR #51 / #53 / #54）— 工作区归属修复 + 大文件流式下载 + Markdown 预览
 
 > 版本：插件 `3.2.3` / App `3.2.3+28`。

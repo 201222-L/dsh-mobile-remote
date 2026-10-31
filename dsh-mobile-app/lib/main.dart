@@ -70,7 +70,8 @@ void main() async {
     hideInApp: store.petHideInApp,
   ));
   // v2.7.2：上次开过宠物 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
-  unawaited(store.restoreFloating());
+  // v3.2.4（issue #55）：按 attentionMode 恢复（service = 常驻通知保活 / pet = 桌面宠物）
+  unawaited(store.restoreBackgroundAlerts());
   runApp(const DshApp());
 }
 
@@ -100,7 +101,7 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     unawaited(LocalNotifier.instance.init());
     LocalNotifier.instance.onOpenSession = (id) =>
         _handleFloatingAction('session:$id');
-    store.onAttention = (kind, sessionId, rpcId, toolName, reason, prompt) {
+    store.onAttention = (kind, sessionId, rpcId, toolName, reason, prompt, approvalId) {
       String? title;
       for (final s in store.sessions) {
         if (s.id == sessionId) {
@@ -113,12 +114,21 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
           kind: kind,
           rpcId: rpcId,
           sessionId: sessionId,
+          approvalId: approvalId,
           toolName: toolName,
           reason: reason,
           prompt: prompt,
           sessionTitle: title,
         ),
       );
+    };
+    // issue #55：审批/问询结算后撤销对应的系统通知
+    store.onAttentionResolved = (kind, approvalId, rpcId) {
+      unawaited(LocalNotifier.instance.cancelAttention(
+        kind: kind,
+        approvalId: approvalId,
+        rpcId: rpcId,
+      ));
     };
     // 悬浮球迷你面板动作（原生 → Flutter）：打开会话 / 去充值
     const MethodChannel('dsh/floating').setMethodCallHandler((call) async {
@@ -189,8 +199,8 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final resumed = state == AppLifecycleState.resumed;
     LocalNotifier.instance.foreground = resumed;
-    // 回到前台：App 内已有卡片/横幅，清掉可能过时的系统通知
-    if (resumed) unawaited(LocalNotifier.instance.clearAll());
+    // issue #55：不再回前台即 clearAll()——那会把仍未处理的审批提醒一起抹掉；
+    // 现在按 approvalId 在 resolved 帧到达时精确撤销。
   }
 
   @override
@@ -199,6 +209,7 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     _bannerTimer = null;
     WidgetsBinding.instance.removeObserver(this);
     store.onAttention = null;
+    store.onAttentionResolved = null;
     store.removeListener(_onStore);
     super.dispose();
   }

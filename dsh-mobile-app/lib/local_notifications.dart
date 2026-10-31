@@ -122,13 +122,17 @@ class LocalNotifier {
     required String kind,
     required String rpcId,
     required String sessionId,
+    String? approvalId,
     String? toolName,
     String? reason,
     String? prompt,
     String? sessionTitle,
   }) async {
     if (!_ready || _foreground) return;
-    if (!_dedupe.shouldNotify('$kind:$rpcId')) return;
+    // issue #55：去重与通知 id 都以 approvalId 为准（SSE 重连会重放同一审批帧）；
+    // 问题帧没有 approvalId，退回 rpcId。
+    final key = (approvalId != null && approvalId.isNotEmpty) ? approvalId : rpcId;
+    if (!_dedupe.shouldNotify('$kind:$key')) return;
     final copy = attentionCopy(
       kind: kind,
       sessionId: sessionId,
@@ -139,7 +143,7 @@ class LocalNotifier {
     );
     try {
       await _plugin.show(
-        id: sessionId.hashCode & 0x7fffffff,
+        id: _notificationId(key),
         title: copy.title,
         body: copy.body,
         notificationDetails: const NotificationDetails(
@@ -159,11 +163,22 @@ class LocalNotifier {
     }
   }
 
-  /// 回到前台时清掉已过时的提醒（卡片已在 App 内呈现）。
-  Future<void> clearAll() async {
+  /// 审批/问询结算后撤销对应通知（issue #55）：按 approvalId（无则 rpcId）精确匹配。
+  Future<void> cancelAttention({
+    required String kind,
+    String? approvalId,
+    String? rpcId,
+  }) async {
     if (!_ready) return;
+    final key = (approvalId != null && approvalId.isNotEmpty)
+        ? approvalId
+        : (rpcId ?? '');
+    if (key.isEmpty) return;
     try {
-      await _plugin.cancelAll();
+      await _plugin.cancel(id: _notificationId(key));
     } catch (_) {}
   }
+
+  /// 通知 id 用内容的稳定哈希：同一条审批重放时命中同一条通知，不会堆叠。
+  int _notificationId(String key) => key.hashCode & 0x7fffffff;
 }

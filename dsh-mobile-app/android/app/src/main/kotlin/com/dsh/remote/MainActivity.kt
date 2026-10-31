@@ -23,6 +23,8 @@ class MainActivity : FlutterActivity() {
     private var floatingChannel: MethodChannel? = null
     private var filesChannel: MethodChannel? = null
     private var iconChannel: MethodChannel? = null
+    // v3.2.4（issue #55）：后台提醒保活通道（与桌面宠物互斥）
+    private var keepAliveChannel: MethodChannel? = null
     // v3.1.2（csborbbnc 反馈）：系统文件选择器（ACTION_OPEN_DOCUMENT）结果回传暂存
     private var pendingPick: MethodChannel.Result? = null
     private val pickFileRequestCode = 2001
@@ -118,6 +120,25 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        // v3.2.4（issue #55）：后台提醒保活。只起一个前台服务把进程钉住，
+        // SSE 与通知仍在 Flutter 侧；与桌面宠物互斥（先停另一个再起）。
+        keepAliveChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/keepalive")
+        keepAliveChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    stopService(Intent(this, FloatingBubbleService::class.java))
+                    startServiceCompat(Intent(this, KeepAliveService::class.java))
+                    result.success(true)
+                }
+                "stop" -> {
+                    stopService(Intent(this, KeepAliveService::class.java))
+                    result.success(true)
+                }
+                "isRunning" -> result.success(KeepAliveService.running)
+                "notificationsEnabled" -> result.success(areNotificationsEnabled())
+                else -> result.notImplemented()
+            }
+        }
         // 引擎就绪：投递冷启动暂存的面板动作
         deliverPendingAction()
         // v2.7.2 review：Dart 侧 handler 注册可能晚于本回调——延迟再投一次 + consume 兜底
@@ -125,6 +146,7 @@ class MainActivity : FlutterActivity() {
         floatingChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
+                    stopService(Intent(this, KeepAliveService::class.java))
                     startBubbleService()
                     result.success(true)
                 }
@@ -297,6 +319,16 @@ class MainActivity : FlutterActivity() {
             startForegroundService(i)
         } else {
             startService(i)
+        }
+    }
+
+    /** 通知总开关是否开启（13+ 用户拒绝 POST_NOTIFICATIONS 时常驻通知不可见）。 */
+    private fun areNotificationsEnabled(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 24) {
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            nm?.areNotificationsEnabled() ?: true
+        } else {
+            true
         }
     }
 
