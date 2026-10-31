@@ -1,8 +1,19 @@
 # Changelog
 
-## 未发布（下一版，issue #55）— 后台提醒保活 + 通知精确撤销
+## v3.2.3（2026-10-31，build 29 重发，issue #55）— 后台提醒保活 + 通知精确撤销
 
-> 版本号待定：本次发布的是 v3.2.3，这一版内容随下一个版本号一起 bump。
+> 版本：插件 `3.2.3` / App `3.2.3+29`。对已发布 v3.2.3（build 28）的**同版本号重发**，Release 资产替换；构建号 28 → 29。
+> 验收：`flutter analyze` 0 issue、`flutter test` 555、`node --test test/*.mjs`（审批相关 20/20）、真机 9 项（见下）。
+
+### 真机验收（Xiaomi 17 Pro Max / Android 16，2026-10-31）
+
+- 常驻通知模式启动：`KeepAliveService` 前台运行、通道 `dsh_keep_alive`、通知 ID 1041，`ONGOING|ONLY_ALERT_ONCE|NO_CLEAR`。
+- 与桌面宠物互斥：切常驻通知 → 宠物服务停止；切回桌面宠物 → 常驻服务停止。
+- 选「关闭」→ 两个服务都停。
+- `force-stop` 后重开 App → 按持久化模式自动恢复常驻服务。
+- 按 HOME 退到后台 190 秒：进程 PID 与 ServiceRecord 不变，服务存活。
+- 通知权限被拒时选「常驻通知」→ 弹「需要通知权限」且不启动服务。
+- 端到端：后台收到真实审批帧 → 系统通知出现（`dsh_attention`）；`/respond` 结算后通知自动撤销。
 
 ### 后台提醒：三选一模式（#55 步骤 4）
 
