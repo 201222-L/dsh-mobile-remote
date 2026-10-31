@@ -1,9 +1,9 @@
 # Changelog
 
-## v3.2.3（2026-10-31，build 29 重发，issue #55）— 后台提醒保活 + 通知精确撤销
+## v3.2.3（2026-10-31，build 30 重发，issue #55 / PR #56）— 后台提醒保活 + 通知判据与精确撤销
 
-> 版本：插件 `3.2.3` / App `3.2.3+29`。对已发布 v3.2.3（build 28）的**同版本号重发**，Release 资产替换；构建号 28 → 29。
-> 验收：`flutter analyze` 0 issue、`flutter test` 555、`node --test test/*.mjs`（审批相关 20/20）、真机 9 项（见下）。
+> 版本：插件 `3.2.3` / App `3.2.3+30`。对 v3.2.3（build 29）的**同版本号重发**，Release 资产替换；构建号 29 → 30。
+> 验收：`flutter analyze` 0 issue、`flutter test` 593、`node --test test/*.mjs`（审批相关单跑 13/13）、真机 9 项（见下）。
 
 ### 真机验收（Xiaomi 17 Pro Max / Android 16，2026-10-31）
 
@@ -14,6 +14,15 @@
 - 按 HOME 退到后台 190 秒：进程 PID 与 ServiceRecord 不变，服务存活。
 - 通知权限被拒时选「常驻通知」→ 弹「需要通知权限」且不启动服务。
 - 端到端：后台收到真实审批帧 → 系统通知出现（`dsh_attention`）；`/respond` 结算后通知自动撤销。
+
+### 通知判据与身份（PR #56，合并后以此实现为准）
+
+- 新增 `lib/attention.dart`：把「要不要弹、弹哪条、怎么撤」抽成纯逻辑层（`AttentionEvent` / `decideAttention` / `AttentionLedger`），key = `kind|sessionId|approvalId 或 rpcId`，通知 id 用稳定哈希，跨重连与重启都不重复、不撤错。
+- 进会话即已读：打开会话时该会话未读自动标已读并撤掉对应横幅；横幅按会话合并，全局一条，点击直达。
+- `notify_diag.dart`：通知链路诊断页（前台/后台、权限、渠道、服务状态与心跳）。
+- 设置页增加「系统省电设置」入口：MIUI/HyperOS 默认会冻结后台应用（实测连前台服务也照冻，需设为「不受限制」）。
+- 原生启动前用 `resolveService` 校验组件可解析——此前 manifest 漏声明时 `startForegroundService` 不抛异常，UI 会假成功。
+- 单测新增 `attention_test.dart`（38 条）与通知测试补充，总数 593。
 
 ### 后台提醒：三选一模式（#55 步骤 4）
 

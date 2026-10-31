@@ -47,6 +47,8 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // v3.3.3（PR #56）：清单里的 android:label 用占位符，避免 dev/正式包改 label 时漏改一处
+        manifestPlaceholders["appName"] = "DSH Remote"
     }
 
     signingConfigs {
