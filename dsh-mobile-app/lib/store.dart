@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api.dart';
 import 'floating.dart';
+import 'keep_alive.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
@@ -79,6 +80,9 @@ class AppStore extends ChangeNotifier {
     'copy',
   ];
   bool floatingEnabled = false; // 桌面宠物开关（沿用旧悬浮球 key，v2.7.2 起持久化）
+  /// 后台提醒模式（issue #55）：off = 只管前台；service = 常驻通知保活；pet = 桌面宠物保活。
+  /// 三者互斥，服务本体在原生侧，切模式时由设置页启停。
+  String attentionMode = 'off';
   int petHeight = 96; // 宠物画布高度 dp（56~160）
   bool petReducedMotion = false; // 减少动效：宠物静态姿势 + 首页角色/背景静止
   bool petEdgeHide = true; // 贴边 5 秒后自动躲藏/虚化
@@ -218,7 +222,7 @@ class AppStore extends ChangeNotifier {
   /// （v2.7.1：悬浮球跳转/回前台时"错过的也提醒"）。
   void Function(int count, {bool force})? onNewNotifications;
 
-  /// 审批/问询帧到达回调（issue #46）：参数 = (kind, sessionId, rpcId, toolName, reason, prompt)。
+  /// 审批/问询帧到达回调（issue #46 / #55）：参数 = (kind, sessionId, rpcId, toolName, reason, prompt, approvalId)。
   /// 由 main.dart 接到系统本地通知；只在 App 不在前台时真正弹通知。
   void Function(
     String kind,
@@ -227,7 +231,12 @@ class AppStore extends ChangeNotifier {
     String? toolName,
     String? reason,
     String? prompt,
+    String? approvalId,
   )? onAttention;
+
+  /// 审批/问询已结算（issue #55）：参数 = (kind, approvalId, rpcId)，用于撤销对应系统通知。
+  void Function(String kind, String? approvalId, String rpcId)?
+      onAttentionResolved;
 
   // ── SSE 内部 ──
   StreamSubscription<Map<String, dynamic>>? _sub;
@@ -247,6 +256,7 @@ class AppStore extends ChangeNotifier {
   static const _kBalanceAlert = 'dsh_mr_balance_alert';
   static const _kBalanceThreshold = 'dsh_mr_balance_threshold';
   static const _kFloating = 'dsh_mr_floating';
+  static const _kAttentionMode = 'dsh_mr_attention_mode';
   static const _kPetHeight = 'dsh_mr_pet_height';
   static const _kPetReducedMotion = 'dsh_mr_pet_reduced_motion';
   static const _kPetEdgeHide = 'dsh_mr_pet_edge_hide';
@@ -285,6 +295,7 @@ class AppStore extends ChangeNotifier {
     balanceAlert = prefs.getBool(_kBalanceAlert) ?? false;
     balanceThreshold = prefs.getDouble(_kBalanceThreshold) ?? 10;
     floatingEnabled = prefs.getBool(_kFloating) ?? false;
+    attentionMode = prefs.getString(_kAttentionMode) ?? (floatingEnabled ? 'pet' : 'off');
     petHeight = (prefs.getInt(_kPetHeight) ?? 96).clamp(56, 160).toInt();
     petReducedMotion = prefs.getBool(_kPetReducedMotion) ?? false;
     petEdgeHide = prefs.getBool(_kPetEdgeHide) ?? true;
@@ -487,6 +498,30 @@ class AppStore extends ChangeNotifier {
     floatingEnabled = v;
     notifyListeners();
     await _persistPrefs(_kFloating, v);
+  }
+
+  /// 后台提醒模式（off / service / pet）：持久化；启停服务由调用方（设置页）负责。
+  Future<void> setAttentionMode(String v) async {
+    if (v != 'off' && v != 'service' && v != 'pet') return;
+    attentionMode = v;
+    floatingEnabled = v == 'pet';
+    notifyListeners();
+    await _persistPrefs(_kAttentionMode, v);
+    await _persistPrefs(_kFloating, floatingEnabled);
+  }
+
+  /// 启动时恢复后台提醒（issue #55）：只在 App 前台调用（Android 12+ 不允许后台起前台服务）。
+  Future<void> restoreBackgroundAlerts() async {
+    if (attentionMode == 'pet') {
+      await restoreFloating();
+      return;
+    }
+    if (attentionMode != 'service') return;
+    // 通知被拒时服务仍可跑但常驻通知不可见——不启动，避免插件误判"手机在线"
+    if (!await KeepAliveBridge.notificationsEnabled()) return;
+    if (await KeepAliveBridge.isRunning()) return;
+    if (attentionMode != 'service') return; // 异步期间用户可能已切走
+    await KeepAliveBridge.start();
   }
 
   /// App 启动自动恢复桌面宠物（沿用旧悬浮球恢复逻辑）：上次开启过且服务没在跑 → 自动拉起。
@@ -1306,6 +1341,7 @@ class AppStore extends ChangeNotifier {
           null,
           null,
           request.questions.isEmpty ? null : request.questions.first.question,
+          null,
         );
         return;
       }
@@ -1328,6 +1364,8 @@ class AppStore extends ChangeNotifier {
             data: {'rpcId': rid, 'sessionId': resolvedSessionId},
           ),
         );
+        // issue #55：撤销对应的系统通知（按 rpcId，问题帧没有独立的 approvalId）
+        onAttentionResolved?.call('question', null, rid is String ? rid : '');
         return;
       }
       if (ftype == 'approval/requested') {
@@ -1356,6 +1394,7 @@ class AppStore extends ChangeNotifier {
           request.toolName,
           request.reason,
           null,
+          request.approvalId,
         );
         return;
       }
@@ -1378,6 +1417,12 @@ class AppStore extends ChangeNotifier {
             sessionId: resolvedSessionId,
             data: {'approvalId': aid, 'sessionId': resolvedSessionId},
           ),
+        );
+        // issue #55：撤销对应的系统通知（按 approvalId）
+        onAttentionResolved?.call(
+          'approval',
+          aid is String ? aid : null,
+          f['rpcId'] as String? ?? '',
         );
         return;
       }

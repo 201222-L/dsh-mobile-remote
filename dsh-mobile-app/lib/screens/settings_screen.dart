@@ -10,6 +10,7 @@ import '../api.dart';
 import '../app_icon.dart';
 import '../app_icon_switcher.dart';
 import '../floating.dart';
+import '../keep_alive.dart';
 import '../l10n.dart';
 import '../logger.dart';
 import '../models.dart';
@@ -131,10 +132,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return;
       }
       await widget.store.setFloatingEnabled(true); // v2.7.2：持久化开关（await 确保落盘）
+      await widget.store.setAttentionMode('pet'); // issue #55：三选一模式同步
       if (mounted) setState(() => _bubbleOn = true);
     } else {
       await Floating.stop();
       await widget.store.setFloatingEnabled(false); // v2.7.2：持久化开关
+      if (widget.store.attentionMode == 'pet') {
+        await widget.store.setAttentionMode('off');
+      }
       if (mounted) setState(() => _bubbleOn = false);
     }
   }
@@ -143,6 +148,89 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     widget.store.removeListener(_onStoreChanged);
     super.dispose();
+  }
+
+  /// 后台提醒三选一（issue #55）：off / service / pet，三者互斥。
+  Future<void> _setAttentionMode(String mode) async {
+    if (mode == 'pet') {
+      await _toggleBubble(true); // 复用悬浮窗权限引导与失败提示
+      return;
+    }
+    if (mode == 'service') {
+      // 常驻通知不可见时不启动（否则插件会误判手机在线，把等待从 300s 压到 120s）
+      if (!await KeepAliveBridge.notificationsEnabled()) {
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(L10n.t('需要通知权限', 'Notification permission needed')),
+            content: Text(
+              L10n.t(
+                '常驻通知被系统关闭，后台提醒无法保持连接。请在系统设置里允许 DSH Remote 的通知后重试。',
+                'Notifications are disabled for DSH Remote. Allow them in system settings, then try again.',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: Text(L10n.t('知道了', 'Got it')),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+      await Floating.stop();
+      await KeepAliveBridge.start();
+      await widget.store.setAttentionMode('service');
+      if (mounted) setState(() => _bubbleOn = false);
+      return;
+    }
+    await KeepAliveBridge.stop();
+    await Floating.stop();
+    await widget.store.setAttentionMode('off');
+    if (mounted) setState(() => _bubbleOn = false);
+  }
+
+  /// 后台提醒卡片（issue #55）：三选一 + 当前生效状态。
+  Widget _attentionCard() {
+    final mode = widget.store.attentionMode;
+    final brand = DshColors.brand(context);
+    Widget tile(String id, IconData icon, String title, String sub) => _row(
+          leading: Icon(icon),
+          title: title,
+          sub: sub,
+          trailing: mode == id
+              ? Icon(Icons.check_circle, size: 18, color: brand)
+              : null,
+          onTap: () => _setAttentionMode(id),
+        );
+    return _card(L10n.t('后台提醒', 'Background alerts'), [
+      tile(
+        'off',
+        Icons.notifications_off_outlined,
+        L10n.t('关闭', 'Off'),
+        L10n.t('App 退到后台后收不到审批提醒', 'No alerts once the app is backgrounded'),
+      ),
+      tile(
+        'service',
+        Icons.notifications_active_outlined,
+        L10n.t('常驻通知', 'Persistent notification'),
+        L10n.t(
+          '一条低干扰常驻通知保活，后台也能即时提醒',
+          'A low-key ongoing notification keeps the connection alive',
+        ),
+      ),
+      tile(
+        'pet',
+        Icons.pets_outlined,
+        L10n.t('桌面宠物', 'Desktop pet'),
+        L10n.t(
+          '用大肥鱼常驻代替常驻通知（需悬浮窗权限）',
+          'Use the pet instead (overlay permission needed)',
+        ),
+      ),
+    ]);
   }
 
   void _onStoreChanged() {
@@ -1276,6 +1364,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ]),
         _appearanceCard(),
+        _attentionCard(),
         _card(L10n.t('显示', 'Display'), [
           _row(
             leading: const Icon(Icons.tab_outlined),
