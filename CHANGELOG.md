@@ -47,8 +47,14 @@
 
 ### 插件（#55 步骤 3）
 
-- `pendingTimeoutMs` 改为可配置（默认仍 120s），`offlineHoldMs` 保持原默认 300s。
+- `pendingTimeoutMs` 改为可配置，`offlineHoldMs` 保持原默认 300s。
 - `hello` 与 `/api/bootstrap` 的 `capabilities` 增加 `hold: { onlineMs, offlineMs }`，手机端只用它展示剩余时间，结算仍以服务端为准。
+
+### 插件：审批默认保持 1 小时（PR #59，@qudongzhen）
+
+- 默认在线保持从 120 秒放宽到 1 小时（`DEFAULT_PENDING_TIMEOUT_MS`），仍可用 `pendingTimeoutMs` 覆盖。手机上看代码再答，2 分钟经常不够。
+- 超时结算从 `unavailable` 改为 `rejected`（手机超时、双端超时两处）——App 与桌面都显示「超时自动拒绝」，而不是「没有答复」。
+- 离线回放 TTL 30 → 70 分钟，必须大于在线保持时长，否则回放帧会先于结算被清掉。
 
 ### 未包含（按 issue 约定后置）
 

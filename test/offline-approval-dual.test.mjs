@@ -261,14 +261,15 @@ test("双端竞速：没有桌面客户端（下游 unavailable）时仍等手�
 
 // ───────── 4. 超时 fail-close：内核不会悬挂 ─────────
 
-test("离线超时：到点返回 unavailable，不把内核永远挂住", async () => {
+test("离线超时：到点返回 rejected（超时自动拒绝），不把内核永远挂住", async () => {
 	const harness = createHarness({ config: { offlineHoldMs: 80, offlineAlsoDesktop: false } });
 	try {
 		const started = Date.now();
 		const outcome = await harness.approval()(approvalRequest(), async () => new Promise(() => {}));
 		const elapsed = Date.now() - started;
 
-		assert.equal(outcome, "unavailable");
+		// PR #59：超时结算从 unavailable 改为 rejected，用户能看到「超时自动拒绝」
+		assert.equal(outcome, "rejected");
 		assert.ok(elapsed >= 60, `应按 offlineHoldMs 超时（实际 ${elapsed}ms）`);
 		assert.equal((await diagnostics(harness)).checks.pendingApprovals, 0, "超时后条目必须清空");
 	} finally {
