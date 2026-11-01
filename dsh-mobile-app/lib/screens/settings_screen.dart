@@ -64,7 +64,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _initBubbleState() async {
     final on = await Floating.isRunning();
-    final want = widget.store.floatingEnabled;
+    // 互斥兜底（build 31）：设置页在 IndexedStack 里随 App 启动就 initState，
+    // 保活开着时不能按残留的旧偏好把宠物拉回来。
+    final prefs = await SharedPreferences.getInstance();
+    final keepAliveOn = prefs.getBool(BackgroundKeepAlive.prefKey) ?? false;
+    if (keepAliveOn && widget.store.floatingEnabled) {
+      await widget.store.setFloatingEnabled(false); // 纠正偏好，下次启动不再冲突
+    }
+    final want = keepAliveOn ? false : widget.store.floatingEnabled;
     final canOverlay = await Floating.canDrawOverlay();
     // v2.7.2：偏好是开但服务没跑（清理后台/重启后）→ 自动拉起，开关保持开
     if (want && !on && canOverlay) {

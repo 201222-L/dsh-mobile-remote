@@ -17,8 +17,9 @@
 
 ### build 31 修复
 
-- 互斥切换时同步持久化宠物开关；启动恢复时若保活已开启则不再恢复宠物。
-- 现象（build 30 实测）：先开宠物再切到保活，`force-stop` 重启会按旧偏好把宠物拉回来、保活不恢复。
+- 切到常驻通知时同步持久化宠物开关（`floatingEnabled=false`），App 启动时的恢复守卫也检查保活偏好。
+- 真正漏点：主框架用 `IndexedStack`，设置页随 App 启动就 `initState`，其 `_initBubbleState()` 按残留的旧偏好无条件拉起宠物——与保活开关无关。现在该处也做互斥判断，并把冲突的旧偏好纠正为 `false`。
+- 现象（build 30 实测）：先开宠物再切到保活，`force-stop` 重启后 `KeepAliveService` 正常恢复，但 `FloatingBubbleService` 也被拉起，两条常驻通知（同一通知 ID 3515）互相覆盖。
 
 ### 通知判据与身份（PR #56，合并后以此实现为准）
 
