@@ -129,6 +129,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (_bubbleOn) {
         // 互斥：先停掉宠物服务（它会自己管理前台服务与 SSE）。
         await Floating.stop();
+        // 持久化也要一起改，否则重启后 restoreFloating() 会按旧偏好把宠物拉回来。
+        await widget.store.setFloatingEnabled(false);
         if (!mounted) return;
         setState(() => _bubbleOn = false);
         showToast(context, L10n.t('已关闭桌面宠物（两者互斥）', 'Desktop pet turned off (mutually exclusive)'));

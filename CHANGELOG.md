@@ -1,21 +1,24 @@
 # Changelog
 
-## v3.2.3（2026-10-31，build 30 重发，issue #55 / PR #56）— 后台提醒保活 + 通知判据与精确撤销
+## v3.2.3（2026-11-01，build 31 重发，issue #55 / PR #56）— 后台提醒保活 + 通知判据与精确撤销
 
-> 版本：插件 `3.2.3` / App `3.2.3+30`。对 v3.2.3（build 29）的**同版本号重发**，Release 资产替换；构建号 29 → 30。
-> 验收：`flutter analyze` 0 issue、`flutter test` 593、`node --test test/*.mjs`（审批相关单跑 13/13）、真机 9 项（见下）。
+> 版本：插件 `3.2.3` / App `3.2.3+31`。对 v3.2.3（build 30）的**同版本号重发**，Release 资产替换；构建号 30 → 31。
+> 验收：`flutter analyze` 0 issue、`flutter test` 593、`node --test test/*.mjs`（审批相关单跑 13/13）、真机见下。
 
-### 真机验收（build 29 的实现，Xiaomi 17 Pro Max / Android 16，2026-10-31）
+### 真机验收（Xiaomi 17 Pro Max / Android 16，2026-11-01）
 
-- 常驻通知模式启动：`KeepAliveService` 前台运行、通道 `dsh_keep_alive`、通知 ID 1041，`ONGOING|ONLY_ALERT_ONCE|NO_CLEAR`。
-- 与桌面宠物互斥：切常驻通知 → 宠物服务停止；切回桌面宠物 → 常驻服务停止。
-- 选「关闭」→ 两个服务都停。
-- `force-stop` 后重开 App → 按持久化模式自动恢复常驻服务。
-- 按 HOME 退到后台 190 秒：进程 PID 与 ServiceRecord 不变，服务存活。
+- 常驻通知启动：`KeepAliveService` 前台运行、通道 `dsh_keepalive_v2`、通知 ID 3515、`types=0x40000000`（specialUse），`ONGOING|ONLY_ALERT_ONCE|NO_CLEAR`。
+- 状态行「保活运行 · 心跳 服务7/Dart5」：原生与 Dart 心跳都在走。
+- 与桌面宠物双向互斥：切保活 → 宠物停；切宠物 → 保活停。
+- 按 HOME 退后台 150 秒：PID 与 ServiceRecord 不变，服务存活。
+- 开启保活后设置页出现「系统省电设置」入口。
 - 通知权限被拒时选「常驻通知」→ 弹「需要通知权限」且不启动服务。
 - 端到端：后台收到真实审批帧 → 系统通知出现（`dsh_attention`）；`/respond` 结算后通知自动撤销。
 
-> build 30 并入 PR #56 后，原生保活服务与通知判据换成了其实现（通道 `dsh_keepalive_v2`、ID 3515、启动前 `resolveService` 校验），PR 作者在 MIUI / Android 14 上验过；本机 build 30 的复测待设备重新连上后补。
+### build 31 修复
+
+- 互斥切换时同步持久化宠物开关；启动恢复时若保活已开启则不再恢复宠物。
+- 现象（build 30 实测）：先开宠物再切到保活，`force-stop` 重启会按旧偏好把宠物拉回来、保活不恢复。
 
 ### 通知判据与身份（PR #56，合并后以此实现为准）
 
@@ -48,7 +51,7 @@
 
 ### 未包含（按 issue 约定后置）
 
-- 首次连接后的保活引导弹窗、进会话即已读与横幅合并（issue 步骤 2），下一版做。
+- 首次连接后的保活引导弹窗（issue 步骤 2 的引导部分），下一版做。
 
 ## v3.2.3（2026-10-30，issue #50 / #52，PR #51 / #53 / #54）— 工作区归属修复 + 大文件流式下载 + Markdown 预览
 

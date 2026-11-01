@@ -74,7 +74,10 @@ void main() async {
     hideInApp: store.petHideInApp,
   ));
   // v2.7.2：上次开过宠物 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
-  unawaited(store.restoreFloating());
+  // v3.3.3 修复：保活开着时不再恢复宠物（两者互斥，旧偏好可能残留 true）。
+  final bootPrefs = await SharedPreferences.getInstance();
+  final keepAlivePref = bootPrefs.getBool(BackgroundKeepAlive.prefKey) ?? false;
+  if (!keepAlivePref) unawaited(store.restoreFloating());
   runApp(const DshApp());
 }
 
