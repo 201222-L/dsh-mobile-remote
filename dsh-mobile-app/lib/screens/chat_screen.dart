@@ -3677,7 +3677,12 @@ class _ChatScreenState extends State<ChatScreen> {
   void _openSessionFilesFromActionRail() {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    openSessionFiles(context, widget.store, sid);
+    openSessionFiles(
+      context,
+      widget.store,
+      sid,
+      gitReadApi: widget.gitReadApi,
+    );
   }
 
   Future<void> _openGit() async {

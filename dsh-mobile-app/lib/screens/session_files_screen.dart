@@ -5,14 +5,19 @@
 // - 路径夹在会话工作目录内，不提供向上越出。
 // - 隐藏 `.git/` 由服务端过滤点开头条目实现（服务端只回非点开头项）。
 // - 浏览根就是会话工作目录：不提供工作区选择，也不写回全局工作区筛选状态。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../api.dart';
+import '../git_browser_controller.dart';
 import '../l10n.dart';
 import '../session_files_controller.dart';
 import '../session_files_logic.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../widgets/git_file_viewer.dart';
+import 'git_browser_sheet.dart';
 
 /// 打开「会话文件浏览」全屏只读页。
 ///
@@ -22,6 +27,7 @@ void openSessionFiles(
   AppStore store,
   String sessionId, {
   SessionFilesController? controller,
+  GitReadApi? gitReadApi,
 }) {
   Navigator.of(context).push(
     MaterialPageRoute<void>(
@@ -29,6 +35,7 @@ void openSessionFiles(
         store: store,
         sessionId: sessionId,
         controller: controller,
+        gitReadApi: gitReadApi,
       ),
     ),
   );
@@ -40,6 +47,7 @@ class SessionFilesScreen extends StatefulWidget {
     required this.store,
     required this.sessionId,
     this.controller,
+    this.gitReadApi,
   });
 
   final AppStore store;
@@ -48,6 +56,9 @@ class SessionFilesScreen extends StatefulWidget {
   /// 测试可注入；为 null 时页面自己建一个。
   final SessionFilesController? controller;
 
+  /// 只读 Git API（文件提交历史入口用）；为 null 时走全局 [api] 单例。
+  final GitReadApi? gitReadApi;
+
   @override
   State<SessionFilesScreen> createState() => _SessionFilesScreenState();
 }
@@ -55,6 +66,10 @@ class SessionFilesScreen extends StatefulWidget {
 class _SessionFilesScreenState extends State<SessionFilesScreen> {
   late final SessionFilesController _c;
   late final bool _ownsController;
+  late final GitReadApi _gitApi;
+
+  /// 宿主是否支持文件提交历史（capability `fileHistory` 且会话在仓库内）。
+  bool _fileHistoryAvailable = false;
 
   @override
   void initState() {
@@ -66,8 +81,63 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
           sessionId: widget.sessionId,
         );
     _ownsController = widget.controller == null;
+    _gitApi = widget.gitReadApi ?? api;
     _c.addListener(_onChange);
     _c.open();
+    unawaited(_probeFileHistory());
+  }
+
+  /// 探测 Git 能力：旧宿主 / 非仓库 / 读取失败一律隐藏历史入口。
+  Future<void> _probeFileHistory() async {
+    try {
+      final capabilities = await _gitApi.capabilities(widget.sessionId);
+      if (!capabilities.available || !capabilities.fileHistory) return;
+      final repository = await _gitApi.repository(widget.sessionId);
+      if (repository.repositoryId.isEmpty) return;
+      if (mounted) setState(() => _fileHistoryAvailable = true);
+    } catch (_) {
+      // 非 Git 仓库 / 旧宿主：不显示入口，不影响文件浏览。
+    }
+  }
+
+  /// 从文件预览深链到「文件历史」。
+  ///
+  /// 复用 Git 浏览器：history tab 已启用则打开该 tab，否则显示无 TabBar 的独立
+  /// 历史视图；返回时回到当前文件预览（本页面未被替换）。
+  Future<void> _openFileHistory() async {
+    final path = _c.previewPath;
+    if (path.isEmpty || !_fileHistoryAvailable) return;
+    final controller = GitBrowserController(_gitApi);
+    unawaited(controller.open(widget.sessionId));
+    final graphScrollController = ScrollController();
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => GitBrowserSheet(
+            controller: controller,
+            scrollController: graphScrollController,
+            tabs: widget.store.gitTabs,
+            initialFileHistoryPath: path,
+          ),
+        ),
+      );
+    } finally {
+      graphScrollController.dispose();
+      controller.dispose();
+    }
+  }
+
+  /// 文件查看器顶部的「提交历史」入口；能力缺失时隐藏。
+  List<Widget> _historyActions() {
+    if (!_fileHistoryAvailable) return const [];
+    return [
+      IconButton(
+        key: const Key('sf-history'),
+        tooltip: L10n.t('提交历史', 'Commit history'),
+        icon: const Icon(Icons.history),
+        onPressed: _openFileHistory,
+      ),
+    ];
   }
 
   @override
@@ -265,6 +335,7 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
         path: _c.previewPath,
         notice: v.reason,
         leading: _previewBackButton(),
+        topActions: _historyActions(),
         keys: const GitFileViewerKeys(prefix: 'sf-preview', modePrefix: 'sf'),
       );
     }
@@ -283,6 +354,7 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
         'File is large: showing first ${v.bytesShown ~/ 1024} KiB',
       ),
       leading: _previewBackButton(),
+      topActions: _historyActions(),
       keys: const GitFileViewerKeys(prefix: 'sf-preview', modePrefix: 'sf'),
     );
   }

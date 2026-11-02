@@ -4,11 +4,14 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../git_browser_controller.dart';
+import '../git_file_history_controller.dart';
 import '../git_graph_logic.dart';
 import '../git_graph_presentation.dart';
 import '../git_models.dart';
 import '../l10n.dart';
 import '../theme.dart';
+import '../toast.dart';
+import '../widgets/git_file_history_body.dart';
 import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
 
@@ -19,17 +22,24 @@ class GitBrowserSheet extends StatefulWidget {
     required this.controller,
     required this.scrollController,
     this.tabs = const ['branches', 'graph', 'worktree'],
+    this.initialFileHistoryPath,
   });
 
   final GitBrowserController controller;
   final ScrollController scrollController;
   final List<String> tabs;
 
+  /// 打开即深链到该文件的提交历史（issue #42）。
+  ///
+  /// 若 history tab 已启用则切到该 tab；否则显示无 TabBar 的独立历史视图，
+  /// 返回时恢复进入前的视图（从会话文件页进入时直接返回原页面）。
+  final String? initialFileHistoryPath;
+
   @override
   State<GitBrowserSheet> createState() => _GitBrowserSheetState();
 }
 
-enum _View { tab, commit, preview }
+enum _View { tab, commit, preview, history }
 
 /// 图行固定高度：标签全部单行展示，行高不再随标签数量变化。
 const double kGitGraphRowHeight = 86;
@@ -45,6 +55,16 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   bool _choosingBranches = false;
   String _graphQuery = '';
   String? _openingOid;
+
+  /// 文件提交历史：tab 与独立历史视图共用同一个 controller/body。
+  GitFileHistoryController? _history;
+  String? _historySessionId;
+  String? _historyRepositoryId;
+  String? _pendingHistoryPath;
+  bool _historyLinkHandled = false;
+  bool _historyFromRoute = false;
+  _View _viewBeforeHistory = _View.tab;
+  _View _commitReturnView = _View.tab;
   late final TabController _tabs;
   final ScrollController _branchScroll = ScrollController();
   final ScrollController _worktreeScroll = ScrollController();
@@ -170,6 +190,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   void initState() {
     super.initState();
     _tabs = TabController(length: _tabIds.length, vsync: this);
+    _tabs.addListener(_onTabControllerChanged);
+    _pendingHistoryPath = widget.initialFileHistoryPath;
     widget.scrollController.addListener(_onGraphScroll);
     _commitScroll.addListener(_onCommitScroll);
     widget.controller.addListener(_onState);
@@ -177,6 +199,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.checkWorktreeFreshness();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeHandleHistoryDeepLink();
       _maybeOpenDefaultGraph();
       if (mounted && _tabIds.first == 'worktree') {
         widget.controller.loadWorktree();
@@ -196,6 +219,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.addListener(_onState);
       _layout = null;
       _laidOutOids = const [];
+      _history?.dispose();
+      _history = null;
+      _historySessionId = null;
+      _historyRepositoryId = null;
     }
   }
 
@@ -205,7 +232,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     widget.scrollController.removeListener(_onGraphScroll);
     _commitScroll.removeListener(_onCommitScroll);
     widget.controller.removeListener(_onState);
+    _tabs.removeListener(_onTabControllerChanged);
     _tabs.dispose();
+    _history?.dispose();
     _branchScroll.dispose();
     _worktreeScroll.dispose();
     _commitScroll.dispose();
@@ -224,6 +253,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.loadWorktree();
     }
     setState(() {});
+    _maybeHandleHistoryDeepLink();
     _maybeOpenDefaultGraph();
     // A short first page may not generate a scroll event at all.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -233,6 +263,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             : widget.scrollController,
       );
     });
+  }
+
+  void _onTabControllerChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onGraphScroll() => _onScroll(widget.scrollController);
@@ -259,6 +293,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
 
   void _maybeOpenDefaultGraph() {
     if (!mounted || _defaultGraphRequested || _activeTab != 'graph') return;
+    // 带文件历史深链打开时不要抢先打开默认分支图；深链处理完后
+    // 用户再切到图谱 tab 仍应正常打开默认分支。
+    if (_pendingHistoryPath != null && !_historyLinkHandled) return;
+    if (_view == _View.history || _activeTab == 'fileHistory') return;
     final state = widget.controller.state;
     if (state.loading ||
         state.loadingGraph ||
@@ -300,13 +338,19 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     widget.controller.openBranch(branch);
   }
 
-  Future<void> _showCommit(String oid) async {
+  Future<void> _showCommit(String oid, {_View? returnTo}) async {
+    final previous = returnTo ?? _view;
     setState(() => _openingOid = oid);
     await widget.controller.openCommit(oid);
     if (!mounted || _openingOid != oid) return;
     setState(() {
       _openingOid = null;
-      if (widget.controller.state.commit?.oid == oid) _view = _View.commit;
+      if (widget.controller.state.commit?.oid == oid) {
+        _commitReturnView = previous == _View.history
+            ? _View.history
+            : _View.tab;
+        _view = _View.commit;
+      }
     });
   }
 
@@ -326,12 +370,146 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     await widget.controller.openPreview(kind: kind, path: path, oid: oid);
   }
 
+  bool _historyEnabled(GitBrowserState state) =>
+      state.capabilities?.fileHistory == true &&
+      state.repository != null &&
+      state.sessionId != null;
+
+  GitFileHistoryController _ensureHistoryController(GitBrowserState state) {
+    final sessionId = state.sessionId!;
+    final repositoryId = state.repository!.repositoryId;
+    final existing = _history;
+    if (existing != null &&
+        _historySessionId == sessionId &&
+        _historyRepositoryId == repositoryId) {
+      return existing;
+    }
+    existing?.dispose();
+    final created = GitFileHistoryController(
+      api: widget.controller.readApi,
+      sessionId: sessionId,
+      repositoryId: repositoryId,
+      repositoryEmpty: state.repository?.empty == true,
+    );
+    _history = created;
+    _historySessionId = sessionId;
+    _historyRepositoryId = repositoryId;
+    return created;
+  }
+
+  /// 打开即深链（来自会话文件页，或构造参数 [GitBrowserSheet.initialFileHistoryPath]）。
+  void _maybeHandleHistoryDeepLink() {
+    final path = _pendingHistoryPath;
+    if (path == null || _historyLinkHandled) return;
+    final state = widget.controller.state;
+    if (state.loading || state.repository == null) return;
+    _historyLinkHandled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _openFileHistory(path, fromInitialRoute: true);
+    });
+  }
+
+  /// 深链到某文件的提交历史：已启用 history tab 则切 tab，否则显示独立历史视图。
+  void _openFileHistory(String path, {bool fromInitialRoute = false}) {
+    final state = widget.controller.state;
+    if (!_historyEnabled(state)) {
+      if (fromInitialRoute) {
+        setState(() {
+          _historyFromRoute = true;
+          _viewBeforeHistory = _View.tab;
+          _view = _View.history;
+        });
+      } else {
+        showToast(
+          context,
+          L10n.t('当前宿主不支持文件提交历史', 'File history is not supported by this host'),
+        );
+      }
+      return;
+    }
+    final history = _ensureHistoryController(state);
+    unawaited(history.selectFile(path));
+    final tabIndex = _tabIds.indexOf('fileHistory');
+    if (tabIndex >= 0) {
+      setState(() {
+        _temporaryGraph = false;
+        _view = _View.tab;
+        _historyFromRoute = false;
+      });
+      _tabs.animateTo(tabIndex);
+      return;
+    }
+    setState(() {
+      _historyFromRoute = fromInitialRoute;
+      _viewBeforeHistory = fromInitialRoute ? _View.tab : _view;
+      _view = _View.history;
+    });
+  }
+
+  void _openCommitFromHistory(String oid) {
+    unawaited(
+      _showCommit(
+        oid,
+        returnTo: _view == _View.history ? _View.history : _View.tab,
+      ),
+    );
+  }
+
+  /// 文件查看器顶部的「提交历史」入口（capability 缺失时隐藏）。
+  List<Widget> _historyActions(GitBrowserState state, String path) {
+    if (state.capabilities?.fileHistory != true || state.repository == null) {
+      return const [];
+    }
+    return [
+      IconButton(
+        key: const Key('git-file-history'),
+        tooltip: L10n.t('提交历史', 'Commit history'),
+        icon: const Icon(Icons.history),
+        onPressed: () => _openFileHistory(path),
+      ),
+    ];
+  }
+
+  /// tab 与独立历史视图共用的 body。
+  Widget _historySurface(GitBrowserState state) {
+    if (state.repository == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (!_historyEnabled(state)) {
+      return _MessageState(
+        message: L10n.t(
+          '此宿主不支持文件提交历史',
+          'File history is not supported by this host',
+        ),
+        onRetry: _refresh,
+      );
+    }
+    final history = _ensureHistoryController(state);
+    return GitFileHistoryBody(
+      controller: history,
+      onOpenCommit: _openCommitFromHistory,
+    );
+  }
+
   void _back() {
-    if (_view == _View.preview) {
+    if (_view == _View.history) {
+      if (_historyFromRoute) {
+        Navigator.of(context).pop();
+      } else {
+        setState(() {
+          _view = _viewBeforeHistory;
+          _historyFromRoute = false;
+        });
+      }
+    } else if (_view == _View.preview) {
       widget.controller.closePreview();
       setState(() => _view = _previewFromCommit ? _View.commit : _View.tab);
     } else if (_view == _View.commit) {
-      setState(() => _view = _View.tab);
+      setState(
+        () => _view = _commitReturnView == _View.history
+            ? _View.history
+            : _View.tab,
+      );
     } else if (_temporaryGraph) {
       setState(() => _temporaryGraph = false);
     } else {
@@ -340,6 +518,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   }
 
   Future<void> _refresh() async {
+    if (_view == _View.history ||
+        (_view == _View.tab && _activeTab == 'fileHistory')) {
+      await _history?.refresh();
+      return;
+    }
     final activeTab = _activeTab;
     if (activeTab == 'worktree' ||
         (_view == _View.preview && !_previewFromCommit)) {
@@ -387,6 +570,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                       ? (state.preview?.path ?? L10n.t('文件预览', 'File preview'))
                       : _view == _View.commit
                       ? L10n.t('提交详情', 'Commit details')
+                      : _view == _View.history
+                      ? L10n.t('文件历史', 'File history')
                       : _temporaryGraph
                       ? L10n.t('分支图', 'Branch graph')
                       : state.repository?.name ?? 'Git',
@@ -471,6 +656,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     _tabBody('graph', state),
                   if (_view == _View.commit) _detail(state),
                   if (_view == _View.preview) _preview(state),
+                  if (_view == _View.history) _historySurface(state),
                 ],
               ),
             ),
@@ -484,6 +670,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     'branches' => L10n.t('分支列表', 'Branches'),
     'graph' => L10n.t('分支图', 'Graph'),
     'worktree' => L10n.t('工作区', 'Worktree'),
+    'fileHistory' => L10n.t('文件历史', 'History'),
     _ => id,
   };
 
@@ -498,6 +685,23 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             L10n.t('此会话无法使用 Git', 'Git is unavailable for this session'),
         onRetry: _refresh,
       );
+    }
+    if (id == 'fileHistory') {
+      if (state.repository == null) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (state.capabilities?.fileHistory != true) {
+        return _MessageState(
+          message: L10n.t(
+            '此宿主不支持文件提交历史',
+            'File history is not supported by this host',
+          ),
+          onRetry: _refresh,
+        );
+      }
+      // 只在当前激活该 tab 时挂载 body：避免未打开就自动弹文件选择器。
+      if (_activeTab != 'fileHistory') return const SizedBox.shrink();
+      return _historySurface(state);
     }
     if (id == 'worktree') return _worktree(state);
     if (state.error != null && state.branches.isEmpty && !state.stale) {
@@ -723,6 +927,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       binary: preview.binary,
       notice: preview.notice,
       rawAddedContent: preview.kind == 'untracked',
+      topActions: _historyActions(state, preview.path),
       keys: const GitFileViewerKeys(prefix: 'git-file'),
     );
   }

@@ -52,4 +52,29 @@ void main() {
     );
     await expectLater(store.setGitTabs(['other']), throwsArgumentError);
   });
+
+  test('file history is an optional known tab and defaults stay unchanged', () async {
+    expect(
+      AppStore.gitTabIds,
+      ['branches', 'graph', 'worktree', 'fileHistory'],
+    );
+    final store = AppStore();
+    await store.loadPrefs();
+    expect(store.gitTabs, ['branches', 'graph', 'worktree']);
+
+    await store.setGitTabs(['fileHistory']);
+    expect(store.gitTabs, ['fileHistory']);
+
+    final restored = AppStore();
+    await restored.loadPrefs();
+    expect(restored.gitTabs, ['fileHistory']);
+
+    // 仍然最多 3 个：四个候选不能全选。
+    await expectLater(
+      store.setGitTabs(['branches', 'graph', 'worktree', 'fileHistory']),
+      throwsArgumentError,
+    );
+    await expectLater(store.setGitTabs(['fileHistory', 'fileHistory']), throwsArgumentError);
+    await expectLater(store.setGitTabs(['fileHistory', 'unknown']), throwsArgumentError);
+  });
 }

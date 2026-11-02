@@ -327,6 +327,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     'branches' => L10n.t('分支', 'Branches'),
     'graph' => L10n.t('图谱', 'Graph'),
     'worktree' => L10n.t('工作区', 'Worktree'),
+    'fileHistory' => L10n.t('文件历史', 'History'),
     _ => id,
   };
 
