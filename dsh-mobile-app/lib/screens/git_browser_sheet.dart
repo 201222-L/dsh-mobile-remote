@@ -4,12 +4,17 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../git_browser_controller.dart';
+import '../git_file_history_controller.dart';
 import '../git_graph_logic.dart';
 import '../git_graph_presentation.dart';
 import '../git_models.dart';
 import '../l10n.dart';
+import '../store.dart';
 import '../theme.dart';
+import '../widgets/git_file_history_body.dart';
+import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
+import 'session_files_screen.dart';
 
 /// Full-screen, read-only Git browser route.
 class GitBrowserSheet extends StatefulWidget {
@@ -18,38 +23,77 @@ class GitBrowserSheet extends StatefulWidget {
     required this.controller,
     required this.scrollController,
     this.tabs = const ['branches', 'graph', 'worktree'],
+    this.initialFileHistoryPath,
+    this.store,
+    this.fileBrowserPicker,
   });
 
   final GitBrowserController controller;
   final ScrollController scrollController;
   final List<String> tabs;
 
+  /// 应用状态（会话工作目录等）：文件历史的「选择文件」需要它打开会话文件浏览器。
+  final AppStore? store;
+
+  /// 测试注入的浏览器选择器：返回选中的文件绝对路径（null = 取消）。
+  ///
+  /// 生产默认用 [SessionFilesScreen]（selectionMode）实现；注入后不创建路由，
+  /// 便于 widget 测试验证“选择后回到原历史视图”。
+  final Future<String?> Function(BuildContext context, String sessionId)?
+  fileBrowserPicker;
+
+  /// 打开即深链到该文件的提交历史（issue #42）。
+  ///
+  /// 若 history tab 已启用则切到该 tab；否则显示无 TabBar 的独立历史视图，
+  /// 返回时恢复进入前的视图（从会话文件页进入时直接返回原页面）。
+  final String? initialFileHistoryPath;
+
   @override
   State<GitBrowserSheet> createState() => _GitBrowserSheetState();
 }
 
-enum _View { tab, commit, preview }
+enum _View { tab, commit, preview, history }
+
+/// 图行固定高度：标签全部单行展示，行高不再随标签数量变化。
+const double kGitGraphRowHeight = 86;
 
 class _GitBrowserSheetState extends State<GitBrowserSheet>
     with TickerProviderStateMixin {
   _View _view = _View.tab;
   bool _temporaryGraph = false;
-  bool _previewFromCommit = false;
+
+  /// 预览返回目标：worktree 预览→tab，提交详情文件→commit，历史行→历史 surface。
+  _View _previewReturnView = _View.tab;
   String _previewKind = 'unstaged';
   String _previewPath = '';
   String? _previewOid;
   bool _choosingBranches = false;
   String _graphQuery = '';
   String? _openingOid;
+
+  /// 文件提交历史：tab 与独立历史视图共用同一个 controller/body。
+  GitFileHistoryController? _history;
+  String? _historySessionId;
+  String? _historyRepositoryId;
+  String? _pendingHistoryPath;
+  bool _historyLinkHandled = false;
+  int _lastTabIndex = 0;
   late final TabController _tabs;
   final ScrollController _branchScroll = ScrollController();
   final ScrollController _worktreeScroll = ScrollController();
   final ScrollController _commitScroll = ScrollController();
-  final ScrollController _previewScroll = ScrollController();
   final ScrollController _horizontal = ScrollController();
   Timer? _freshnessTimer;
-  final Set<int> _expandedContextRuns = {};
   bool _defaultGraphRequested = false;
+
+  /// 图行标签缓存：标签只在图数据变化时计算/测量一次（TextPainter 是 O(标签数)）。
+  final Map<String, List<GitGraphLabel>> _rowLabels = {};
+  List<String> _labelOids = const [];
+  double _labelLineWidth = 0;
+  String? _labelSnapshot;
+  String? _labelTips;
+  TextStyle? _labelStyle;
+  TextScaler? _labelTextScaler;
   GraphLayout? _layout;
   String? _layoutSnapshot;
   String? _layoutTips;
@@ -69,6 +113,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
           _laidOutOids.length,
           (index) => commits[index].oid == _laidOutOids[index],
         ).every((same) => same);
+    _syncGraphLabels(state, rebuild: !append);
     if (!append) {
       _layout = layoutGraph(commits, state.selectedBranches);
     } else if (commits.length > _laidOutOids.length) {
@@ -89,6 +134,63 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     return _layout!;
   }
 
+  /// 依据图数据增量刷新标签缓存（[rebuild] 为 true 时整体重算）。
+  ///
+  /// 排序/归一/去重全部由 [gitGraphLabels] 统一处理；这里只做缓存与宽度测量：
+  /// 每行标签共用图的横向滚动轴，需要提前知道"最宽一行"才能确定滚动范围。
+  void _syncGraphLabels(GitBrowserState state, {required bool rebuild}) {
+    final style = Theme.of(context).textTheme.labelSmall;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final tips = state.selectedBranches
+        .map((branch) => '${branch.name}\u0000${branch.oid}')
+        .join('\u0001');
+    // 字号或系统文字缩放变化都会改变标签宽度，必须重算横向滚动范围。
+    if (style != _labelStyle || textScaler != _labelTextScaler) {
+      _labelStyle = style;
+      _labelTextScaler = textScaler;
+      rebuild = true;
+    }
+    if (rebuild ||
+        state.snapshotId != _labelSnapshot ||
+        tips != _labelTips ||
+        _labelOids.length > state.commits.length) {
+      _rowLabels.clear();
+      _labelOids = const [];
+      _labelLineWidth = 0;
+      _labelSnapshot = state.snapshotId;
+      _labelTips = tips;
+    }
+    if (_labelOids.length == state.commits.length) return;
+    for (final commit in state.commits.skip(_labelOids.length)) {
+      final labels = gitGraphLabels(commit.resolvedDecoration);
+      _rowLabels[commit.oid] = labels;
+      final width = _measureLabelLine(labels, style, textScaler);
+      if (width > _labelLineWidth) _labelLineWidth = width;
+    }
+    _labelOids = [for (final commit in state.commits) commit.oid];
+  }
+
+  /// 一行全部标签的像素宽度（pill 内边距 6*2 + 右边距 5 + 边框 1*2）。
+  ///
+  /// 宽度宁大勿小：这里算出的滚动范围要保证全部标签单行、不被裁切。
+  double _measureLabelLine(
+    List<GitGraphLabel> labels,
+    TextStyle? style,
+    TextScaler textScaler,
+  ) {
+    var width = 0.0;
+    for (final label in labels) {
+      final painter = TextPainter(
+        text: TextSpan(text: label.text, style: style),
+        maxLines: 1,
+        textDirection: TextDirection.ltr,
+        textScaler: textScaler,
+      )..layout();
+      width += painter.width + 19;
+    }
+    return width;
+  }
+
   List<String> get _tabIds => widget.tabs.isEmpty
       ? const ['branches', 'graph', 'worktree']
       : widget.tabs;
@@ -101,6 +203,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   void initState() {
     super.initState();
     _tabs = TabController(length: _tabIds.length, vsync: this);
+    _lastTabIndex = _tabs.index;
+    _tabs.addListener(_onTabControllerChanged);
+    _pendingHistoryPath = widget.initialFileHistoryPath;
     widget.scrollController.addListener(_onGraphScroll);
     _commitScroll.addListener(_onCommitScroll);
     widget.controller.addListener(_onState);
@@ -108,6 +213,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.checkWorktreeFreshness();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeHandleHistoryDeepLink();
       _maybeOpenDefaultGraph();
       if (mounted && _tabIds.first == 'worktree') {
         widget.controller.loadWorktree();
@@ -127,6 +233,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.addListener(_onState);
       _layout = null;
       _laidOutOids = const [];
+      _history?.dispose();
+      _history = null;
+      _historySessionId = null;
+      _historyRepositoryId = null;
     }
   }
 
@@ -136,11 +246,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     widget.scrollController.removeListener(_onGraphScroll);
     _commitScroll.removeListener(_onCommitScroll);
     widget.controller.removeListener(_onState);
+    _tabs.removeListener(_onTabControllerChanged);
     _tabs.dispose();
+    _history?.dispose();
     _branchScroll.dispose();
     _worktreeScroll.dispose();
     _commitScroll.dispose();
-    _previewScroll.dispose();
     _horizontal.dispose();
     super.dispose();
   }
@@ -156,6 +267,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.loadWorktree();
     }
     setState(() {});
+    _maybeHandleHistoryDeepLink();
     _maybeOpenDefaultGraph();
     // A short first page may not generate a scroll event at all.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -165,6 +277,13 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             : widget.scrollController,
       );
     });
+  }
+
+  void _onTabControllerChanged() {
+    // TabController 在切换动画期间会多次通知；只在 index 真正变化时重建。
+    if (!mounted || _tabs.index == _lastTabIndex) return;
+    _lastTabIndex = _tabs.index;
+    setState(() {});
   }
 
   void _onGraphScroll() => _onScroll(widget.scrollController);
@@ -191,6 +310,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
 
   void _maybeOpenDefaultGraph() {
     if (!mounted || _defaultGraphRequested || _activeTab != 'graph') return;
+    // 带文件历史深链打开时不要抢先打开默认分支图；深链处理完后
+    // 用户再切到图谱 tab 仍应正常打开默认分支。
+    if (_pendingHistoryPath != null && !_historyLinkHandled) return;
+    if (_view == _View.history || _activeTab == 'fileHistory') return;
     final state = widget.controller.state;
     if (state.loading ||
         state.loadingGraph ||
@@ -246,23 +369,180 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     required String kind,
     required String path,
     String? oid,
-    required bool fromCommit,
+    required _View returnTo,
   }) async {
     setState(() {
-      _previewFromCommit = fromCommit;
+      _previewReturnView = returnTo;
       _previewKind = kind;
       _previewPath = path;
       _previewOid = oid;
-      _expandedContextRuns.clear();
       _view = _View.preview;
     });
     await widget.controller.openPreview(kind: kind, path: path, oid: oid);
   }
 
+  bool _historyEnabled(GitBrowserState state) =>
+      state.capabilities?.fileHistory == true &&
+      state.repository != null &&
+      state.sessionId != null;
+
+  GitFileHistoryController _ensureHistoryController(GitBrowserState state) {
+    final sessionId = state.sessionId!;
+    final repositoryId = state.repository!.repositoryId;
+    final existing = _history;
+    if (existing != null &&
+        _historySessionId == sessionId &&
+        _historyRepositoryId == repositoryId) {
+      return existing;
+    }
+    existing?.dispose();
+    final created = GitFileHistoryController(
+      api: widget.controller.readApi,
+      sessionId: sessionId,
+      repositoryId: repositoryId,
+      repositoryEmpty: state.repository?.empty == true,
+    );
+    _history = created;
+    _historySessionId = sessionId;
+    _historyRepositoryId = repositoryId;
+    return created;
+  }
+
+  /// 打开即深链（来自会话文件页，或构造参数 [GitBrowserSheet.initialFileHistoryPath]）。
+  void _maybeHandleHistoryDeepLink() {
+    final path = _pendingHistoryPath;
+    if (path == null || _historyLinkHandled) return;
+    final state = widget.controller.state;
+    if (state.loading || state.repository == null) return;
+    _historyLinkHandled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _openFileHistory(path);
+    });
+  }
+
+  /// 深链到某文件的提交历史：已启用 history tab 则切 tab，否则显示独立历史视图。
+  ///
+  /// 独立历史视图的返回键直接退出 Git 浏览器（不恢复进入前的预览/提交详情），
+  /// 避免“历史 → 预览 → 历史”的循环；tab 模式返回键在 tab 根退出。
+  void _openFileHistory(String path) {
+    final state = widget.controller.state;
+    if (!_historyEnabled(state)) {
+      // 查看器入口在能力缺失时隐藏，因此这里只可能是初始深链：仍进入历史
+      // 视图，由 body 显示不可用提示，而不是静默丢掉深链。
+      setState(() => _view = _View.history);
+      return;
+    }
+    final history = _ensureHistoryController(state);
+    unawaited(history.selectFile(path));
+    final tabIndex = _tabIds.indexOf('fileHistory');
+    if (tabIndex >= 0) {
+      // 设计决策（US11）：history tab 已启用时深链切换过去，不叠加独立历史视图。
+      // 返回键行为与手动切到该 tab 一致——在 tab 根退出 Git 浏览器。
+      setState(() {
+        _temporaryGraph = false;
+        _view = _View.tab;
+      });
+      _tabs.animateTo(tabIndex);
+      return;
+    }
+    if (_view == _View.preview) widget.controller.closePreview();
+    setState(() => _view = _View.history);
+  }
+
+  /// 历史行点按：直接打开该文件在此提交上的 diff（不经过通用提交详情）。
+  Future<void> _openHistoryEntryDiff(String oid) async {
+    final path = _history?.selectedPath;
+    if (path == null || path.isEmpty) return;
+    final returnTo = _view == _View.history ? _View.history : _View.tab;
+    await _showPreview(
+      kind: 'commit',
+      path: path,
+      oid: oid,
+      returnTo: returnTo,
+    );
+  }
+
+  /// 文件历史的主「选择文件」入口：打开会话文件浏览器选中文件后，回到本历史
+  /// 视图直接加载该文件的历史（不叠加第二个 GitBrowserSheet）。
+  Future<void> _browseFilesForHistory() async {
+    final sessionId = widget.controller.state.sessionId;
+    final history = _history;
+    if (history == null || sessionId == null) return;
+    final picker = widget.fileBrowserPicker;
+    final path = picker != null
+        ? await picker(context, sessionId)
+        : await _pushSessionFileBrowser(sessionId, history);
+    if (!mounted) return;
+    final selected = path?.trim() ?? '';
+    if (selected.isEmpty) return;
+    await history.selectFile(selected);
+  }
+
+  Future<String?> _pushSessionFileBrowser(
+    String sessionId,
+    GitFileHistoryController history,
+  ) async {
+    final store = widget.store;
+    if (store == null) return null;
+    return Navigator.of(context).push<String?>(
+      MaterialPageRoute<String?>(
+        builder: (_) => SessionFilesScreen(
+          store: store,
+          sessionId: sessionId,
+          gitReadApi: history.api,
+          selectionMode: true,
+        ),
+      ),
+    );
+  }
+
+  /// 文件查看器顶部的「提交历史」入口（capability 缺失时隐藏）。
+  List<Widget> _historyActions(GitBrowserState state, String path) {
+    if (state.capabilities?.fileHistory != true || state.repository == null) {
+      return const [];
+    }
+    return [
+      IconButton(
+        key: const Key('git-file-history'),
+        tooltip: L10n.t('提交历史', 'Commit history'),
+        icon: const Icon(Icons.history),
+        onPressed: () => _openFileHistory(path),
+      ),
+    ];
+  }
+
+  /// tab 与独立历史视图共用的 body。
+  Widget _historySurface(GitBrowserState state) {
+    if (state.repository == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (!_historyEnabled(state)) {
+      return _MessageState(
+        message: L10n.t(
+          '此宿主不支持文件提交历史',
+          'File history is not supported by this host',
+        ),
+        onRetry: _refresh,
+      );
+    }
+    final history = _ensureHistoryController(state);
+    final canBrowse =
+        widget.store != null || widget.fileBrowserPicker != null;
+    return GitFileHistoryBody(
+      controller: history,
+      onOpenCommitDiff: _openHistoryEntryDiff,
+      onBrowseFiles: canBrowse ? _browseFilesForHistory : null,
+    );
+  }
+
   void _back() {
-    if (_view == _View.preview) {
+    if (_view == _View.history) {
+      // 独立历史视图：返回直接退出 Git 浏览器到调用方（不恢复预览/提交详情），
+      // 这样重复“历史 → diff → 历史”也不会形成导航回环。
+      Navigator.of(context).pop();
+    } else if (_view == _View.preview) {
       widget.controller.closePreview();
-      setState(() => _view = _previewFromCommit ? _View.commit : _View.tab);
+      setState(() => _view = _previewReturnView);
     } else if (_view == _View.commit) {
       setState(() => _view = _View.tab);
     } else if (_temporaryGraph) {
@@ -273,10 +553,15 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   }
 
   Future<void> _refresh() async {
+    if (_view == _View.history ||
+        (_view == _View.tab && _activeTab == 'fileHistory')) {
+      await _history?.refresh();
+      return;
+    }
     final activeTab = _activeTab;
-    if (activeTab == 'worktree' ||
-        (_view == _View.preview && !_previewFromCommit)) {
-      final reloadingPreview = _view == _View.preview && !_previewFromCommit;
+    final worktreePreview = _view == _View.preview && _previewKind != 'commit';
+    if (activeTab == 'worktree' || worktreePreview) {
+      final reloadingPreview = worktreePreview;
       await widget.controller.loadWorktree(refresh: true);
       if (reloadingPreview &&
           mounted &&
@@ -320,6 +605,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                       ? (state.preview?.path ?? L10n.t('文件预览', 'File preview'))
                       : _view == _View.commit
                       ? L10n.t('提交详情', 'Commit details')
+                      : _view == _View.history
+                      ? L10n.t('文件历史', 'File history')
                       : _temporaryGraph
                       ? L10n.t('分支图', 'Branch graph')
                       : state.repository?.name ?? 'Git',
@@ -361,7 +648,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               ),
             if (state.worktreeStale &&
                 (_activeTab == 'worktree' ||
-                    (_view == _View.preview && !_previewFromCommit)))
+                    (_view == _View.preview && _previewKind != 'commit')))
               MaterialBanner(
                 content: Text(
                   L10n.t(
@@ -402,8 +689,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   ),
                   if (_temporaryGraph && _view == _View.tab)
                     _tabBody('graph', state),
-                  if (_view == _View.commit) _detail(state),
                   if (_view == _View.preview) _preview(state),
+                  if (_view == _View.commit) _detail(state),
+                  if (_view == _View.history) _historySurface(state),
                 ],
               ),
             ),
@@ -417,6 +705,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     'branches' => L10n.t('分支列表', 'Branches'),
     'graph' => L10n.t('分支图', 'Graph'),
     'worktree' => L10n.t('工作区', 'Worktree'),
+    'fileHistory' => L10n.t('文件历史', 'History'),
     _ => id,
   };
 
@@ -431,6 +720,23 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             L10n.t('此会话无法使用 Git', 'Git is unavailable for this session'),
         onRetry: _refresh,
       );
+    }
+    if (id == 'fileHistory') {
+      if (state.repository == null) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (state.capabilities?.fileHistory != true) {
+        return _MessageState(
+          message: L10n.t(
+            '此宿主不支持文件提交历史',
+            'File history is not supported by this host',
+          ),
+          onRetry: _refresh,
+        );
+      }
+      // 只在当前激活该 tab 时挂载 body：避免未打开就自动弹文件选择器。
+      if (_activeTab != 'fileHistory') return const SizedBox.shrink();
+      return _historySurface(state);
     }
     if (id == 'worktree') return _worktree(state);
     if (state.error != null && state.branches.isEmpty && !state.stale) {
@@ -598,7 +904,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               : () => _showPreview(
                   kind: kind,
                   path: file.path,
-                  fromCommit: false,
+                  returnTo: _View.tab,
                 ),
         ),
     ],
@@ -613,222 +919,53 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     _ => L10n.t('修改', 'Modified'),
   };
 
+  /// 工作区/提交 diff 预览：只做数据适配，渲染交给统一的 GitFileViewer。
   Widget _preview(GitBrowserState state) {
     final preview = state.preview;
     if (state.loadingPreview) {
-      return const Center(child: CircularProgressIndicator());
+      return GitFileViewer(
+        key: const Key('git-file-preview'),
+        mode: GitFileViewerMode.diff,
+        path: _previewPath,
+        loading: true,
+        topActions: _historyActions(state, _previewPath),
+        keys: const GitFileViewerKeys(prefix: 'git'),
+      );
     }
     if (preview == null) {
       final error = state.previewError;
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(error ?? L10n.t('无法读取文件差异', 'Could not load file changes')),
-              const SizedBox(height: 12),
-              if (error != null && !state.worktreeStale)
-                FilledButton.tonalIcon(
-                  onPressed: () => widget.controller.openPreview(
-                    kind: _previewKind,
-                    path: _previewPath,
-                    oid: _previewOid,
-                  ),
-                  icon: const Icon(Icons.refresh),
-                  label: Text(L10n.t('重试', 'Retry')),
-                ),
-            ],
-          ),
-        ),
+      return GitFileViewer(
+        key: const Key('git-file-preview'),
+        mode: GitFileViewerMode.diff,
+        path: _previewPath,
+        error: error ?? L10n.t('无法读取文件差异', 'Could not load file changes'),
+        onRetry: error != null && !state.worktreeStale
+            ? () => widget.controller.openPreview(
+                kind: _previewKind,
+                path: _previewPath,
+                oid: _previewOid,
+              )
+            : null,
+        topActions: _historyActions(state, _previewPath),
+        keys: const GitFileViewerKeys(prefix: 'git'),
       );
     }
-    if (preview.binary || preview.notice != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            preview.notice ??
-                L10n.t('二进制文件不提供行级预览', 'Binary files have no line preview'),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-    return ListView(
+    return GitFileViewer(
       key: const Key('git-file-preview'),
-      controller: _previewScroll,
-      children: [
-        if (preview.truncated)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            color: Theme.of(context).colorScheme.tertiaryContainer,
-            child: Text(
-              L10n.t(
-                '差异已截断，仅显示安全上限内的内容',
-                'Diff truncated at the safety limit.',
-              ),
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(
-            '${preview.oldPath == null ? '' : '${preview.oldPath} → '}${preview.path}',
-            style: Theme.of(context).textTheme.titleSmall,
-          ),
-        ),
-        ..._diffWidgets(preview),
-        if (preview.diff.isEmpty)
-          Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(L10n.t('没有可显示的行级差异', 'No line changes to display')),
-          ),
-      ],
-    );
-  }
-
-  List<Widget> _diffWidgets(GitFilePreview preview) {
-    if (preview.diff.isEmpty) return const [];
-    final rawLines = preview.diff.split('\n');
-    final lines = <({String marker, String text})>[];
-    var inHunk = false;
-    for (var rawIndex = 0; rawIndex < rawLines.length; rawIndex++) {
-      final line = rawLines[rawIndex];
-      if (preview.kind == 'untracked') {
-        // This endpoint returns file bytes, not a unified patch: keep blank lines
-        // and source text that happens to resemble diff metadata. Ignore only
-        // the terminal split sentinel after a final newline.
-        if (rawIndex == rawLines.length - 1 &&
-            line.isEmpty &&
-            preview.diff.endsWith('\n')) {
-          continue;
-        }
-        lines.add((marker: '+', text: line));
-        continue;
-      }
-      if (line.isEmpty ||
-          line.startsWith('diff --git ') ||
-          line.startsWith('index ') ||
-          line.startsWith('Binary files ')) {
-        continue;
-      }
-      if (line.startsWith('@@')) {
-        inHunk = true;
-        lines.add((marker: '@', text: line));
-        continue;
-      }
-      if (line.startsWith('\\')) continue;
-      if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-        continue;
-      }
-      if (line.startsWith('+') || line.startsWith('-')) {
-        lines.add((marker: line[0], text: line.substring(1)));
-      } else if (line.startsWith(' ')) {
-        lines.add((marker: ' ', text: line.substring(1)));
-      }
-    }
-    final result = <Widget>[];
-    var index = 0;
-    var runId = 0;
-    while (index < lines.length) {
-      if (lines[index].marker != ' ') {
-        result.add(_diffLine(lines[index], lineIndex: index));
-        index++;
-        continue;
-      }
-      final start = index;
-      while (index < lines.length && lines[index].marker == ' ') {
-        index++;
-      }
-      final length = index - start;
-      if (length <= 6) {
-        for (var i = start; i < index; i++) {
-          result.add(_diffLine(lines[i], lineIndex: i));
-        }
-        continue;
-      }
-      final id = runId++;
-      final expanded = _expandedContextRuns.contains(id);
-      final visible = expanded
-          ? List.generate(length, (offset) => start + offset)
-          : [
-              ...List.generate(3, (offset) => start + offset),
-              ...List.generate(3, (offset) => index - 3 + offset),
-            ];
-      for (final lineIndex in visible.where((lineIndex) => lineIndex < index)) {
-        result.add(_diffLine(lines[lineIndex], lineIndex: lineIndex));
-      }
-      result.add(
-        TextButton.icon(
-          key: Key('git-context-fold-$id'),
-          onPressed: () => setState(() {
-            if (expanded) {
-              _expandedContextRuns.remove(id);
-            } else {
-              _expandedContextRuns.add(id);
-            }
-          }),
-          icon: Icon(
-            expanded ? Icons.unfold_less : Icons.unfold_more,
-            size: 18,
-          ),
-          label: Text(
-            expanded
-                ? L10n.t('折叠未改动行', 'Fold unchanged lines')
-                : L10n.t(
-                    '展开 ${length - 6} 行未改动',
-                    'Expand ${length - 6} unchanged lines',
-                  ),
-          ),
-        ),
-      );
-    }
-    return result;
-  }
-
-  Widget _diffLine(({String marker, String text}) line, {int? lineIndex}) {
-    final color = switch (line.marker) {
-      '+' => DshColors.ok(context),
-      '-' => DshColors.danger(context),
-      '@' => DshColors.ink3(context),
-      _ => DshColors.ink(context),
-    };
-    final background = switch (line.marker) {
-      '+' => DshColors.ok(context).withValues(alpha: .10),
-      '-' => DshColors.danger(context).withValues(alpha: .10),
-      _ => Colors.transparent,
-    };
-    return Container(
-      key: lineIndex == null ? null : Key('git-diff-line-$lineIndex'),
-      color: background,
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 20,
-            child: Text(
-              line.marker == ' ' ? ' ' : line.marker,
-              style: TextStyle(color: color, fontWeight: FontWeight.bold),
-            ),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Text(
-                line.text,
-                softWrap: false,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  color: color,
-                ),
-              ),
-            ),
-          ),
-        ],
+      mode: GitFileViewerMode.diff,
+      path: preview.path,
+      oldPath: preview.oldPath,
+      diff: preview.diff,
+      truncated: preview.truncated,
+      truncatedMessage: L10n.t(
+        '差异已截断，仅显示安全上限内的内容',
+        'Diff truncated at the safety limit.',
       ),
+      binary: preview.binary,
+      notice: preview.notice,
+      rawAddedContent: preview.kind == 'untracked',
+      topActions: _historyActions(state, preview.path),
+      keys: const GitFileViewerKeys(prefix: 'git'),
     );
   }
 
@@ -877,8 +1014,18 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
     final layout = _graphLayout(state);
     final graphWidth = math.max(80.0, layout.laneCount * 30.0 + 32);
-    // Compact decorations keep long ref/tag lists from expanding the graph lane viewport.
-    const labelWidth = 560.0;
+    // 全部标签单行展示、与图共用同一条横向滚动轴：滚动范围按最宽一行标签计算。
+    final horizontalWidth = math.max(
+      MediaQuery.sizeOf(context).width,
+      graphWidth + _labelLineWidth + 56,
+    );
+    // 正常字号下保持设计稿固定 86；系统文字缩放时按文本高度放大行高，
+    // 避免主题/无障碍字号下标签行被纵向裁切。
+    final textScaler = MediaQuery.textScalerOf(context);
+    final rowHeight = math.max(
+      kGitGraphRowHeight,
+      textScaler.scale(kGitGraphRowHeight - 22) + 22,
+    );
     return Column(
       children: [
         Padding(
@@ -956,10 +1103,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             controller: _horizontal,
             scrollDirection: Axis.horizontal,
             child: SizedBox(
-              width: math.max(
-                MediaQuery.sizeOf(context).width,
-                graphWidth + labelWidth,
-              ),
+              width: horizontalWidth,
               child: ListView.builder(
                 key: const Key('git-graph-vertical'),
                 controller: widget.scrollController,
@@ -976,15 +1120,17 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   }
                   final commit = state.commits[index];
                   final row = layout.rows[index];
+                  final labels =
+                      _rowLabels[commit.oid] ?? const <GitGraphLabel>[];
                   return SizedBox(
-                    height: 86,
+                    height: rowHeight,
                     child: InkWell(
                       key: Key('git-commit-${commit.oid}'),
                       onTap: () => _showCommit(commit.oid),
                       child: Row(
                         children: [
                           CustomPaint(
-                            size: Size(graphWidth, 86),
+                            size: Size(graphWidth, rowHeight),
                             painter: _GraphRowPainter(
                               row,
                               selected,
@@ -1007,22 +1153,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                                   '${commit.author} · ${_time(commit.timestamp)} · ${_short(commit.oid)}',
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
-                                if (commit.refs.isNotEmpty ||
-                                    commit.tags.isNotEmpty)
+                                if (labels.isNotEmpty)
                                   Row(
                                     children: [
-                                      for (final label in compactGitGraphLabels(
-                                        refs: commit.refs,
-                                        tags: commit.tags,
-                                        selected: selected,
-                                        currentBranch:
-                                            state.repository?.currentBranch,
-                                      ))
-                                        _graphLabel(
-                                          label.text,
-                                          label.tag,
-                                          overflow: label.overflow,
-                                        ),
+                                      for (final label in labels)
+                                        _graphLabel(label),
                                     ],
                                   ),
                               ],
@@ -1048,29 +1183,47 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
   }
 
-  Widget _graphLabel(String label, bool tag, {bool overflow = false}) =>
-      Container(
-        constraints: const BoxConstraints(maxWidth: 112),
-        margin: const EdgeInsets.only(right: 5, top: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color: overflow
-              ? Theme.of(context).colorScheme.surfaceContainerHighest
-              : tag
-              ? Theme.of(context).colorScheme.tertiaryContainer
-              : gitBranchColor(
-                  label,
-                  Theme.of(context).brightness,
-                ).withValues(alpha: .15),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.labelSmall,
-        ),
-      );
+  /// 图行单个标签 pill：全量展示、不截断（滚动由外层共享横向轴负责）。
+  Widget _graphLabel(GitGraphLabel label) {
+    final theme = Theme.of(context);
+    final colors = gitGraphLabelColors(
+      label,
+      scheme: theme.colorScheme,
+      brightness: theme.brightness,
+    );
+    final pill = Container(
+      margin: const EdgeInsets.only(right: 5, top: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(4),
+        border: colors.border == null
+            ? null
+            : Border.all(color: colors.border!, width: 1),
+      ),
+      child: Text(
+        label.text,
+        maxLines: 1,
+        softWrap: false,
+        style: theme.textTheme.labelSmall?.copyWith(color: colors.foreground),
+      ),
+    );
+    final hint = label.hint;
+    if (hint == null) return pill;
+    return Tooltip(message: _tagHintLabel(hint), child: pill);
+  }
+
+  String _tagHintLabel(String hint) => switch (hint) {
+    'nested-tag' => L10n.t(
+      '嵌套 tag：目标不是该提交',
+      'Nested tag: does not target this commit',
+    ),
+    'non-commit-target' => L10n.t(
+      'tag 指向非 commit 对象',
+      'Tag targets a non-commit object',
+    ),
+    _ => hint,
+  };
 
   Widget _detail(GitBrowserState state) {
     final commit = state.commit;
@@ -1093,8 +1246,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               _metadata(L10n.t('时间', 'Time'), _time(commit.timestamp)),
               _metadata('OID', commit.oid),
               _metadata(L10n.t('父提交', 'Parents'), commit.parents.join(', ')),
-              _metadata('Refs', commit.refs.join(', ')),
-              _metadata('Tags', commit.tags.join(', ')),
+              _metadata('Refs', _refsText(commit.resolvedDecoration)),
+              _metadata('Tags', _tagsText(commit.resolvedDecoration)),
+              ..._annotatedTagWidgets(commit.resolvedDecoration),
               _metadata(
                 L10n.t('统计', 'Stats'),
                 '${commit.stats.files} files · +${commit.stats.additions} −${commit.stats.deletions}',
@@ -1119,7 +1273,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               kind: 'commit',
               path: file.path,
               oid: commit.oid,
-              fromCommit: true,
+              returnTo: _View.commit,
             ),
           ),
         if (state.loadingFilesPage)
@@ -1128,6 +1282,63 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
           Center(child: Text(L10n.t('加载更多…', 'Loading more…'))),
       ],
     );
+  }
+
+  /// 详情 Refs：结构化 refsDetail 优先（HEAD → 本地 → 远程），旧宿主由原始
+  /// 装饰字符串解析兜底；空态显示 `none`（与图行一致）。
+  String _refsText(GitDecoration decoration) {
+    final labels = gitRefLabels(decoration);
+    return labels.isEmpty
+        ? 'none'
+        : labels.map((label) => label.text).join(', ');
+  }
+
+  /// 详情 Tags：结构化 tagsDetail 优先；旧宿主的 Tags 从 refs 装饰派生。
+  /// tag 目标非 commit / 嵌套 tag 时附加宿主 hint。
+  String _tagsText(GitDecoration decoration) {
+    final labels = gitTagLabels(decoration);
+    if (labels.isEmpty) return 'none';
+    return labels
+        .map(
+          (label) => label.hint == null
+              ? label.text
+              : '${label.text} (${_tagHintLabel(label.hint!)})',
+        )
+        .join(', ');
+  }
+
+  /// annotated tag 元数据（tagger / 日期 / 说明）；无元数据时不占位。
+  List<Widget> _annotatedTagWidgets(GitDecoration decoration) {
+    final tags = decoration.tags
+        .where((tag) => tag.annotated && tag.hasMetadata)
+        .toList();
+    if (tags.isEmpty) return const [];
+    return [
+      const SizedBox(height: 4),
+      Text(
+        L10n.t('Tag 详情', 'Tag details'),
+        style: Theme.of(context).textTheme.titleSmall,
+      ),
+      for (final tag in tags)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                tag.shortName,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              if ((tag.tagger ?? '').isNotEmpty)
+                _metadata(L10n.t('Tagger', 'Tagger'), tag.tagger!),
+              if (tag.timestamp != null)
+                _metadata(L10n.t('日期', 'Date'), _time(tag.timestamp!)),
+              if ((tag.subject ?? '').isNotEmpty)
+                SelectableText(tag.subject!),
+            ],
+          ),
+        ),
+    ];
   }
 
   Widget _metadata(String label, String value) => Padding(

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### 插件：Git 只读浏览契约 1.1.0（issue #42）— 结构化 refs/tags + 文件列表与文件历史
+
+- `GET /m/api/git/capabilities`：`contractVersion` 升至 `1.1.0`；`features` 新增 `refsDetail` 与 `fileHistory`（两项独立降级，旧 `1.0.0` 外部 provider 继续兼容）。`fileHistory` 仅在**当前生效的** provider 实现 `files()` / `fileHistory()` 时为 `true`，不会用包内 bundled 数据补齐外部 provider 的视图。
+- `GET /m/api/git/graph`、`GET /m/api/git/commit`：保留旧 `refs: string[]`，新增 `refsDetail` / `tagsDetail`（HEAD → 本地分支 → 远程分支 → tag 排序，排除 `refs/stash`，commit 详情返回 annotated tag 的 tagger/date/subject，subject ≤ 200 字）；旧 provider 的原始 refs 字符串由宿主解析兜底，`for-each-ref` 读取改为 NUL/US 分隔（tagger/tag subject 中的 tab 不再破坏解析）。
+- 新增 `GET /m/api/git/files`（HEAD 已跟踪文件，大小写不敏感 `q` 子串过滤，`limit` ≤ 200）与 `GET /m/api/git/file-history`（单文件提交历史，默认 20 / 最多 100，不透明游标，5000 条 / 20 秒上限；空/异常结果以 200 + `reason` 返回），路径由宿主归一化并拒绝越界。
+- 文档：`docs/03-api.md` 新增自包含的 Git 只读浏览接口章节（§6.19）。
+
 ## v3.2.3（2026-11-01，build 31 重发，issue #55 / PR #56）— 后台提醒保活 + 通知判据与精确撤销
 
 > 版本：插件 `3.2.3` / App `3.2.3+31`。对 v3.2.3（build 30）的**同版本号重发**，Release 资产替换；构建号 30 → 31。

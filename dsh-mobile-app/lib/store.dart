@@ -58,7 +58,7 @@ class AppStore extends ChangeNotifier {
   double balanceThreshold = 10; // 预警阈值（元）
   /// Git 浏览页显示的 Tab 顺序（最多三个）；配置跨 App 启动持久化。
   List<String> gitTabs = const ['branches', 'graph', 'worktree'];
-  static const gitTabIds = ['branches', 'graph', 'worktree'];
+  static const gitTabIds = ['branches', 'graph', 'worktree', 'fileHistory'];
   static const _defaultGitTabs = ['branches', 'graph', 'worktree'];
 
   /// Chat-page action rail order, shared across conversations on this device.

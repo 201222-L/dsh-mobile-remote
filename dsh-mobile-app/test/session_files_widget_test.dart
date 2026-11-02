@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/models.dart';
+import 'package:dsh_mobile_app/screens/git_browser_sheet.dart';
 import 'package:dsh_mobile_app/screens/session_files_screen.dart';
 import 'package:dsh_mobile_app/session_files_controller.dart';
 import 'package:dsh_mobile_app/store.dart';
@@ -16,6 +17,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'git_history_fake.dart';
 
 class _Backend {
   _Backend() {
@@ -26,6 +29,7 @@ class _Backend {
   }
 
   bool failDirs = false;
+  Completer<void>? filesGate;
   late final Api api;
 
   final Map<String, ({List<String> dirs, List<String> files})> listing = {
@@ -55,6 +59,8 @@ class _Backend {
       );
     }
     if (request.url.path == '/m/api/files') {
+      final gate = filesGate;
+      if (gate != null) await gate.future;
       if (path.endsWith('photo.png')) {
         return http.Response.bytes([0x89, 0x50, 0x00, 0x4E], 200);
       }
@@ -384,5 +390,67 @@ void main() {
 
     await _systemBack(tester); // → 退出页面
     expect(find.text('宿主页'), findsOneWidget);
+  });
+
+  testWidgets('文件预览加载中仍保留 in-content 返回按钮', (tester) async {
+    final b = _Backend();
+    b.filesGate = Completer<void>();
+    await _pump(tester, _store(), b.api);
+
+    await tester.tap(find.byKey(const Key('sf-file-README.md')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('sf-preview')), findsOneWidget);
+    expect(find.byKey(const Key('sf-preview-back')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    b.filesGate!.complete();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sf-preview-md')), findsOneWidget);
+  });
+
+  testWidgets('选择模式：预览页 sf-history 返回所选文件路径（不叠加 Git 页）', (tester) async {
+    final b = _Backend();
+    final store = _store();
+    final c = SessionFilesController(
+      store: store,
+      sessionId: 's1',
+      apiClient: b.api,
+    );
+    final nav = GlobalKey<NavigatorState>();
+    String? picked;
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: nav,
+        home: const Scaffold(body: Center(child: Text('宿主页'))),
+      ),
+    );
+    unawaited(
+      nav.currentState!
+          .push<String?>(
+            MaterialPageRoute<String?>(
+              builder: (_) => SessionFilesScreen(
+                store: store,
+                sessionId: 's1',
+                controller: c,
+                gitReadApi: HistoryGitApi(),
+                selectionMode: true,
+              ),
+            ),
+          )
+          .then((value) => picked = value),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('sf-file-README.md')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sf-history')));
+    await tester.pumpAndSettle();
+
+    // 回到调用方并携带选中文件的绝对路径；没有打开第二个 GitBrowserSheet。
+    expect(find.text('宿主页'), findsOneWidget);
+    expect(picked, '/work/README.md');
+    expect(find.byType(GitBrowserSheet), findsNothing);
   });
 }
