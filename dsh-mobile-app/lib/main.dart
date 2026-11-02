@@ -131,27 +131,12 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
         _handleFloatingAction('session:$pendingOpen');
       });
     }
-    store.onAttention = (kind, sessionId, rpcId, toolName, reason, prompt) {
-      String? title;
-      for (final s in store.sessions) {
-        if (s.id == sessionId) {
-          title = s.title;
-          break;
-        }
-      }
-      unawaited(
-        LocalNotifier.instance.showAttention(
-          kind: kind,
-          rpcId: rpcId,
-          sessionId: sessionId,
-          toolName: toolName,
-          reason: reason,
-          prompt: prompt,
-          sessionTitle: title,
-        ),
-      );
-    };
-    // M1a：结构化事件 → 判据 → ledger → 展示（取代上面那条旧路径，旧路径保留兜底）。
+    // 通知只走这一条路径：结构化事件 → 判据 → ledger → 展示。
+    //
+    // 这里**不再注册旧的 `store.onAttention`**。旧路径（`showAttention`）虽然已改成转调
+    // `showAttentionEvent`，但两条路径的 identity 不一致：旧路径用 `rpcId`，新路径用
+    // `approvalId`，于是同一个审批被算成两个不同的通知 id，用户看到**一条审批弹两条**。
+    // 提问因为两边 identity 都是 rpcId、id 相同，第二条覆盖第一条，所以症状不明显。
     store.onAttentionEvent = (event) {
       unawaited(_handleAttention(event));
     };
