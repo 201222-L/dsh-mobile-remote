@@ -73,7 +73,10 @@ class WidgetGitApi implements GitReadApi {
   final graphRequests = <List<String>>[];
   final graphCursors = <String?>[];
   final filesCursors = <String?>[];
+  final historyPaths = <String>[];
   Completer<GitReadCapabilities>? pendingRefresh;
+  bool structuredDetails = false;
+  bool emptyDetails = false;
 
   @override
   Future<GitReadCapabilities> capabilities(String sessionId) async {
@@ -135,7 +138,61 @@ class WidgetGitApi implements GitReadApi {
           tags: ['v1.0'],
         ),
         for (var i = 0; i < 24; i++)
-          GitCommitSummary(oid: 'history-$i', subject: 'History $i'),
+          i == 0
+              ? const GitCommitSummary(
+                  oid: 'history-0',
+                  subject: 'History 0',
+                  decoration: GitDecoration(
+                    refs: [
+                      GitRefDetail(
+                        kind: 'localBranch',
+                        name:
+                            'refs/heads/feature/very-long-branch-name-that-would-have-been-ellipsized',
+                        shortName:
+                            'feature/very-long-branch-name-that-would-have-been-ellipsized',
+                        oid: 'history-0',
+                      ),
+                      GitRefDetail(
+                        kind: 'localBranch',
+                        name: 'refs/heads/feature',
+                        shortName: 'feature',
+                        oid: 'history-0',
+                      ),
+                      GitRefDetail(
+                        kind: 'localBranch',
+                        name: 'refs/heads/feature',
+                        shortName: 'feature',
+                        oid: 'history-0',
+                      ),
+                      GitRefDetail(
+                        kind: 'remoteBranch',
+                        name: 'refs/remotes/origin/main',
+                        shortName: 'origin/main',
+                        oid: 'history-0',
+                      ),
+                      GitRefDetail(
+                        kind: 'other',
+                        name: 'refs/stash',
+                        shortName: 'stash',
+                        oid: 'history-0',
+                      ),
+                    ],
+                    tags: [
+                      GitTagDetail(
+                        name: 'refs/tags/v2.0.0-rc.1',
+                        shortName: 'v2.0.0-rc.1',
+                        oid: 'history-0',
+                        annotated: true,
+                      ),
+                      GitTagDetail(
+                        name: 'refs/tags/release-2026',
+                        shortName: 'release-2026',
+                        oid: 'history-0',
+                      ),
+                    ],
+                  ),
+                )
+              : GitCommitSummary(oid: 'history-$i', subject: 'History $i'),
       ],
     );
   }
@@ -154,6 +211,58 @@ class WidgetGitApi implements GitReadApi {
       return GitCommitDetails(
         oid: oid,
         files: const [GitCommitFile(path: 'later.dart', additions: 2)],
+      );
+    }
+    if (structuredDetails) {
+      return GitCommitDetails(
+        oid: oid,
+        message: 'Main subject\n\nFull message',
+        decoration: const GitDecoration(
+          refs: [
+            GitRefDetail(
+              kind: 'head',
+              name: 'refs/heads/main',
+              shortName: 'main',
+              oid: 'main-oid',
+              current: true,
+            ),
+            GitRefDetail(
+              kind: 'localBranch',
+              name: 'refs/heads/feature',
+              shortName: 'feature',
+              oid: 'main-oid',
+            ),
+            GitRefDetail(
+              kind: 'remoteBranch',
+              name: 'refs/remotes/origin/main',
+              shortName: 'origin/main',
+              oid: 'main-oid',
+            ),
+          ],
+          tags: [
+            GitTagDetail(
+              name: 'refs/tags/v2.0',
+              shortName: 'v2.0',
+              oid: 'main-oid',
+              annotated: true,
+              tagger: 'Release Bot',
+              timestamp: 1700000100,
+              subject: 'Release 2.0',
+            ),
+            GitTagDetail(
+              name: 'refs/tags/old',
+              shortName: 'old',
+              oid: 'main-oid',
+              hint: 'non-commit-target',
+            ),
+          ],
+        ),
+      );
+    }
+    if (emptyDetails) {
+      return GitCommitDetails(
+        oid: oid,
+        message: 'Main subject\n\nFull message',
       );
     }
     return GitCommitDetails(
@@ -201,6 +310,28 @@ class WidgetGitApi implements GitReadApi {
           ? 'line one\n\nindex literal\ndiff --git literal\nBinary files are source text\n'
           : 'diff --git a/$path b/$path\n@@ -1,10 +1,10 @@\n keep 1\n keep 2\n keep 3\n-old line\n+new line\n--- source -- marker\n+++ source ++ marker\n keep 4\n keep 5\n keep 6\n keep 7\n keep 8\n keep 9\n keep 10\n',
     );
+  }
+
+  @override
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit = 200,
+  }) async => const GitFileList(
+    files: ['docs/readme.md', 'lib/main.dart', 'src/a.dart'],
+  );
+
+  @override
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit = 20,
+  }) async {
+    historyPaths.add(path);
+    return const GitFileHistoryPage();
   }
 }
 
@@ -603,5 +734,73 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.filesCursors, [null, 'files-next']);
     expect(controller.state.commit!.files.last.path, 'later.dart');
+  });
+
+  testWidgets('graph shows every ref and tag on one line without +N folding', (
+    tester,
+  ) async {
+    const longRef =
+        'feature/very-long-branch-name-that-would-have-been-ellipsized';
+    final api = WidgetGitApi();
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+
+    // 旧实现最多显示 2 个 + `+N`，且单个 pill 在 112px 处省略号截断。
+    expect(find.text(longRef), findsOneWidget);
+    expect(find.text('v2.0.0-rc.1'), findsOneWidget);
+    expect(find.text('release-2026'), findsOneWidget);
+    expect(find.textContaining(RegExp(r'^\+\d+$')), findsNothing);
+    // 重复 ref 只出现一次；refs/stash 不展示。
+    expect(find.text('feature'), findsOneWidget);
+    expect(find.text('stash'), findsNothing);
+    // 同一行（固定行高、单行标签）：所有 pill 纵向位置一致。
+    final baseline = tester.getTopLeft(find.text(longRef)).dy;
+    for (final text in ['feature', 'origin/main', 'v2.0.0-rc.1', 'release-2026']) {
+      expect(tester.getTopLeft(find.text(text)).dy, baseline);
+    }
+    // 顺序：本地分支 → 远程分支 → tag。
+    final featureX = tester.getTopLeft(find.text('feature')).dx;
+    final remoteX = tester.getTopLeft(find.text('origin/main')).dx;
+    final tagX = tester.getTopLeft(find.text('v2.0.0-rc.1')).dx;
+    expect(featureX, lessThan(remoteX));
+    expect(remoteX, lessThan(tagX));
+  });
+
+  testWidgets('commit detail renders structured refs and annotated tag metadata', (
+    tester,
+  ) async {
+    final api = WidgetGitApi()..structuredDetails = true;
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Refs: main, feature, origin/main'), findsOneWidget);
+    expect(
+      find.text('Tags: v2.0, old (Tag targets a non-commit object)'),
+      findsOneWidget,
+    );
+    expect(find.text('Tag details'), findsOneWidget);
+    expect(find.text('Tagger: Release Bot'), findsOneWidget);
+    expect(find.text('Release 2.0'), findsOneWidget);
+  });
+
+  testWidgets('commit detail shows none when refs and tags are empty', (
+    tester,
+  ) async {
+    final api = WidgetGitApi()..emptyDetails = true;
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Refs: none'), findsOneWidget);
+    expect(find.text('Tags: none'), findsOneWidget);
   });
 }

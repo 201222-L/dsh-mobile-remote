@@ -2,12 +2,29 @@ import 'package:flutter/material.dart';
 
 import 'git_models.dart';
 
+/// 图行标签种类：决定排序、配色与是否 tag。
+enum GitGraphLabelKind { head, localBranch, remoteBranch, other, tag }
+
+/// 图行/详情展示用的引用标签（已归一、排序、去重）。
 class GitGraphLabel {
   final String text;
-  final bool tag;
-  final bool overflow;
+  final GitGraphLabelKind kind;
 
-  const GitGraphLabel(this.text, {this.tag = false, this.overflow = false});
+  /// tag 是否为 annotated（图行只保证这一位；详情可读完整元数据）。
+  final bool annotated;
+
+  /// 宿主提示：`nested-tag` / `non-commit-target`（仅 tag 相关时存在）。
+  final String? hint;
+
+  const GitGraphLabel(
+    this.text, {
+    required this.kind,
+    this.annotated = false,
+    this.hint,
+  });
+
+  bool get tag => kind == GitGraphLabelKind.tag;
+  bool get isHead => kind == GitGraphLabelKind.head;
 }
 
 const _lightBranchColors = <Color>[
@@ -82,62 +99,110 @@ Color gitLaneColor(int slot, List<GitBranch> selected, Brightness brightness) {
   return colors[slot.abs() % colors.length];
 }
 
-List<GitGraphLabel> compactGitGraphLabels({
-  required List<String> refs,
-  required List<String> tags,
-  required List<GitBranch> selected,
-  String? currentBranch,
-  int maxVisible = 2,
-}) {
-  final values = <GitGraphLabel>[
-    for (final ref in refs) GitGraphLabel(_cleanRef(ref)),
-    for (final tag in tags) GitGraphLabel(tag, tag: true),
-  ];
-  final unique = <GitGraphLabel>[];
-  final seen = <String>{};
-  for (final value in values) {
-    final key = '${value.tag ? 'tag' : 'ref'}:${value.text}';
-    if (value.text.isNotEmpty && seen.add(key)) unique.add(value);
-  }
-  if (unique.length <= maxVisible) return unique;
+const _refOrder = <String>[
+  GitRefKind.head,
+  GitRefKind.localBranch,
+  GitRefKind.remoteBranch,
+  GitRefKind.other,
+];
 
-  final currentName = currentBranch == null
-      ? null
-      : _cleanRef(currentBranch.replaceFirst('refs/heads/', ''));
-  var currentIndex = -1;
-  if (currentName != null) {
-    currentIndex = unique.indexWhere(
-      (label) =>
-          !label.tag &&
-          (label.text == currentName || label.text.endsWith('->$currentName')),
+GitGraphLabelKind _labelKindOf(String kind) => switch (kind) {
+  GitRefKind.head => GitGraphLabelKind.head,
+  GitRefKind.localBranch => GitGraphLabelKind.localBranch,
+  GitRefKind.remoteBranch => GitGraphLabelKind.remoteBranch,
+  _ => GitGraphLabelKind.other,
+};
+
+/// 提交详情 / 图行共用的引用标签：HEAD → 本地分支 → 远程分支 → 其他。
+///
+/// 契约要求展示全量标签（不再 +N 折叠），排序与去重在这里统一做：
+/// 按 (kind, shortName) 去重，`refs/stash` 不展示。
+List<GitGraphLabel> gitRefLabels(GitDecoration decoration) {
+  final seen = <String>{};
+  final buckets = <String, List<GitGraphLabel>>{
+    for (final kind in _refOrder) kind: <GitGraphLabel>[],
+  };
+  for (final ref in decoration.refs) {
+    if (ref.isStash) continue;
+    // `refs/remotes/*/HEAD` 是远程默认分支的符号引用，不是真实分支，不展示。
+    if (ref.name.startsWith('refs/remotes/') && ref.name.endsWith('/HEAD')) {
+      continue;
+    }
+    final text = ref.shortName.trim();
+    if (text.isEmpty) continue;
+    if (ref.kind == GitRefKind.remoteBranch && text.endsWith('/HEAD')) continue;
+    final kind = _refOrder.contains(ref.kind) ? ref.kind : GitRefKind.other;
+    if (!seen.add('$kind\u0000$text')) continue;
+    buckets[kind]!.add(
+      GitGraphLabel(text, kind: _labelKindOf(kind)),
     );
   }
-  if (currentIndex < 0) {
-    currentIndex = unique.indexWhere(
-      (label) => !label.tag && label.text.startsWith('HEAD ->'),
-    );
-  }
-  if (currentIndex < 0 && selected.isNotEmpty) {
-    final selectedNames = selected
-        .map((branch) => _cleanRef(branch.displayName))
-        .toSet();
-    currentIndex = unique.indexWhere(
-      (label) => !label.tag && selectedNames.contains(label.text),
-    );
-  }
-  final prioritized = <GitGraphLabel>[
-    if (currentIndex >= 0) unique[currentIndex],
-    for (var i = 0; i < unique.length; i++)
-      if (i != currentIndex) unique[i],
-  ];
-  final visibleCount = maxVisible.clamp(1, 8).toInt();
-  final visible = prioritized.take(visibleCount).toList();
-  final hidden = prioritized.length - visible.length;
-  if (hidden > 0) visible.add(GitGraphLabel('+$hidden', overflow: true));
-  return List.unmodifiable(visible);
+  return List.unmodifiable([
+    for (final kind in _refOrder) ...buckets[kind]!,
+  ]);
 }
 
-String _cleanRef(String ref) => ref
-    .replaceFirst('HEAD -> ', '')
-    .replaceFirst('refs/heads/', '')
-    .replaceFirst('refs/remotes/', '');
+/// tag 标签：保持宿主返回顺序，按短名去重。
+List<GitGraphLabel> gitTagLabels(GitDecoration decoration) {
+  final seen = <String>{};
+  final labels = <GitGraphLabel>[];
+  for (final tag in decoration.tags) {
+    final text = tag.shortName.trim();
+    if (text.isEmpty || !seen.add(text)) continue;
+    labels.add(
+      GitGraphLabel(
+        text,
+        kind: GitGraphLabelKind.tag,
+        annotated: tag.annotated,
+        hint: tag.hint,
+      ),
+    );
+  }
+  return List.unmodifiable(labels);
+}
+
+/// 图行完整标签：引用（HEAD → 本地 → 远程）后接全部 tag，单行展示、不折叠。
+List<GitGraphLabel> gitGraphLabels(GitDecoration decoration) =>
+    List.unmodifiable([...gitRefLabels(decoration), ...gitTagLabels(decoration)]);
+
+/// 按种类取标签配色：HEAD 高亮、本地/远程分支用稳定色、tag 用 tertiaryContainer。
+({Color background, Color foreground, Color? border}) gitGraphLabelColors(
+  GitGraphLabel label, {
+  required ColorScheme scheme,
+  required Brightness brightness,
+}) {
+  switch (label.kind) {
+    case GitGraphLabelKind.head:
+      return (
+        background: scheme.primary.withValues(alpha: .16),
+        foreground: scheme.primary,
+        border: scheme.primary.withValues(alpha: .45),
+      );
+    case GitGraphLabelKind.localBranch:
+      final color = gitBranchColor(label.text, brightness);
+      return (
+        background: color.withValues(alpha: .14),
+        foreground: color,
+        border: null,
+      );
+    case GitGraphLabelKind.remoteBranch:
+      final color = gitBranchColor(label.text, brightness);
+      return (
+        background: color.withValues(alpha: .08),
+        foreground: color,
+        border: color.withValues(alpha: .35),
+      );
+    case GitGraphLabelKind.tag:
+      return (
+        background: scheme.tertiaryContainer,
+        foreground: scheme.onTertiaryContainer,
+        border: null,
+      );
+    case GitGraphLabelKind.other:
+      return (
+        background: scheme.surfaceContainerHighest,
+        foreground: scheme.onSurfaceVariant,
+        border: null,
+      );
+  }
+}

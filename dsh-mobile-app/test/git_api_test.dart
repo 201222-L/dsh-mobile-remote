@@ -114,4 +114,79 @@ void main() {
     expect(requests[6].url.queryParameters['snapshotId'], 'worktree-snap');
     expect(requests[6].url.queryParameters['path'], 'a b.txt');
   });
+
+  test('GitReadApi requests tracked files and file history', () async {
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.url.path.endsWith('/files')) {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'repositoryId': 'repo&1',
+            'files': ['lib/a.dart', 'README.md'],
+            'truncated': false,
+          }),
+          200,
+        );
+      }
+      if (request.url.path.endsWith('/file-history')) {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'repositoryId': 'repo&1',
+            'path': 'lib/a b.dart',
+            'entries': [
+              {
+                'oid': 'abcdef123456',
+                'shortOid': 'abcdef1',
+                'author': 'Ada',
+                'timestamp': 1700000000,
+                'subject': 'update',
+                'status': 'M',
+              },
+            ],
+            'nextCursor': null,
+            'truncated': false,
+          }),
+          200,
+        );
+      }
+      return http.Response('unexpected', 500);
+    });
+    final GitReadApi value = Api(client: client)
+      ..baseUrl = 'https://host.example'
+      ..path = '/m';
+
+    final files = await value.files(
+      'session / one',
+      'repo&1',
+      q: 'lib/a b',
+      limit: 50,
+    );
+    final history = await value.fileHistory(
+      'session / one',
+      'repo&1',
+      path: 'lib/a b.dart',
+      cursor: 'cursor+1',
+      limit: 20,
+    );
+    await value.files('session / one', 'repo&1', q: '', limit: 200);
+
+    expect(files.files, ['lib/a.dart', 'README.md']);
+    expect(history.entries.single.shortOid, 'abcdef1');
+    expect(requests, hasLength(3));
+    expect(requests[0].method, 'GET');
+    expect(requests[0].url.path, '/m/api/git/files');
+    expect(requests[0].url.queryParameters['sessionId'], 'session / one');
+    expect(requests[0].url.queryParameters['repositoryId'], 'repo&1');
+    expect(requests[0].url.queryParameters['q'], 'lib/a b');
+    expect(requests[0].url.queryParameters['limit'], '50');
+    expect(requests[1].url.path, '/m/api/git/file-history');
+    expect(requests[1].url.queryParameters['path'], 'lib/a b.dart');
+    expect(requests[1].url.queryParameters['cursor'], 'cursor+1');
+    expect(requests[1].url.queryParameters['limit'], '20');
+    // 空 q 不发送过滤参数（宿主按"无 q"返回排序后的上限条数）。
+    expect(requests[2].url.queryParameters.containsKey('q'), isFalse);
+  });
 }

@@ -59,8 +59,26 @@ class FakeGitReadApi implements GitReadApi {
   )?
   onPreview;
 
+  Future<GitFileList> Function(
+    String sessionId,
+    String repositoryId,
+    String? q,
+    int limit,
+  )?
+  onFiles;
+  Future<GitFileHistoryPage> Function(
+    String sessionId,
+    String repositoryId,
+    String path,
+    String? cursor,
+    int limit,
+  )?
+  onHistory;
+
   int graphCalls = 0;
   int commitCalls = 0;
+  int filesCalls = 0;
+  int historyCalls = 0;
 
   @override
   Future<GitReadCapabilities> capabilities(String sessionId) =>
@@ -158,6 +176,31 @@ class FakeGitReadApi implements GitReadApi {
           diff: '-old\n+new\n',
         ),
       );
+
+  @override
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit = 200,
+  }) {
+    filesCalls++;
+    return onFiles?.call(sessionId, repositoryId, q, limit) ??
+        Future.value(const GitFileList());
+  }
+
+  @override
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit = 20,
+  }) {
+    historyCalls++;
+    return onHistory?.call(sessionId, repositoryId, path, cursor, limit) ??
+        Future.value(const GitFileHistoryPage());
+  }
 }
 
 void main() {

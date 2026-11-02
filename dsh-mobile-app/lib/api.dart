@@ -75,6 +75,25 @@ abstract interface class GitReadApi {
     String? snapshotId,
     String? oid,
   });
+
+  /// HEAD 已跟踪文件列表（issue #42）。
+  ///
+  /// [q] 为大小写不敏感的路径子串；空 q 返回宿主排序后的前 [limit] 条。
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit,
+  });
+
+  /// 单个文件的提交历史（分页；[cursor] 由宿主签名，客户端不解释）。
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit,
+  });
 }
 
 class Api implements GitReadApi {
@@ -1356,6 +1375,42 @@ class Api implements GitReadApi {
         'path': path,
         'snapshotId': ?snapshotId,
         'oid': ?oid,
+      }),
+    ),
+  );
+
+  @override
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit = 200,
+  }) async => GitFileList.fromJson(
+    await getJson(
+      _gitQuery('/api/git/files', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'q': ?(q != null && q.isNotEmpty ? q : null),
+        'limit': '$limit',
+      }),
+    ),
+  );
+
+  @override
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit = 20,
+  }) async => GitFileHistoryPage.fromJson(
+    await getJson(
+      _gitQuery('/api/git/file-history', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'path': path,
+        'cursor': ?cursor,
+        'limit': '$limit',
       }),
     ),
   );
