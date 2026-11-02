@@ -783,7 +783,193 @@
 
 **能力位**：`GET /m/api/bootstrap` 与 SSE hello 的 `capabilities.turnOutline` 与本节同一判据（见 §3.1、§3.6）：宿主真的注册了投影单元且观察面可用才 `supported: true`，否则 `supported: false`。客户端必须先读能力位再决定是否渲染未加载刻度。
 
+### 6.19 Git 只读浏览接口（contractVersion 1.1.0，issue #42）
 
+> 本节是移动端 Git 只读浏览的**自包含**接口说明（此前的只读 Git 实现没有写入本文档）。全部端点只读、要求鉴权，并且只允许读取「当前会话 `cwd` 所属、且位于已注册 DSH 工作区内的 Git 仓库」。响应不包含主机绝对路径、remote URL 或作者邮箱；错误只返回稳定 `error` 码，不回传 provider 细节。对外契约版本 `contractVersion` 自本次起为 **`1.1.0`**：只做加法扩展，旧 App 与外部旧 provider 都不破坏。
 
+**公共参数**：`sessionId`（必填）；除 `/git/capabilities`、`/git/repository` 外，其余端点还需要 `GET /m/api/git/repository` 返回的 `repositoryId`，它与会话绑定，跨会话/跨仓库复用会得到 `403 repository-not-authorized`。
 
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/m/api/git/capabilities` | Git 只读能力与契约版本 |
+| GET | `/m/api/git/repository` | 当前会话 cwd 解析出的仓库标识 |
+| GET | `/m/api/git/branches` | 本地/远程分支列表 |
+| GET | `/m/api/git/graph` | 一至五个 tip 之间的提交拓扑（分页） |
+| GET | `/m/api/git/commit` | 提交详情 + 变更文件（分页） |
+| GET | `/m/api/git/worktree` | 工作区快照（已暂存/未暂存/未跟踪） |
+| GET | `/m/api/git/preview` | 单文件文本差异预览（有界） |
+| GET | `/m/api/git/files` | HEAD 已跟踪文件列表（v1.1.0 新增） |
+| GET | `/m/api/git/file-history` | 单文件提交历史（v1.1.0 新增） |
 
+#### 6.19.1 GET /m/api/git/capabilities
+
+```json
+{
+  "ok": true,
+  "git": {
+    "contractVersion": "1.1.0",
+    "available": true,
+    "reason": null,
+    "readOnly": true,
+    "provider": "bundled",
+    "features": {
+      "repository": true, "branches": true, "graph": true, "commit": true,
+      "worktree": true, "preview": true, "refsDetail": true, "fileHistory": true
+    }
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `contractVersion` | string | 宿主 Git 契约版本；本次为 `1.1.0`（`1.0.0` 为旧版） |
+| `available` / `reason` | bool / string\|null | 当前会话是否可用；`reason` 取值 `git-provider-unavailable` / `workspace-registry-unavailable` / `not-git-repository` / `repository-not-authorized` |
+| `readOnly` | bool | 恒为 `true` |
+| `provider` | string | `bundled`（包内只读实现）或 `external`（外部 provider） |
+| `features` | object | 能力位；App 必须按位判断，不得按版本号推断 |
+
+v1.1.0 新增两个**相互独立**的能力位：
+
+- `refsDetail`：graph/commit 返回结构化 `refsDetail` / `tagsDetail`。宿主总是可以给出名称级结构（旧 provider 的原始 refs 字符串会被解析兜底），因此新宿主恒为 `true`。
+- `fileHistory`：`/git/files` 与 `/git/file-history` 可用。仅当 provider 实现对应方法，或包内 bundled provider 可用（宿主有 subprocess 与工作区注册表）时为 `true`。
+
+#### 6.19.2 结构化引用：`refsDetail` / `tagsDetail`（graph 与 commit 共用）
+
+graph 的每个提交与 commit 详情都**保留旧的** `refs: string[]`（deprecated，仍为原始 decoration 字符串），并**新增**以下两个数组：
+
+```json
+"refsDetail": [
+  { "kind": "head", "name": "HEAD", "shortName": "HEAD", "oid": "<commit>", "current": true },
+  { "kind": "localBranch", "name": "refs/heads/main", "shortName": "main", "oid": "<commit>", "current": true },
+  { "kind": "remoteBranch", "name": "refs/remotes/origin/main", "shortName": "origin/main", "oid": "<commit>" }
+],
+"tagsDetail": [
+  { "name": "refs/tags/v1.0.0", "shortName": "v1.0.0", "oid": "<commit>", "annotated": true,
+    "tagger": "Alice", "date": 1700000000, "subject": "Release v1.0.0" },
+  { "name": "refs/tags/nested", "shortName": "nested", "oid": "<commit>", "annotated": true, "hint": "nested-tag" },
+  { "name": "refs/tags/nightly", "shortName": "nightly", "oid": "<commit>", "annotated": false }
+]
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `refsDetail[].kind` | string | `head` / `localBranch` / `remoteBranch` / `other`（tag 不进 refsDetail） |
+| `refsDetail[].name` / `shortName` | string | 完整 ref 名 / 规范化短名（去掉 `refs/heads/`、`refs/remotes/`；`HEAD` 保持 `HEAD`） |
+| `refsDetail[].oid` | string | 该引用解析到的提交 OID（与所在提交一致） |
+| `refsDetail[].current` | bool? | HEAD 与当前本地分支为 `true`；其余省略 |
+| `tagsDetail[].name` / `shortName` | string | 完整 tag ref 名 / 短名 |
+| `tagsDetail[].oid` | string | tag 解引用后指向的提交 OID（不是 tag 对象 OID） |
+| `tagsDetail[].annotated` | bool | 是否为 annotated tag（旧 provider 兜底无法判断时为 `false`） |
+| `tagsDetail[].tagger` / `date` / `subject` | string? / number? / string? | 仅 commit 详情的 annotated tag 提供；`date` 为 Unix 秒；`subject` 截断到 200 字 |
+| `tagsDetail[].hint` | string? | `nested-tag`（tag→tag→commit）或 `non-commit-target`（tag 最终目标不是 commit） |
+
+约定：
+
+- **顺序**：`refsDetail` 固定 HEAD → 本地分支 → 远程分支 → 其它；`tagsDetail` 按 tag 全名排序。按 `(kind, shortName)`（tag 为 `shortName`）去重。
+- 排除 `refs/stash` 与 `refs/remotes/*/HEAD` 等符号引用。
+- **graph 行只保证名称级信息**：`tagsDetail` 条目只含 `name` / `shortName` / `oid` / `annotated`；完整 tag 元数据只在 `commit` 详情返回。
+- **失败降级**：annotated tag 元数据读不到时静默降级为「名字 + `annotated`」，不影响列表展示；tag 目标不是 commit 时给出 `hint`，不产生错误。
+
+#### 6.19.3 GET /m/api/git/repository、GET /m/api/git/branches
+
+`repository` 响应：`{ ok, repositoryId, name, headOid?, currentBranch?, detached, empty }`。`headOid` 在空仓库省略；`currentBranch` 为 `refs/heads/*` 全名。
+
+`branches` 响应：`{ ok, repositoryId, branches: [{ name, displayName, oid, kind, current, tracking, ahead, behind }] }`，`kind` 为 `local` / `remote`，`name` 为完整 ref 名。
+
+#### 6.19.4 GET /m/api/git/graph
+
+| 参数 | 说明 |
+|---|---|
+| `tips` | JSON 数组字符串：`[{"name":"refs/heads/main"\|"HEAD"\|"refs/remotes/origin/main","tipOid":"<可选>"}]`，1–5 个且不重复 |
+| `snapshotId` / `cursor` | 翻页时成对提交：首次请求省略，响应返回 `snapshotId` 与 `nextCursor` |
+| `limit` | 每页条数，1–200，默认 100 |
+
+响应：`{ ok, repositoryId, snapshotId, tips, commits, nextCursor }`，`commits[]` 含 `oid` / `parents` / `author` / `timestamp` / `subject` / `refs` / `refsDetail` / `tagsDetail`。引用在翻页期间移动、tip 失效、快照过期或游标非法返回 `409 graph-stale`；非法 tip 返回 `409 graph-tip-invalid`，超过 5 个返回 `400 graph-too-many-tips`。
+
+#### 6.19.5 GET /m/api/git/commit
+
+| 参数 | 说明 |
+|---|---|
+| `oid` | 提交 OID（必填，40/64 位十六进制） |
+| `filesCursor` / `filesLimit` | 变更文件翻页游标 / 每页条数（1–200，默认 100） |
+
+响应：`{ ok, repositoryId, oid, parents, author, timestamp, message, refs, tags, refsDetail, tagsDetail, stats: { additions, deletions, files }, files: { items, total, nextCursor } }`。`files.items[]` 含 `path` / `oldPath?` / `status`（`added` / `modified` / `deleted` / `renamed` / `copied` / `type-changed`）/ `binary` / `additions` / `deletions`。`tagsDetail` 在此返回完整 annotated tag 元数据（见 §6.19.2）。
+
+#### 6.19.6 GET /m/api/git/worktree、GET /m/api/git/preview
+
+- `worktree`：`{ ok, repositoryId, snapshotId, staged, unstaged, untracked, truncated }`。三类条目含 `path` / `oldPath?` / `status` / `conflicted`；快照最多 2000 条，超出 `truncated: true`。
+- `preview`：`kind=staged|unstaged|untracked` 需同时带 `worktree` 返回的 `snapshotId`；`kind=commit` 需带 `oid`。响应 `{ ok, repositoryId, kind, path, oldPath?, diff, truncated, binary, additions, deletions, notice? }`；单文件差异上限 512 KiB，二进制/符号链接/子模块/纯模式变化以 `notice` 说明。
+
+#### 6.19.7 GET /m/api/git/files（v1.1.0 新增）
+
+读取 **HEAD 已跟踪**文件（不是工作区目录列表，未跟踪文件不会出现）。
+
+| 参数 | 说明 |
+|---|---|
+| `q` | 可选；大小写不敏感的路径子串过滤（服务端过滤） |
+| `limit` | 1–200，默认 200 |
+
+```json
+{ "ok": true, "repositoryId": "repo_…", "files": ["README.md", "docs/guide.md"], "truncated": false }
+```
+
+- `files` 按路径升序；`truncated` 表示还有更多匹配文件未返回（`limit` 截断）。
+- 空仓库返回 `{ files: [], truncated: false }`（HTTP 200）。
+
+#### 6.19.8 GET /m/api/git/file-history（v1.1.0 新增）
+
+单文件提交历史（仅当前 HEAD 可达范围；不做 `--follow` 重命名跟随）。
+
+| 参数 | 说明 |
+|---|---|
+| `path` | 必填；仓库相对路径或工作区绝对路径（宿主归一化，见下） |
+| `cursor` | 可选；不透明分页游标（绑定会话/仓库/路径，过期或非法返回 `400 invalid-history-cursor`） |
+| `limit` | 1–100，默认 20 |
+
+```json
+{
+  "ok": true,
+  "repositoryId": "repo_…",
+  "path": "docs/guide.md",
+  "entries": [
+    { "oid": "…", "shortOid": "…", "author": "Alice", "timestamp": 1700000000, "subject": "update guide", "status": "M" }
+  ],
+  "nextCursor": "…",
+  "truncated": false
+}
+```
+
+- `entries` 按提交从新到旧；`status` 为该提交对文件的变更类型：`A` / `M` / `D` / `R` / `C` / `T`。
+- 空/异常结果**恒为 HTTP 200**，用 `reason` 表达（不让客户端猜 404）：
+
+| `reason` | 场景 |
+|---|---|
+| `not-tracked` | HEAD 中不存在该路径（未跟踪/从未提交） |
+| `no-history` | 仓库尚无提交（空仓库） |
+| `path-invalid` | 越界（`..`、仓库外绝对路径、无法映射的 Windows 绝对路径）或无法归一化的路径 |
+
+- **路径归一化由宿主负责**：接受工作区绝对路径或仓库相对路径，归一化到仓库根内；越界/仓库外返回 `path-invalid`。目录路径（含仓库根、`.`）返回 `400 path-invalid`；只接受文件路径。
+- **有界**：单次最多扫描 5000 条提交或 20 秒软超时；达到上限时返回已取部分并 `truncated: true`（客户端可提示「仅显示最近 N 条提交」）。
+- 缺失 `path` → `400 bad-request`。
+
+#### 6.19.9 Git 只读端点错误码
+
+| HTTP | error 值 | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId` / `repositoryId` / `path`，`tips` 不是 JSON |
+| 400 | `invalid-oid` / `invalid-files-cursor` / `invalid-history-cursor` | 非法 OID / 文件分页游标 / 历史分页游标 |
+| 400 | `path-invalid` | `/git/file-history` 传入目录路径 |
+| 400 | `preview-invalid` | 预览参数非法 |
+| 400 | `graph-tip-invalid` / `graph-too-many-tips` | 非法 tip / 超过 5 个 tip |
+| 401 | `auth-required` / `bad-token` | 未鉴权（同 §1） |
+| 403 | `repository-not-authorized` / `workspace-not-allowed` | 会话/仓库不匹配或路径不在已注册工作区 |
+| 404 | `session-not-found` / `not-git-repository` / `preview-file-not-found` | 会话不存在 / cwd 不是仓库 / 提交中无该文件 |
+| 409 | `graph-stale` / `graph-tip-invalid` | 快照或 tip 已变化 |
+| 413 | `git-output-too-large` | Git 输出超过宿主上限 |
+| 503 | `git-provider-unavailable` / `provider-incompatible` | provider 不可用 / 旧 provider 不支持所需方法 |
+
+#### 6.19.10 兼容与降级
+
+- 契约只做加法：旧 App 忽略新字段即可；旧宿主（无 `refsDetail` / `fileHistory` 能力位）由 App 走字符串解析兜底（`HEAD ->`、`refs/heads/`、`refs/remotes/`、`tag: refs/tags/`）。
+- 外部 provider 兼容 `1.0.0`：缺新方法时宿主用原始 refs 字符串合成名称级 `refsDetail` / `tagsDetail`；`/git/files`、`/git/file-history` 仅在 provider 实现新方法或包内 bundled provider 可用时生效（否则 `503 provider-incompatible`）。
+- `contractVersion` 只随破坏性变更提升主/次版本；`1.x` 内的加法不要求客户端按版本号分支。

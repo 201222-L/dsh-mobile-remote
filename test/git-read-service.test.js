@@ -41,7 +41,7 @@ test("capabilities and repository are read-only and authorized only through a se
     const caps = await service.capabilitiesForSession('session-1');
     assert.equal(caps.available, true);
     assert.equal(caps.readOnly, true);
-    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true, worktree: true, preview: true });
+    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true, worktree: true, preview: true, refsDetail: true, fileHistory: true });
     const repository = await service.repositoryForSession("session-1");
     assert.match(repository.repositoryId, /^repo_[A-Za-z0-9_-]+$/);
     assert.equal(repository.name, root.split("/").at(-1));
@@ -435,7 +435,11 @@ test("commit details omit secrets and page root, rename, and binary changed file
     const repository = await service.repositoryForSession("session-1");
     const first = await service.commit("session-1", repository.repositoryId, rootOid, { filesLimit: 2 });
     assert.equal(first.parents.length, 0); assert.equal(first.author, "Alice"); assert.equal(first.message, "root subject\n\nroot body");
-    assert.equal("email" in first, false); assert.equal("patch" in first, false); assert.deepEqual(first.refs, []); assert.deepEqual(first.tags, []);
+    assert.equal("email" in first, false); assert.equal("patch" in first, false); assert.deepEqual(first.tags, []);
+    // v1.1.0 keeps the legacy decoration strings and projects them additively.
+    assert.ok(first.refs.some((ref) => ref === "HEAD -> refs/heads/main"));
+    assert.deepEqual(first.refsDetail.map(({ kind, shortName, oid }) => ({ kind, shortName, oid })), [{ kind: "head", shortName: "HEAD", oid: rootOid }, { kind: "localBranch", shortName: "main", oid: rootOid }]);
+    assert.deepEqual(first.tagsDetail, []);
     assert.equal(first.files.items.length, 2); assert.equal(first.files.total, 3); assert.ok(first.files.nextCursor); assert.deepEqual(first.stats, { additions: 2, deletions: 0, files: 3 });
     const second = await service.commit("session-1", repository.repositoryId, rootOid, { filesCursor: first.files.nextCursor, filesLimit: 2 });
     const rootFiles = [...first.files.items, ...second.files.items];

@@ -240,3 +240,154 @@ test("lossy subprocess stdout fails explicitly instead of parsing a tail slice",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function refsFixture(root) {
+  fixture(root);
+  writeFileSync(join(root, "second.txt"), "second\n");
+  git(root, "add", "second.txt");
+  git(root, "commit", "-qm", "second");
+  git(root, "branch", "topic");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(root, "update-ref", "refs/remotes/origin/HEAD", "HEAD");
+  git(root, "update-ref", "refs/stash", "HEAD");
+  git(root, "tag", "-a", "v1.0.0", "-m", "Release v1.0.0");
+  git(root, "tag", "light");
+  git(root, "tag", "-a", "nested", "-m", "Nested release", "v1.0.0");
+  writeFileSync(join(root, "blob-target.txt"), "blob target\n");
+  const blob = git(root, "hash-object", "-w", "blob-target.txt");
+  rmSync(join(root, "blob-target.txt"));
+  git(root, "tag", "-a", "blobtag", "-m", "Blob tag", blob);
+  return { headOid: git(root, "rev-parse", "HEAD"), blob };
+}
+
+test("refs projects head, local, remote and tag records with annotated metadata and safe hints", async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-refs-"));
+  try {
+    const { headOid, blob } = refsFixture(root);
+    const records = await providerFor(root).refs(root);
+    const byName = new Map(records.map((record) => [record.name, record]));
+
+    assert.deepEqual(byName.get("HEAD"), { name: "HEAD", shortName: "HEAD", kind: "head", oid: headOid, commitOid: headOid, current: true, annotated: false });
+    assert.equal(byName.get("refs/heads/main").current, true);
+    assert.equal(byName.get("refs/heads/topic").current, false);
+    assert.equal(byName.get("refs/remotes/origin/main").kind, "remoteBranch");
+    assert.equal(byName.has("refs/remotes/origin/HEAD"), false, "remote symbolic HEAD is not a branch");
+    assert.equal(byName.has("refs/stash"), false, "stash refs are excluded");
+
+    const annotated = byName.get("refs/tags/v1.0.0");
+    assert.equal(annotated.kind, "tag");
+    assert.equal(annotated.annotated, true);
+    assert.equal(annotated.commitOid, headOid);
+    assert.equal(annotated.tagger, "Alice");
+    assert.equal(typeof annotated.date, "number");
+    assert.equal(annotated.subject, "Release v1.0.0");
+    assert.equal(annotated.hint, undefined);
+
+    const lightweight = byName.get("refs/tags/light");
+    assert.equal(lightweight.annotated, false);
+    assert.equal(lightweight.commitOid, headOid);
+    assert.equal("tagger" in lightweight, false);
+
+    const nested = byName.get("refs/tags/nested");
+    assert.equal(nested.annotated, true);
+    assert.equal(nested.commitOid, headOid);
+    assert.equal(nested.hint, "nested-tag");
+
+    const blobTag = byName.get("refs/tags/blobtag");
+    assert.equal(blobTag.annotated, true);
+    assert.equal(blobTag.commitOid, null);
+    assert.equal(blobTag.hint, "non-commit-target");
+    assert.equal(blobTag.oid === blob || /^[0-9a-f]{40,64}$/.test(blobTag.oid), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("file history is capped by maxCommits and reports truncation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-history-cap-"));
+  try {
+    fixture(root);
+    for (let index = 2; index <= 4; index++) {
+      writeFileSync(join(root, "tracked.txt"), `change ${index}\n`);
+      git(root, "commit", "-qam", `change ${index}`);
+    }
+    const provider = providerFor(root);
+
+    const complete = await provider.fileHistory(root, "tracked.txt");
+    assert.deepEqual(complete.entries.map((entry) => entry.subject), ["change 4", "change 3", "change 2", "initial"]);
+    assert.deepEqual(complete.entries.map((entry) => entry.status), ["M", "M", "M", "A"]);
+    assert.equal(complete.truncated, false);
+
+    const capped = await provider.fileHistory(root, "tracked.txt", { maxCommits: 2 });
+    assert.deepEqual(capped.entries.map((entry) => entry.subject), ["change 4", "change 3"]);
+    assert.equal(capped.truncated, true);
+
+    assert.deepEqual(await provider.fileHistory(root, "missing.txt"), { entries: [], truncated: false, reason: "not-tracked" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("file history soft timeout returns the partial result with truncated: true", async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-history-timeout-"));
+  try {
+    fixture(root);
+    for (let index = 2; index <= 4; index++) {
+      writeFileSync(join(root, "tracked.txt"), `change ${index}\n`);
+      git(root, "commit", "-qam", `change ${index}`);
+    }
+    const rawLog = spawnSync("git", ["-C", root, "--literal-pathspecs", "log", "--max-count=6", "--format=%x00%H%x1f%h%x1f%an%x1f%at%x1f%s", "--name-status", "-M", "-z", "--", "tracked.txt"], { encoding: "utf8" });
+    assert.equal(rawLog.status, 0, rawLog.stderr);
+    const partial = rawLog.stdout.slice(0, Math.floor(rawLog.stdout.length / 2));
+    const realExecutor = subprocess();
+    const provider = createBundledGitReadProvider({
+      subprocess: {
+        spawn(spec) {
+          if (!spec.argv.includes("log") || !spec.argv.includes("--name-status")) return realExecutor.spawn(spec);
+          return {
+            done: new Promise((resolve) => {
+              spec.signal?.addEventListener("abort", () => resolve({ exitCode: null, signal: "SIGTERM" }), { once: true });
+            }),
+            collected: {
+              stdout: { readFrom: async () => ({ text: partial, lossy: false }) },
+              stderr: { readFrom: async () => ({ text: "", lossy: false }) },
+            },
+          };
+        },
+      },
+      get(name) {
+        if (name === "workspaceRegistry") return { list: () => [{ path: root }] };
+        return undefined;
+      },
+    });
+
+    const result = await provider.fileHistory(root, "tracked.txt", { timeoutMs: 20 });
+    assert.equal(result.truncated, true);
+    assert.ok(result.entries.length >= 1);
+    for (const entry of result.entries) assert.match(entry.oid, /^[0-9a-f]{40,64}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("files lists HEAD-tracked paths and treats an unborn repository as empty", async () => {
+  const root = mkdtempSync(join(tmpdir(), "git-files-provider-"));
+  const emptyRoot = mkdtempSync(join(tmpdir(), "git-files-empty-"));
+  try {
+    fixture(root);
+    writeFileSync(join(root, "zeta.txt"), "zeta\n");
+    writeFileSync(join(root, "Alpha.txt"), "alpha\n");
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "more");
+    const provider = providerFor(root);
+    assert.deepEqual(await provider.files(root, { limit: 200 }), { files: ["Alpha.txt", "tracked.txt", "zeta.txt"], truncated: false });
+    assert.deepEqual(await provider.files(root, { q: "ALPHA", limit: 200 }), { files: ["Alpha.txt"], truncated: false });
+    assert.deepEqual(await provider.files(root, { limit: 1 }), { files: ["Alpha.txt"], truncated: true });
+
+    git(emptyRoot, "init", "-q", "-b", "main");
+    assert.deepEqual(await providerFor(emptyRoot).files(emptyRoot, {}), { files: [], truncated: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(emptyRoot, { recursive: true, force: true });
+  }
+});
