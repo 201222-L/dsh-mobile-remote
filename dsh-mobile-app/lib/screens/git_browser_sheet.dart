@@ -80,6 +80,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   String? _labelSnapshot;
   String? _labelTips;
   TextStyle? _labelStyle;
+  TextScaler? _labelTextScaler;
   GraphLayout? _layout;
   String? _layoutSnapshot;
   String? _layoutTips;
@@ -126,11 +127,14 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   /// 每行标签共用图的横向滚动轴，需要提前知道"最宽一行"才能确定滚动范围。
   void _syncGraphLabels(GitBrowserState state, {required bool rebuild}) {
     final style = Theme.of(context).textTheme.labelSmall;
+    final textScaler = MediaQuery.textScalerOf(context);
     final tips = state.selectedBranches
         .map((branch) => '${branch.name}\u0000${branch.oid}')
         .join('\u0001');
-    if (style != _labelStyle) {
+    // 字号或系统文字缩放变化都会改变标签宽度，必须重算横向滚动范围。
+    if (style != _labelStyle || textScaler != _labelTextScaler) {
       _labelStyle = style;
+      _labelTextScaler = textScaler;
       rebuild = true;
     }
     if (rebuild ||
@@ -147,11 +151,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     for (final commit in state.commits.skip(_labelOids.length)) {
       final labels = gitGraphLabels(commit.resolvedDecoration);
       _rowLabels[commit.oid] = labels;
-      final width = _measureLabelLine(
-        labels,
-        style,
-        MediaQuery.textScalerOf(context),
-      );
+      final width = _measureLabelLine(labels, style, textScaler);
       if (width > _labelLineWidth) _labelLineWidth = width;
     }
     _labelOids = [for (final commit in state.commits) commit.oid];
@@ -893,7 +893,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         mode: GitFileViewerMode.diff,
         path: _previewPath,
         loading: true,
-        keys: const GitFileViewerKeys(prefix: 'git-file'),
+        topActions: _historyActions(state, _previewPath),
+        keys: const GitFileViewerKeys(prefix: 'git'),
       );
     }
     if (preview == null) {
@@ -910,7 +911,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 oid: _previewOid,
               )
             : null,
-        keys: const GitFileViewerKeys(prefix: 'git-file'),
+        topActions: _historyActions(state, _previewPath),
+        keys: const GitFileViewerKeys(prefix: 'git'),
       );
     }
     return GitFileViewer(
@@ -928,7 +930,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       notice: preview.notice,
       rawAddedContent: preview.kind == 'untracked',
       topActions: _historyActions(state, preview.path),
-      keys: const GitFileViewerKeys(prefix: 'git-file'),
+      keys: const GitFileViewerKeys(prefix: 'git'),
     );
   }
 
@@ -981,6 +983,13 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     final horizontalWidth = math.max(
       MediaQuery.sizeOf(context).width,
       graphWidth + _labelLineWidth + 56,
+    );
+    // 正常字号下保持设计稿固定 86；系统文字缩放时按文本高度放大行高，
+    // 避免主题/无障碍字号下标签行被纵向裁切。
+    final textScaler = MediaQuery.textScalerOf(context);
+    final rowHeight = math.max(
+      kGitGraphRowHeight,
+      textScaler.scale(kGitGraphRowHeight - 22) + 22,
     );
     return Column(
       children: [
@@ -1079,14 +1088,14 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   final labels =
                       _rowLabels[commit.oid] ?? const <GitGraphLabel>[];
                   return SizedBox(
-                    height: kGitGraphRowHeight,
+                    height: rowHeight,
                     child: InkWell(
                       key: Key('git-commit-${commit.oid}'),
                       onTap: () => _showCommit(commit.oid),
                       child: Row(
                         children: [
                           CustomPaint(
-                            size: Size(graphWidth, kGitGraphRowHeight),
+                            size: Size(graphWidth, rowHeight),
                             painter: _GraphRowPainter(
                               row,
                               selected,

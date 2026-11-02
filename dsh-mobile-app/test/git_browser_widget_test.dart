@@ -803,4 +803,27 @@ void main() {
     expect(find.text('Refs: none'), findsOneWidget);
     expect(find.text('Tags: none'), findsOneWidget);
   });
+
+  testWidgets('graph label viewport tracks system text scale without clipping', (
+    tester,
+  ) async {
+    const longRef =
+        'feature/very-long-branch-name-that-would-have-been-ellipsized';
+    final api = WidgetGitApi();
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    expect(find.text(longRef), findsOneWidget);
+
+    // 打开 sheet 后再改系统文字缩放：标签宽度缓存必须失效并重算，
+    // 否则横向滚动范围会按旧字号计算导致裁切。
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpAndSettle();
+
+    expect(find.text(longRef), findsOneWidget);
+    expect(find.byKey(const Key('git-graph-horizontal')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

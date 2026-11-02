@@ -232,8 +232,19 @@ void main() {
 
     expect(
       summary.decoration.refs.map((ref) => ref.kind).toList(),
-      [GitRefKind.head, GitRefKind.localBranch, GitRefKind.remoteBranch],
+      [
+        GitRefKind.head,
+        GitRefKind.localBranch,
+        GitRefKind.localBranch,
+        GitRefKind.remoteBranch,
+      ],
     );
+    // 旧宿主 `HEAD -> refs/heads/main` 同时投影 head 与 current localBranch。
+    expect(summary.decoration.refs[0].isHead, isTrue);
+    expect(summary.decoration.refs[0].shortName, 'main');
+    expect(summary.decoration.refs[1].isLocalBranch, isTrue);
+    expect(summary.decoration.refs[1].current, isTrue);
+    expect(summary.decoration.refs[1].shortName, 'main');
     expect(
       summary.decoration.tags.map((tag) => tag.shortName).toList(),
       ['v1', 'v2'],

@@ -207,6 +207,21 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
         }
         return _errorPane();
       case BrowseStage.loading:
+        // 文件预览加载态：保留 in-content 返回按钮（目录加载仍用整页 spinner）。
+        if (_c.previewPath.isNotEmpty) {
+          return GitFileViewer(
+            key: const Key('sf-preview'),
+            mode: GitFileViewerMode.content,
+            path: _c.previewPath,
+            loading: true,
+            leading: _previewBackButton(),
+            topActions: _historyActions(),
+            keys: const GitFileViewerKeys(
+              prefix: 'sf-preview',
+              modePrefix: 'sf',
+            ),
+          );
+        }
         return const Center(child: CircularProgressIndicator());
       case BrowseStage.listing:
         return _listing();

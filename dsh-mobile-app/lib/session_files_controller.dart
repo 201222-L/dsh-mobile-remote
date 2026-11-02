@@ -190,6 +190,8 @@ class SessionFilesController extends ChangeNotifier {
   Future<void> openFile(String name) async {
     final path = joinBrowsePath(currentPath, name, sep);
     stage = BrowseStage.loading;
+    // 先发布 previewPath：加载态也要能显示 in-content 返回按钮与历史入口。
+    previewPath = path;
     notifyListeners();
     try {
       final prefix = await _api.downloadFilePrefix(path, kPreviewByteLimit);

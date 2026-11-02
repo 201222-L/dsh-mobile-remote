@@ -5,6 +5,10 @@
 // 横向滚动 / 复制」收敛到一处，两个入口只负责把各自的数据适配成
 // [GitFileViewerMode.content] 或 [GitFileViewerMode.diff]。
 //
+// 行号在两种模式下都提供：content 模式是单侧行号；diff 模式按 hunk header 的
+// 起始行解析出旧/新两侧行号（删除行只有旧侧、新增行只有新侧），与 US6
+// 「文件内容与 diff 共享行号交互」一致。
+//
 // 上限沿用既有约定：内容 256 KiB（[kGitFileViewerContentLimit]，由取数侧按
 // 前缀读取截断）、差异 512 KiB（[kGitFileViewerDiffLimit]，由宿主返回
 // truncated 标记）；组件本身不重新拉取数据。
@@ -50,6 +54,14 @@ class GitFileViewerKeys {
   Key get retry => Key('$prefix-retry');
   Key get copy => Key('$prefix-copy');
   Key get empty => Key('$prefix-empty');
+
+  /// diff 模式的行（含折叠后仍保持原始行号下标）与旧/新行号列。
+  Key diffLine(int index) => Key('$prefix-diff-line-$index');
+  Key diffLineOldNumber(int index) => Key('$prefix-old-$index');
+  Key diffLineNewNumber(int index) => Key('$prefix-new-$index');
+
+  /// 长段未改动行的折叠/展开按钮。
+  Key contextFold(int id) => Key('$prefix-context-fold-$id');
 }
 
 /// 只读的 Git 文件内容 / 差异查看器。
@@ -203,14 +215,17 @@ class _GitFileViewerState extends State<GitFileViewer> {
   @override
   Widget build(BuildContext context) {
     final hasPayload = _hasPayload;
+    // 状态 body 也挂在同一 header 下：leading（返回）与 topActions（提交历史）
+    // 在任何状态都保持可见，不因加载/错误/二进制而丢失入口。
+    final Widget body;
     if (widget.loading && !hasPayload) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (widget.error != null && !hasPayload) {
-      return _errorState(context);
-    }
-    if (widget.binary || widget.notice != null) {
-      return _unavailableState(context);
+      body = const Center(child: CircularProgressIndicator());
+    } else if (widget.error != null && !hasPayload) {
+      body = _errorState(context);
+    } else if (widget.binary || widget.notice != null) {
+      body = _unavailableState(context);
+    } else {
+      body = _body(context);
     }
     return Column(
       key: widget.keys.surface,
@@ -218,8 +233,8 @@ class _GitFileViewerState extends State<GitFileViewer> {
       children: [
         if (_showHeader) _header(context),
         if (_showHeader) const Divider(height: 1),
-        if (widget.truncated) _truncatedBanner(context),
-        Expanded(child: _body(context)),
+        if (widget.truncated && hasPayload) _truncatedBanner(context),
+        Expanded(child: body),
       ],
     );
   }
@@ -475,13 +490,18 @@ class _GitFileViewerState extends State<GitFileViewer> {
 
   /// 解析 unified diff：跳过文件头/索引行，保留 hunk 标记与增删/上下文行。
   ///
-  /// 未跟踪文件返回的是原始内容而不是 patch：每一行按新增行展示，保留空行和
-  /// 看起来像 diff 元数据的普通源码行，只忽略末尾换行产生的空哨兵。
-  List<({String marker, String text})> _parseDiffLines() {
+  /// 同时按 hunk header（`@@ -a,b +c,d @@`）为每行算出旧/新行号：上下文行两边
+  /// 都递增，删除行只进旧侧，新增行只进新侧；hunk header 行本身不显示行号。
+  /// 未跟踪文件返回原始内容而不是 patch：每行按新增行展示（新侧行号），保留
+  /// 空行与看起来像 diff 元数据的普通源码行，只忽略末尾换行产生的空哨兵。
+  List<_DiffLineData> _parseDiffLines() {
     if (widget.diff.isEmpty) return const [];
     final rawLines = widget.diff.split('\n');
-    final lines = <({String marker, String text})>[];
+    final lines = <_DiffLineData>[];
     var inHunk = false;
+    var oldLine = 0;
+    var newLine = 0;
+    var addedCount = 0;
     for (var rawIndex = 0; rawIndex < rawLines.length; rawIndex++) {
       final line = rawLines[rawIndex];
       if (widget.rawAddedContent) {
@@ -490,7 +510,10 @@ class _GitFileViewerState extends State<GitFileViewer> {
             widget.diff.endsWith('\n')) {
           continue;
         }
-        lines.add((marker: '+', text: line));
+        addedCount++;
+        lines.add(
+          _DiffLineData(marker: '+', text: line, newNumber: addedCount),
+        );
         continue;
       }
       if (line.isEmpty ||
@@ -501,26 +524,49 @@ class _GitFileViewerState extends State<GitFileViewer> {
       }
       if (line.startsWith('@@')) {
         inHunk = true;
-        lines.add((marker: '@', text: line));
+        final header = _hunkHeader.firstMatch(line);
+        if (header != null) {
+          oldLine = int.parse(header.group(1)!);
+          newLine = int.parse(header.group(3)!);
+        }
+        lines.add(_DiffLineData(marker: '@', text: line));
         continue;
       }
       if (line.startsWith('\\')) continue;
       if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
         continue;
       }
-      if (line.startsWith('+') || line.startsWith('-')) {
-        lines.add((marker: line[0], text: line.substring(1)));
+      if (line.startsWith('+')) {
+        lines.add(
+          _DiffLineData(
+            marker: '+',
+            text: line.substring(1),
+            newNumber: newLine++,
+          ),
+        );
+      } else if (line.startsWith('-')) {
+        lines.add(
+          _DiffLineData(
+            marker: '-',
+            text: line.substring(1),
+            oldNumber: oldLine++,
+          ),
+        );
       } else if (line.startsWith(' ')) {
-        lines.add((marker: ' ', text: line.substring(1)));
+        lines.add(
+          _DiffLineData(
+            marker: ' ',
+            text: line.substring(1),
+            oldNumber: oldLine++,
+            newNumber: newLine++,
+          ),
+        );
       }
     }
     return lines;
   }
 
-  List<Widget> _diffWidgets(
-    BuildContext context,
-    List<({String marker, String text})> lines,
-  ) {
+  List<Widget> _diffWidgets(BuildContext context, List<_DiffLineData> lines) {
     final result = <Widget>[];
     var index = 0;
     var runId = 0;
@@ -554,7 +600,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
       }
       result.add(
         TextButton.icon(
-          key: Key('git-context-fold-$id'),
+          key: widget.keys.contextFold(id),
           onPressed: () => setState(() {
             if (expanded) {
               _expandedContextRuns.remove(id);
@@ -582,7 +628,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
 
   Widget _diffLine(
     BuildContext context,
-    ({String marker, String text}) line, {
+    _DiffLineData line, {
     int? lineIndex,
   }) {
     final color = switch (line.marker) {
@@ -596,13 +642,41 @@ class _GitFileViewerState extends State<GitFileViewer> {
       '-' => DshColors.danger(context).withValues(alpha: .10),
       _ => Colors.transparent,
     };
+    final numberStyle = TextStyle(
+      fontFamily: 'monospace',
+      fontSize: 11,
+      color: DshColors.ink3(context),
+    );
     return Container(
-      key: lineIndex == null ? null : Key('git-diff-line-$lineIndex'),
+      key: lineIndex == null ? null : widget.keys.diffLine(lineIndex),
       color: background,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          SizedBox(
+            width: 34,
+            child: Text(
+              line.oldNumber?.toString() ?? '',
+              key: lineIndex == null
+                  ? null
+                  : widget.keys.diffLineOldNumber(lineIndex),
+              textAlign: TextAlign.right,
+              style: numberStyle,
+            ),
+          ),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 34,
+            child: Text(
+              line.newNumber?.toString() ?? '',
+              key: lineIndex == null
+                  ? null
+                  : widget.keys.diffLineNewNumber(lineIndex),
+              textAlign: TextAlign.right,
+              style: numberStyle,
+            ),
+          ),
           SizedBox(
             width: 20,
             child: Text(
@@ -629,3 +703,21 @@ class _GitFileViewerState extends State<GitFileViewer> {
     );
   }
 }
+
+/// 一行 diff（已解析出行号）：[oldNumber]/[newNumber] 为 null 表示该侧不存在。
+class _DiffLineData {
+  const _DiffLineData({
+    required this.marker,
+    required this.text,
+    this.oldNumber,
+    this.newNumber,
+  });
+
+  final String marker;
+  final String text;
+  final int? oldNumber;
+  final int? newNumber;
+}
+
+/// unified diff hunk header：`@@ -oldStart,oldCount +newStart,newCount @@`。
+final RegExp _hunkHeader = RegExp(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@');

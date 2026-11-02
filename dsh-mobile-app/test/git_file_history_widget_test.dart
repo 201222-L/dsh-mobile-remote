@@ -33,6 +33,7 @@ class HistoryGitApi implements GitReadApi {
   bool truncatedHistory = false;
   int pageOneCount = 2;
   bool failFiles = false;
+  final Set<String> binaryPaths = {};
 
   final List<String?> fileQueries = [];
   final List<String?> historyPaths = [];
@@ -125,6 +126,7 @@ class HistoryGitApi implements GitReadApi {
     repositoryId: repositoryId,
     kind: kind,
     path: path,
+    binary: binaryPaths.contains(path),
     diff:
         'diff --git a/$path b/$path\n@@ -1 +1 @@\n-old line\n+new line\n',
   );
@@ -690,5 +692,44 @@ void main() {
     await tester.tap(find.byKey(const Key('sf-file-README.md')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('sf-history')), findsNothing);
+  });
+
+  testWidgets('binary and untracked-binary previews keep the history action', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()
+      ..binaryPaths.addAll(['lib/a.dart', 'new-file.txt']);
+    await mountSheet(tester, api, pushed: true);
+
+    // 二进制 staged 文件：预览不可读，但查看器头栏仍保留历史入口。
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('git-unavailable')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+
+    // 返回预览，再返回工作区。
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    // 未跟踪二进制文件：入口可见，进入后给出 not-tracked 空态。
+    await tester.tap(
+      find.byKey(const Key('git-worktree-untracked-new-file.txt')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-unavailable')), findsOneWidget);
+    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('No commit history (untracked file)'), findsOneWidget);
   });
 }

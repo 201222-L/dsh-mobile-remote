@@ -111,13 +111,25 @@ void main() {
     expect(find.text('File is large: showing first 10 KiB'), findsOneWidget);
   });
 
-  testWidgets('binary and notice states replace the body', (tester) async {
+  testWidgets('binary and notice states keep the header actions', (tester) async {
     await _pump(
       tester,
-      const GitFileViewer(
+      GitFileViewer(
         mode: GitFileViewerMode.content,
         path: 'photo.png',
         binary: true,
+        leading: IconButton(
+          key: const Key('state-back'),
+          onPressed: () {},
+          icon: const Icon(Icons.arrow_back),
+        ),
+        topActions: [
+          TextButton(
+            key: const Key('state-history'),
+            onPressed: () {},
+            child: const Text('History'),
+          ),
+        ],
       ),
     );
     expect(
@@ -125,6 +137,9 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('Binary'), findsOneWidget);
+    // 状态 body 不能吞掉 leading/topActions（历史入口必须可达）。
+    expect(find.byKey(const Key('state-back')), findsOneWidget);
+    expect(find.byKey(const Key('state-history')), findsOneWidget);
 
     await _pump(
       tester,
@@ -141,7 +156,7 @@ void main() {
   testWidgets('content loading and error states expose retry', (tester) async {
     // loading 的 spinner 无限动画，不能 pumpAndSettle。
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
         home: Scaffold(
           body: SizedBox(
             height: 600,
@@ -149,6 +164,18 @@ void main() {
               mode: GitFileViewerMode.content,
               path: 'a.txt',
               loading: true,
+              leading: IconButton(
+                key: const Key('state-back'),
+                onPressed: () {},
+                icon: const Icon(Icons.arrow_back),
+              ),
+              topActions: [
+                TextButton(
+                  key: const Key('state-history'),
+                  onPressed: () {},
+                  child: const Text('History'),
+                ),
+              ],
             ),
           ),
         ),
@@ -156,6 +183,14 @@ void main() {
     );
     await tester.pump();
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byKey(const Key('state-back')), findsOneWidget);
+    expect(find.byKey(const Key('state-history')), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('git-file-viewer-copy')))
+          .onPressed,
+      isNull,
+    );
 
     var retries = 0;
     await _pump(
@@ -165,9 +200,30 @@ void main() {
         path: 'a.txt',
         error: 'network failed',
         onRetry: () => retries++,
+        leading: IconButton(
+          key: const Key('state-back'),
+          onPressed: () {},
+          icon: const Icon(Icons.arrow_back),
+        ),
+        topActions: [
+          TextButton(
+            key: const Key('state-history'),
+            onPressed: () {},
+            child: const Text('History'),
+          ),
+        ],
       ),
     );
     expect(find.byKey(const Key('git-file-viewer-error')), findsOneWidget);
+    expect(find.byKey(const Key('state-back')), findsOneWidget);
+    expect(find.byKey(const Key('state-history')), findsOneWidget);
+    // 无 payload 时复制动作禁用。
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('git-file-viewer-copy')))
+          .onPressed,
+      isNull,
+    );
     await tester.tap(find.byKey(const Key('git-file-viewer-retry')));
     await tester.pumpAndSettle();
     expect(retries, 1);
@@ -250,13 +306,29 @@ void main() {
     expect(find.text('new line'), findsOneWidget);
     expect(find.text('-- source -- marker'), findsOneWidget);
     expect(find.text('++ source ++ marker'), findsOneWidget);
+    // US6：diff 模式同样有行号；旧/新行号来自 hunk header。
+    String number(Key key) => tester.widget<Text>(find.byKey(key)).data!;
+    expect(number(const Key('git-file-viewer-old-1')), '1');
+    expect(number(const Key('git-file-viewer-new-1')), '1');
+    expect(number(const Key('git-file-viewer-old-4')), '4'); // -old line
+    expect(number(const Key('git-file-viewer-new-4')), ''); // 仅旧侧
+    expect(number(const Key('git-file-viewer-old-5')), ''); // +new line 仅新侧
+    expect(number(const Key('git-file-viewer-new-5')), '4');
+    // hunk header 行不显示行号。
+    expect(number(const Key('git-file-viewer-old-0')), '');
+    expect(number(const Key('git-file-viewer-new-0')), '');
     expect(find.text('-'), findsNWidgets(2));
     expect(find.text('+'), findsNWidgets(2));
     // 7 行未改动的上下文默认折叠（保留首尾 3 行）。
     expect(find.text('keep 7'), findsNothing);
-    expect(find.byKey(const Key('git-context-fold-0')), findsOneWidget);
+    expect(
+      find.byKey(const Key('git-file-viewer-context-fold-0')),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.byKey(const Key('git-context-fold-0')));
+    await tester.tap(
+      find.byKey(const Key('git-file-viewer-context-fold-0')),
+    );
     await tester.pumpAndSettle();
     expect(find.text('keep 7'), findsOneWidget);
   });
@@ -295,8 +367,24 @@ void main() {
     );
 
     expect(find.text('line one'), findsOneWidget);
-    expect(find.byKey(const Key('git-diff-line-1')), findsOneWidget);
+    expect(
+      find.byKey(const Key('git-file-viewer-diff-line-1')),
+      findsOneWidget,
+    );
     expect(find.text('index literal'), findsOneWidget);
+    // 未跟踪内容按新增行展示：只有新侧行号，且空行也占一行。
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('git-file-viewer-new-1')))
+          .data,
+      '2',
+    );
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('git-file-viewer-old-1')))
+          .data,
+      '',
+    );
     expect(find.text('diff --git literal'), findsOneWidget);
     expect(find.text('Binary files are source text'), findsOneWidget);
   });

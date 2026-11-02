@@ -227,15 +227,20 @@ void main() {
     );
 
     final labels = gitGraphLabels(decoration);
+    // `HEAD -> refs/heads/main` 在旧宿主上投影为 head + current localBranch，
+    // 所以 main 同时以 HEAD（首个）和本地分支出现；排序仍是 HEAD → 本地。
     expect(labels.map((label) => label.text).toList(), [
       'main',
       'feature',
+      'main',
       'origin/main',
       'origin/other',
       'v1',
       'v2',
     ]);
     expect(labels.first.kind, GitGraphLabelKind.head);
+    expect(labels[1].kind, GitGraphLabelKind.localBranch);
+    expect(labels[2].kind, GitGraphLabelKind.localBranch);
     expect(labels.where((label) => label.tag).every((l) => !l.annotated), isTrue);
     // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
     expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);

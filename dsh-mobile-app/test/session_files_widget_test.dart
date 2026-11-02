@@ -26,6 +26,7 @@ class _Backend {
   }
 
   bool failDirs = false;
+  Completer<void>? filesGate;
   late final Api api;
 
   final Map<String, ({List<String> dirs, List<String> files})> listing = {
@@ -55,6 +56,8 @@ class _Backend {
       );
     }
     if (request.url.path == '/m/api/files') {
+      final gate = filesGate;
+      if (gate != null) await gate.future;
       if (path.endsWith('photo.png')) {
         return http.Response.bytes([0x89, 0x50, 0x00, 0x4E], 200);
       }
@@ -384,5 +387,23 @@ void main() {
 
     await _systemBack(tester); // → 退出页面
     expect(find.text('宿主页'), findsOneWidget);
+  });
+
+  testWidgets('文件预览加载中仍保留 in-content 返回按钮', (tester) async {
+    final b = _Backend();
+    b.filesGate = Completer<void>();
+    await _pump(tester, _store(), b.api);
+
+    await tester.tap(find.byKey(const Key('sf-file-README.md')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('sf-preview')), findsOneWidget);
+    expect(find.byKey(const Key('sf-preview-back')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    b.filesGate!.complete();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sf-preview-md')), findsOneWidget);
   });
 }

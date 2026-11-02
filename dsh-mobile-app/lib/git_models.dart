@@ -332,14 +332,28 @@ class GitDecoration {
         parsedTags.add(GitTagDetail.fromLegacy(text));
       } else if (text.startsWith('HEAD -> ')) {
         final target = text.substring(8).trim();
+        final shortName = gitShortRefName(target);
         parsedRefs.add(
           GitRefDetail(
             kind: GitRefKind.head,
             name: target,
-            shortName: gitShortRefName(target),
+            shortName: shortName,
             current: true,
           ),
         );
+        // 旧宿主投影 `HEAD -> refs/heads/x` 等于“x 是当前本地分支”：
+        // 补一条 localBranch current:true，US3 的 HEAD → 本地分支排序在旧宿主
+        // 上也与结构化宿主一致。
+        if (shortName.isNotEmpty && shortName != 'HEAD') {
+          parsedRefs.add(
+            GitRefDetail(
+              kind: GitRefKind.localBranch,
+              name: target,
+              shortName: shortName,
+              current: true,
+            ),
+          );
+        }
       } else if (text == 'HEAD') {
         parsedRefs.add(
           const GitRefDetail(
