@@ -257,6 +257,8 @@ function refsFixture(root) {
   const blob = git(root, "hash-object", "-w", "blob-target.txt");
   rmSync(join(root, "blob-target.txt"));
   git(root, "tag", "-a", "blobtag", "-m", "Blob tag", blob);
+  // Tabs in the tagger name and subject must survive the NUL/US-delimited parser.
+  git(root, "-c", "user.name=Tab\tTagger", "tag", "-a", "tabtag", "-m", "subject\twith\ttabs");
   return { headOid: git(root, "rev-parse", "HEAD"), blob };
 }
 
@@ -292,6 +294,13 @@ test("refs projects head, local, remote and tag records with annotated metadata 
     assert.equal(nested.annotated, true);
     assert.equal(nested.commitOid, headOid);
     assert.equal(nested.hint, "nested-tag");
+
+    const tabbed = byName.get("refs/tags/tabtag");
+    assert.equal(tabbed.annotated, true);
+    assert.equal(tabbed.commitOid, headOid);
+    assert.equal(tabbed.tagger, "Tab\tTagger");
+    assert.equal(tabbed.subject, "subject\twith\ttabs");
+    assert.equal(tabbed.hint, undefined);
 
     const blobTag = byName.get("refs/tags/blobtag");
     assert.equal(blobTag.annotated, true);

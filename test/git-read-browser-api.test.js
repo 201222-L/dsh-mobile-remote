@@ -365,7 +365,7 @@ test("empty repositories answer file listing and history with explicit empty res
   } finally { browser.cleanup?.(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("legacy 1.0.0 external providers stay compatible and get structured refs synthesized from raw strings", async () => {
+test("legacy 1.0.0 external providers stay compatible, synthesize structured refs and never inherit bundled file APIs", async () => {
   const root = initRepo("git-legacy-");
   try {
     const oid = "a".repeat(40);
@@ -391,6 +391,9 @@ test("legacy 1.0.0 external providers stay compatible and get structured refs sy
       logger: { warn() {}, info() {} }, get(name) { return services.get(name); },
       provide(name, value) { services.set(name, value); }, on() { return () => {}; },
       effect(callback) { return callback?.() ?? (() => {}); }, inject() {},
+      // The bundled provider IS available here; the active provider is still the
+      // legacy external one, so file-history must not be advertised or mixed in.
+      subprocess: subprocess(),
     };
     const cleanup = apply(ctx, config);
     const route = routes.find((item) => item.path === "/m/api")?.handler;
@@ -407,7 +410,8 @@ test("legacy 1.0.0 external providers stay compatible and get structured refs sy
       assert.equal(capabilities.body.git.contractVersion, "1.1.0");
       assert.equal(capabilities.body.git.provider, "external");
       assert.equal(capabilities.body.git.features.refsDetail, true);
-      // No bundled subprocess in this context: file history is honestly unavailable.
+      // Bundled Git is usable, but the ACTIVE provider lacks the new methods:
+      // the capability must stay false rather than mixing providers.
       assert.equal(capabilities.body.git.features.fileHistory, false);
 
       const repository = await request("/git/repository?sessionId=s1");
@@ -416,9 +420,9 @@ test("legacy 1.0.0 external providers stay compatible and get structured refs sy
       assert.equal(graph.status, 200);
       const row = graph.body.commits[0];
       assert.deepEqual(row.refs, ["HEAD -> refs/heads/main", "refs/heads/topic", "refs/remotes/origin/main", "refs/remotes/origin/HEAD", "refs/stash", "tag: refs/tags/v1.0.0"]);
-      assert.deepEqual(row.refsDetail.map(({ kind, shortName }) => ({ kind, shortName })), [
-        { kind: "head", shortName: "HEAD" },
-        { kind: "localBranch", shortName: "main" },
+      assert.deepEqual(row.refsDetail.map(({ kind, shortName, current }) => ({ kind, shortName, ...(current === undefined ? {} : { current }) })), [
+        { kind: "head", shortName: "HEAD", current: true },
+        { kind: "localBranch", shortName: "main", current: true },
         { kind: "localBranch", shortName: "topic" },
         { kind: "remoteBranch", shortName: "origin/main" },
       ]);
@@ -426,21 +430,23 @@ test("legacy 1.0.0 external providers stay compatible and get structured refs sy
 
       const commit = await request(`/git/commit?${query}&oid=${oid}`);
       assert.equal(commit.status, 200);
-      assert.deepEqual(commit.body.refsDetail.map(({ kind, shortName }) => ({ kind, shortName })), [
-        { kind: "head", shortName: "HEAD" },
-        { kind: "localBranch", shortName: "main" },
+      assert.deepEqual(commit.body.refsDetail.map(({ kind, shortName, current }) => ({ kind, shortName, ...(current === undefined ? {} : { current }) })), [
+        { kind: "head", shortName: "HEAD", current: true },
+        { kind: "localBranch", shortName: "main", current: true },
       ]);
       assert.deepEqual(commit.body.tagsDetail.map(({ name, shortName, oid: tagOid, annotated }) => ({ name, shortName, oid: tagOid, annotated })), [
         { name: "refs/tags/legacy-tag", shortName: "legacy-tag", oid, annotated: false },
         { name: "refs/tags/short-tag", shortName: "short-tag", oid, annotated: false },
       ]);
 
+      // Fail closed with a stable code; never serve bundled data behind the
+      // external provider's graph/commit facts.
       const files = await request(`/git/files?${query}`);
       assert.equal(files.status, 503);
-      assert.equal(files.body.error, "provider-incompatible");
+      assert.deepEqual(files.body, { error: "provider-incompatible" });
       const history = await request(`/git/file-history?${query}&path=a.txt`);
       assert.equal(history.status, 503);
-      assert.equal(history.body.error, "provider-incompatible");
+      assert.deepEqual(history.body, { error: "provider-incompatible" });
     } finally { cleanup?.(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
