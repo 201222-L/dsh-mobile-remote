@@ -65,6 +65,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   bool _historyFromRoute = false;
   _View _viewBeforeHistory = _View.tab;
   _View _commitReturnView = _View.tab;
+
+  /// 独立历史视图覆盖在预览上时，保活预览子树，返回后滚动/fold/markdown 不丢。
+  bool _keepPreviewAlive = false;
+  int _lastTabIndex = 0;
   late final TabController _tabs;
   final ScrollController _branchScroll = ScrollController();
   final ScrollController _worktreeScroll = ScrollController();
@@ -190,6 +194,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   void initState() {
     super.initState();
     _tabs = TabController(length: _tabIds.length, vsync: this);
+    _lastTabIndex = _tabs.index;
     _tabs.addListener(_onTabControllerChanged);
     _pendingHistoryPath = widget.initialFileHistoryPath;
     widget.scrollController.addListener(_onGraphScroll);
@@ -266,7 +271,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   }
 
   void _onTabControllerChanged() {
-    if (mounted) setState(() {});
+    // TabController 在切换动画期间会多次通知；只在 index 真正变化时重建。
+    if (!mounted || _tabs.index == _lastTabIndex) return;
+    _lastTabIndex = _tabs.index;
+    setState(() {});
   }
 
   void _onGraphScroll() => _onScroll(widget.scrollController);
@@ -431,10 +439,14 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     unawaited(history.selectFile(path));
     final tabIndex = _tabIds.indexOf('fileHistory');
     if (tabIndex >= 0) {
+      // 设计决策（US11）：history tab 已启用时深链切换过去，不叠加独立历史视图。
+      // 因此从 diff 预览深链后，返回键行为与手动切到该 tab 一致——在 tab 根
+      // 退出 Git 浏览器，而不是恢复原 diff 预览。
       setState(() {
         _temporaryGraph = false;
         _view = _View.tab;
         _historyFromRoute = false;
+        _keepPreviewAlive = false;
       });
       _tabs.animateTo(tabIndex);
       return;
@@ -442,6 +454,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     setState(() {
       _historyFromRoute = fromInitialRoute;
       _viewBeforeHistory = fromInitialRoute ? _View.tab : _view;
+      // 从查看器进入独立历史视图时保活预览子树，返回后 fold/markdown/滚动不丢。
+      _keepPreviewAlive = !fromInitialRoute && _viewBeforeHistory == _View.preview;
       _view = _View.history;
     });
   }
@@ -499,16 +513,17 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         setState(() {
           _view = _viewBeforeHistory;
           _historyFromRoute = false;
+          _keepPreviewAlive = false;
         });
       }
     } else if (_view == _View.preview) {
       widget.controller.closePreview();
       setState(() => _view = _previewFromCommit ? _View.commit : _View.tab);
     } else if (_view == _View.commit) {
+      final returningToHistory = _commitReturnView == _View.history;
+      if (!returningToHistory) _keepPreviewAlive = false;
       setState(
-        () => _view = _commitReturnView == _View.history
-            ? _View.history
-            : _View.tab,
+        () => _view = returningToHistory ? _View.history : _View.tab,
       );
     } else if (_temporaryGraph) {
       setState(() => _temporaryGraph = false);
@@ -654,8 +669,20 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   ),
                   if (_temporaryGraph && _view == _View.tab)
                     _tabBody('graph', state),
+                  // 预览在独立历史/从历史打开的提交详情期间保活（Offstage），
+                  // 返回时 fold 展开、Markdown 模式与滚动偏移都保持原样。
+                  // 顺序固定为 [预览, 提交详情, 历史]，避免 overlay 切换时因
+                  // Stack 子节点位置变化导致预览子树被重建。
+                  if (_view == _View.preview ||
+                      (_keepPreviewAlive &&
+                          (_view == _View.history ||
+                              (_view == _View.commit &&
+                                  _commitReturnView == _View.history))))
+                    Offstage(
+                      offstage: _view != _View.preview,
+                      child: _preview(state),
+                    ),
                   if (_view == _View.commit) _detail(state),
-                  if (_view == _View.preview) _preview(state),
                   if (_view == _View.history) _historySurface(state),
                 ],
               ),

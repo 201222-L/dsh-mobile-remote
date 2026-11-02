@@ -362,9 +362,10 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
     if (controller.entries.isEmpty) {
       if (controller.isUntracked) {
         return _emptyState(
+          // not-tracked 覆盖“未跟踪”与“已在 HEAD 删除/改名”两种情形。
           L10n.t(
-            '该文件暂无提交历史（未跟踪）',
-            'No commit history (untracked file)',
+            '该文件不在当前 HEAD（未跟踪或已删除）',
+            'File is not in the current HEAD (untracked or deleted)',
           ),
           action: _openPicker,
           actionLabel: L10n.t('重新选择文件', 'Choose another file'),

@@ -4,7 +4,6 @@ import 'dart:convert';
 
 import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/git_browser_controller.dart';
-import 'package:dsh_mobile_app/git_models.dart';
 import 'package:dsh_mobile_app/l10n.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/screens/git_browser_sheet.dart';
@@ -18,211 +17,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const _main = GitBranch(
-  name: 'refs/heads/main',
-  displayName: 'main',
-  oid: 'main-oid',
-  kind: 'local',
-  current: true,
-);
-
-class HistoryGitApi implements GitReadApi {
-  bool fileHistoryCapability = true;
-  bool repositoryEmpty = false;
-  bool failHistory = false;
-  bool truncatedHistory = false;
-  int pageOneCount = 2;
-  bool failFiles = false;
-  final Set<String> binaryPaths = {};
-
-  final List<String?> fileQueries = [];
-  final List<String?> historyPaths = [];
-  final List<String?> historyCursors = [];
-
-  @override
-  Future<GitReadCapabilities> capabilities(String sessionId) async =>
-      GitReadCapabilities(
-        available: true,
-        features: {
-          'refsDetail': true,
-          'fileHistory': fileHistoryCapability,
-        },
-      );
-
-  @override
-  Future<GitRepository> repository(String sessionId) async => GitRepository(
-    repositoryId: 'repo-1',
-    name: 'example',
-    headOid: 'main-oid',
-    currentBranch: 'refs/heads/main',
-    empty: repositoryEmpty,
-  );
-
-  @override
-  Future<List<GitBranch>> branches(
-    String sessionId,
-    String repositoryId,
-  ) async => const [_main];
-
-  @override
-  Future<GitGraphPage> graph(
-    String sessionId,
-    String repositoryId,
-    List<GitGraphTip> tips, {
-    String? snapshotId,
-    String? cursor,
-    int limit = 100,
-  }) async => GitGraphPage(
-    snapshotId: 'snapshot',
-    tips: tips,
-    commits: const [
-      GitCommitSummary(
-        oid: 'main-oid',
-        subject: 'Main commit',
-        author: 'Ada',
-        timestamp: 1700000000,
-      ),
-    ],
-  );
-
-  @override
-  Future<GitCommitDetails> commitDetails(
-    String sessionId,
-    String repositoryId,
-    String oid, {
-    String? filesCursor,
-    int filesLimit = 100,
-  }) async => GitCommitDetails(
-    oid: oid,
-    author: 'Ada',
-    timestamp: 1700000000,
-    message: 'History commit $oid',
-    refs: const ['main'],
-    files: const [GitCommitFile(path: 'lib/a.dart')],
-    filesTotal: 1,
-  );
-
-  @override
-  Future<GitWorktreeSnapshot> worktree(
-    String sessionId,
-    String repositoryId,
-  ) async => const GitWorktreeSnapshot(
-    repositoryId: 'repo-1',
-    snapshotId: 'worktree-1',
-    staged: [GitWorktreeFile(path: 'lib/a.dart', status: 'modified')],
-    unstaged: [GitWorktreeFile(path: 'bad.txt', status: 'modified')],
-    untracked: [GitWorktreeFile(path: 'new-file.txt', status: 'untracked')],
-  );
-
-  @override
-  Future<GitFilePreview> preview(
-    String sessionId,
-    String repositoryId, {
-    required String kind,
-    required String path,
-    String? snapshotId,
-    String? oid,
-  }) async => GitFilePreview(
-    repositoryId: repositoryId,
-    kind: kind,
-    path: path,
-    binary: binaryPaths.contains(path),
-    diff:
-        'diff --git a/$path b/$path\n@@ -1 +1 @@\n-old line\n+new line\n',
-  );
-
-  @override
-  Future<GitFileList> files(
-    String sessionId,
-    String repositoryId, {
-    String? q,
-    int limit = 200,
-  }) async {
-    fileQueries.add(q);
-    if (failFiles) throw ApiException('file list unavailable');
-    const all = ['lib/a.dart', 'lib/b.dart', 'new-file.txt'];
-    final query = (q ?? '').toLowerCase();
-    return GitFileList(
-      files: all
-          .where((path) => query.isEmpty || path.toLowerCase().contains(query))
-          .toList(),
-    );
-  }
-
-  @override
-  Future<GitFileHistoryPage> fileHistory(
-    String sessionId,
-    String repositoryId, {
-    required String path,
-    String? cursor,
-    int limit = 20,
-  }) async {
-    historyPaths.add(path);
-    historyCursors.add(cursor);
-    if (failHistory) throw ApiException('history unavailable');
-    if (path.contains('new-file')) {
-      return GitFileHistoryPage(repositoryId: repositoryId, path: path, reason: 'not-tracked');
-    }
-    if (path.contains('bad')) {
-      return GitFileHistoryPage(repositoryId: repositoryId, path: path, reason: 'path-invalid');
-    }
-    if (repositoryEmpty) {
-      return GitFileHistoryPage(repositoryId: repositoryId, path: path, reason: 'no-history');
-    }
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    if (cursor != null) {
-      return GitFileHistoryPage(
-        repositoryId: repositoryId,
-        path: path,
-        entries: [
-          GitFileHistoryEntry(
-            oid: 'later-oid',
-            shortOid: 'later-oi',
-            author: 'Cyd',
-            timestamp: now - 86400,
-            subject: 'Delete c.dart',
-            status: 'D',
-          ),
-        ],
-      );
-    }
-    final entries = <GitFileHistoryEntry>[
-      GitFileHistoryEntry(
-        oid: 'aaaa111122223333',
-        shortOid: 'aaaa1111',
-        author: 'Ada',
-        timestamp: now - 3600,
-        subject: 'Update a.dart',
-        status: 'M',
-      ),
-      if (pageOneCount > 1)
-        GitFileHistoryEntry(
-          oid: 'bbbb222233334444',
-          shortOid: 'bbbb2222',
-          author: 'Bob',
-          timestamp: now - 7200,
-          subject: 'Add b.dart',
-          status: 'A',
-        ),
-      for (var i = 2; i < pageOneCount; i++)
-        GitFileHistoryEntry(
-          oid: 'oid-$i',
-          shortOid: 'short-$i',
-          author: 'Ada',
-          timestamp: now - 7200 - i,
-          subject: 'History $i',
-          status: 'M',
-        ),
-    ];
-    return GitFileHistoryPage(
-      repositoryId: repositoryId,
-      path: path,
-      entries: entries,
-      nextCursor: truncatedHistory ? null : 'cursor-2',
-      truncated: truncatedHistory,
-    );
-  }
-}
+import 'git_history_fake.dart';
 
 AppStore makeStore() {
   final store = AppStore();
@@ -486,6 +281,12 @@ void main() {
     expect(find.byType(TabBar), findsOneWidget);
     expect(find.text('Update a.dart'), findsOneWidget);
     expect(find.byKey(const Key('git-history-picker')), findsNothing);
+
+    // 设计决策：tab 模式下返回键与手动切 tab 一致——在 tab 根退出 Git 浏览器，
+    // 而不是恢复进入前的 diff 预览（独立历史视图才恢复预览）。
+    await tester.tap(find.byTooltip('Back to chat'));
+    await tester.pumpAndSettle();
+    expect(find.text('host page'), findsOneWidget);
   });
 
   testWidgets('file history action is hidden without the capability', (
@@ -524,7 +325,7 @@ void main() {
     await tester.tap(find.byKey(const Key('git-file-history')));
     await tester.pumpAndSettle();
     expect(
-      find.text('No commit history (untracked file)'),
+      find.text('File is not in the current HEAD (untracked or deleted)'),
       findsOneWidget,
     );
 
@@ -730,6 +531,224 @@ void main() {
     expect(find.byKey(const Key('git-file-history')), findsOneWidget);
     await tester.tap(find.byKey(const Key('git-file-history')));
     await tester.pumpAndSettle();
-    expect(find.text('No commit history (untracked file)'), findsOneWidget);
+    expect(find.text('File is not in the current HEAD (untracked or deleted)'), findsOneWidget);
+  });
+
+  testWidgets('picker cancel then reopen resets the stale query', (tester) async {
+    final api = HistoryGitApi();
+    await mountSheet(tester, api, tabs: const ['fileHistory']);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('git-history-search')), 'b.');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(api.fileQueries.last, 'b.');
+
+    await tester.tap(find.byKey(const Key('git-history-cancel')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-history-change')));
+    await tester.pumpAndSettle();
+
+    // 重开选择器：输入框与结果都不能残留上次搜索词。
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('git-history-search')),
+    );
+    expect(field.controller!.text, isEmpty);
+    expect(api.fileQueries.last, isNull);
+    expect(
+      find.byKey(const Key('git-history-file-lib/a.dart')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('history rows render C/T/unknown status badges', (tester) async {
+    final api = HistoryGitApi()..statusesOverride = ['C', 'T', 'Z'];
+    await mountSheet(tester, api, tabs: const ['fileHistory']);
+    await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('C'), findsOneWidget);
+    expect(find.text('T'), findsOneWidget);
+    expect(find.text('Z'), findsOneWidget);
+    expect(
+      find.byKey(const Key('git-history-status-status-oid-0')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('git-history-status-status-oid-2')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('notice preview keeps the history action reachable', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..noticePaths.add('lib/a.dart');
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('git-unavailable')), findsOneWidget);
+    expect(find.text('preview unavailable'), findsOneWidget);
+    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+  });
+
+  testWidgets('commit-diff origin with binary preview keeps history action', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..binaryPaths.add('lib/a.dart');
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-file-lib/a.dart')));
+    await tester.pumpAndSettle();
+
+    // commit diff origin + binary preview：历史入口仍可达并可打开历史。
+    expect(find.byKey(const Key('git-unavailable')), findsOneWidget);
+    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(api.historyPaths, ['lib/a.dart']);
+  });
+
+  testWidgets('standalone history back keeps expanded fold state', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..longDiff = true;
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-context-fold-0')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-context-fold-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('keep 7'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    // 预览子树保活（Offstage）：折叠展开状态还原后仍保持。
+    expect(find.text('keep 7'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('session files hides history when capability probe fails', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..failCapabilities = true;
+    final fileApi = Api(
+      client: MockClient((request) async {
+        final path = request.url.queryParameters['path'] ?? '';
+        if (request.url.path == '/m/api/directories') {
+          return http.Response(
+            jsonEncode({
+              'ok': true,
+              'path': path,
+              'dirs': <String>[],
+              'files': ['README.md'],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/m/api/files') {
+          return http.Response.bytes(utf8.encode('line one\n'), 200);
+        }
+        return http.Response('unexpected ${request.url}', 500);
+      }),
+    )
+      ..baseUrl = 'http://sf.test'
+      ..path = '/m'
+      ..token = '';
+    final store = makeStore();
+    final controller = SessionFilesController(
+      store: store,
+      sessionId: 'session-1',
+      apiClient: fileApi,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SessionFilesScreen(
+          store: store,
+          sessionId: 'session-1',
+          controller: controller,
+          gitReadApi: api,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sf-file-README.md')));
+    await tester.pumpAndSettle();
+    // 探测失败（旧宿主/非仓库）：入口隐藏，文件浏览不受影响。
+    expect(find.byKey(const Key('sf-history')), findsNothing);
+    expect(find.byKey(const Key('sf-preview')), findsOneWidget);
+  });
+
+  testWidgets('session files binary preview keeps the history action', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    final fileApi = Api(
+      client: MockClient((request) async {
+        final path = request.url.queryParameters['path'] ?? '';
+        if (request.url.path == '/m/api/directories') {
+          return http.Response(
+            jsonEncode({
+              'ok': true,
+              'path': path,
+              'dirs': <String>[],
+              'files': ['photo.png'],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/m/api/files') {
+          return http.Response.bytes([0x89, 0x50, 0x00, 0x4E], 200);
+        }
+        return http.Response('unexpected ${request.url}', 500);
+      }),
+    )
+      ..baseUrl = 'http://sf.test'
+      ..path = '/m'
+      ..token = '';
+    final store = makeStore();
+    final controller = SessionFilesController(
+      store: store,
+      sessionId: 'session-1',
+      apiClient: fileApi,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SessionFilesScreen(
+          store: store,
+          sessionId: 'session-1',
+          controller: controller,
+          gitReadApi: api,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('sf-file-photo.png')));
+    await tester.pumpAndSettle();
+
+    // 会话文件页的二进制不可预览态：leading/历史入口仍保留。
+    expect(find.byKey(const Key('sf-preview-unavailable')), findsOneWidget);
+    expect(find.byKey(const Key('sf-preview-back')), findsOneWidget);
+    expect(find.byKey(const Key('sf-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sf-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
   });
 }

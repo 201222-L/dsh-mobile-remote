@@ -239,12 +239,19 @@ void main() {
         GitRefKind.remoteBranch,
       ],
     );
-    // 旧宿主 `HEAD -> refs/heads/main` 同时投影 head 与 current localBranch。
+    // 旧宿主 `HEAD -> refs/heads/main` 与宿主 legacy 投影一致：
+    // head 标签是 HEAD/HEAD，目标分支是 current localBranch main。
     expect(summary.decoration.refs[0].isHead, isTrue);
-    expect(summary.decoration.refs[0].shortName, 'main');
+    expect(summary.decoration.refs[0].name, 'HEAD');
+    expect(summary.decoration.refs[0].shortName, 'HEAD');
     expect(summary.decoration.refs[1].isLocalBranch, isTrue);
     expect(summary.decoration.refs[1].current, isTrue);
+    expect(summary.decoration.refs[1].name, 'refs/heads/main');
     expect(summary.decoration.refs[1].shortName, 'main');
+    expect(
+      summary.decoration.refs.map((ref) => ref.shortName).toList(),
+      ['HEAD', 'main', 'feature', 'origin/main'],
+    );
     expect(
       summary.decoration.tags.map((tag) => tag.shortName).toList(),
       ['v1', 'v2'],

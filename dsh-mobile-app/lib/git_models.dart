@@ -332,24 +332,26 @@ class GitDecoration {
         parsedTags.add(GitTagDetail.fromLegacy(text));
       } else if (text.startsWith('HEAD -> ')) {
         final target = text.substring(8).trim();
-        final shortName = gitShortRefName(target);
+        final targetShortName = gitShortRefName(target);
+        // 与宿主 legacy 投影一致：HEAD 自身作为 head 标签（name/shortName 均为
+        // HEAD），目标分支另投影为 current localBranch。两者不能共用 shortName，
+        // 否则旧宿主的图行/Refs 行会出现重复的 “main” pill。
         parsedRefs.add(
-          GitRefDetail(
+          const GitRefDetail(
             kind: GitRefKind.head,
-            name: target,
-            shortName: shortName,
+            name: 'HEAD',
+            shortName: 'HEAD',
             current: true,
           ),
         );
-        // 旧宿主投影 `HEAD -> refs/heads/x` 等于“x 是当前本地分支”：
-        // 补一条 localBranch current:true，US3 的 HEAD → 本地分支排序在旧宿主
-        // 上也与结构化宿主一致。
-        if (shortName.isNotEmpty && shortName != 'HEAD') {
+        if (targetShortName.isNotEmpty) {
           parsedRefs.add(
             GitRefDetail(
               kind: GitRefKind.localBranch,
-              name: target,
-              shortName: shortName,
+              name: target.startsWith('refs/heads/')
+                  ? target
+                  : 'refs/heads/$targetShortName',
+              shortName: targetShortName,
               current: true,
             ),
           );

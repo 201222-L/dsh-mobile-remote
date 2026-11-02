@@ -350,6 +350,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Choose 1–3 tabs and reorder them; the first is the default.',
                 ),
               ),
+              const SizedBox(height: 4),
+              Text(
+                L10n.t(
+                  '“文件历史”需要宿主支持；旧版宿主上该 tab 会降级为不可用提示。',
+                  'File history requires host support; on older hosts the tab degrades to an unavailable notice.',
+                ),
+                key: const Key('git-tabs-file-history-note'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               const SizedBox(height: 8),
               for (final id in [
                 ...selected,

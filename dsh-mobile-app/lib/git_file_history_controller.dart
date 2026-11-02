@@ -128,6 +128,8 @@ class GitFileHistoryController extends ChangeNotifier {
     if (path == null || _disposed) return;
     final generation = ++_historyGeneration;
     loadingHistory = true;
+    // 刷新/重选文件会作废 in-flight loadMore：先收起旧 footer spinner。
+    loadingMore = false;
     historyError = null;
     _notify();
     try {
@@ -172,7 +174,11 @@ class GitFileHistoryController extends ChangeNotifier {
         cursor: cursor,
         limit: pageSize,
       );
-      if (generation != _historyGeneration || _disposed) return;
+      if (generation != _historyGeneration) {
+        loadingMore = false;
+        return;
+      }
+      if (_disposed) return;
       final seen = entries.map((entry) => entry.oid).toSet();
       entries = List.unmodifiable([
         ...entries,
@@ -182,7 +188,11 @@ class GitFileHistoryController extends ChangeNotifier {
       nextCursor = page.nextCursor;
       truncated = truncated || page.truncated;
     } catch (error) {
-      if (generation != _historyGeneration || _disposed) return;
+      if (generation != _historyGeneration) {
+        loadingMore = false;
+        return;
+      }
+      if (_disposed) return;
       historyError = _short(error);
     }
     loadingMore = false;
@@ -209,9 +219,12 @@ class GitFileHistoryController extends ChangeNotifier {
   }
 
   /// 打开文件选择器（自动打开与用户点击共用；自动只发生一次）。
+  ///
+  /// 重新打开时清空上次搜索词：否则输入框已清空、结果却仍是旧过滤结果。
   void openPicker() {
     if (pickerOpen || _disposed) return;
     pickerOpen = true;
+    pickerQuery = '';
     filesError = null;
     _notify();
     unawaited(_loadFiles(query: pickerQuery));
@@ -280,7 +293,20 @@ class GitFileHistoryController extends ChangeNotifier {
       merged.removeRange(recentFilesLimit, merged.length);
     }
     recentFiles = List.unmodifiable(merged);
+    // 预填文件可能先于 prefs 读取被记入内存：合并后回写，重建控制器仍能读到。
+    final prefs = _prefs;
+    if (prefs != null && !_samePaths(merged, saved)) {
+      unawaited(prefs.setStringList(recentFilesKey(repositoryId), recentFiles));
+    }
     _notify();
+  }
+
+  bool _samePaths(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _rememberRecent(String path) {

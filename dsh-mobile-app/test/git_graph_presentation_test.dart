@@ -227,10 +227,10 @@ void main() {
     );
 
     final labels = gitGraphLabels(decoration);
-    // `HEAD -> refs/heads/main` 在旧宿主上投影为 head + current localBranch，
-    // 所以 main 同时以 HEAD（首个）和本地分支出现；排序仍是 HEAD → 本地。
+    // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
+    // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
     expect(labels.map((label) => label.text).toList(), [
-      'main',
+      'HEAD',
       'feature',
       'main',
       'origin/main',
@@ -239,8 +239,10 @@ void main() {
       'v2',
     ]);
     expect(labels.first.kind, GitGraphLabelKind.head);
+    expect(labels.first.text, 'HEAD');
     expect(labels[1].kind, GitGraphLabelKind.localBranch);
     expect(labels[2].kind, GitGraphLabelKind.localBranch);
+    expect(labels[2].text, 'main');
     expect(labels.where((label) => label.tag).every((l) => !l.annotated), isTrue);
     // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
     expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
