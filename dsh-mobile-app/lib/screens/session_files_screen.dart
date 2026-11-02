@@ -28,14 +28,16 @@ void openSessionFiles(
   String sessionId, {
   SessionFilesController? controller,
   GitReadApi? gitReadApi,
+  bool selectionMode = false,
 }) {
   Navigator.of(context).push(
-    MaterialPageRoute<void>(
+    MaterialPageRoute<String?>(
       builder: (_) => SessionFilesScreen(
         store: store,
         sessionId: sessionId,
         controller: controller,
         gitReadApi: gitReadApi,
+        selectionMode: selectionMode,
       ),
     ),
   );
@@ -48,6 +50,7 @@ class SessionFilesScreen extends StatefulWidget {
     required this.sessionId,
     this.controller,
     this.gitReadApi,
+    this.selectionMode = false,
   });
 
   final AppStore store;
@@ -58,6 +61,10 @@ class SessionFilesScreen extends StatefulWidget {
 
   /// 只读 Git API（文件提交历史入口用）；为 null 时走全局 [api] 单例。
   final GitReadApi? gitReadApi;
+
+  /// 选择模式：预览页的「提交历史」按钮改为确认选择，`Navigator.pop(previewPath)`
+  /// 返回给调用方（文件历史页用），不打开第二个 GitBrowserSheet。
+  final bool selectionMode;
 
   @override
   State<SessionFilesScreen> createState() => _SessionFilesScreenState();
@@ -107,6 +114,11 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
   Future<void> _openFileHistory() async {
     final path = _c.previewPath;
     if (path.isEmpty || !_fileHistoryAvailable) return;
+    if (widget.selectionMode) {
+      // 选择模式：把当前预览文件的绝对路径返回给文件历史页，由它 selectFile。
+      Navigator.of(context).pop(path);
+      return;
+    }
     final controller = GitBrowserController(_gitApi);
     unawaited(controller.open(widget.sessionId));
     final graphScrollController = ScrollController();
@@ -117,6 +129,7 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
             controller: controller,
             scrollController: graphScrollController,
             tabs: widget.store.gitTabs,
+            store: widget.store,
             initialFileHistoryPath: path,
           ),
         ),
@@ -133,8 +146,10 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
     return [
       IconButton(
         key: const Key('sf-history'),
-        tooltip: L10n.t('提交历史', 'Commit history'),
-        icon: const Icon(Icons.history),
+        tooltip: widget.selectionMode
+            ? L10n.t('选择此文件', 'Choose this file')
+            : L10n.t('提交历史', 'Commit history'),
+        icon: Icon(widget.selectionMode ? Icons.check : Icons.history),
         onPressed: _openFileHistory,
       ),
     ];
@@ -181,7 +196,11 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(L10n.t('文件', 'Files')),
+          title: Text(
+            widget.selectionMode
+                ? L10n.t('选择文件', 'Choose file')
+                : L10n.t('文件', 'Files'),
+          ),
           actions: [
             IconButton(
               key: const Key('sf-refresh'),

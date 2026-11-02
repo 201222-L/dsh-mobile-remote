@@ -3703,6 +3703,7 @@ class _ChatScreenState extends State<ChatScreen> {
             controller: controller,
             scrollController: graphScrollController,
             tabs: widget.store.gitTabs,
+            store: widget.store,
           ),
         ),
       );

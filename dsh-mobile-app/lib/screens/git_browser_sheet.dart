@@ -9,11 +9,13 @@ import '../git_graph_logic.dart';
 import '../git_graph_presentation.dart';
 import '../git_models.dart';
 import '../l10n.dart';
+import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
 import '../widgets/git_file_history_body.dart';
 import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
+import 'session_files_screen.dart';
 
 /// Full-screen, read-only Git browser route.
 class GitBrowserSheet extends StatefulWidget {
@@ -23,11 +25,23 @@ class GitBrowserSheet extends StatefulWidget {
     required this.scrollController,
     this.tabs = const ['branches', 'graph', 'worktree'],
     this.initialFileHistoryPath,
+    this.store,
+    this.fileBrowserPicker,
   });
 
   final GitBrowserController controller;
   final ScrollController scrollController;
   final List<String> tabs;
+
+  /// 应用状态（会话工作目录等）：文件历史的「选择文件」需要它打开会话文件浏览器。
+  final AppStore? store;
+
+  /// 测试注入的浏览器选择器：返回选中的文件绝对路径（null = 取消）。
+  ///
+  /// 生产默认用 [SessionFilesScreen]（selectionMode）实现；注入后不创建路由，
+  /// 便于 widget 测试验证“选择后回到原历史视图”。
+  final Future<String?> Function(BuildContext context, String sessionId)?
+  fileBrowserPicker;
 
   /// 打开即深链到该文件的提交历史（issue #42）。
   ///
@@ -469,6 +483,40 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
   }
 
+  /// 文件历史的主「选择文件」入口：打开会话文件浏览器选中文件后，回到本历史
+  /// 视图直接加载该文件的历史（不叠加第二个 GitBrowserSheet）。
+  Future<void> _browseFilesForHistory() async {
+    final sessionId = widget.controller.state.sessionId;
+    final history = _history;
+    if (history == null || sessionId == null) return;
+    final picker = widget.fileBrowserPicker;
+    final path = picker != null
+        ? await picker(context, sessionId)
+        : await _pushSessionFileBrowser(sessionId, history);
+    if (!mounted) return;
+    final selected = path?.trim() ?? '';
+    if (selected.isEmpty) return;
+    await history.selectFile(selected);
+  }
+
+  Future<String?> _pushSessionFileBrowser(
+    String sessionId,
+    GitFileHistoryController history,
+  ) async {
+    final store = widget.store;
+    if (store == null) return null;
+    return Navigator.of(context).push<String?>(
+      MaterialPageRoute<String?>(
+        builder: (_) => SessionFilesScreen(
+          store: store,
+          sessionId: sessionId,
+          gitReadApi: history.api,
+          selectionMode: true,
+        ),
+      ),
+    );
+  }
+
   /// 文件查看器顶部的「提交历史」入口（capability 缺失时隐藏）。
   List<Widget> _historyActions(GitBrowserState state, String path) {
     if (state.capabilities?.fileHistory != true || state.repository == null) {
@@ -499,9 +547,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       );
     }
     final history = _ensureHistoryController(state);
+    final canBrowse =
+        widget.store != null || widget.fileBrowserPicker != null;
     return GitFileHistoryBody(
       controller: history,
       onOpenCommit: _openCommitFromHistory,
+      onBrowseFiles: canBrowse ? _browseFilesForHistory : null,
     );
   }
 

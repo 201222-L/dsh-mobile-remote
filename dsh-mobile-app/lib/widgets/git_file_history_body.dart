@@ -3,9 +3,12 @@
 // Git 管理里的「文件历史」tab 与未启用该 tab 时深链打开的独立历史视图都渲染
 // 这个 body；数据与交互状态全部在 [GitFileHistoryController] 里。
 //
-// 交互：顶部文件 chip（更换文件 / 刷新）→ 文件选择器（服务端 q 搜索、防抖、
-// 最近使用）→ 分页历史列表（状态徽标、短 OID、作者、相对时间；点按进提交详情，
-// 长按复制 OID）。
+// 交互：顶部文件 chip（选择/更换文件、刷新）→ 分页历史列表（状态徽标、短 OID、
+// 作者、相对时间；点按进提交详情，长按复制 OID）。
+//
+// 选择文件有两个入口：宿主注入 [GitFileHistoryBody.onBrowseFiles] 时，主按钮
+// 打开会话文件浏览器（选中文件后回到本历史视图），内联搜索选择器降级为
+// 「搜索文件」次要入口；未注入时保持旧行为（主按钮即内联选择器）。
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -43,6 +46,10 @@ class GitFileHistoryKeys {
   Key get list => Key('$prefix-list');
   Key get truncated => Key('$prefix-truncated');
   Key get loadMore => Key('$prefix-load-more');
+
+  /// 次要入口：打开内联搜索选择器（主入口改为会话文件浏览器时）。
+  Key get searchFiles => Key('$prefix-search-files');
+  Key get searchFilesEmpty => Key('$prefix-search-empty');
 }
 
 /// 文件历史共享 body。
@@ -51,6 +58,7 @@ class GitFileHistoryBody extends StatefulWidget {
     super.key,
     required this.controller,
     this.onOpenCommit,
+    this.onBrowseFiles,
     this.autoOpenPickerWhenEmpty = true,
     this.keys = const GitFileHistoryKeys(),
   });
@@ -59,6 +67,12 @@ class GitFileHistoryBody extends StatefulWidget {
 
   /// 点历史行：打开既有提交详情（由宿主决定跳转方式）。
   final ValueChanged<String>? onOpenCommit;
+
+  /// 主「选择/更换文件」入口：打开会话文件浏览器（选择后回到原历史视图）。
+  ///
+  /// 为 null 时保持旧行为（内联搜索选择器）；非 null 时内联选择器降级为
+  /// 「搜索文件」次要入口，仍可随时打开。
+  final Future<void> Function()? onBrowseFiles;
 
   /// 无预填文件时是否自动打开一次选择器（深链不触发）。
   final bool autoOpenPickerWhenEmpty;
@@ -132,6 +146,18 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
     );
   }
 
+  bool get _hasBrowser => widget.onBrowseFiles != null;
+
+  /// 主入口：优先会话文件浏览器；未注入时退回内联搜索选择器。
+  Future<void> _chooseFile() async {
+    final browse = widget.onBrowseFiles;
+    if (browse == null) {
+      _openPicker();
+      return;
+    }
+    await browse();
+  }
+
   /// 打开选择器前清空上次搜索词（controller 在选完文件后会重置 query）。
   void _openPicker() {
     _search.clear();
@@ -165,7 +191,7 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
             ),
           TextButton.icon(
             key: widget.keys.changeFile,
-            onPressed: _openPicker,
+            onPressed: () => unawaited(_chooseFile()),
             icon: const Icon(Icons.folder_open, size: 18),
             label: Text(
               selected == null
@@ -173,6 +199,14 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
                   : L10n.t('更换文件', 'Change file'),
             ),
           ),
+          if (_hasBrowser)
+            IconButton(
+              key: widget.keys.searchFiles,
+              tooltip: L10n.t('搜索文件', 'Search files'),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.search, size: 20),
+              onPressed: _openPicker,
+            ),
         ],
       ),
     );
@@ -355,7 +389,7 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
           '路径不在仓库内，或不是文件路径',
           'Path is outside the repository or is not a file',
         ),
-        onRetry: _openPicker,
+        onRetry: () => unawaited(_chooseFile()),
         retryLabel: L10n.t('重新选择文件', 'Choose another file'),
       );
     }
@@ -367,20 +401,20 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
             '该文件不在当前 HEAD（未跟踪或已删除）',
             'File is not in the current HEAD (untracked or deleted)',
           ),
-          action: _openPicker,
+          action: () => unawaited(_chooseFile()),
           actionLabel: L10n.t('重新选择文件', 'Choose another file'),
         );
       }
       if (controller.isEmptyRepository) {
         return _emptyState(
           L10n.t('仓库还没有提交', 'Repository has no commits'),
-          action: _openPicker,
+          action: () => unawaited(_chooseFile()),
           actionLabel: L10n.t('重新选择文件', 'Choose another file'),
         );
       }
       return _emptyState(
         L10n.t('该文件暂无提交历史', 'No commit history for this file'),
-        action: _openPicker,
+        action: () => unawaited(_chooseFile()),
         actionLabel: L10n.t('重新选择文件', 'Choose another file'),
       );
     }
@@ -516,10 +550,18 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
           const SizedBox(height: 12),
           FilledButton.tonalIcon(
             key: widget.keys.chooseFile,
-            onPressed: _openPicker,
+            onPressed: () => unawaited(_chooseFile()),
             icon: const Icon(Icons.folder_open),
             label: Text(L10n.t('选择文件', 'Choose file')),
           ),
+          if (_hasBrowser) ...[
+            const SizedBox(height: 4),
+            TextButton(
+              key: widget.keys.searchFilesEmpty,
+              onPressed: _openPicker,
+              child: Text(L10n.t('搜索文件', 'Search files')),
+            ),
+          ],
         ],
       ),
     );

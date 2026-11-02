@@ -33,6 +33,8 @@ Future<GitBrowserController> mountSheet(
   HistoryGitApi api, {
   List<String> tabs = const ['branches', 'graph', 'worktree'],
   bool pushed = false,
+  Future<String?> Function(BuildContext context, String sessionId)?
+  fileBrowserPicker,
 }) async {
   final controller = GitBrowserController(api);
   addTearDown(controller.dispose);
@@ -43,6 +45,7 @@ Future<GitBrowserController> mountSheet(
     controller: controller,
     scrollController: graphScroll,
     tabs: tabs,
+    fileBrowserPicker: fileBrowserPicker,
   );
   if (!pushed) {
     await tester.pumpWidget(
@@ -750,5 +753,63 @@ void main() {
     await tester.tap(find.byKey(const Key('sf-history')));
     await tester.pumpAndSettle();
     expect(find.text('Update a.dart'), findsOneWidget);
+  });
+
+  testWidgets('injected file browser selects a file and loads history in place', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    final picks = <String>[];
+    await mountSheet(
+      tester,
+      api,
+      tabs: const ['fileHistory'],
+      fileBrowserPicker: (context, sessionId) async {
+        picks.add(sessionId);
+        return 'lib/a.dart';
+      },
+    );
+    await tester.pumpAndSettle();
+    // 无文件时仍先自动打开内联选择器一次（不自动打开全屏浏览器）。
+    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-history-cancel')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('git-history-change')));
+    await tester.pumpAndSettle();
+
+    expect(picks, ['session-1']);
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(api.historyPaths, ['lib/a.dart']);
+    // 选择后仍停留在原历史视图，没有叠加第二个 GitBrowserSheet。
+    expect(find.byType(GitBrowserSheet), findsOneWidget);
+  });
+
+  testWidgets('file browser cancel leaves the history selection unchanged', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    var browseCalls = 0;
+    await mountSheet(
+      tester,
+      api,
+      tabs: const ['fileHistory'],
+      fileBrowserPicker: (context, sessionId) async {
+        browseCalls++;
+        return null;
+      },
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-history-cancel')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('git-history-change')));
+    await tester.pumpAndSettle();
+
+    expect(browseCalls, 1);
+    expect(api.historyPaths, isEmpty);
+    expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
+    expect(find.byKey(const Key('git-history-picker')), findsNothing);
   });
 }
