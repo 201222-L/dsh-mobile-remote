@@ -326,6 +326,15 @@ test("file history paginates with an opaque cursor, normalizes paths and reports
     assert.equal(absolute.status, 200);
     assert.deepEqual(absolute.body.entries.map((entry) => entry.oid), newestFirst.slice(0, 1));
 
+    // Canonical parent aliases (Windows junction / 8.3 paths) must address the
+    // same tracked file rather than looking like an escape from the repository.
+    const { symlinkSync } = await import('node:fs');
+    const alias = join(root, 'docs-alias');
+    symlinkSync(join(root, 'docs'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const aliased = await browser.request(`/git/file-history?${query}&path=${encodeURIComponent(join(alias, 'a.txt'))}&limit=1`);
+    assert.equal(aliased.status, 200);
+    assert.deepEqual(aliased.body.entries.map(entry => entry.oid), newestFirst.slice(0, 1));
+
     const traversal = await browser.request(`/git/file-history?${query}&path=${encodeURIComponent("../outside.txt")}`);
     assert.equal(traversal.status, 200);
     assert.deepEqual(traversal.body, { ok: true, repositoryId, path: "../outside.txt", entries: [], nextCursor: null, truncated: false, reason: "path-invalid" });

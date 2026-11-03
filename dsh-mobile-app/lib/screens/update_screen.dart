@@ -83,9 +83,9 @@ class _UpdateScreenState extends State<UpdateScreen> {
       if (mounted) {
         setState(() {
           busy = false;
-      }
           progress = null;
         });
+      }
     }
   }
 
@@ -179,7 +179,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
           ),
           const SizedBox(height: 16),
           Text(phases[phase] ?? phase),
-          if (candidate != null) {
+          if (candidate != null)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
@@ -234,6 +234,5 @@ class _UpdateScreenState extends State<UpdateScreen> {
         ],
       ),
     );
-          }
   }
 }
