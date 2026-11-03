@@ -46,6 +46,7 @@ jobs:
           RELEASE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
           RELEASE_TAG: ${{ inputs.tag || '' }}
         run: node tools/release-request.mjs
+      - run: python3 -m unittest discover -s test -p 'test_*.py'
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.0'
