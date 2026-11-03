@@ -8,7 +8,7 @@
 - 新增 PR CI、不可变发布清单和自动发布 workflow。npm scope 与 CI 签名配置由维护者后续设置；本次不发布 npm / Release，不改动正在运行的桌面安装。
 - Git 浏览吸收 PR #63，并补修 Git 2.52 嵌套 tag 识别与文件历史超时预算；详情如下。
 
-验证：Node（Ubuntu）263/263、Flutter 665/665、`flutter analyze` 无问题、Kotlin 43/43、Android debug 编译通过；Windows 时间线 / 用量门禁通过，Git 服务测试 19 通过 + 2 个 POSIX 文件名用例按平台跳过。隔离 DSH Web 0.2.1-rc.5 冒烟通过（bootstrap、SSE 审批能力、更新状态、确认门禁）。正式发布、手机后台 / 系统安装器真机验收尚未执行。
+验证：Node（Ubuntu）263/263、Flutter 665/665、`flutter analyze` 无问题、Kotlin 43/43、Android debug / 正式签名 release 预览包编译通过；Windows 时间线 / 用量门禁通过，Git 服务测试 19 通过 + 2 个 POSIX 文件名用例按平台跳过。隔离 DSH Web 0.2.1-rc.5 冒烟通过（bootstrap、SSE 审批能力、更新状态、确认门禁）。正式发布、手机后台 / 系统安装器真机验收尚未执行。
 
 
 ### 插件：Git 只读浏览契约 1.1.0（PR #63）— 结构化 refs/tags + 文件列表与文件历史
