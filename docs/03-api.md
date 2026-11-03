@@ -319,7 +319,7 @@
 | POST | `/m/api/actions/:id/invoke` | 执行插件动作 |
 | GET | `/m/api/usage` | 会话 token 用量统计（v2.1） |
 | GET | `/m/api/workspaces` | 已注册工作区（新建会话默认目录，v2.1） |
-| GET | `/m/api/directories` | 目录浏览（盘符/子目录，v2.1；v3.1.1 根视图响应新增 `sep` 字段） |
+| GET | `/m/api/directories` | 目录浏览（盘符/子目录，v2.1；v3.1.1 根视图响应新增 `sep` 字段；issue #45 可选 `includeHidden=1` 显示点开头条目，`.git` 永不返回） |
 | POST | `/m/api/directories` | 新建文件夹（v2.1） |
 | GET | `/m/api/diagnostics` | 环境诊断（服务端端点实测，v2.1） |
 | GET | `/m/api/balance` | DeepSeek 官方余额（服务端代查，v2.1） |
@@ -333,6 +333,16 @@
 > 服务端会归一化为**当前平台**分隔符后读盘/建夹/建会话（旧版 App 在 WSL 上拼出的 `/\home` 也能命中真实目录）。
 > 根视图响应（`path` 为空）携带 `sep`（服务端真实分隔符），新版 App 据此拼接子目录，不再按 Windows 习惯硬编码 `\`；
 > 该字段为纯增量，旧版 App 忽略即可。
+
+> **隐藏条目（issue #45，纯增量）**：`GET /m/api/directories?path=<非空>&includeHidden=1` 时，
+> 点开头的目录与文件会同时出现在 `dirs` / `files` / `fileEntries` 三条列表里（排序规则不变）；
+> 缺省或 `includeHidden` 不是 `1` 时保持旧行为，全部隐藏点开头条目。无论是否 `includeHidden`，
+> 名称恰为 `.git` 的条目（**文件或目录**）永远不返回——避免暴露对象库与可能含凭据的 `.git/config`，
+> 列表也不提供进入其内部的入口。根视图（`path` 为空）与 `POST /m/api/directories` 不受该参数影响；
+> `/m/api/files` 下载/预览通道对隐藏文件与普通文件一视同仁（可按普通文件路径读取隐藏文件）。
+> 隐藏判定只看**名字是否以 `.` 开头**（Windows 隐藏属性不在本次范围）；显式按路径发起的列表/读取
+> 仍沿用既有只读信任模型，本参数只影响目录列表的可见性。旧客户端不传该参数即可，契约纯增量，
+> 不新增 capability 位。
 
 ### 6.2 GET /m/api/catalog
 
