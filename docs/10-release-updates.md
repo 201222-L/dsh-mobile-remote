@@ -36,7 +36,23 @@ App 下载流式落入私有缓存 `updates/`，校验大小 / 哈希后才交�
 
 `check.yml` 在 PR 和 main / develop 推送时运行 Node（Ubuntu + Windows）、Flutter 和 Android 本地单测。Node 依赖使用 lockfile 与固定的宿主测试依赖，不依赖开发机现有安装。
 
-`release.yml` 对新 `v*` tag 执行正式构建；手动运行默认只准备产物。发布顺序为验证 → 使用既有正式 Android 签名构建 → 校验 APK 实际身份 → 签名清单 → npm 载体 → npm 插件 → GitHub Release。已存在的 GitHub Release 拒绝覆盖。npm 某部分已成功时，重跑先校验已发布 tarball 的 integrity，完全一致才跳过；dist-tag 不允许回退到旧版本。
+`release.yml` 对新 `v*` tag 只构建、校验并归档产物；公开发布必须手动运行并勾选 `publish`。构建任务只有仓库读取权限，发布任务独立申请仓库写入和 npm OIDC 权限。发布顺序为验证 → 使用既有正式 Android 签名构建 → 校验 APK 实际身份 → 签名清单 → npm 载体 → npm 插件 → GitHub Release。已存在的 GitHub Release 拒绝覆盖。npm 某部分已成功时，重跑先校验已发布 tarball 的 integrity，完全一致才跳过；dist-tag 不允许回退到旧版本。
+
+### 第一次只构建演练
+
+GitHub 只有在默认分支存在该工作流后才提供手动运行入口，因此先审阅并合入开发 PR。`release` 环境允许 main 分支和 `v*` 标签。
+
+1. 仓库 **Actions → Prepare and publish release → Run workflow**。
+2. **Use workflow from** 选择 `main`。
+3. `source_ref` 填写要验证的分支或提交，通常为 `main`；需要试构建开发线时可填 `develop`。
+4. `tag` 留空，`publish` 保持未勾选。
+5. 点击 **Run workflow**。完成后从该次运行页面的 **Artifacts** 下载 `signed-release-v<版本>`，其中包含正式签名 APK、插件 tgz 和签名清单。
+
+预演不需要创建 Git tag，也不修改安装、npm 或 GitHub Release。版本名称由源码的 package.json / pubspec.yaml 推导，App build 仍须有效。
+
+### 明确发布
+
+验收通过后，在 main 的对应提交建立版本标签（如 `v3.2.4-alpha.2`）。推送该标签仍然只准备产物。再次手动运行时，**Use workflow from** 选择 `main`，填写已有 `tag`，勾选 `publish`；此时忽略 `source_ref`，直接构建该标签。发布前后两次校验标签对应的提交、main 归属、版本一致性，以及下载产物的签名、哈希和来源提交。最终才执行 npm / GitHub 发布步骤。
 
 维护者在 GitHub `release` environment 设置：
 
