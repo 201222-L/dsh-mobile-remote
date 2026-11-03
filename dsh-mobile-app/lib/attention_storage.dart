@@ -15,8 +15,9 @@ class AttentionStorage {
       final value = prefs.getString(preferenceKey);
       if (value == null) return;
       final data = jsonDecode(value);
-      if (data is! Map || data['version'] != 1 || data['entries'] is! List)
+      if (data is! Map || data['version'] != 1 || data['entries'] is! List) {
         return;
+      }
       ledger.restore(
         (data['entries'] as List)
             .whereType<Map>()

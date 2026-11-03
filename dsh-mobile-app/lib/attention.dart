@@ -356,8 +356,9 @@ class AttentionLedger {
     final entry = _byKey[key];
     if (entry == null) return;
     if (entry.status == AttentionStatus.resolved &&
-        status != AttentionStatus.resolved)
+        status != AttentionStatus.resolved) {
       return;
+    }
     entry.status = status;
   }
 

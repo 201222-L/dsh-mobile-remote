@@ -266,12 +266,14 @@ class LocalNotifier {
     try {
       final rows = <Map<String, dynamic>>[];
       for (final n in await _plugin.getActiveNotifications()) {
-        if (n.id == null || !AttentionLedger.isValidNotificationId(n.id!))
+        if (n.id == null || !AttentionLedger.isValidNotificationId(n.id!)) {
           continue;
+        }
         try {
           final row = jsonDecode(n.payload ?? '');
-          if (row is! Map || row['key'] is! String || row['s'] is! String)
+          if (row is! Map || row['key'] is! String || row['s'] is! String) {
             continue;
+          }
           rows.add({
             'key': row['key'],
             'id': n.id,

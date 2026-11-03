@@ -28,10 +28,11 @@ class _UpdateScreenState extends State<UpdateScreen> {
     unawaited(
       PackageInfo.fromPlatform()
           .then((info) {
-            if (mounted)
+            if (mounted) {
               setState(
                 () => appVersion = '${info.version}+${info.buildNumber}',
               );
+            }
           })
           .catchError((_) {}),
     );
@@ -52,12 +53,13 @@ class _UpdateScreenState extends State<UpdateScreen> {
       final next = await client.getJson('/api/release-update/status');
       if (mounted) setState(() => status = next);
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => message = updateMessage(
             error is ApiException ? error.code : '更新服务暂不可用',
           ),
         );
+      }
     }
   }
 
@@ -70,16 +72,18 @@ class _UpdateScreenState extends State<UpdateScreen> {
     try {
       await action();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => message = updateMessage(
             error is ApiException ? error.code : error.toString(),
           ),
         );
+      }
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           busy = false;
+      }
           progress = null;
         });
     }
@@ -175,7 +179,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
           ),
           const SizedBox(height: 16),
           Text(phases[phase] ?? phase),
-          if (candidate != null)
+          if (candidate != null) {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
@@ -230,5 +234,6 @@ class _UpdateScreenState extends State<UpdateScreen> {
         ],
       ),
     );
+          }
   }
 }

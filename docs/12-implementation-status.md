@@ -25,6 +25,7 @@
 - Android debug APK 编译通过；Kotlin `PetAnimationModelTest` 7、`PetStateReducerTest` 9、`UsagePanelModelTest` 27，合计 43/43。
 - Android release 预览 APK 编译通过并用现有正式证书验签；实际包名 `com.dsh.remote`、版本 `3.2.4-alpha.1`、build 32。APK 与插件 tgz 已归档 `dsh-mobile-app/dist/`，未上传 Release。
 - Windows 时间线契约、用量归一化和用量对抗门禁通过；Windows Git 服务回归 19 通过、2 个 POSIX 文件名用例按平台跳过，相关 Unix 安全用例由 Linux 执行。
+- 干净 CI 追加验证发现 Windows 临时目录的 8.3 别名与仓库长路径不一致，已将历史路径的现存父目录规范化；Flutter CI 的多行 if 样式诊断也已补齐花括号。
 - 独立 DSH Web `0.2.1-rc.5`：bootstrap 返回新版能力、`remoteEvents=true`、宿主能力 8 项 ok；更新状态端点可用，未确认暂存返回 `update-confirmation-required`。空 profile 的会话列表 / bootstrap 分别约 60 / 96 ms，仅为冒烟结果，不代表大型真实语料性能。
 
 ## 仍需配置或现场验收
