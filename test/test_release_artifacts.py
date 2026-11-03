@@ -9,9 +9,10 @@ from release_artifacts import certificate_sha256, validate_apk_identity
 class CertificateOutputTests(unittest.TestCase):
     fingerprint = 'a1' * 32
 
-    def test_accepts_numbered_and_sdk_range_signers(self):
+    def test_accepts_numbered_sdk_range_and_build_tools_37_signers(self):
         for label in ['Signer #1', 'Signer (minSdkVersion=24, maxSdkVersion=2147483647) #1',
-                      'Signer (minSdkVersion=24, maxSdkVersion=32)']:
+                      'Signer (minSdkVersion=24, maxSdkVersion=32)',
+                      'V2 Signer:', 'V3.1 Signer:']:
             with self.subTest(label=label):
                 self.assertEqual(certificate_sha256(
                     f'{label} certificate DN: CN=DSH Remote\n'

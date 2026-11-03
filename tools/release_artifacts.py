@@ -3,12 +3,12 @@ import re
 
 
 def certificate_sha256(output):
-    # Recent apksigner versions annotate signers with SDK ranges. The signer
-    # label is presentation; the complete certificate fingerprint is the fact.
+    # Build-tools 37 labels APK signatures as "V2 Signer:"; earlier versions
+    # use "Signer #1" or an SDK-range annotation. Exclude source-stamp metadata.
     fingerprints = {
         match.group(1).lower()
         for line in output.splitlines()
-        if re.match(r'\s*Signer\b', line, re.IGNORECASE)
+        if re.match(r'\s*(?:V\d+(?:\.\d+)?\s+)?Signer\b', line, re.IGNORECASE)
         for match in [re.search(
             r'\bcertificate SHA-256 digest:\s*([0-9a-f]{64})\s*$',
             line, re.IGNORECASE)]
