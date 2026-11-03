@@ -1508,6 +1508,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: _toggleKeepAlive,
             ),
           ),
+          if (_keepAliveOn && !NotifyDiag.notificationsEnabled)
+            _row(
+              leading: const Icon(Icons.notifications_off_outlined),
+              title: L10n.t('通知权限未开启', 'Notification permission is off'),
+              // 永久拒绝后 requestNotificationsPermission() 不再弹窗，只能去系统设置开。
+              sub: L10n.t(
+                '保活在跑，但提醒不会显示——点这里去开启',
+                'The service runs, but alerts stay hidden — tap to enable',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final ok =
+                    await BackgroundKeepAlive.instance.openNotificationSettings();
+                if (!mounted) return;
+                if (!ok) {
+                  showToast(this.context, L10n.t('打不开系统设置，请手动进入「应用 → 通知」', 'Cannot open settings; go to App → Notifications'));
+                }
+              },
+            ),
           if (_keepAliveOn)
             _row(
               leading: const Icon(Icons.battery_saver_outlined),
