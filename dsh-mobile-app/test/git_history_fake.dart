@@ -17,6 +17,8 @@ class HistoryGitApi implements GitReadApi {
   bool fileHistoryCapability = true;
   bool repositoryEmpty = false;
   bool failHistory = false;
+  /// 模拟宿主把绝对路径归一化后返回的仓库相对路径。
+  String? normalizedHistoryPath;
   bool truncatedHistory = false;
   int pageOneCount = 2;
   bool failFiles = false;
@@ -177,21 +179,21 @@ class HistoryGitApi implements GitReadApi {
     if (path.contains('new-file')) {
       return GitFileHistoryPage(
         repositoryId: repositoryId,
-        path: path,
+        path: normalizedHistoryPath ?? path,
         reason: 'not-tracked',
       );
     }
     if (path.contains('bad')) {
       return GitFileHistoryPage(
         repositoryId: repositoryId,
-        path: path,
+        path: normalizedHistoryPath ?? path,
         reason: 'path-invalid',
       );
     }
     if (repositoryEmpty) {
       return GitFileHistoryPage(
         repositoryId: repositoryId,
-        path: path,
+        path: normalizedHistoryPath ?? path,
         reason: 'no-history',
       );
     }
@@ -202,7 +204,7 @@ class HistoryGitApi implements GitReadApi {
       if (gate != null) return gate.future;
       return GitFileHistoryPage(
         repositoryId: repositoryId,
-        path: path,
+        path: normalizedHistoryPath ?? path,
         entries: [
           GitFileHistoryEntry(
             oid: 'later-oid',
@@ -218,7 +220,7 @@ class HistoryGitApi implements GitReadApi {
     if (statuses != null) {
       return GitFileHistoryPage(
         repositoryId: repositoryId,
-        path: path,
+        path: normalizedHistoryPath ?? path,
         entries: [
           for (var i = 0; i < statuses.length; i++)
             GitFileHistoryEntry(
@@ -263,7 +265,7 @@ class HistoryGitApi implements GitReadApi {
     ];
     return GitFileHistoryPage(
       repositoryId: repositoryId,
-      path: path,
+      path: normalizedHistoryPath ?? path,
       entries: entries,
       nextCursor: truncatedHistory ? null : 'cursor-2',
       truncated: truncatedHistory,

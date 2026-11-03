@@ -35,6 +35,7 @@ Future<GitBrowserController> mountSheet(
   bool pushed = false,
   Future<String?> Function(BuildContext context, String sessionId)?
   fileBrowserPicker,
+  String? initialFileHistoryPath,
 }) async {
   final controller = GitBrowserController(api);
   addTearDown(controller.dispose);
@@ -46,6 +47,7 @@ Future<GitBrowserController> mountSheet(
     scrollController: graphScroll,
     tabs: tabs,
     fileBrowserPicker: fileBrowserPicker,
+    initialFileHistoryPath: initialFileHistoryPath,
   );
   if (!pushed) {
     await tester.pumpWidget(
@@ -230,6 +232,30 @@ void main() {
       expect(find.byType(TabBar), findsOneWidget);
     },
   );
+
+  testWidgets('deep-linked absolute history path opens diff with normalized path', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..normalizedHistoryPath = 'lib/a.dart';
+    await mountSheet(
+      tester,
+      api,
+      tabs: const ['fileHistory'],
+      pushed: true,
+      initialFileHistoryPath: '/home/mark/projects/dsh-mobile-remote/lib/a.dart',
+    );
+    await tester.pumpAndSettle();
+
+    expect(api.historyPaths.first, '/home/mark/projects/dsh-mobile-remote/lib/a.dart');
+    expect(find.text('Update a.dart'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const Key('git-history-row-aaaa111122223333')),
+    );
+    await tester.pumpAndSettle();
+    expect(api.previews.last.kind, 'commit');
+    expect(api.previews.last.path, 'lib/a.dart');
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+  });
 
   testWidgets('history pagination loads the next page near the bottom', (
     tester,
