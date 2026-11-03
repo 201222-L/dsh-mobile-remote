@@ -21,3 +21,4 @@ AGENT-RULES.md
 # Prepared release artifacts (source code only in Git)
 release-dist/
 npm-dist/
+dsh-mobile-app/android/.kotlin/
