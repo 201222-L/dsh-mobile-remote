@@ -134,11 +134,7 @@ void main() {
         ),
       ],
       tags: [
-        GitTagDetail(
-          name: 'refs/tags/v1',
-          shortName: 'v1',
-          annotated: true,
-        ),
+        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1', annotated: true),
         GitTagDetail(name: 'refs/tags/v2', shortName: 'v2'),
       ],
     );
@@ -157,101 +153,99 @@ void main() {
     expect(
       labels.where(
         (label) =>
-            label.text.startsWith('+') ||
-            label.text.contains('overflow'),
+            label.text.startsWith('+') || label.text.contains('overflow'),
       ),
       isEmpty,
     );
     expect(labels.first.kind, GitGraphLabelKind.head);
-    expect(
-      labels.map((label) => label.kind).toList(),
-      [
-        GitGraphLabelKind.head,
-        GitGraphLabelKind.localBranch,
-        GitGraphLabelKind.localBranch,
-        GitGraphLabelKind.remoteBranch,
-        GitGraphLabelKind.tag,
-        GitGraphLabelKind.tag,
-      ],
-    );
+    expect(labels.map((label) => label.kind).toList(), [
+      GitGraphLabelKind.head,
+      GitGraphLabelKind.localBranch,
+      GitGraphLabelKind.localBranch,
+      GitGraphLabelKind.remoteBranch,
+      GitGraphLabelKind.tag,
+      GitGraphLabelKind.tag,
+    ]);
     expect(labels.first.annotated, isFalse);
     expect(labels[4].annotated, isTrue);
   });
 
-  test('graph labels dedupe by kind/shortName and hide stash and remote HEAD', () {
-    const decoration = GitDecoration(
-      refs: [
-        GitRefDetail(
-          kind: 'localBranch',
-          name: 'refs/heads/main',
-          shortName: 'main',
-        ),
-        GitRefDetail(
-          kind: 'localBranch',
-          name: 'refs/heads/main',
-          shortName: 'main',
-        ),
-        GitRefDetail(
-          kind: 'other',
-          name: 'refs/stash',
-          shortName: 'stash',
-        ),
-        GitRefDetail(
-          kind: 'remoteBranch',
-          name: 'refs/remotes/origin/HEAD',
-          shortName: 'origin/HEAD',
-        ),
-      ],
-      tags: [
-        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
-        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
-      ],
-    );
+  test(
+    'graph labels dedupe by kind/shortName and hide stash and remote HEAD',
+    () {
+      const decoration = GitDecoration(
+        refs: [
+          GitRefDetail(
+            kind: 'localBranch',
+            name: 'refs/heads/main',
+            shortName: 'main',
+          ),
+          GitRefDetail(
+            kind: 'localBranch',
+            name: 'refs/heads/main',
+            shortName: 'main',
+          ),
+          GitRefDetail(kind: 'other', name: 'refs/stash', shortName: 'stash'),
+          GitRefDetail(
+            kind: 'remoteBranch',
+            name: 'refs/remotes/origin/HEAD',
+            shortName: 'origin/HEAD',
+          ),
+        ],
+        tags: [
+          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+        ],
+      );
 
-    final labels = gitGraphLabels(decoration);
+      final labels = gitGraphLabels(decoration);
 
-    // `refs/stash`、`refs/remotes/*/HEAD` 不展示；同 kind+shortName 只留一个。
-    expect(labels.map((label) => label.text).toList(), ['main', 'v1']);
-  });
+      // `refs/stash`、`refs/remotes/*/HEAD` 不展示；同 kind+shortName 只留一个。
+      expect(labels.map((label) => label.text).toList(), ['main', 'v1']);
+    },
+  );
 
-  test('legacy ref strings fall back to ordered labels without annotated metadata', () {
-    final decoration = GitDecoration.fromLegacy(
-      refs: const [
-        'refs/heads/feature',
-        'HEAD -> refs/heads/main',
-        'refs/remotes/origin/main',
-        'tag: refs/tags/v1',
+  test(
+    'legacy ref strings fall back to ordered labels without annotated metadata',
+    () {
+      final decoration = GitDecoration.fromLegacy(
+        refs: const [
+          'refs/heads/feature',
+          'HEAD -> refs/heads/main',
+          'refs/remotes/origin/main',
+          'tag: refs/tags/v1',
+          'origin/other',
+        ],
+        tags: const ['v2'],
+      );
+
+      final labels = gitGraphLabels(decoration);
+      // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
+      // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
+      expect(labels.map((label) => label.text).toList(), [
+        'HEAD',
+        'feature',
+        'main',
+        'origin/main',
         'origin/other',
-      ],
-      tags: const ['v2'],
-    );
-
-    final labels = gitGraphLabels(decoration);
-    // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
-    // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
-    expect(labels.map((label) => label.text).toList(), [
-      'HEAD',
-      'feature',
-      'main',
-      'origin/main',
-      'origin/other',
-      'v1',
-      'v2',
-    ]);
-    expect(labels.first.kind, GitGraphLabelKind.head);
-    expect(labels.first.text, 'HEAD');
-    expect(labels[1].kind, GitGraphLabelKind.localBranch);
-    expect(labels[2].kind, GitGraphLabelKind.localBranch);
-    expect(labels[2].text, 'main');
-    expect(labels.where((label) => label.tag).every((l) => !l.annotated), isTrue);
-    // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
-    expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
-    // refs 行不混入 tag。
-    expect(
-      gitRefLabels(decoration).where((label) => label.tag),
-      isEmpty,
-    );
-  });
+        'v1',
+        'v2',
+      ]);
+      expect(labels.first.kind, GitGraphLabelKind.head);
+      expect(labels.first.text, 'HEAD');
+      expect(labels[1].kind, GitGraphLabelKind.localBranch);
+      expect(labels[2].kind, GitGraphLabelKind.localBranch);
+      expect(labels[2].text, 'main');
+      expect(
+        labels.where((label) => label.tag).every((l) => !l.annotated),
+        isTrue,
+      );
+      // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
+      expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
+      // refs 行不混入 tag。
+      expect(gitRefLabels(decoration).where((label) => label.tag), isEmpty);
+    },
+  );
 
   test('label colors distinguish HEAD, local, remote and tag', () {
     const scheme = ColorScheme.light();

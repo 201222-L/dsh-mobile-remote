@@ -62,9 +62,7 @@ Future<GitBrowserController> mountSheet(
       ),
     );
     unawaited(
-      nav.currentState!.push(
-        MaterialPageRoute<void>(builder: (_) => sheet),
-      ),
+      nav.currentState!.push(MaterialPageRoute<void>(builder: (_) => sheet)),
     );
   }
   await tester.pumpAndSettle();
@@ -113,39 +111,42 @@ void main() {
     expect(find.text('History'), findsNothing);
   });
 
-  testWidgets('history tab auto-opens the picker once and cancel keeps empty state', (
+  testWidgets(
+    'history tab auto-opens the picker once and cancel keeps empty state',
+    (tester) async {
+      final api = HistoryGitApi();
+      await mountSheet(
+        tester,
+        api,
+        tabs: const ['branches', 'graph', 'fileHistory'],
+      );
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+
+      // 未选择文件：引导空态 + 自动打开一次选择器。
+      expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('git-history-cancel')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsNothing);
+      expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
+      expect(
+        find.text('Choose a file to see its commit history'),
+        findsOneWidget,
+      );
+
+      // 切走再切回：不再自动打开（一次 per surface）。
+      await tester.tap(find.text('Branches'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsNothing);
+      expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
+    },
+  );
+
+  testWidgets('picker searches server-side with a 250ms debounce', (
     tester,
   ) async {
-    final api = HistoryGitApi();
-    await mountSheet(
-      tester,
-      api,
-      tabs: const ['branches', 'graph', 'fileHistory'],
-    );
-    await tester.tap(find.text('History'));
-    await tester.pumpAndSettle();
-
-    // 未选择文件：引导空态 + 自动打开一次选择器。
-    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-history-cancel')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsNothing);
-    expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
-    expect(
-      find.text('Choose a file to see its commit history'),
-      findsOneWidget,
-    );
-
-    // 切走再切回：不再自动打开（一次 per surface）。
-    await tester.tap(find.text('Branches'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('History'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsNothing);
-    expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
-  });
-
-  testWidgets('picker searches server-side with a 250ms debounce', (tester) async {
     final api = HistoryGitApi();
     await mountSheet(tester, api, tabs: const ['fileHistory']);
     await tester.pumpAndSettle();
@@ -158,7 +159,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
     expect(api.fileQueries, [null, 'b.']);
-    expect(find.byKey(const Key('git-history-file-lib/b.dart')), findsOneWidget);
+    expect(
+      find.byKey(const Key('git-history-file-lib/b.dart')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('git-history-file-lib/a.dart')), findsNothing);
 
     await tester.tap(find.byKey(const Key('git-history-file-lib/b.dart')));
@@ -178,53 +182,54 @@ void main() {
     );
   });
 
-  testWidgets('history rows show metadata/status and open the file diff at that commit', (
-    tester,
-  ) async {
-    final api = HistoryGitApi();
-    await mountSheet(tester, api, tabs: const ['fileHistory'], pushed: true);
-    await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'history rows show metadata/status and open the file diff at that commit',
+    (tester) async {
+      final api = HistoryGitApi();
+      await mountSheet(tester, api, tabs: const ['fileHistory'], pushed: true);
+      await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
+      await tester.pumpAndSettle();
 
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.textContaining('aaaa1111'), findsOneWidget);
-    expect(find.textContaining('Ada'), findsWidgets);
-    expect(find.textContaining('1 hr ago'), findsOneWidget);
-    expect(
-      find.byKey(const Key('git-history-status-aaaa111122223333')),
-      findsOneWidget,
-    );
-    expect(find.text('A'), findsOneWidget); // 第二行状态徽标
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.textContaining('aaaa1111'), findsOneWidget);
+      expect(find.textContaining('Ada'), findsWidgets);
+      expect(find.textContaining('1 hr ago'), findsOneWidget);
+      expect(
+        find.byKey(const Key('git-history-status-aaaa111122223333')),
+        findsOneWidget,
+      );
+      expect(find.text('A'), findsOneWidget); // 第二行状态徽标
 
-    await _expectClipboard(
-      tester,
-      () => tester.longPress(
+      await _expectClipboard(
+        tester,
+        () => tester.longPress(
+          find.byKey(const Key('git-history-row-aaaa111122223333')),
+        ),
+        'aaaa111122223333',
+      );
+
+      await tester.tap(
         find.byKey(const Key('git-history-row-aaaa111122223333')),
-      ),
-      'aaaa111122223333',
-    );
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(
-      find.byKey(const Key('git-history-row-aaaa111122223333')),
-    );
-    await tester.pumpAndSettle();
+      // A) 直接打开该文件在该提交上的 diff（kind=commit/path=selectedPath/oid=行 oid），
+      //    不经过通用提交详情。
+      expect(api.previews.last.kind, 'commit');
+      expect(api.previews.last.path, 'lib/a.dart');
+      expect(api.previews.last.oid, 'aaaa111122223333');
+      expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+      expect(find.text('new line'), findsOneWidget);
+      expect(find.text('History commit aaaa111122223333'), findsNothing);
+      expect(find.text('Commit details'), findsNothing);
 
-    // A) 直接打开该文件在该提交上的 diff（kind=commit/path=selectedPath/oid=行 oid），
-    //    不经过通用提交详情。
-    expect(api.previews.last.kind, 'commit');
-    expect(api.previews.last.path, 'lib/a.dart');
-    expect(api.previews.last.oid, 'aaaa111122223333');
-    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
-    expect(find.text('new line'), findsOneWidget);
-    expect(find.text('History commit aaaa111122223333'), findsNothing);
-    expect(find.text('Commit details'), findsNothing);
-
-    // C) 历史来源的 diff 返回原位历史 surface（这里是 fileHistory tab 根）。
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.byType(TabBar), findsOneWidget);
-  });
+      // C) 历史来源的 diff 返回原位历史 surface（这里是 fileHistory tab 根）。
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.byType(TabBar), findsOneWidget);
+    },
+  );
 
   testWidgets('history pagination loads the next page near the bottom', (
     tester,
@@ -332,7 +337,9 @@ void main() {
 
     await tester.tap(find.text('Worktree'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-worktree-untracked-new-file.txt')));
+    await tester.tap(
+      find.byKey(const Key('git-worktree-untracked-new-file.txt')),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('git-file-history')));
     await tester.pumpAndSettle();
@@ -407,29 +414,33 @@ void main() {
     tester,
   ) async {
     final api = HistoryGitApi();
-    final fileApi = Api(
-      client: MockClient((request) async {
-        final path = request.url.queryParameters['path'] ?? '';
-        if (request.url.path == '/m/api/directories') {
-          return http.Response(
-            jsonEncode({
-              'ok': true,
-              'path': path,
-              'dirs': <String>[],
-              'files': ['README.md'],
+    final fileApi =
+        Api(
+            client: MockClient((request) async {
+              final path = request.url.queryParameters['path'] ?? '';
+              if (request.url.path == '/m/api/directories') {
+                return http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'path': path,
+                    'dirs': <String>[],
+                    'files': ['README.md'],
+                  }),
+                  200,
+                );
+              }
+              if (request.url.path == '/m/api/files') {
+                return http.Response.bytes(
+                  utf8.encode('line one\nline two\n'),
+                  200,
+                );
+              }
+              return http.Response('unexpected ${request.url}', 500);
             }),
-            200,
-          );
-        }
-        if (request.url.path == '/m/api/files') {
-          return http.Response.bytes(utf8.encode('line one\nline two\n'), 200);
-        }
-        return http.Response('unexpected ${request.url}', 500);
-      }),
-    )
-      ..baseUrl = 'http://sf.test'
-      ..path = '/m'
-      ..token = '';
+          )
+          ..baseUrl = 'http://sf.test'
+          ..path = '/m'
+          ..token = '';
     final store = makeStore();
     final controller = SessionFilesController(
       store: store,
@@ -466,29 +477,30 @@ void main() {
     tester,
   ) async {
     final api = HistoryGitApi()..fileHistoryCapability = false;
-    final fileApi = Api(
-      client: MockClient((request) async {
-        final path = request.url.queryParameters['path'] ?? '';
-        if (request.url.path == '/m/api/directories') {
-          return http.Response(
-            jsonEncode({
-              'ok': true,
-              'path': path,
-              'dirs': <String>[],
-              'files': ['README.md'],
+    final fileApi =
+        Api(
+            client: MockClient((request) async {
+              final path = request.url.queryParameters['path'] ?? '';
+              if (request.url.path == '/m/api/directories') {
+                return http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'path': path,
+                    'dirs': <String>[],
+                    'files': ['README.md'],
+                  }),
+                  200,
+                );
+              }
+              if (request.url.path == '/m/api/files') {
+                return http.Response.bytes(utf8.encode('line one\n'), 200);
+              }
+              return http.Response('unexpected ${request.url}', 500);
             }),
-            200,
-          );
-        }
-        if (request.url.path == '/m/api/files') {
-          return http.Response.bytes(utf8.encode('line one\n'), 200);
-        }
-        return http.Response('unexpected ${request.url}', 500);
-      }),
-    )
-      ..baseUrl = 'http://sf.test'
-      ..path = '/m'
-      ..token = '';
+          )
+          ..baseUrl = 'http://sf.test'
+          ..path = '/m'
+          ..token = '';
     final store = makeStore();
     final controller = SessionFilesController(
       store: store,
@@ -552,7 +564,9 @@ void main() {
     );
   });
 
-  testWidgets('picker cancel then reopen resets the stale query', (tester) async {
+  testWidgets('picker cancel then reopen resets the stale query', (
+    tester,
+  ) async {
     final api = HistoryGitApi();
     await mountSheet(tester, api, tabs: const ['fileHistory']);
     await tester.pumpAndSettle();
@@ -638,81 +652,83 @@ void main() {
     expect(api.historyPaths, ['lib/a.dart']);
   });
 
-  testWidgets('independent history -> diff -> history does not loop; back exits', (
-    tester,
-  ) async {
-    final api = HistoryGitApi();
-    await mountSheet(tester, api, pushed: true);
-    await tester.tap(find.text('Worktree'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-file-history')));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.byType(TabBar), findsNothing);
+  testWidgets(
+    'independent history -> diff -> history does not loop; back exits',
+    (tester) async {
+      final api = HistoryGitApi();
+      await mountSheet(tester, api, pushed: true);
+      await tester.tap(find.text('Worktree'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-file-history')));
+      await tester.pumpAndSettle();
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.byType(TabBar), findsNothing);
 
-    // 历史行 → 直接 diff；返回回到独立历史视图（不回到进入前的 worktree 预览）。
-    await tester.tap(
-      find.byKey(const Key('git-history-row-aaaa111122223333')),
-    );
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.byType(TabBar), findsNothing);
+      // 历史行 → 直接 diff；返回回到独立历史视图（不回到进入前的 worktree 预览）。
+      await tester.tap(
+        find.byKey(const Key('git-history-row-aaaa111122223333')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.byType(TabBar), findsNothing);
 
-    // D) 历史来源 diff 里的「提交历史」回到同一个独立历史 surface，不叠加路由。
-    await tester.tap(
-      find.byKey(const Key('git-history-row-aaaa111122223333')),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-file-history')));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.byType(GitBrowserSheet), findsOneWidget);
+      // D) 历史来源 diff 里的「提交历史」回到同一个独立历史 surface，不叠加路由。
+      await tester.tap(
+        find.byKey(const Key('git-history-row-aaaa111122223333')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-file-history')));
+      await tester.pumpAndSettle();
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.byType(GitBrowserSheet), findsOneWidget);
 
-    // B) 独立历史返回直接退出 Git 浏览器，循环终止。
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    expect(find.text('host page'), findsOneWidget);
-    expect(find.byType(GitBrowserSheet), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+      // B) 独立历史返回直接退出 Git 浏览器，循环终止。
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('host page'), findsOneWidget);
+      expect(find.byType(GitBrowserSheet), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('tab-enabled history-origin diff back returns to the history tab', (
-    tester,
-  ) async {
-    final api = HistoryGitApi();
-    await mountSheet(
-      tester,
-      api,
-      tabs: const ['branches', 'fileHistory'],
-      pushed: true,
-    );
-    await tester.tap(find.text('History'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'tab-enabled history-origin diff back returns to the history tab',
+    (tester) async {
+      final api = HistoryGitApi();
+      await mountSheet(
+        tester,
+        api,
+        tabs: const ['branches', 'fileHistory'],
+        pushed: true,
+      );
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
+      await tester.pumpAndSettle();
 
-    await tester.tap(
-      find.byKey(const Key('git-history-row-aaaa111122223333')),
-    );
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('git-history-row-aaaa111122223333')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
 
-    // C) 返回原位 history tab（TabBar 恢复、历史列表仍在）。
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(find.byType(TabBar), findsOneWidget);
+      // C) 返回原位 history tab（TabBar 恢复、历史列表仍在）。
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(find.byType(TabBar), findsOneWidget);
 
-    // tab 根返回退出 Git 浏览器。
-    await tester.tap(find.byTooltip('Back to chat'));
-    await tester.pumpAndSettle();
-    expect(find.text('host page'), findsOneWidget);
-  });
+      // tab 根返回退出 Git 浏览器。
+      await tester.tap(find.byTooltip('Back to chat'));
+      await tester.pumpAndSettle();
+      expect(find.text('host page'), findsOneWidget);
+    },
+  );
 
   testWidgets('worktree preview back returns to the tab', (tester) async {
     final api = HistoryGitApi();
@@ -729,52 +745,54 @@ void main() {
     expect(find.byType(TabBar), findsOneWidget);
   });
 
-  testWidgets('commit-detail file preview back still returns to commit detail', (
-    tester,
-  ) async {
-    final api = HistoryGitApi();
-    await mountSheet(tester, api, pushed: true);
-    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-file-lib/a.dart')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+  testWidgets(
+    'commit-detail file preview back still returns to commit detail',
+    (tester) async {
+      final api = HistoryGitApi();
+      await mountSheet(tester, api, pushed: true);
+      await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-file-lib/a.dart')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    expect(find.text('Commit details'), findsOneWidget);
-    expect(find.byKey(const Key('git-file-preview')), findsNothing);
-  });
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Commit details'), findsOneWidget);
+      expect(find.byKey(const Key('git-file-preview')), findsNothing);
+    },
+  );
 
   testWidgets('session files hides history when capability probe fails', (
     tester,
   ) async {
     final api = HistoryGitApi()..failCapabilities = true;
-    final fileApi = Api(
-      client: MockClient((request) async {
-        final path = request.url.queryParameters['path'] ?? '';
-        if (request.url.path == '/m/api/directories') {
-          return http.Response(
-            jsonEncode({
-              'ok': true,
-              'path': path,
-              'dirs': <String>[],
-              'files': ['README.md'],
+    final fileApi =
+        Api(
+            client: MockClient((request) async {
+              final path = request.url.queryParameters['path'] ?? '';
+              if (request.url.path == '/m/api/directories') {
+                return http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'path': path,
+                    'dirs': <String>[],
+                    'files': ['README.md'],
+                  }),
+                  200,
+                );
+              }
+              if (request.url.path == '/m/api/files') {
+                return http.Response.bytes(utf8.encode('line one\n'), 200);
+              }
+              return http.Response('unexpected ${request.url}', 500);
             }),
-            200,
-          );
-        }
-        if (request.url.path == '/m/api/files') {
-          return http.Response.bytes(utf8.encode('line one\n'), 200);
-        }
-        return http.Response('unexpected ${request.url}', 500);
-      }),
-    )
-      ..baseUrl = 'http://sf.test'
-      ..path = '/m'
-      ..token = '';
+          )
+          ..baseUrl = 'http://sf.test'
+          ..path = '/m'
+          ..token = '';
     final store = makeStore();
     final controller = SessionFilesController(
       store: store,
@@ -803,29 +821,30 @@ void main() {
     tester,
   ) async {
     final api = HistoryGitApi();
-    final fileApi = Api(
-      client: MockClient((request) async {
-        final path = request.url.queryParameters['path'] ?? '';
-        if (request.url.path == '/m/api/directories') {
-          return http.Response(
-            jsonEncode({
-              'ok': true,
-              'path': path,
-              'dirs': <String>[],
-              'files': ['photo.png'],
+    final fileApi =
+        Api(
+            client: MockClient((request) async {
+              final path = request.url.queryParameters['path'] ?? '';
+              if (request.url.path == '/m/api/directories') {
+                return http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'path': path,
+                    'dirs': <String>[],
+                    'files': ['photo.png'],
+                  }),
+                  200,
+                );
+              }
+              if (request.url.path == '/m/api/files') {
+                return http.Response.bytes([0x89, 0x50, 0x00, 0x4E], 200);
+              }
+              return http.Response('unexpected ${request.url}', 500);
             }),
-            200,
-          );
-        }
-        if (request.url.path == '/m/api/files') {
-          return http.Response.bytes([0x89, 0x50, 0x00, 0x4E], 200);
-        }
-        return http.Response('unexpected ${request.url}', 500);
-      }),
-    )
-      ..baseUrl = 'http://sf.test'
-      ..path = '/m'
-      ..token = '';
+          )
+          ..baseUrl = 'http://sf.test'
+          ..path = '/m'
+          ..token = '';
     final store = makeStore();
     final controller = SessionFilesController(
       store: store,
@@ -855,35 +874,36 @@ void main() {
     expect(find.text('Update a.dart'), findsOneWidget);
   });
 
-  testWidgets('injected file browser selects a file and loads history in place', (
-    tester,
-  ) async {
-    final api = HistoryGitApi();
-    final picks = <String>[];
-    await mountSheet(
-      tester,
-      api,
-      tabs: const ['fileHistory'],
-      fileBrowserPicker: (context, sessionId) async {
-        picks.add(sessionId);
-        return 'lib/a.dart';
-      },
-    );
-    await tester.pumpAndSettle();
-    // 无文件时仍先自动打开内联选择器一次（不自动打开全屏浏览器）。
-    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-history-cancel')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'injected file browser selects a file and loads history in place',
+    (tester) async {
+      final api = HistoryGitApi();
+      final picks = <String>[];
+      await mountSheet(
+        tester,
+        api,
+        tabs: const ['fileHistory'],
+        fileBrowserPicker: (context, sessionId) async {
+          picks.add(sessionId);
+          return 'lib/a.dart';
+        },
+      );
+      await tester.pumpAndSettle();
+      // 无文件时仍先自动打开内联选择器一次（不自动打开全屏浏览器）。
+      expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('git-history-cancel')));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('git-history-change')));
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-history-change')));
+      await tester.pumpAndSettle();
 
-    expect(picks, ['session-1']);
-    expect(find.text('Update a.dart'), findsOneWidget);
-    expect(api.historyPaths, ['lib/a.dart']);
-    // 选择后仍停留在原历史视图，没有叠加第二个 GitBrowserSheet。
-    expect(find.byType(GitBrowserSheet), findsOneWidget);
-  });
+      expect(picks, ['session-1']);
+      expect(find.text('Update a.dart'), findsOneWidget);
+      expect(api.historyPaths, ['lib/a.dart']);
+      // 选择后仍停留在原历史视图，没有叠加第二个 GitBrowserSheet。
+      expect(find.byType(GitBrowserSheet), findsOneWidget);
+    },
+  );
 
   testWidgets('file browser cancel leaves the history selection unchanged', (
     tester,

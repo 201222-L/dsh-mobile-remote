@@ -56,6 +56,21 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/update").setMethodCallHandler { call, result ->
+            if (call.method != "install") {
+                result.notImplemented()
+            } else {
+                val args = call.arguments as? Map<*, *>
+                if (args == null) result.success("apk-invalid") else fileIoExecutor.execute {
+                    val error = try { AppUpdateInstaller.verify(this, args) } catch (_: Exception) { "apk-invalid" }
+                    mainHandler.post {
+                        try {
+                            result.success(error ?: AppUpdateInstaller.launch(this, args["path"] as String))
+                        } catch (_: Exception) { result.success("installer-unavailable") }
+                    }
+                }
+            }
+        }
         floatingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/floating")
         // v3.1.2（csborbbnc 反馈）：文件下载/上传原生通道
         filesChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/files")
@@ -196,6 +211,14 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "isRunning" -> result.success(FloatingBubbleService.running)
+                "syncUnread" -> {
+                    if (FloatingBubbleService.running) {
+                        val count = (call.argument<Int>("count") ?: 0).coerceAtLeast(0)
+                        startServiceCompat(Intent(this, FloatingBubbleService::class.java)
+                            .putExtra("notification_unread", count))
+                    }
+                    result.success(true)
+                }
                 "canDrawOverlay" -> result.success(Settings.canDrawOverlays(this))
                 "openOverlaySettings" -> {
                     openOverlaySettingsPage()

@@ -2,15 +2,19 @@
 // 原生 App：抽屉导航（首页/会话/设置）+ 通知 + 连接配置 + 扫码连接。
 // 界面与功能对齐网页端 dsh-mobile-remote（DeepSeek 配色，Claude 式布局）。
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 import 'l10n.dart';
 import 'api.dart';
 import 'app_icon_switcher.dart';
 import 'store.dart';
 import 'attention.dart';
+import 'attention_storage.dart';
 import 'floating.dart';
 import 'keep_alive.dart';
 import 'local_notifications.dart';
@@ -25,6 +29,7 @@ import 'screens/settings_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/sheets.dart';
 import 'screens/usage_screen.dart';
+import 'screens/update_screen.dart';
 
 final AppStore store = AppStore();
 
@@ -35,15 +40,22 @@ final rootNavigatorKey = GlobalKey<NavigatorState>();
 void openNotificationsScreen({VoidCallback? onOpenSession}) {
   final nav = rootNavigatorKey.currentState;
   if (nav == null) return;
-  nav.push(MaterialPageRoute(
-    builder: (_) => NotificationsScreen(store: store, onOpenSession: onOpenSession ?? () {}),
-  ));
+  nav.push(
+    MaterialPageRoute(
+      builder: (_) => NotificationsScreen(
+        store: store,
+        onOpenSession: onOpenSession ?? () {},
+      ),
+    ),
+  );
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppLog.instance.init();
-  AppLog.instance.log('main: 启动，baseUrl=${api.baseUrl.isNotEmpty ? "已配置" : "空"}');
+  AppLog.instance.log(
+    'main: 启动，baseUrl=${api.baseUrl.isNotEmpty ? "已配置" : "空"}',
+  );
   // 全局错误边界：build/布局异常不再白屏或静默闪退，直接显示错误文本（调试用）
   ErrorWidget.builder = (details) {
     AppLog.instance.log('build 异常: ${details.exceptionAsString()}');
@@ -65,14 +77,18 @@ void main() async {
   // 桌面图标：把上次选择同步给系统（原生侧已是目标 alias 时不会重复切换）
   unawaited(AppIconSwitcher.sync(store.appIcon));
   // v2.7.1：启动即把余额预警配置同步给宠物面板（可能已在后台运行，判定以 App 端设置为准）
-  unawaited(Floating.setBalanceAlert(store.balanceAlert, store.balanceThreshold));
+  unawaited(
+    Floating.setBalanceAlert(store.balanceAlert, store.balanceThreshold),
+  );
   // 桌面宠物配置（大小/减少动效/贴边躲藏/前台收起）同步给原生服务
-  unawaited(Floating.setPetConfig(
-    height: store.petHeight,
-    reducedMotion: store.petReducedMotion,
-    edgeHide: store.petEdgeHide,
-    hideInApp: store.petHideInApp,
-  ));
+  unawaited(
+    Floating.setPetConfig(
+      height: store.petHeight,
+      reducedMotion: store.petReducedMotion,
+      edgeHide: store.petEdgeHide,
+      hideInApp: store.petHideInApp,
+    ),
+  );
   // v2.7.2：上次开过宠物 → 自动恢复服务（清理后台/重启 App 后无需手动重开）
   // v3.3.3 修复：保活开着时不再恢复宠物（两者互斥，旧偏好可能残留 true）。
   final bootPrefs = await SharedPreferences.getInstance();
@@ -105,6 +121,37 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
 
   /// M1a：通知去重/撤销的唯一写者。
   final AttentionLedger _ledger = AttentionLedger();
+  final AttentionStorage _attentionStorage = AttentionStorage();
+  late final Future<void> _attentionReady;
+  Future<void> _attentionQueue = Future<void>.value();
+
+  Future<void> _initNotifications() async {
+    await LocalNotifier.instance.init();
+    if (LocalNotifier.instance.consumePendingUpdate()) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openUpdates());
+    }
+    await _attentionStorage.restore(_ledger);
+    final saved = _ledger.toJson();
+    final keys = saved.map((r) => r['key']).toSet();
+    final active = await LocalNotifier.instance.activeLedgerRows();
+    _ledger.restore([
+      ...saved,
+      ...active.where((r) => !keys.contains(r['key'])),
+    ]);
+  }
+
+  void _queueAttention(Future<void> Function() action) {
+    _attentionQueue = _attentionQueue
+        .then((_) async {
+          await _attentionReady;
+          if (!mounted) return;
+          await action();
+          await _attentionStorage.save(_ledger);
+        })
+        .catchError((Object error) {
+          AppLog.instance.log('通知：处理未完成，等待下一次宿主对账（${error.runtimeType}）');
+        });
+  }
 
   /// 当前是否在前台（判据输入之一）。
   bool _resumed = true;
@@ -118,9 +165,10 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     // issue #46：连接状态下的系统本地通知（pushUrls 仅作离线兜底）。
     // 只在 App 不在前台时真正弹出；点击通知走统一 openChat 入口。
     WidgetsBinding.instance.addObserver(this);
-    unawaited(LocalNotifier.instance.init());
+    _attentionReady = _initNotifications();
     // M2：后台保活（默认关；开启后 onResume 会拉起前台服务）。
     unawaited(_initKeepAlive());
+    LocalNotifier.instance.onOpenUpdates = _openUpdates;
     LocalNotifier.instance.onOpenSession = (id) =>
         _handleFloatingAction('session:$id');
     // 冷启动是被通知点开的：回调挂好后再补派发一次（init 早于这里完成）。
@@ -131,36 +179,22 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
         _handleFloatingAction('session:$pendingOpen');
       });
     }
-    store.onAttention = (kind, sessionId, rpcId, toolName, reason, prompt) {
-      String? title;
-      for (final s in store.sessions) {
-        if (s.id == sessionId) {
-          title = s.title;
-          break;
-        }
-      }
-      unawaited(
-        LocalNotifier.instance.showAttention(
-          kind: kind,
-          rpcId: rpcId,
-          sessionId: sessionId,
-          toolName: toolName,
-          reason: reason,
-          prompt: prompt,
-          sessionTitle: title,
-        ),
-      );
-    };
-    // M1a：结构化事件 → 判据 → ledger → 展示（取代上面那条旧路径，旧路径保留兜底）。
-    store.onAttentionEvent = (event) {
-      unawaited(_handleAttention(event));
-    };
+    // Single writer: restore -> event -> persist, including replay and resolution.
+    store.onAttentionEvent = (event) =>
+        _queueAttention(() => _handleAttention(event));
     store.onAttentionResolved = (identity) {
-      final id = _ledger.resolveByIdentity(identity);
-      if (id != null) {
-        unawaited(LocalNotifier.instance.cancel(id));
-        AppLog.instance.log('通知：结算撤销 identity=$identity id=$id');
-      }
+      final source = api.notificationScope;
+      _queueAttention(() async {
+        final id = _ledger.resolveByIdentity(identity, source: source);
+        if (id != null) await LocalNotifier.instance.cancel(id);
+      });
+    };
+    store.onAttentionSnapshot = (source, pendingKeys) {
+      _queueAttention(() async {
+        for (final id in _ledger.reconcile(source, pendingKeys)) {
+          await LocalNotifier.instance.cancel(id);
+        }
+      });
     };
     // S1：进入会话 → 收掉横幅（未读标已读由 store 负责）。
     store.onChatOpened = (sessionId) {
@@ -200,7 +234,9 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     });
     // v2.7.2 review：冷启动面板动作兜底——Dart handler 注册晚于原生 deliver，
     // 首帧后主动拉取原生暂存的动作（可能已被 handler 消费，幂等）
-    WidgetsBinding.instance.addPostFrameCallback((_) => _consumePendingFloatingAction());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _consumePendingFloatingAction(),
+    );
   }
 
   /// 统一处理悬浮球面板动作（热启动 handler 与冷启动 consume 共用）。
@@ -212,13 +248,19 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
       if (id.isEmpty) return;
       final prev = store.sessionId;
       // Phase 2(A4)：统一打开会话流程；返回后恢复原会话（悬浮球进入的会话页不改变主会话）
-      await openChat(nav.context, store, id,
-          onReturn: () async {
-        if (prev != null && prev != id) await store.setSession(prev);
-      });
+      await openChat(
+        nav.context,
+        store,
+        id,
+        onReturn: () async {
+          if (prev != null && prev != id) await store.setSession(prev);
+        },
+      );
     } else if (action == 'charge') {
       await launchUrl(
-        Uri.parse(store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up'),
+        Uri.parse(
+          store.catalog?.rechargeUrl ?? 'https://platform.deepseek.com/top_up',
+        ),
         mode: LaunchMode.externalApplication,
       );
     } else if (action == 'notifs') {
@@ -259,11 +301,14 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
           '（原生服务 ${NotifyDiag.serviceBeats} 次）→ ${NotifyDiag.freezeVerdict()}',
         );
       }
-      AppLog.instance.log('通知：回前台，不清理未结算提醒（保留 ${_ledger.activeEntries.length} 条待处理）');
+      AppLog.instance.log(
+        '通知：回前台，不清理未结算提醒（保留 ${_ledger.activeEntries.length} 条待处理）',
+      );
       // M2：后台保活开启时，回到前台补一次启动（被杀过也能恢复）。
       unawaited(BackgroundKeepAlive.instance.ensureStarted());
       unawaited(BackgroundKeepAlive.instance.refreshStatus());
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
       // 进后台：启动 Dart 心跳。若这里一次都不跳，说明 isolate 已被冻住。
       _bgBeatTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
         NotifyDiag.onDartBeat();
@@ -279,16 +324,48 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     _bgBeatTimer?.cancel();
     _bgBeatTimer = null;
     WidgetsBinding.instance.removeObserver(this);
-    store.onAttention = null;
     store.onAttentionEvent = null;
     store.onAttentionResolved = null;
+    store.onAttentionSnapshot = null;
     store.onChatOpened = null;
     store.removeListener(_onStore);
+    LocalNotifier.instance.onOpenUpdates = null;
     super.dispose();
+  }
+
+  bool _checkingAppUpdate = false;
+
+  void _openUpdates() {
+    rootNavigatorKey.currentState?.push(
+      MaterialPageRoute(builder: (_) => const UpdateScreen()),
+    );
+  }
+
+  Future<void> _checkPairedAppUpdate() async {
+    final build = api.pairedAppBuild;
+    final version = api.pairedAppVersion;
+    if (_checkingAppUpdate || build == null || version == null) return;
+    _checkingAppUpdate = true;
+    try {
+      await _attentionReady;
+      final installed = await PackageInfo.fromPlatform();
+      if (build <= (int.tryParse(installed.buildNumber) ?? build)) return;
+      final prefs = await SharedPreferences.getInstance();
+      final identity = '${api.notificationScope}|$build';
+      if (prefs.getString('dsh_update_notified') == identity) return;
+      if (await LocalNotifier.instance.showAppUpdate(version, build)) {
+        await prefs.setString('dsh_update_notified', identity);
+      }
+    } catch (_) {
+      /* Update availability remains visible in Settings. */
+    } finally {
+      _checkingAppUpdate = false;
+    }
   }
 
   void _onStore() {
     if (mounted) setState(() {});
+    unawaited(_checkPairedAppUpdate());
   }
 
   /// M2：读取保活开关（默认关），开启中则补一次启动。
@@ -300,7 +377,9 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     );
     await BackgroundKeepAlive.instance.ensureStarted();
     NotifyDiag.keepAliveRunning = BackgroundKeepAlive.instance.running;
-    NotifyDiag.logSummary(keepAliveEnabled: BackgroundKeepAlive.instance.enabled);
+    NotifyDiag.logSummary(
+      keepAliveEnabled: BackgroundKeepAlive.instance.enabled,
+    );
     // 冷启动时 Activity 可能还没进入 resumed：下一帧再补一次（失败会记录原因，不静默）。
     if (BackgroundKeepAlive.instance.enabled &&
         !BackgroundKeepAlive.instance.running) {
@@ -318,15 +397,16 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
 
   /// M1a：一条审批/问询事件的完整处理链路（判据 → 去重 → 展示 → 回写 ledger）。
   Future<void> _handleAttention(AttentionEvent event) async {
+    final available = await LocalNotifier.instance.availability();
     final snapshot = AttentionSnapshot(
       phase: _resumed ? AppPhase.foreground : AppPhase.background,
-      permissionGranted: LocalNotifier.instance.ready,
-      // TODO(M4)：用 getNotificationChannels 读渠道 importance，目前假定未静音。
-      channelEnabled: true,
+      permissionGranted: available.permission,
+      channelEnabled: available.channel,
       visibleSession: LocalNotifier.instance.visibleSession,
     );
-    final now = DateTime.now();
-    final seen = _ledger.seenRecently(event.key, now: now);
+    final entry = _ledger.byKey(event.key);
+    if (entry?.status == AttentionStatus.resolved) return;
+    final seen = entry != null && entry.status != AttentionStatus.blocked;
     final decision = decideAttention(event, snapshot, seenRecently: seen);
     final reserved = _ledger.reserve(event);
     NotifyDiag.onFrame(event.kind.wire, inForeground: _resumed);
@@ -338,8 +418,16 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
       '通知：判据 key=${event.key} reason=${decision.reason} '
       'system=${decision.system} banner=${decision.banner} reserve=$reserved',
     );
-    if (!decision.system) return;
-    if (!reserved && !event.isReplay) return;
+    if (decision.banner) {
+      _showBanner(1, event.sessionId, null);
+    }
+    if (!decision.system) {
+      if (!decision.any && !seen && decision.reason == 'no-permission') {
+        _ledger.mark(event.key, AttentionStatus.blocked);
+      }
+      return;
+    }
+    if (!reserved && entry?.status != AttentionStatus.blocked) return;
     String? title;
     for (final s in store.sessions) {
       if (s.id == event.sessionId) {
@@ -350,6 +438,8 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
     final result = await LocalNotifier.instance.showAttentionEvent(
       id: event.notificationId,
       key: event.key,
+      source: event.source,
+      at: event.at,
       kind: event.kind.wire,
       sessionId: event.sessionId,
       toolName: event.toolName,
@@ -370,21 +460,30 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
   /// 新增未读通知横幅：顶部滑入，4 秒自动消失（可左右滑动手动关闭），点击直达会话；10 秒内不重复。
   /// force=true（悬浮球跳转/回前台）时绕过防抖——"错过的也提醒"。
   void _onNewNotifications(int count, {bool force = false}) {
+    if (!_resumed) return;
+    final latest = store.latestUnreadNotif;
+    if (latest?.sessionId == LocalNotifier.instance.visibleSession) return;
+    // Attention cards use the structured event path, which also checks channel state.
+    if (latest?.kind == 'needs-answer') return;
     final now = DateTime.now();
     if (!force && now.difference(_lastBannerAt).inSeconds < 10) {
-      AppLog.instance.log('Banner: 防抖拦截（距上次 ${now.difference(_lastBannerAt).inSeconds}s）');
+      AppLog.instance.log(
+        'Banner: 防抖拦截（距上次 ${now.difference(_lastBannerAt).inSeconds}s）',
+      );
       return;
     }
     _lastBannerAt = now;
     _bannerTimer?.cancel();
     _bannerTimer = null;
     if (!mounted) return;
-    // S2：横幅按会话合并——记下"最新一条未读属于哪个会话"，文案与点击都用它。
-    final latest = store.latestUnreadNotif;
-    _bannerSessionId = latest?.sessionId;
-    _bannerSessionTitle = (latest != null && latest.title.isNotEmpty)
-        ? latest.title
-        : null;
+    _showBanner(count, latest?.sessionId, latest?.title);
+  }
+
+  void _showBanner(int count, String? sessionId, String? title) {
+    if (!mounted || !_resumed) return;
+    _bannerTimer?.cancel();
+    _bannerSessionId = sessionId;
+    _bannerSessionTitle = title;
     setState(() => _bannerCount = count);
     AppLog.instance.log(
       'Banner: 出现 count=$count session=${_bannerSessionId ?? "未知"}',
@@ -473,21 +572,35 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
                           }
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 11,
+                          ),
                           decoration: BoxDecoration(
                             // 跟随主题：浅色=白底深字，深色=深底浅字
                             color: DshColors.surface(context),
-                            borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+                            borderRadius: BorderRadius.circular(
+                              DshTheme.radiusMd,
+                            ),
                             boxShadow: const [
-                              BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 4)),
+                              BoxShadow(
+                                color: Color(0x33000000),
+                                blurRadius: 12,
+                                offset: Offset(0, 4),
+                              ),
                             ],
-                            border: Theme.of(context).brightness == Brightness.dark
+                            border:
+                                Theme.of(context).brightness == Brightness.dark
                                 ? null
                                 : Border.all(color: DshColors.line(context)),
                           ),
                           child: Row(
                             children: [
-                              Icon(Icons.notifications_active, size: 17, color: DshColors.brand(context)),
+                              Icon(
+                                Icons.notifications_active,
+                                size: 17,
+                                color: DshColors.brand(context),
+                              ),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
@@ -502,10 +615,18 @@ class _DshAppState extends State<DshApp> with WidgetsBindingObserver {
                                         ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: DshColors.ink(context)),
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: DshColors.ink(context),
+                                  ),
                                 ),
                               ),
-                              Icon(Icons.chevron_right, size: 16, color: DshColors.ink3(context)),
+                              Icon(
+                                Icons.chevron_right,
+                                size: 16,
+                                color: DshColors.ink3(context),
+                              ),
                             ],
                           ),
                         ),
@@ -548,7 +669,9 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     }
     // v3.2.2 build 27：升级后一次性说明「图标入口已换成 alias」——
     // 老桌面快捷方式指向的是旧组件名，会点不开一次，提前说比让用户自己猜好。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowIconMigrationTip());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _maybeShowIconMigrationTip(),
+    );
   }
 
   /// 首次启动弹一次图标入口迁移说明；已提示过则直接返回。
@@ -567,12 +690,12 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
         content: Text(
           L10n.t(
             '这一版把启动图标换成了可切换的入口。抽屉里的 App 图标正常；'
-            '但如果桌面上的旧快捷方式点开提示「应用未安装」，'
-            '把它删掉、从抽屉里重新拖一个出来即可，之后切换图标不会再出现。',
+                '但如果桌面上的旧快捷方式点开提示「应用未安装」，'
+                '把它删掉、从抽屉里重新拖一个出来即可，之后切换图标不会再出现。',
             'This build moved the launcher entry so icons can be switched. '
-            'The app in your drawer still works; if an old home-screen shortcut '
-            'says "App isn\'t installed", remove it and drag a fresh one from the '
-            'drawer. It will not happen again after that.',
+                'The app in your drawer still works; if an old home-screen shortcut '
+                'says "App isn\'t installed", remove it and drag a fresh one from the '
+                'drawer. It will not happen again after that.',
           ),
         ),
         actions: [
@@ -667,165 +790,200 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
         }
       },
       child: Scaffold(
-      key: _drawerKey,
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.menu, size: 20),
-          onPressed: () => _drawerKey.currentState?.openDrawer(),
-        ),
-        // 去掉默认 16px 标题间距：状态点紧贴抽屉菜单按钮右侧
-        titleSpacing: 0,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 电脑在线状态点：贴靠抽屉图标；点按立即探测/重连，长按看状态文字
-            Transform.translate(
-              offset: const Offset(-6, 0), // 再向抽屉菜单靠近一点
-              child: Tooltip(
-                message: switch (store.connState) {
-                  'connected' => L10n.t('电脑在线', 'PC online'),
-                  'connecting' => L10n.t('连接中…', 'Connecting…'),
-                  _ => L10n.t('电脑离线 · 点按重连', 'PC offline · tap to reconnect'),
-                },
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: () => store.resume(),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: switch (store.connState) {
-                          'connected' => DshColors.ok(context),
-                          'connecting' => DshColors.warn(context),
-                          _ => DshColors.ink3(context),
-                        },
-                        shape: BoxShape.circle,
-                        border: Border.all(color: DshColors.line(context), width: 1),
+        key: _drawerKey,
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.menu, size: 20),
+            onPressed: () => _drawerKey.currentState?.openDrawer(),
+          ),
+          // 去掉默认 16px 标题间距：状态点紧贴抽屉菜单按钮右侧
+          titleSpacing: 0,
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 电脑在线状态点：贴靠抽屉图标；点按立即探测/重连，长按看状态文字
+              Transform.translate(
+                offset: const Offset(-6, 0), // 再向抽屉菜单靠近一点
+                child: Tooltip(
+                  message: switch (store.connState) {
+                    'connected' => L10n.t('电脑在线', 'PC online'),
+                    'connecting' => L10n.t('连接中…', 'Connecting…'),
+                    _ => L10n.t('电脑离线 · 点按重连', 'PC offline · tap to reconnect'),
+                  },
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => store.resume(),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: switch (store.connState) {
+                            'connected' => DshColors.ok(context),
+                            'connecting' => DshColors.warn(context),
+                            _ => DshColors.ink3(context),
+                          },
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: DshColors.line(context),
+                            width: 1,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 5),
-            Text(
-              titles[_index],
-              style: TextStyle(
-                fontSize: _index == 0 ? 20 : 17,
-                fontWeight: FontWeight.w700,
-                fontFamily: _index == 0 ? 'Georgia' : null,
-                color: _index == 0 && DshColors.skin(context).isBigFish
-                    ? DshColors.accent(context)
-                    : null,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: Badge(
-              isLabelVisible: store.unread > 0,
-              backgroundColor: DshColors.danger(context),
-              label: Text(
-                '${store.unread}',
-                style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white),
-              ),
-              child: const Icon(Icons.notifications_none, size: 20),
-            ),
-            onPressed: () => openNotificationsScreen(onOpenSession: () {
-              // 通知页里打开会话后回到首页 tab（原抽屉入口行为）
-              if (mounted) setState(() => _index = 0);
-            }),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      drawer: Drawer(
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        child: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('DSH', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, fontFamily: 'Georgia')),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(42)),
-                      onPressed: () {
-                        Navigator.of(context).pop();
-                        _openNewSession();
-                      },
-                      child: Text(L10n.t('＋ 新建会话', '+ New Session')),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 4),
-              // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
-              // 封顶 35% 屏高 + 可滚动：工作区再多也不会把下方导航挤出屏幕
-              if (store.workspaces.length >= 2) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-                  child: Text(
-                    L10n.t('工作区', 'Workspaces'),
-                    style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: DshColors.ink3(context)),
-                  ),
-                ),
-                ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.35),
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      _workspaceItem(null),
-                      for (final w in store.workspaces) _workspaceItem(w),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-              _drawerItem(Icons.home_outlined, L10n.t('首页', 'Home'), 0),
-              _drawerItem(Icons.history, L10n.t('会话', 'Sessions'), 1),
-              _drawerItem(Icons.settings_outlined, L10n.t('设置', 'Settings'), 2),
-              const Spacer(),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  L10n.t('本机直连 · DeepSeek Harness', 'Direct connection · DeepSeek Harness'),
-                  style: TextStyle(fontSize: 12, color: DshColors.ink3(context)),
+              const SizedBox(width: 5),
+              Text(
+                titles[_index],
+                style: TextStyle(
+                  fontSize: _index == 0 ? 20 : 17,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: _index == 0 ? 'Georgia' : null,
+                  color: _index == 0 && DshColors.skin(context).isBigFish
+                      ? DshColors.accent(context)
+                      : null,
                 ),
               ),
             ],
           ),
+          actions: [
+            IconButton(
+              icon: Badge(
+                isLabelVisible: store.unread > 0,
+                backgroundColor: DshColors.danger(context),
+                label: Text(
+                  '${store.unread}',
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+                child: const Icon(Icons.notifications_none, size: 20),
+              ),
+              onPressed: () => openNotificationsScreen(
+                onOpenSession: () {
+                  // 通知页里打开会话后回到首页 tab（原抽屉入口行为）
+                  if (mounted) setState(() => _index = 0);
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
         ),
-      ),
-      body: IndexedStack(
-        index: _index,
-        children: [
-          // v3.1.6（issue #14）：IndexedStack 让三个页面同时活着，所以"本页是否可见"
-          // 必须显式告知——列表页据此暂停状态标识的旋转动效（页面不可见不耗电）。
-          HomeScreen(
-            store: store,
-            visible: _index == 0,
-            onOpenSession: () {
-              if (mounted) setState(() {});
-            },
+        drawer: Drawer(
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+          child: SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'DSH',
+                        style: TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Georgia',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton(
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(42),
+                        ),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _openNewSession();
+                        },
+                        child: Text(L10n.t('＋ 新建会话', '+ New Session')),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                // 工作区快速切换（对齐 PC 端 workspace 切换；≥2 个工作区时显示）
+                // 封顶 35% 屏高 + 可滚动：工作区再多也不会把下方导航挤出屏幕
+                if (store.workspaces.length >= 2) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                    child: Text(
+                      L10n.t('工作区', 'Workspaces'),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.5,
+                        color: DshColors.ink3(context),
+                      ),
+                    ),
+                  ),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.35,
+                    ),
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        _workspaceItem(null),
+                        for (final w in store.workspaces) _workspaceItem(w),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                _drawerItem(Icons.home_outlined, L10n.t('首页', 'Home'), 0),
+                _drawerItem(Icons.history, L10n.t('会话', 'Sessions'), 1),
+                _drawerItem(
+                  Icons.settings_outlined,
+                  L10n.t('设置', 'Settings'),
+                  2,
+                ),
+                const Spacer(),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    L10n.t(
+                      '本机直连 · DeepSeek Harness',
+                      'Direct connection · DeepSeek Harness',
+                    ),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: DshColors.ink3(context),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-          SessionsScreen(
-            store: store,
-            visible: _index == 1,
-            onOpenSession: () {
-              if (mounted) setState(() {});
-            },
-          ),
-          SettingsScreen(store: store, onReconfigure: _reconfigure),
-        ],
-      ),
+        ),
+        body: IndexedStack(
+          index: _index,
+          children: [
+            // v3.1.6（issue #14）：IndexedStack 让三个页面同时活着，所以"本页是否可见"
+            // 必须显式告知——列表页据此暂停状态标识的旋转动效（页面不可见不耗电）。
+            HomeScreen(
+              store: store,
+              visible: _index == 0,
+              onOpenSession: () {
+                if (mounted) setState(() {});
+              },
+            ),
+            SessionsScreen(
+              store: store,
+              visible: _index == 1,
+              onOpenSession: () {
+                if (mounted) setState(() {});
+              },
+            ),
+            SettingsScreen(store: store, onReconfigure: _reconfigure),
+          ],
+        ),
       ),
     );
   }
@@ -867,6 +1025,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
       ),
     );
   }
+
   /// 工作区切换项（null = 全部工作区）。
   Widget _workspaceItem(Map<String, dynamic>? w) {
     final brand = DshColors.brand(context);
@@ -875,9 +1034,13 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
     final ink3 = DshColors.ink3(context);
     final isAll = w == null;
     final path = w?['path'] as String? ?? '';
-    final title = isAll ? L10n.t('全部工作区', 'All Workspaces') : ((w['title'] as String?) ?? path);
+    final title = isAll
+        ? L10n.t('全部工作区', 'All Workspaces')
+        : ((w['title'] as String?) ?? path);
     // v3.1.1(issue #5)：原始路径做展示，规范化后与 workspacePath（归一存储）匹配
-    final selected = isAll ? store.workspacePath == null : store.workspacePath == AppStore.normPath(path);
+    final selected = isAll
+        ? store.workspacePath == null
+        : store.workspacePath == AppStore.normPath(path);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
       child: InkWell(
@@ -894,18 +1057,35 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
           ),
           child: Row(
             children: [
-              Icon(isAll ? Icons.folder_open_outlined : Icons.folder_outlined, size: 18, color: selected ? brand : ink2),
+              Icon(
+                isAll ? Icons.folder_open_outlined : Icons.folder_outlined,
+                size: 18,
+                color: selected ? brand : ink2,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13.5, color: selected ? brand : ink2,
-                            fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        color: selected ? brand : ink2,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      ),
+                    ),
                     if (!isAll)
-                      Text(path, maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 10.5, color: ink3)),
+                      Text(
+                        path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10.5, color: ink3),
+                      ),
                   ],
                 ),
               ),
@@ -921,6 +1101,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 /// 连接设置（首次进入/重新配置时显示）
 class ConnectionSheet extends StatefulWidget {
   final VoidCallback onConnected;
+
   /// 非空时显示「返回」按钮：放弃重新配置、保留旧配置返回主界面。
   final VoidCallback? onCancel;
   const ConnectionSheet({super.key, required this.onConnected, this.onCancel});
@@ -963,9 +1144,12 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
       if (!mounted) return;
       // v3.0.0：网络原因引导（MiUI 智能网络/蜂窝把局域网流量分流时会表现为超时或 404）
       final hint = L10n.t(
-          '；请确认手机与电脑在同一 Wi-Fi，并关闭手机流量/智能网络后重试',
-          '; make sure the phone is on the same Wi-Fi as the PC, and turn off mobile data / smart network switch');
-      setState(() => _status = '${L10n.t('连接失败：', 'Connection failed:')}$e$hint');
+        '；请确认手机与电脑在同一 Wi-Fi，并关闭手机流量/智能网络后重试',
+        '; make sure the phone is on the same Wi-Fi as the PC, and turn off mobile data / smart network switch',
+      );
+      setState(
+        () => _status = '${L10n.t('连接失败：', 'Connection failed:')}$e$hint',
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1012,56 +1196,88 @@ class _ConnectionSheetState extends State<ConnectionSheet> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-            Text('DSH Remote',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: scheme.primary)),
-            const SizedBox(height: 6),
-            Text(L10n.t('手机远程操作 DeepSeek Harness', 'Control DeepSeek Harness from your phone'), textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
-            const SizedBox(height: 28),
-            FilledButton.icon(
-              onPressed: _busy ? null : _scan,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: Text(L10n.t('扫码连接', 'Scan to Connect')),
-              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(child: Divider(color: scheme.outlineVariant)),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text(L10n.t('或手动输入', 'Or enter manually'), style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                ),
-                Expanded(child: Divider(color: scheme.outlineVariant)),
-              ],
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _baseCtrl,
-              keyboardType: TextInputType.url,
-              decoration: InputDecoration(
-                labelText: L10n.t('电脑地址', 'Computer Address'),
-                hintText: 'http://192.168.x.x:3080',
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _tokenCtrl,
-              obscureText: true,
-              decoration: InputDecoration(
-                labelText: L10n.t('访问口令', 'Token'),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: _busy ? null : _connect,
-              child: Text(_busy ? L10n.t('连接中…', 'Connecting…') : L10n.t('连接', 'Connect')),
-            ),
-            const SizedBox(height: 12),
-            Text(_status, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),
-          ],
+                    Text(
+                      'DSH Remote',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      L10n.t(
+                        '手机远程操作 DeepSeek Harness',
+                        'Control DeepSeek Harness from your phone',
+                      ),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    FilledButton.icon(
+                      onPressed: _busy ? null : _scan,
+                      icon: const Icon(Icons.qr_code_scanner),
+                      label: Text(L10n.t('扫码连接', 'Scan to Connect')),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(46),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(child: Divider(color: scheme.outlineVariant)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          child: Text(
+                            L10n.t('或手动输入', 'Or enter manually'),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        Expanded(child: Divider(color: scheme.outlineVariant)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _baseCtrl,
+                      keyboardType: TextInputType.url,
+                      decoration: InputDecoration(
+                        labelText: L10n.t('电脑地址', 'Computer Address'),
+                        hintText: 'http://192.168.x.x:3080',
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _tokenCtrl,
+                      obscureText: true,
+                      decoration: InputDecoration(
+                        labelText: L10n.t('访问口令', 'Token'),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    FilledButton(
+                      onPressed: _busy ? null : _connect,
+                      child: Text(
+                        _busy
+                            ? L10n.t('连接中…', 'Connecting…')
+                            : L10n.t('连接', 'Connect'),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _status,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
                 ),
               ),
             ),

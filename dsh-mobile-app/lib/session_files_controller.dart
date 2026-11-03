@@ -104,10 +104,7 @@ class SessionFilesController extends ChangeNotifier {
       }
       return crumbs;
     }
-    return [
-      (label: _rootLabel(), path: root),
-      ...all.sublist(rootIdx + 1),
-    ];
+    return [(label: _rootLabel(), path: root), ...all.sublist(rootIdx + 1)];
   }
 
   /// 是否位于浏览根（不允许再向上）。
@@ -174,7 +171,8 @@ class SessionFilesController extends ChangeNotifier {
   }
 
   /// 进入子目录。
-  Future<void> openDir(String name) => loadDir(joinBrowsePath(currentPath, name, sep));
+  Future<void> openDir(String name) =>
+      loadDir(joinBrowsePath(currentPath, name, sep));
 
   /// 返回上一级；已在根则不动。
   Future<void> goUp() async {

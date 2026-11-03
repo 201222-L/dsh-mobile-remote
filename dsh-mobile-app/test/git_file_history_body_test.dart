@@ -46,47 +46,46 @@ void main() {
   });
   tearDown(() => L10n.lang = 'zh');
 
-  testWidgets('primary choose opens file browser, secondary search opens inline picker', (
-    tester,
-  ) async {
-    var browseCalls = 0;
-    await mountBody(
-      tester,
-      onBrowseFiles: () async => browseCalls++,
-    );
+  testWidgets(
+    'primary choose opens file browser, secondary search opens inline picker',
+    (tester) async {
+      var browseCalls = 0;
+      await mountBody(tester, onBrowseFiles: () async => browseCalls++);
 
-    // 主入口：会话文件浏览器；内联选择器不自动/直接打开。
-    await tester.tap(find.byKey(const Key('git-history-change')));
-    await tester.pumpAndSettle();
-    expect(browseCalls, 1);
-    expect(find.byKey(const Key('git-history-picker')), findsNothing);
+      // 主入口：会话文件浏览器；内联选择器不自动/直接打开。
+      await tester.tap(find.byKey(const Key('git-history-change')));
+      await tester.pumpAndSettle();
+      expect(browseCalls, 1);
+      expect(find.byKey(const Key('git-history-picker')), findsNothing);
 
-    // 次要入口：搜索文件 → 仍可打开内联选择器。
-    expect(find.byKey(const Key('git-history-search-files')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-history-search-files')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-history-cancel')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsNothing);
-  });
+      // 次要入口：搜索文件 → 仍可打开内联选择器。
+      expect(find.byKey(const Key('git-history-search-files')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('git-history-search-files')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('git-history-cancel')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsNothing);
+    },
+  );
 
-  testWidgets('guided empty state offers browser primary and search secondary', (
-    tester,
-  ) async {
-    var browseCalls = 0;
-    await mountBody(tester, onBrowseFiles: () async => browseCalls++);
+  testWidgets(
+    'guided empty state offers browser primary and search secondary',
+    (tester) async {
+      var browseCalls = 0;
+      await mountBody(tester, onBrowseFiles: () async => browseCalls++);
 
-    expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-history-choose')));
-    await tester.pumpAndSettle();
-    expect(browseCalls, 1);
-    expect(find.byKey(const Key('git-history-picker')), findsNothing);
+      expect(find.byKey(const Key('git-history-empty')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('git-history-choose')));
+      await tester.pumpAndSettle();
+      expect(browseCalls, 1);
+      expect(find.byKey(const Key('git-history-picker')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('git-history-search-empty')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
-  });
+      await tester.tap(find.byKey(const Key('git-history-search-empty')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+    },
+  );
 
   testWidgets('browser null/cancel leaves the current selection unchanged', (
     tester,
@@ -107,16 +106,17 @@ void main() {
     expect(find.text('Update a.dart'), findsOneWidget);
   });
 
-  testWidgets('without onBrowseFiles the inline picker stays primary (legacy)', (
-    tester,
-  ) async {
-    await mountBody(tester);
-    expect(find.byKey(const Key('git-history-search-files')), findsNothing);
+  testWidgets(
+    'without onBrowseFiles the inline picker stays primary (legacy)',
+    (tester) async {
+      await mountBody(tester);
+      expect(find.byKey(const Key('git-history-search-files')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('git-history-change')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
-  });
+      await tester.tap(find.byKey(const Key('git-history-change')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('git-history-picker')), findsOneWidget);
+    },
+  );
 
   testWidgets('auto-open-once still opens inline picker, never the browser', (
     tester,

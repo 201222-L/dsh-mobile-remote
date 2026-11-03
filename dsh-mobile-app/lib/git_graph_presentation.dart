@@ -133,13 +133,9 @@ List<GitGraphLabel> gitRefLabels(GitDecoration decoration) {
     if (ref.kind == GitRefKind.remoteBranch && text.endsWith('/HEAD')) continue;
     final kind = _refOrder.contains(ref.kind) ? ref.kind : GitRefKind.other;
     if (!seen.add('$kind\u0000$text')) continue;
-    buckets[kind]!.add(
-      GitGraphLabel(text, kind: _labelKindOf(kind)),
-    );
+    buckets[kind]!.add(GitGraphLabel(text, kind: _labelKindOf(kind)));
   }
-  return List.unmodifiable([
-    for (final kind in _refOrder) ...buckets[kind]!,
-  ]);
+  return List.unmodifiable([for (final kind in _refOrder) ...buckets[kind]!]);
 }
 
 /// tag 标签：保持宿主返回顺序，按短名去重。
@@ -163,7 +159,10 @@ List<GitGraphLabel> gitTagLabels(GitDecoration decoration) {
 
 /// 图行完整标签：引用（HEAD → 本地 → 远程）后接全部 tag，单行展示、不折叠。
 List<GitGraphLabel> gitGraphLabels(GitDecoration decoration) =>
-    List.unmodifiable([...gitRefLabels(decoration), ...gitTagLabels(decoration)]);
+    List.unmodifiable([
+      ...gitRefLabels(decoration),
+      ...gitTagLabels(decoration),
+    ]);
 
 /// 按种类取标签配色：HEAD 高亮、本地/远程分支用稳定色、tag 用 tertiaryContainer。
 ({Color background, Color foreground, Color? border}) gitGraphLabelColors(

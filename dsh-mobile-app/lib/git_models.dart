@@ -131,11 +131,7 @@ String gitShortRefName(String raw) {
   var value = raw.trim();
   if (value.startsWith('HEAD -> ')) value = value.substring(8).trim();
   if (value.startsWith('tag: ')) value = value.substring(5).trim();
-  for (final prefix in const [
-    'refs/heads/',
-    'refs/remotes/',
-    'refs/tags/',
-  ]) {
+  for (final prefix in const ['refs/heads/', 'refs/remotes/', 'refs/tags/']) {
     if (value.startsWith(prefix)) {
       value = value.substring(prefix.length);
       break;
@@ -300,18 +296,14 @@ class GitDecoration {
       tags: _strings(json['tags']),
     );
     final structuredRefs = List<GitRefDetail>.unmodifiable(
-      (json['refsDetail'] as List? ?? const [])
-          .whereType<Map>()
-          .map(
-            (item) => GitRefDetail.fromJson(Map<String, dynamic>.from(item)),
-          ),
+      (json['refsDetail'] as List? ?? const []).whereType<Map>().map(
+        (item) => GitRefDetail.fromJson(Map<String, dynamic>.from(item)),
+      ),
     );
     final structuredTags = List<GitTagDetail>.unmodifiable(
-      (json['tagsDetail'] as List? ?? const [])
-          .whereType<Map>()
-          .map(
-            (item) => GitTagDetail.fromJson(Map<String, dynamic>.from(item)),
-          ),
+      (json['tagsDetail'] as List? ?? const []).whereType<Map>().map(
+        (item) => GitTagDetail.fromJson(Map<String, dynamic>.from(item)),
+      ),
     );
     return GitDecoration(
       refs: structuredRefs.isEmpty ? legacy.refs : structuredRefs,
@@ -721,7 +713,11 @@ class GitFileList {
   /// 不可用原因（如 `not-a-repository`）；正常为空。
   final String? reason;
 
-  const GitFileList({this.files = const [], this.truncated = false, this.reason});
+  const GitFileList({
+    this.files = const [],
+    this.truncated = false,
+    this.reason,
+  });
 
   factory GitFileList.fromJson(Map<String, dynamic> json) {
     final raw = json['files'] ?? json['items'];
@@ -765,7 +761,8 @@ class GitFileHistoryEntry {
     final oid = json['oid']?.toString() ?? '';
     return GitFileHistoryEntry(
       oid: oid,
-      shortOid: json['shortOid']?.toString() ??
+      shortOid:
+          json['shortOid']?.toString() ??
           (oid.length <= 8 ? oid : oid.substring(0, 8)),
       author: json['author']?.toString() ?? '',
       timestamp: (json['timestamp'] as num?)?.toInt() ?? 0,

@@ -136,17 +136,9 @@ void main() {
     final store = await makeStore();
     await openPreferenceDialog(tester, store);
 
-    expect(displayedGitTabNames(tester), [
-      '分支',
-      '图谱',
-      '工作区',
-      '文件历史',
-    ]);
+    expect(displayedGitTabNames(tester), ['分支', '图谱', '工作区', '文件历史']);
     // 旧宿主没有该能力时 tab 降级为不可用提示，弹窗里需给出说明（US16）。
-    expect(
-      find.byKey(const Key('git-tabs-file-history-note')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const Key('git-tabs-file-history-note')), findsOneWidget);
     final rows = tester
         .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
         .toList();

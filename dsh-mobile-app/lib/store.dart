@@ -72,7 +72,12 @@ class AppStore extends ChangeNotifier {
     'session_tools',
     'copy',
   ];
-  static const conversationActionIds = ['git', 'files', 'session_tools', 'copy'];
+  static const conversationActionIds = [
+    'git',
+    'files',
+    'session_tools',
+    'copy',
+  ];
   static const _defaultConversationActionOrder = [
     'git',
     'files',
@@ -219,21 +224,12 @@ class AppStore extends ChangeNotifier {
   /// （v2.7.1：悬浮球跳转/回前台时"错过的也提醒"）。
   void Function(int count, {bool force})? onNewNotifications;
 
-  /// 审批/问询帧到达回调（issue #46 旧签名，保留兼容）。
-  void Function(
-    String kind,
-    String sessionId,
-    String rpcId,
-    String? toolName,
-    String? reason,
-    String? prompt,
-  )? onAttention;
-
   /// M1a：结构化事件（带 approvalId，身份稳定、可精确撤销）。
   void Function(AttentionEvent event)? onAttentionEvent;
 
   /// M1a：事件已结算（`approval/resolved` / `question/resolved`），参数是 identity。
   void Function(String identity)? onAttentionResolved;
+  void Function(String source, Set<String> pendingKeys)? onAttentionSnapshot;
 
   /// S1：用户打开了某个会话——调用方应清掉该会话的横幅并标已读。
   void Function(String sessionId)? onChatOpened;
@@ -780,9 +776,8 @@ class AppStore extends ChangeNotifier {
   );
 
   /// 当前列表里是否存在需要驱动旋转标识的会话（存在运行中会话才启动动画）。
-  bool hasRunningSessions(Iterable<Session> visible) => visible.any(
-    (s) => rowStateOf(s.id) == SessionRowState.running,
-  );
+  bool hasRunningSessions(Iterable<Session> visible) =>
+      visible.any((s) => rowStateOf(s.id) == SessionRowState.running);
 
   /// 当前工作区的显示名（无工作区/全部时为 null）。
   String? get workspaceTitle {
@@ -923,11 +918,9 @@ class AppStore extends ChangeNotifier {
     // 而不只是"当前打开的会话"变化时。下面逐项比对（含将被裁剪的键）。
     final willPrune =
         snapshotEpoch == null || snapshotEpoch == _agentStatusEpoch;
-    final changed = _statusSetChanged(
-      agentStatusMap,
-      liveAgents,
-      prune: willPrune,
-    ) || _statusSetChanged(sessionAgentStatus, liveSessions, prune: willPrune);
+    final changed =
+        _statusSetChanged(agentStatusMap, liveAgents, prune: willPrune) ||
+        _statusSetChanged(sessionAgentStatus, liveSessions, prune: willPrune);
 
     if (willPrune) {
       // 快照权威：先删不在快照里的陈旧键，再写入快照值
@@ -1091,6 +1084,7 @@ class AppStore extends ChangeNotifier {
       _firstUnreadSeen = true;
       _lastUnread = u;
       unread = u;
+      unawaited(Floating.syncUnread(u).catchError((_) {}));
       if (notify) notifyListeners();
     } catch (_) {}
   }
@@ -1313,6 +1307,30 @@ class AppStore extends ChangeNotifier {
       unawaited(refreshWorkspaces());
       return;
     }
+    if (type == 'attention/snapshot') {
+      final entries = frame['pending'];
+      if (frame['version'] != 1 || entries is! List) return;
+      final source = api.notificationScope;
+      final keys = <String>{};
+      for (final item in entries) {
+        if (item is! Map ||
+            item['kind'] is! String ||
+            item['sessionId'] is! String ||
+            item['identity'] is! String) {
+          return;
+        }
+        keys.add(
+          attentionKey(
+            kind: item['kind'] as String,
+            sessionId: item['sessionId'] as String,
+            identity: item['identity'] as String,
+            source: source,
+          ),
+        );
+      }
+      onAttentionSnapshot?.call(source, keys);
+      return;
+    }
     if (type == 'git/changed') {
       final repositoryId = frame['repositoryId'];
       if (repositoryId is String && repositoryId.isNotEmpty) {
@@ -1364,22 +1382,18 @@ class AppStore extends ChangeNotifier {
             data: {'rpcId': request.rpcId, 'sessionId': request.sessionId},
           ),
         );
-        onAttention?.call(
-          'question',
-          request.sessionId,
-          request.rpcId,
-          null,
-          null,
-          request.questions.isEmpty ? null : request.questions.first.question,
+        onAttentionEvent?.call(
+          AttentionEvent(
+            kind: AttentionKind.question,
+            source: api.notificationScope,
+            sessionId: request.sessionId,
+            identity: request.rpcId,
+            at: DateTime.now(),
+            summary: request.questions.isEmpty
+                ? null
+                : request.questions.first.question,
+          ),
         );
-        onAttentionEvent?.call(AttentionEvent(
-          kind: AttentionKind.question,
-          sessionId: request.sessionId,
-          identity: request.rpcId,
-          at: DateTime.now(),
-          summary:
-              request.questions.isEmpty ? null : request.questions.first.question,
-        ));
         AppLog.instance.log(
           '通知：问询帧到达 rpc=${request.rpcId} session=${request.sessionId}（已交给本地通知）',
         );
@@ -1428,24 +1442,19 @@ class AppStore extends ChangeNotifier {
             data: {'rpcId': request.rpcId, 'sessionId': request.sessionId},
           ),
         );
-        onAttention?.call(
-          'approval',
-          request.sessionId,
-          request.rpcId,
-          request.toolName,
-          request.reason,
-          null,
+        onAttentionEvent?.call(
+          AttentionEvent(
+            kind: AttentionKind.approval,
+            source: api.notificationScope,
+            sessionId: request.sessionId,
+            identity: request.approvalId.isEmpty
+                ? request.rpcId
+                : request.approvalId,
+            at: DateTime.now(),
+            toolName: request.toolName,
+            summary: request.reason,
+          ),
         );
-        onAttentionEvent?.call(AttentionEvent(
-          kind: AttentionKind.approval,
-          sessionId: request.sessionId,
-          identity: request.approvalId.isEmpty
-              ? request.rpcId
-              : request.approvalId,
-          at: DateTime.now(),
-          toolName: request.toolName,
-          summary: request.reason,
-        ));
         AppLog.instance.log(
           '通知：审批帧到达 rpc=${request.rpcId} approvalId=${request.approvalId} '
           'session=${request.sessionId} tool=${request.toolName}（已交给本地通知）',
@@ -1573,7 +1582,9 @@ class AppStore extends ChangeNotifier {
           (sid != null && sid.isNotEmpty && sessionAgentStatus[sid] != norm);
       if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
       if (sid != null && sid.isNotEmpty) sessionAgentStatus[sid] = norm;
-      final current = sid != null && sid.isNotEmpty ? sid == sessionId : aid == sessionId;
+      final current = sid != null && sid.isNotEmpty
+          ? sid == sessionId
+          : aid == sessionId;
       // legacy：无 id 的帧只影响当前页显示（保留下方原有语义）
       final legacyUnrouted = sid == null && aid == null;
       if (current || legacyUnrouted) {

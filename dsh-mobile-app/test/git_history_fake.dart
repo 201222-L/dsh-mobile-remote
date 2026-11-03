@@ -44,10 +44,7 @@ class HistoryGitApi implements GitReadApi {
     if (failCapabilities) throw ApiException('capabilities unavailable');
     return GitReadCapabilities(
       available: true,
-      features: {
-        'refsDetail': true,
-        'fileHistory': fileHistoryCapability,
-      },
+      features: {'refsDetail': true, 'fileHistory': fileHistoryCapability},
     );
   }
 
@@ -130,21 +127,21 @@ class HistoryGitApi implements GitReadApi {
   }) async {
     previews.add((kind: kind, path: path, oid: oid));
     return GitFilePreview(
-    repositoryId: repositoryId,
-    kind: kind,
-    path: path,
-    binary: binaryPaths.contains(path),
-    notice: noticePaths.contains(path) ? 'preview unavailable' : null,
-    diff: longDiff
-        ? 'diff --git a/$path b/$path\n'
-              '@@ -1,10 +1,10 @@\n'
-              ' keep 1\n keep 2\n keep 3\n'
-              '-old line\n'
-              '+new line\n'
-              '--- source -- marker\n'
-              '+++ source ++ marker\n'
-              ' keep 4\n keep 5\n keep 6\n keep 7\n keep 8\n keep 9\n keep 10\n'
-        : 'diff --git a/$path b/$path\n@@ -1 +1 @@\n-old line\n+new line\n',
+      repositoryId: repositoryId,
+      kind: kind,
+      path: path,
+      binary: binaryPaths.contains(path),
+      notice: noticePaths.contains(path) ? 'preview unavailable' : null,
+      diff: longDiff
+          ? 'diff --git a/$path b/$path\n'
+                '@@ -1,10 +1,10 @@\n'
+                ' keep 1\n keep 2\n keep 3\n'
+                '-old line\n'
+                '+new line\n'
+                '--- source -- marker\n'
+                '+++ source ++ marker\n'
+                ' keep 4\n keep 5\n keep 6\n keep 7\n keep 8\n keep 9\n keep 10\n'
+          : 'diff --git a/$path b/$path\n@@ -1 +1 @@\n-old line\n+new line\n',
     );
   }
 

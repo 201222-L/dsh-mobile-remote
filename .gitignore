@@ -17,3 +17,7 @@ dsh-mobile-app/dist/
 
 # AGENT 规则（写给 AI 助手的项目约定，仅本机保留，不推送 GitHub）
 AGENT-RULES.md
+
+# Prepared release artifacts (source code only in Git)
+release-dist/
+npm-dist/

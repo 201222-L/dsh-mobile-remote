@@ -131,87 +131,95 @@ void main() {
     },
   );
 
-  test('structured refsDetail/tagsDetail parse for graph rows and commit detail', () {
-    final summary = GitCommitSummary.fromJson({
-      'oid': 'abc',
-      'refs': ['refs/heads/main'],
-      'tags': ['v1'],
-      'refsDetail': [
-        {
-          'kind': 'head',
-          'name': 'refs/heads/main',
-          'shortName': 'main',
-          'oid': 'abc',
-          'current': true,
-        },
-        {
-          'kind': 'localBranch',
-          'name': 'refs/heads/feature',
-          'shortName': 'feature',
-          'oid': 'abc',
-        },
-        {
-          'kind': 'remoteBranch',
-          'name': 'refs/remotes/origin/main',
-          'shortName': 'origin/main',
-          'oid': 'abc',
-        },
-        {
-          'kind': 'other',
-          'name': 'refs/stash',
-          'shortName': 'stash',
-          'oid': 'abc',
-        },
-      ],
-      'tagsDetail': [
-        {'name': 'refs/tags/v1', 'shortName': 'v1', 'oid': 'abc', 'annotated': true},
-      ],
-    });
-    final details = GitCommitDetails.fromJson({
-      'oid': 'abc',
-      'refsDetail': [
-        {
-          'kind': 'head',
-          'name': 'refs/heads/main',
-          'shortName': 'main',
-          'oid': 'abc',
-          'current': true,
-        },
-      ],
-      'tagsDetail': [
-        {
-          'name': 'refs/tags/v2',
-          'shortName': 'v2',
-          'oid': 'abc',
-          'annotated': true,
-          'tagger': 'Release Bot',
-          'date': 1700000000,
-          'subject': 'release 2.0',
-          'hint': 'non-commit-target',
-        },
-      ],
-    });
+  test(
+    'structured refsDetail/tagsDetail parse for graph rows and commit detail',
+    () {
+      final summary = GitCommitSummary.fromJson({
+        'oid': 'abc',
+        'refs': ['refs/heads/main'],
+        'tags': ['v1'],
+        'refsDetail': [
+          {
+            'kind': 'head',
+            'name': 'refs/heads/main',
+            'shortName': 'main',
+            'oid': 'abc',
+            'current': true,
+          },
+          {
+            'kind': 'localBranch',
+            'name': 'refs/heads/feature',
+            'shortName': 'feature',
+            'oid': 'abc',
+          },
+          {
+            'kind': 'remoteBranch',
+            'name': 'refs/remotes/origin/main',
+            'shortName': 'origin/main',
+            'oid': 'abc',
+          },
+          {
+            'kind': 'other',
+            'name': 'refs/stash',
+            'shortName': 'stash',
+            'oid': 'abc',
+          },
+        ],
+        'tagsDetail': [
+          {
+            'name': 'refs/tags/v1',
+            'shortName': 'v1',
+            'oid': 'abc',
+            'annotated': true,
+          },
+        ],
+      });
+      final details = GitCommitDetails.fromJson({
+        'oid': 'abc',
+        'refsDetail': [
+          {
+            'kind': 'head',
+            'name': 'refs/heads/main',
+            'shortName': 'main',
+            'oid': 'abc',
+            'current': true,
+          },
+        ],
+        'tagsDetail': [
+          {
+            'name': 'refs/tags/v2',
+            'shortName': 'v2',
+            'oid': 'abc',
+            'annotated': true,
+            'tagger': 'Release Bot',
+            'date': 1700000000,
+            'subject': 'release 2.0',
+            'hint': 'non-commit-target',
+          },
+        ],
+      });
 
-    expect(summary.decoration.refs, hasLength(4));
-    expect(summary.decoration.refs.first.kind, GitRefKind.head);
-    expect(summary.decoration.refs.first.isHead, isTrue);
-    expect(summary.decoration.refs.first.current, isTrue);
-    expect(summary.decoration.refs[2].isRemoteBranch, isTrue);
-    expect(summary.decoration.refs.last.isStash, isTrue);
-    expect(summary.decoration.tags.single.annotated, isTrue);
-    // legacy 字段仍保留（deprecated 契约兼容）。
-    expect(summary.refs, ['refs/heads/main']);
-    expect(summary.tags, ['v1']);
+      expect(summary.decoration.refs, hasLength(4));
+      expect(summary.decoration.refs.first.kind, GitRefKind.head);
+      expect(summary.decoration.refs.first.isHead, isTrue);
+      expect(summary.decoration.refs.first.current, isTrue);
+      expect(summary.decoration.refs[2].isRemoteBranch, isTrue);
+      expect(summary.decoration.refs.last.isStash, isTrue);
+      expect(summary.decoration.tags.single.annotated, isTrue);
+      // legacy 字段仍保留（deprecated 契约兼容）。
+      expect(summary.refs, ['refs/heads/main']);
+      expect(summary.tags, ['v1']);
 
-    expect(details.decoration.refs.single.shortName, 'main');
-    final tag = details.decoration.tags.single;
-    expect(tag.shortName, 'v2');
-    expect(tag.tagger, 'Release Bot');
-    expect(tag.timestamp, 1700000000);
-    expect(tag.subject, 'release 2.0');
-    expect(tag.hint, 'non-commit-target');
-    expect(tag.hasMetadata, isTrue);
-  });
+      expect(details.decoration.refs.single.shortName, 'main');
+      final tag = details.decoration.tags.single;
+      expect(tag.shortName, 'v2');
+      expect(tag.tagger, 'Release Bot');
+      expect(tag.timestamp, 1700000000);
+      expect(tag.subject, 'release 2.0');
+      expect(tag.hint, 'non-commit-target');
+      expect(tag.hasMetadata, isTrue);
+    },
+  );
 
   test('legacy ref/tag decoration strings fall back when structured fields are absent', () {
     final summary = GitCommitSummary.fromJson({
@@ -230,15 +238,12 @@ void main() {
       tags: ['v1.0'],
     );
 
-    expect(
-      summary.decoration.refs.map((ref) => ref.kind).toList(),
-      [
-        GitRefKind.head,
-        GitRefKind.localBranch,
-        GitRefKind.localBranch,
-        GitRefKind.remoteBranch,
-      ],
-    );
+    expect(summary.decoration.refs.map((ref) => ref.kind).toList(), [
+      GitRefKind.head,
+      GitRefKind.localBranch,
+      GitRefKind.localBranch,
+      GitRefKind.remoteBranch,
+    ]);
     // 旧宿主 `HEAD -> refs/heads/main` 与宿主 legacy 投影一致：
     // head 标签是 HEAD/HEAD，目标分支是 current localBranch main。
     expect(summary.decoration.refs[0].isHead, isTrue);
@@ -248,35 +253,40 @@ void main() {
     expect(summary.decoration.refs[1].current, isTrue);
     expect(summary.decoration.refs[1].name, 'refs/heads/main');
     expect(summary.decoration.refs[1].shortName, 'main');
-    expect(
-      summary.decoration.refs.map((ref) => ref.shortName).toList(),
-      ['HEAD', 'main', 'feature', 'origin/main'],
-    );
-    expect(
-      summary.decoration.tags.map((tag) => tag.shortName).toList(),
-      ['v1', 'v2'],
-    );
+    expect(summary.decoration.refs.map((ref) => ref.shortName).toList(), [
+      'HEAD',
+      'main',
+      'feature',
+      'origin/main',
+    ]);
+    expect(summary.decoration.tags.map((tag) => tag.shortName).toList(), [
+      'v1',
+      'v2',
+    ]);
     expect(summary.decoration.tags.every((tag) => !tag.annotated), isTrue);
     // 直接构造（旧宿主/测试桩）的模型也能从 legacy 字段派生展示数据。
     expect(details.resolvedDecoration.refs.single.shortName, 'main');
     expect(details.resolvedDecoration.tags.single.shortName, 'v1.0');
   });
 
-  test('capability flags gate file history and structured refs independently', () {
-    final caps = GitReadCapabilities.fromJson({
-      'available': true,
-      'features': {'refsDetail': true, 'fileHistory': false},
-    });
-    final legacy = GitReadCapabilities.fromJson({
-      'available': true,
-      'features': {'graph': true},
-    });
+  test(
+    'capability flags gate file history and structured refs independently',
+    () {
+      final caps = GitReadCapabilities.fromJson({
+        'available': true,
+        'features': {'refsDetail': true, 'fileHistory': false},
+      });
+      final legacy = GitReadCapabilities.fromJson({
+        'available': true,
+        'features': {'graph': true},
+      });
 
-    expect(caps.refsDetail, isTrue);
-    expect(caps.fileHistory, isFalse);
-    expect(legacy.refsDetail, isFalse);
-    expect(legacy.fileHistory, isFalse);
-  });
+      expect(caps.refsDetail, isTrue);
+      expect(caps.fileHistory, isFalse);
+      expect(legacy.refsDetail, isFalse);
+      expect(legacy.fileHistory, isFalse);
+    },
+  );
 
   test('file list and file history DTOs parse the host contract', () {
     final files = GitFileList.fromJson({

@@ -1,8 +1,17 @@
 # Changelog
 
-## Unreleased
+## 3.2.4-alpha.1（开发预览，App build 32）
 
-### 插件：Git 只读浏览契约 1.1.0（issue #42）— 结构化 refs/tags + 文件列表与文件历史
+- 通知只保留结构化事件入口；修复一条审批两条系统通知。通知账本按宿主隔离、持久化，重连用有序待办快照精确撤销过期通知；真实读取渠道权限，正在查看的会话不重复横幅。
+- 桌面宠物继续保留动画与交互，角标改为呈现宿主未读快照；打开宠物面板与计时器不再自行清除业务未读。
+- 新增插件 / App 配对更新：GitHub 默认来源、可选官方 npm scope、签名清单与流式校验、确认后暂存、安装 helper 与恢复记录；桌面手动重启，受控 Web 可配置停止 / 启动命令。手机校验实际 APK 身份并交系统安装器确认。
+- 新增 PR CI、不可变发布清单和自动发布 workflow。npm scope 与 CI 签名配置由维护者后续设置；本次不发布 npm / Release，不改动正在运行的桌面安装。
+- Git 浏览吸收 PR #63，并补修 Git 2.52 嵌套 tag 识别与文件历史超时预算；详情如下。
+
+验证：Node（Ubuntu）263/263、Flutter 665/665、`flutter analyze` 无问题、Kotlin 43/43、Android debug 编译通过；Windows 时间线 / 用量门禁通过，Git 服务测试 19 通过 + 2 个 POSIX 文件名用例按平台跳过。隔离 DSH Web 0.2.1-rc.5 冒烟通过（bootstrap、SSE 审批能力、更新状态、确认门禁）。正式发布、手机后台 / 系统安装器真机验收尚未执行。
+
+
+### 插件：Git 只读浏览契约 1.1.0（PR #63）— 结构化 refs/tags + 文件列表与文件历史
 
 - `GET /m/api/git/capabilities`：`contractVersion` 升至 `1.1.0`；`features` 新增 `refsDetail` 与 `fileHistory`（两项独立降级，旧 `1.0.0` 外部 provider 继续兼容）。`fileHistory` 仅在**当前生效的** provider 实现 `files()` / `fileHistory()` 时为 `true`，不会用包内 bundled 数据补齐外部 provider 的视图。
 - `GET /m/api/git/graph`、`GET /m/api/git/commit`：保留旧 `refs: string[]`，新增 `refsDetail` / `tagsDetail`（HEAD → 本地分支 → 远程分支 → tag 排序，排除 `refs/stash`，commit 详情返回 annotated tag 的 tagger/date/subject，subject ≤ 200 字）；旧 provider 的原始 refs 字符串由宿主解析兜底，`for-each-ref` 读取改为 NUL/US 分隔（tagger/tag subject 中的 tab 不再破坏解析）。

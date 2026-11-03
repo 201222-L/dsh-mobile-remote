@@ -783,7 +783,7 @@
 
 **能力位**：`GET /m/api/bootstrap` 与 SSE hello 的 `capabilities.turnOutline` 与本节同一判据（见 §3.1、§3.6）：宿主真的注册了投影单元且观察面可用才 `supported: true`，否则 `supported: false`。客户端必须先读能力位再决定是否渲染未加载刻度。
 
-### 6.19 Git 只读浏览接口（contractVersion 1.1.0，issue #42）
+### 6.19 Git 只读浏览接口（contractVersion 1.1.0，PR #63）
 
 > 本节是移动端 Git 只读浏览的**自包含**接口说明（此前的只读 Git 实现没有写入本文档）。全部端点只读、要求鉴权，并且只允许读取「当前会话 `cwd` 所属、且位于已注册 DSH 工作区内的 Git 仓库」。响应不包含 host 发现的仓库绝对路径、remote URL 或作者邮箱；错误只返回稳定 `error` 码，不回传 provider 细节。唯一例外：`/git/file-history` 的 `reason: "path-invalid"` 会原样回显**客户端自己提交的** `path`，供客户端回填/纠错（见 §6.19.8）。对外契约版本 `contractVersion` 自本次起为 **`1.1.0`**：只做加法扩展，旧 App 与外部旧 provider 都不破坏。
 

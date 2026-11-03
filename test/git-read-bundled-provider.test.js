@@ -370,7 +370,9 @@ test("file history soft timeout returns the partial result with truncated: true"
       },
     });
 
-    const result = await provider.fileHistory(root, "tracked.txt", { timeoutMs: 20 });
+    // The total budget now includes two real Git preflight processes. Keep
+    // enough time for those on Windows; only the injected log waits to abort.
+    const result = await provider.fileHistory(root, "tracked.txt", { timeoutMs: 1500 });
     assert.equal(result.truncated, true);
     assert.ok(result.entries.length >= 1);
     for (const entry of result.entries) assert.match(entry.oid, /^[0-9a-f]{40,64}$/);

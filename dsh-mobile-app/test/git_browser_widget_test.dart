@@ -146,10 +146,8 @@ class WidgetGitApi implements GitReadApi {
                     refs: [
                       GitRefDetail(
                         kind: 'localBranch',
-                        name:
-                            'refs/heads/feature/very-long-branch-name-that-would-have-been-ellipsized',
-                        shortName:
-                            'feature/very-long-branch-name-that-would-have-been-ellipsized',
+                        name: 'refs/heads/feature/very-long-branch-name-that-would-have-been-ellipsized',
+                        shortName: 'feature/very-long-branch-name-that-would-have-been-ellipsized',
                         oid: 'history-0',
                       ),
                       GitRefDetail(
@@ -757,7 +755,12 @@ void main() {
     expect(find.text('stash'), findsNothing);
     // 同一行（固定行高、单行标签）：所有 pill 纵向位置一致。
     final baseline = tester.getTopLeft(find.text(longRef)).dy;
-    for (final text in ['feature', 'origin/main', 'v2.0.0-rc.1', 'release-2026']) {
+    for (final text in [
+      'feature',
+      'origin/main',
+      'v2.0.0-rc.1',
+      'release-2026',
+    ]) {
       expect(tester.getTopLeft(find.text(text)).dy, baseline);
     }
     // 顺序：本地分支 → 远程分支 → tag。
@@ -768,26 +771,27 @@ void main() {
     expect(remoteX, lessThan(tagX));
   });
 
-  testWidgets('commit detail renders structured refs and annotated tag metadata', (
-    tester,
-  ) async {
-    final api = WidgetGitApi()..structuredDetails = true;
-    final controller = await mountSheet(tester, api);
-    addTearDown(controller.dispose);
-    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'commit detail renders structured refs and annotated tag metadata',
+    (tester) async {
+      final api = WidgetGitApi()..structuredDetails = true;
+      final controller = await mountSheet(tester, api);
+      addTearDown(controller.dispose);
+      await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+      await tester.pumpAndSettle();
 
-    expect(find.text('Refs: main, feature, origin/main'), findsOneWidget);
-    expect(
-      find.text('Tags: v2.0, old (Tag targets a non-commit object)'),
-      findsOneWidget,
-    );
-    expect(find.text('Tag details'), findsOneWidget);
-    expect(find.text('Tagger: Release Bot'), findsOneWidget);
-    expect(find.text('Release 2.0'), findsOneWidget);
-  });
+      expect(find.text('Refs: main, feature, origin/main'), findsOneWidget);
+      expect(
+        find.text('Tags: v2.0, old (Tag targets a non-commit object)'),
+        findsOneWidget,
+      );
+      expect(find.text('Tag details'), findsOneWidget);
+      expect(find.text('Tagger: Release Bot'), findsOneWidget);
+      expect(find.text('Release 2.0'), findsOneWidget);
+    },
+  );
 
   testWidgets('commit detail shows none when refs and tags are empty', (
     tester,
@@ -804,26 +808,27 @@ void main() {
     expect(find.text('Tags: none'), findsOneWidget);
   });
 
-  testWidgets('graph label viewport tracks system text scale without clipping', (
-    tester,
-  ) async {
-    const longRef =
-        'feature/very-long-branch-name-that-would-have-been-ellipsized';
-    final api = WidgetGitApi();
-    final controller = await mountSheet(tester, api);
-    addTearDown(controller.dispose);
-    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
-    await tester.pumpAndSettle();
-    expect(find.text(longRef), findsOneWidget);
+  testWidgets(
+    'graph label viewport tracks system text scale without clipping',
+    (tester) async {
+      const longRef =
+          'feature/very-long-branch-name-that-would-have-been-ellipsized';
+      final api = WidgetGitApi();
+      final controller = await mountSheet(tester, api);
+      addTearDown(controller.dispose);
+      await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+      await tester.pumpAndSettle();
+      expect(find.text(longRef), findsOneWidget);
 
-    // 打开 sheet 后再改系统文字缩放：标签宽度缓存必须失效并重算，
-    // 否则横向滚动范围会按旧字号计算导致裁切。
-    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
-    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await tester.pumpAndSettle();
+      // 打开 sheet 后再改系统文字缩放：标签宽度缓存必须失效并重算，
+      // 否则横向滚动范围会按旧字号计算导致裁切。
+      tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await tester.pumpAndSettle();
 
-    expect(find.text(longRef), findsOneWidget);
-    expect(find.byKey(const Key('git-graph-horizontal')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+      expect(find.text(longRef), findsOneWidget);
+      expect(find.byKey(const Key('git-graph-horizontal')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

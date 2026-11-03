@@ -526,8 +526,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       );
     }
     final history = _ensureHistoryController(state);
-    final canBrowse =
-        widget.store != null || widget.fileBrowserPicker != null;
+    final canBrowse = widget.store != null || widget.fileBrowserPicker != null;
     return GitFileHistoryBody(
       controller: history,
       onOpenCommitDiff: _openHistoryEntryDiff,
@@ -1333,8 +1332,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 _metadata(L10n.t('Tagger', 'Tagger'), tag.tagger!),
               if (tag.timestamp != null)
                 _metadata(L10n.t('日期', 'Date'), _time(tag.timestamp!)),
-              if ((tag.subject ?? '').isNotEmpty)
-                SelectableText(tag.subject!),
+              if ((tag.subject ?? '').isNotEmpty) SelectableText(tag.subject!),
             ],
           ),
         ),

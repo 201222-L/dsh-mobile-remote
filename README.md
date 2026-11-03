@@ -244,6 +244,8 @@ pushUrls:
 
 ## 开发
 
+后台提醒与桌面宠物职责见 [后台提醒说明](docs/11-notification-reliability.md)；GitHub / 可选 npm 配对发布、插件更新与手机安装流程见 [发布与更新说明](docs/10-release-updates.md)。开发预览不代表当前桌面已安装版本，验证前请核对 App build、插件磁盘版本和运行态版本。
+
 ```
 lib/index.js    服务端：路由、认证、事件桥、catalog、会话、通知、动作、推送、默认配置
 lib/client.js   桌面 GUI 客户端模块（设置页「连接移动端设备」）

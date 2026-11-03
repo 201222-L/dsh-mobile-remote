@@ -111,7 +111,9 @@ void main() {
     expect(find.text('File is large: showing first 10 KiB'), findsOneWidget);
   });
 
-  testWidgets('binary and notice states keep the header actions', (tester) async {
+  testWidgets('binary and notice states keep the header actions', (
+    tester,
+  ) async {
     await _pump(
       tester,
       GitFileViewer(
@@ -258,10 +260,7 @@ void main() {
 
     final clipboard = calls.where((call) => call.method == 'Clipboard.setData');
     expect(clipboard, hasLength(1));
-    expect(
-      (clipboard.single.arguments as Map)['text'],
-      'copy me',
-    );
+    expect((clipboard.single.arguments as Map)['text'], 'copy me');
     expect(find.text('Content copied'), findsOneWidget);
   });
 
@@ -326,9 +325,7 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(
-      find.byKey(const Key('git-file-viewer-context-fold-0')),
-    );
+    await tester.tap(find.byKey(const Key('git-file-viewer-context-fold-0')));
     await tester.pumpAndSettle();
     expect(find.text('keep 7'), findsOneWidget);
   });
@@ -374,15 +371,11 @@ void main() {
     expect(find.text('index literal'), findsOneWidget);
     // 未跟踪内容按新增行展示：只有新侧行号，且空行也占一行。
     expect(
-      tester
-          .widget<Text>(find.byKey(const Key('git-file-viewer-new-1')))
-          .data,
+      tester.widget<Text>(find.byKey(const Key('git-file-viewer-new-1'))).data,
       '2',
     );
     expect(
-      tester
-          .widget<Text>(find.byKey(const Key('git-file-viewer-old-1')))
-          .data,
+      tester.widget<Text>(find.byKey(const Key('git-file-viewer-old-1'))).data,
       '',
     );
     expect(find.text('diff --git literal'), findsOneWidget);

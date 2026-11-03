@@ -224,41 +224,41 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
           child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: TextField(
-                  key: widget.keys.search,
-                  controller: _search,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    prefixIcon: const Icon(Icons.search, size: 18),
-                    hintText: L10n.t('搜索仓库文件', 'Search tracked files'),
-                    border: const OutlineInputBorder(),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: widget.keys.search,
+                      controller: _search,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        hintText: L10n.t('搜索仓库文件', 'Search tracked files'),
+                        border: const OutlineInputBorder(),
+                      ),
+                      onChanged: controller.setPickerQuery,
+                    ),
                   ),
-                  onChanged: controller.setPickerQuery,
-                ),
+                  TextButton(
+                    key: widget.keys.cancelPicker,
+                    onPressed: () {
+                      _search.clear();
+                      controller.closePicker();
+                    },
+                    child: Text(L10n.t('取消', 'Cancel')),
+                  ),
+                ],
               ),
-              TextButton(
-                key: widget.keys.cancelPicker,
-                onPressed: () {
-                  _search.clear();
-                  controller.closePicker();
-                },
-                child: Text(L10n.t('取消', 'Cancel')),
-              ),
+              const SizedBox(height: 6),
+              SizedBox(height: 220, child: _fileResults(controller)),
             ],
           ),
-          const SizedBox(height: 6),
-            SizedBox(height: 220, child: _fileResults(controller)),
-          ],
         ),
       ),
-    ),
     );
   }
 
@@ -364,9 +364,8 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
     padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
     child: Text(
       label,
-      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-        color: DshColors.ink3(context),
-      ),
+      style: Theme.of(context).textTheme.labelSmall
+          ?.copyWith(color: DshColors.ink3(context)),
     ),
   );
 
@@ -466,11 +465,7 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            Text(
-              error,
-              key: widget.keys.error,
-              textAlign: TextAlign.center,
-            ),
+            Text(error, key: widget.keys.error, textAlign: TextAlign.center),
             TextButton(
               key: widget.keys.retry,
               onPressed: () => unawaited(controller.retry()),
@@ -505,10 +500,7 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
               'Showing latest ${controller.entries.length} commits',
             ),
             key: widget.keys.truncated,
-            style: TextStyle(
-              fontSize: 12,
-              color: DshColors.ink3(context),
-            ),
+            style: TextStyle(fontSize: 12, color: DshColors.ink3(context)),
           ),
         ),
       );
@@ -598,17 +590,9 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
       Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.error_outline,
-            size: 36,
-            color: DshColors.danger(context),
-          ),
+          Icon(Icons.error_outline, size: 36, color: DshColors.danger(context)),
           const SizedBox(height: 10),
-          Text(
-            message,
-            key: widget.keys.error,
-            textAlign: TextAlign.center,
-          ),
+          Text(message, key: widget.keys.error, textAlign: TextAlign.center),
           const SizedBox(height: 12),
           FilledButton.tonalIcon(
             key: widget.keys.retry,

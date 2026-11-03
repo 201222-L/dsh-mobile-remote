@@ -159,10 +159,9 @@ class _GitFileViewerState extends State<GitFileViewer> {
 
   bool get _isMarkdown => isMarkdownPath(widget.path ?? widget.title ?? '');
 
-  bool get _hasPayload =>
-      widget.mode == GitFileViewerMode.diff
-          ? widget.diff.isNotEmpty
-          : widget.content.isNotEmpty;
+  bool get _hasPayload => widget.mode == GitFileViewerMode.diff
+      ? widget.diff.isNotEmpty
+      : widget.content.isNotEmpty;
 
   @override
   void initState() {
@@ -272,10 +271,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Text(
                 widget.encodingLabel!,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: DshColors.ink3(context),
-                ),
+                style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
               ),
             ),
           if (_isMarkdown) _modeToggle(),
@@ -294,7 +290,11 @@ class _GitFileViewerState extends State<GitFileViewer> {
 
   /// 「预览 / 源码」切换：仅对 Markdown 内容出现（与旧会话文件页一致）。
   Widget _modeToggle() {
-    Widget item({required bool rendered, required String zh, required String en}) {
+    Widget item({
+      required bool rendered,
+      required String zh,
+      required String en,
+    }) {
       final active = _rendered == rendered;
       return TextButton(
         key: widget.keys.modeButton(rendered: rendered),
@@ -333,10 +333,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
     final message =
         widget.truncatedMessage ??
         (widget.mode == GitFileViewerMode.diff
-            ? L10n.t(
-                '差异已截断，仅显示安全上限内的内容',
-                'Diff truncated at the safety limit.',
-              )
+            ? L10n.t('差异已截断，仅显示安全上限内的内容', 'Diff truncated at the safety limit.')
             : L10n.t(
                 '内容已截断，仅显示安全上限内的部分',
                 'Content truncated at the safety limit.',
@@ -384,10 +381,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
     final message =
         widget.notice ??
         (widget.binary
-            ? L10n.t(
-                '二进制文件不提供行级预览',
-                'Binary files have no line preview',
-              )
+            ? L10n.t('二进制文件不提供行级预览', 'Binary files have no line preview')
             : L10n.t('没有可显示的内容', 'Nothing to display'));
     return Center(
       child: Padding(
@@ -472,10 +466,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
           padding: const EdgeInsets.all(24),
           child: Text(
             widget.emptyMessage ??
-                L10n.t(
-                  '没有可显示的行级差异',
-                  'No line changes to display',
-                ),
+                L10n.t('没有可显示的行级差异', 'No line changes to display'),
             key: widget.keys.empty,
           ),
         ),
@@ -626,11 +617,7 @@ class _GitFileViewerState extends State<GitFileViewer> {
     return result;
   }
 
-  Widget _diffLine(
-    BuildContext context,
-    _DiffLineData line, {
-    int? lineIndex,
-  }) {
+  Widget _diffLine(BuildContext context, _DiffLineData line, {int? lineIndex}) {
     final color = switch (line.marker) {
       '+' => DshColors.ok(context),
       '-' => DshColors.danger(context),
@@ -720,4 +707,6 @@ class _DiffLineData {
 }
 
 /// unified diff hunk header：`@@ -oldStart,oldCount +newStart,newCount @@`。
-final RegExp _hunkHeader = RegExp(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@');
+final RegExp _hunkHeader = RegExp(
+  r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@',
+);

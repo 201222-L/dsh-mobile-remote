@@ -40,6 +40,7 @@ class AttentionEvent {
     this.toolName,
     this.summary,
     this.isReplay = false,
+    this.source = '',
   });
 
   final AttentionKind kind;
@@ -56,11 +57,13 @@ class AttentionEvent {
 
   /// 插件重连时会回放未结算帧（带原始 `at`），回放帧不应重复提醒。
   final bool isReplay;
+  final String source;
 
   String get key => attentionKey(
     kind: kind.wire,
     sessionId: sessionId,
     identity: identity,
+    source: source,
   );
 
   int get notificationId => stableNotificationId(key);
@@ -74,7 +77,8 @@ String attentionKey({
   required String kind,
   required String sessionId,
   required String identity,
-}) => '$kind|$sessionId|$identity';
+  String source = '',
+}) => '${source.isEmpty ? '' : '$source|'}$kind|$sessionId|$identity';
 
 /// 业务通知 id 的起始号段。
 ///
@@ -148,16 +152,17 @@ class ChannelDecision {
   bool get any => system || banner;
 
   @override
-  String toString() => 'ChannelDecision(system=$system, banner=$banner, $reason)';
+  String toString() =>
+      'ChannelDecision(system=$system, banner=$banner, $reason)';
 }
 
 /// 纯函数判据：同一条事件应该走哪些通道。
 ///
 /// 与通道矩阵一一对应：
-/// - 前台且正看着该会话 → 只有横幅（应用内已有卡片）；
-/// - 前台其它页面 → 系统通知 + 横幅；
+/// - 前台且正看着该会话 → 直接使用会话卡片；
+/// - 前台其它页面 → 系统通知，不重复显示横幅；
 /// - 后台 → 只系统通知（横幅看不见）；
-/// - 无权限/渠道被静音 → 系统通知不发，横幅照旧（否则用户完全无感）。
+/// - 无权限/渠道被静音 → 仅在前台其它页面用横幅兜底。
 ChannelDecision decideAttention(
   AttentionEvent event,
   AttentionSnapshot snapshot, {
@@ -170,7 +175,7 @@ ChannelDecision decideAttention(
 
   final permissionOk = snapshot.permissionGranted && snapshot.channelEnabled;
 
-  if (seenRecently && !event.isReplay) {
+  if (seenRecently) {
     // 同一 key 近期已经提醒过：不再发系统通知，横幅也不重复弹。
     return const ChannelDecision(
       system: false,
@@ -182,15 +187,15 @@ ChannelDecision decideAttention(
   if (isViewing) {
     return const ChannelDecision(
       system: false,
-      banner: true,
+      banner: false,
       reason: 'viewing-session',
     );
   }
 
   if (!permissionOk) {
-    return const ChannelDecision(
+    return ChannelDecision(
       system: false,
-      banner: true,
+      banner: snapshot.phase == AppPhase.foreground,
       reason: 'no-permission',
     );
   }
@@ -213,7 +218,7 @@ ChannelDecision decideAttention(
 
   return ChannelDecision(
     system: true,
-    banner: true,
+    banner: false,
     reason: snapshot.phase == AppPhase.foreground ? 'foreground' : 'inactive',
   );
 }
@@ -243,6 +248,7 @@ class AttentionEntry {
     required this.sessionId,
     required this.at,
     this.status = AttentionStatus.active,
+    this.source = '',
   });
 
   final String key;
@@ -250,6 +256,7 @@ class AttentionEntry {
   final AttentionKind kind;
   final String sessionId;
   final DateTime at;
+  final String source;
   AttentionStatus status;
 
   Map<String, dynamic> toJson() => {
@@ -259,15 +266,22 @@ class AttentionEntry {
     'sessionId': sessionId,
     'at': at.millisecondsSinceEpoch,
     'status': status.name,
+    'source': source,
   };
 
   static AttentionEntry? fromJson(Map<String, dynamic> json) {
     final key = json['key'];
     final id = json['id'];
-    final kind = AttentionKind.tryParse(json['kind'] as String?);
+    final kind = AttentionKind.tryParse(
+      json['kind'] is String ? json['kind'] as String : null,
+    );
     final sessionId = json['sessionId'];
     final at = json['at'];
-    if (key is! String || id is! int || kind == null || sessionId is! String) {
+    if (key is! String ||
+        id is! int ||
+        !AttentionLedger.isValidNotificationId(id) ||
+        kind == null ||
+        sessionId is! String) {
       return null;
     }
     return AttentionEntry(
@@ -276,7 +290,10 @@ class AttentionEntry {
       kind: kind,
       sessionId: sessionId,
       at: DateTime.fromMillisecondsSinceEpoch(at is int ? at : 0),
-      status: AttentionStatus.fromName(json['status'] as String?),
+      status: AttentionStatus.fromName(
+        json['status'] is String ? json['status'] as String : null,
+      ),
+      source: json['source'] is String ? json['source'] as String : '',
     );
   }
 }
@@ -304,7 +321,11 @@ class AttentionLedger {
   }
 
   /// 是否在 [window] 内提醒过（只读，不改状态）。
-  bool seenRecently(String key, {required DateTime now, Duration window = const Duration(minutes: 5)}) {
+  bool seenRecently(
+    String key, {
+    required DateTime now,
+    Duration window = const Duration(minutes: 5),
+  }) {
     final entry = _byKey[key];
     if (entry == null) return false;
     if (entry.status == AttentionStatus.resolved) return false;
@@ -312,15 +333,21 @@ class AttentionLedger {
   }
 
   /// 原子占位：未提醒过则登记并返回 true。
-  bool reserve(AttentionEvent event, {Duration window = const Duration(minutes: 5)}) {
+  bool reserve(
+    AttentionEvent event, {
+    Duration window = const Duration(minutes: 5),
+  }) {
     if (seenRecently(event.key, now: event.at, window: window)) return false;
-    _put(AttentionEntry(
-      key: event.key,
-      id: event.notificationId,
-      kind: event.kind,
-      sessionId: event.sessionId,
-      at: event.at,
-    ));
+    _put(
+      AttentionEntry(
+        key: event.key,
+        id: event.notificationId,
+        kind: event.kind,
+        sessionId: event.sessionId,
+        at: event.at,
+        source: event.source,
+      ),
+    );
     return true;
   }
 
@@ -328,21 +355,41 @@ class AttentionLedger {
   void mark(String key, AttentionStatus status) {
     final entry = _byKey[key];
     if (entry == null) return;
+    if (entry.status == AttentionStatus.resolved &&
+        status != AttentionStatus.resolved)
+      return;
     entry.status = status;
   }
 
   /// 按身份撤销：resolved 帧只带 approvalId / questionRpcId。
   ///
   /// 返回被撤销的 id（用于 `cancel(id)`）；找不到说明从未提醒过，返回 null。
-  int? resolveByIdentity(String identity) {
+  int? resolveByIdentity(String identity, {String? source}) {
     for (final entry in _byKey.values) {
       if (entry.key.endsWith('|$identity') &&
+          (source == null || entry.source == source) &&
           entry.status != AttentionStatus.resolved) {
         entry.status = AttentionStatus.resolved;
         return entry.id;
       }
     }
     return null;
+  }
+
+  /// A complete snapshot follows pending-frame replay in the same SSE stream.
+  /// Reconcile only that host; other hosts and service notification IDs stay intact.
+  List<int> reconcile(String source, Set<String> pendingKeys) {
+    final cancel = <int>[];
+    for (final entry in _byKey.values) {
+      if (entry.source != source ||
+          entry.status == AttentionStatus.resolved ||
+          pendingKeys.contains(entry.key)) {
+        continue;
+      }
+      entry.status = AttentionStatus.resolved;
+      cancel.add(entry.id);
+    }
+    return cancel;
   }
 
   /// 移除记录（对账时用：系统里已经没有这条通知了）。

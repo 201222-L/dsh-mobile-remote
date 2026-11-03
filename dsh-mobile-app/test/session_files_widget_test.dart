@@ -49,12 +49,20 @@ class _Backend {
       final l = listing[path];
       if (l == null) {
         return http.Response(
-          jsonEncode({'error': 'directory-unreadable', 'detail': 'no such dir'}),
+          jsonEncode({
+            'error': 'directory-unreadable',
+            'detail': 'no such dir',
+          }),
           400,
         );
       }
       return http.Response(
-        jsonEncode({'ok': true, 'path': path, 'dirs': l.dirs, 'files': l.files}),
+        jsonEncode({
+          'ok': true,
+          'path': path,
+          'dirs': l.dirs,
+          'files': l.files,
+        }),
         200,
       );
     }
@@ -82,9 +90,7 @@ class _Backend {
 
 AppStore _store({String sessionId = 's1', String? cwd = '/work'}) {
   final store = AppStore();
-  store.sessions = [
-    Session(id: sessionId, title: 'S', cwd: cwd, createdAt: 1),
-  ];
+  store.sessions = [Session(id: sessionId, title: 'S', cwd: cwd, createdAt: 1)];
   return store;
 }
 
@@ -101,7 +107,11 @@ Future<void> _pump(
   );
   await tester.pumpWidget(
     MaterialApp(
-      home: SessionFilesScreen(store: store, sessionId: sessionId, controller: c),
+      home: SessionFilesScreen(
+        store: store,
+        sessionId: sessionId,
+        controller: c,
+      ),
     ),
   );
   await tester.pumpAndSettle();

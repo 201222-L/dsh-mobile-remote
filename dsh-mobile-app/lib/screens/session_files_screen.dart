@@ -172,8 +172,7 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
   /// 「返回是往回走一层，而不是直接离开」范式；此前没有这层拦截，右滑会在
   /// 任意深度直接退出整个页面，用户丢掉已下钻的层级。
   bool get _hasInnerLevel =>
-      _c.stage == BrowseStage.preview ||
-      (_c.root.isNotEmpty && !_c.atRoot);
+      _c.stage == BrowseStage.preview || (_c.root.isNotEmpty && !_c.atRoot);
 
   /// 系统返回（手势/返回键）触发的"往回走一层"。
   ///
@@ -221,7 +220,10 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
         // 已加载过内容时保留它（只提示原因），避免刷新失败让页面变空。
         if (_c.dirs.isNotEmpty || _c.files.isNotEmpty) {
           return Column(
-            children: [_errorBanner(), Expanded(child: _listing())],
+            children: [
+              _errorBanner(),
+              Expanded(child: _listing()),
+            ],
           );
         }
         return _errorPane();

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
@@ -82,8 +83,7 @@ final RegExp _commandLinePattern = RegExp(r'^/([a-z][a-z0-9_-]*)(?:\s|$)');
 /// 语法后果（有意，非疏漏）：`/m/api/send 是什么` **不是**命令（`m` 之后是 `/` 而不是空白），
 /// 因此这类路径样式的消息照旧原样发给模型；而 `/tmp` 这类单段文本**是**命令——语法上无法与
 /// 命令名区分，由"目录里查不到该名字 → 提示一次未知命令后照常发送"兜底（见 `_tryRunCommandLine`）。
-bool isCommandLine(String text) =>
-    _commandLinePattern.hasMatch(text.trim());
+bool isCommandLine(String text) => _commandLinePattern.hasMatch(text.trim());
 
 /// issue #25：命令行里的命令名（不是命令行时 null）。入参内部先 trim，与 [isCommandLine] 同口径。
 String? commandLineName(String text) =>
@@ -227,7 +227,9 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
           elevation: 12,
           color: Theme.of(context).colorScheme.surface,
           // 高度贴合内容后它是一条"浮动短条"，左侧圆角让它与右边缘的贴合看起来是有意的
-          borderRadius: const BorderRadius.horizontal(left: Radius.circular(14)),
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(14),
+          ),
           clipBehavior: Clip.antiAlias,
           child: SizedBox(
             width: 56,
@@ -373,6 +375,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // 已构建边界最后一次实测的**内容偏移**（turn → offset）：边界被懒构建回收后，
   // 仍能用它推断阅读线落在哪一轮（长回复场景不再无条件回退到最新轮）。
   final Map<int, double> _turnContentOffset = {};
+
   /// issue #31（方案 B）：**条目尺寸缓存**——已构建子项的实测高度，按稳定 key
   /// （`seq` 优先，工具卡用 `latestSeq`）记录。定位时用它算"索引 → 偏移"的估算，
   /// 这是本体虚拟化列表 `getOffsetForIndex` 的等价物：长跳一步落到目标附近，
@@ -576,10 +579,12 @@ class _ChatScreenState extends State<ChatScreen> {
           // 判据复用时间线既有的一份（`_MsgItem.injected` + `timelineIsInjectedNoise`），
           // 不在这里另起一套，也不因普通/调试模式而分叉。
           final human = !item.injected && !timelineIsInjectedNoise(item.text);
-          rows.add(TurnRow(
-            role: human ? TurnRowRole.user : TurnRowRole.other,
-            text: item.text,
-          ));
+          rows.add(
+            TurnRow(
+              role: human ? TurnRowRole.user : TurnRowRole.other,
+              text: item.text,
+            ),
+          );
         case _MsgKind.assistant:
           rows.add(TurnRow(role: TurnRowRole.assistant, text: item.text));
         default:
@@ -630,12 +635,14 @@ class _ChatScreenState extends State<ChatScreen> {
           final viewportTop = viewport.localToGlobal(Offset.zero).dy;
           final lineOffset = math.min(96.0, viewport.size.height * 0.2);
           final line = viewportTop + lineOffset;
-          final pixels =
-              _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+          final pixels = _scrollCtrl.hasClients
+              ? _scrollCtrl.position.pixels
+              : 0.0;
           final mountedTurns = <({int turn, double top})>[];
           for (final anchor in anchors) {
-            final box = _turnKeysBySeq[anchor.seq]?.currentContext
-                ?.findRenderObject() as RenderBox?;
+            final box =
+                _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+                    as RenderBox?;
             if (box == null || !box.hasSize) continue;
             final top = box.localToGlobal(Offset.zero).dy;
             mountedTurns.add((turn: anchor.turn, top: top));
@@ -686,8 +693,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
     final out = <TurnMeasurement>[];
     for (final anchor in _turnAnchors) {
-      final box = _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
-          as RenderBox?;
+      final box =
+          _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+              as RenderBox?;
       if (box == null || !box.hasSize) continue;
       final offset = pixels + (box.localToGlobal(Offset.zero).dy - viewTop);
       _turnContentOffset[anchor.turn] = offset;
@@ -765,9 +773,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }) {
       final sliver = key.currentContext?.findRenderObject();
       if (sliver is! RenderSliverMultiBoxAdaptor) return;
-      for (var child = sliver.firstChild;
-          child != null;
-          child = sliver.childAfter(child)) {
+      for (
+        var child = sliver.firstChild;
+        child != null;
+        child = sliver.childAfter(child)
+      ) {
         final parentData = child.parentData;
         if (parentData is! SliverMultiBoxAdaptorParentData) continue;
         final local = parentData.index;
@@ -776,11 +786,9 @@ class _ChatScreenState extends State<ChatScreen> {
         final offset = pixels + (child.localToGlobal(Offset.zero).dy - viewTop);
         final index = base + contentIndex;
         final height = child.size.height;
-        out.add(BuiltChildMeasurement(
-          index: index,
-          offset: offset,
-          height: height,
-        ));
+        out.add(
+          BuiltChildMeasurement(index: index, offset: offset, height: height),
+        );
         // issue #31（方案 B）：顺手把实测高度回填进尺寸缓存（key 稳定，prepend/
         // 加载条出现都不会错位）。缓存只增不改，超过上限时整体清空重建。
         final stableKey = _itemKeyAtIndex(index);
@@ -792,14 +800,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // center 之前：`_olderItems` 最新在前，内容顺序与子项序号相反。
-    collect(_olderSliverKey, 0,
-        count: _olderItems.length, contentOrderReversed: true);
+    collect(
+      _olderSliverKey,
+      0,
+      count: _olderItems.length,
+      contentOrderReversed: true,
+    );
     // center 之后：`SliverMultiBoxAdaptorParentData.index` **已经包含**首项
     // 「更早」按钮 / 加载条，所以基准只加前一条 sliver 的长度，不能再加一次首项偏移——
     // 否则加载条显示期间消息的实测 index 会比目标坐标系大 1，定位器把前一条消息当成目标
     // （第二轮评审 note 1080 的对照复现：同样数据，仅"上翻在途"这一项不同就跳不到）。
-    collect(_liveSliverKey, _olderItems.length,
-        count: _items.length, contentOrderReversed: false);
+    collect(
+      _liveSliverKey,
+      _olderItems.length,
+      count: _items.length,
+      contentOrderReversed: false,
+    );
     return out;
   }
 
@@ -849,7 +865,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (count > 0) average = total / count;
     }
     if (average <= 0) {
-      final extent = _scrollCtrl.position.maxScrollExtent -
+      final extent =
+          _scrollCtrl.position.maxScrollExtent -
           _scrollCtrl.position.minScrollExtent;
       if (extent <= 0) return null;
       average = extent / childCount;
@@ -878,7 +895,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 内容高度未必同尺度——实测里热跳的首个估算因此偏小近 2 倍，逼出 3–4 步二分。
     // 把"已缓存实测高度 + 未缓存均值"的总权重映射到布局给出的真实 extent，缓存只影响
     // **相对权重**，估算随实际高度分布伸缩而不是随样本均值漂移。
-    final extent = _scrollCtrl.position.maxScrollExtent -
+    final extent =
+        _scrollCtrl.position.maxScrollExtent -
         _scrollCtrl.position.minScrollExtent;
     if (extent <= 0) return null;
     final total = estimateSignedContentOffset(
@@ -924,13 +942,11 @@ class _ChatScreenState extends State<ChatScreen> {
             _scrollCtrl.hasClients ? _scrollCtrl.position.maxScrollExtent : 0,
         currentOffset: () =>
             _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0,
-        viewportExtent: () => _scrollCtrl.hasClients
-            ? _scrollCtrl.position.viewportDimension
-            : 0,
+        viewportExtent: () =>
+            _scrollCtrl.hasClients ? _scrollCtrl.position.viewportDimension : 0,
         // 目标一律按**边界持久 seq** 绑定：同轮号的重试边界不会误伤规范边界。
         isTargetLoaded: () => _turnAnchors.any((a) => a.seq == anchor.seq),
-        isTargetBuilt: () =>
-            _turnKeysBySeq[anchor.seq]?.currentContext != null,
+        isTargetBuilt: () => _turnKeysBySeq[anchor.seq]?.currentContext != null,
         isTargetInView: () => _turnKeyInViewport(_turnKeysBySeq[anchor.seq]),
         reveal: () => _revealTurnKey(_turnKeysBySeq[anchor.seq]),
         measure: _measureTurnBoundaries,
@@ -948,13 +964,13 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return; // 让分析器认得 context 守卫（current() 已含 mounted）
       final message = switch (outcome.failure) {
         TurnLocateFailure.notInWindow => L10n.t(
-            '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
-            'Could not locate turn ${anchor.turn}: it is outside the loaded range',
-          ),
+          '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
+          'Could not locate turn ${anchor.turn}: it is outside the loaded range',
+        ),
         _ => L10n.t(
-            '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
-            'Could not locate turn ${anchor.turn}: still out of view after several attempts',
-          ),
+          '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
+          'Could not locate turn ${anchor.turn}: still out of view after several attempts',
+        ),
       };
       showToast(context, message);
     } finally {
@@ -1318,7 +1334,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 到顶（exhausted）不是失败：如实回报"没有更早历史"，由跳转结果统一说明**不可达**。
     // 但请求失败或没有取得任何进展（仍在加载）必须**显式失败**——否则跳转循环会
     // 对着不变的 earliestSeq 一直空转到页数上限（最坏 32 次 × 等待）。
-    if (outcome == _PrependOutcome.failed || outcome == _PrependOutcome.skipped) {
+    if (outcome == _PrependOutcome.failed ||
+        outcome == _PrependOutcome.skipped) {
       throw StateError(L10n.t('未能继续加载更早历史', 'Could not load earlier history'));
     }
     return TurnPageLoad(earliestSeq: _earliestSeq, hasMore: !_noMoreHistory);
@@ -1394,11 +1411,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 合并前先看**最新能力声明**：能力被撤销（换宿主 / 宿主降级）时旧大纲必须立刻失效，
   /// 不能继续把上次连接拿到的大纲当成本机能力（issue #25 评审 P2）。
   List<TurnTick> get _turnTicks => mergeTurnTicks(
-        loaded: _turnAnchors,
-        outline: _api.turnOutlineCapabilities.supported
-            ? _turnOutline.turns
-            : const [],
-      );
+    loaded: _turnAnchors,
+    outline: _api.turnOutlineCapabilities.supported
+        ? _turnOutline.turns
+        : const [],
+  );
 
   /// 选中某一轮：已加载的直接定位（一期）；未加载的先跨页加载再定位（二期）。
   ///
@@ -1407,8 +1424,9 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _navigateToTurn(TurnAnchor anchor) async {
     final token = ++_turnNavGeneration;
     _turnJumpCancelled = false;
-    final loaded =
-        _turnAnchors.any((a) => a.turn == anchor.turn && a.seq == anchor.seq);
+    final loaded = _turnAnchors.any(
+      (a) => a.turn == anchor.turn && a.seq == anchor.seq,
+    );
     if (loaded) {
       // 一条路径到底：已加载轮次也走同一个世代守卫（#24 修复后 `_jumpToTurn` 支持 token），
       // 连续点选时旧定位不得再把视口搬走。
@@ -1461,10 +1479,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       if (mounted && _turnNavCurrent(token)) {
-        showToast(
-          context,
-          '${L10n.t('跳转失败：', 'Jump failed: ')}$e',
-        );
+        showToast(context, '${L10n.t('跳转失败：', 'Jump failed: ')}$e');
       }
     } finally {
       // 只有仍是当前操作才清 busy：旧操作的 finally 不得清掉新操作的脉冲。
@@ -1691,7 +1706,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   }
                   final dataIndex = index - (topButton || loadingTail ? 1 : 0);
                   if (dataIndex < _items.length) {
-                    return _buildItemWithTurnKey(_items[_items.length - 1 - dataIndex]);
+                    return _buildItemWithTurnKey(
+                      _items[_items.length - 1 - dataIndex],
+                    );
                   }
                   if (hasDraft) {
                     return _AssistantBubble(text: _draft, streaming: true);
@@ -2840,8 +2857,16 @@ class _ChatScreenState extends State<ChatScreen> {
           _upsertToolItem(out, ev, history: history);
         }
       case 'tool/call':
-        final callId = _toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length);
-        final name = timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool'));
+        final callId = _toolActivityKey(
+          d ?? const <String, dynamic>{},
+          ev.seq,
+          out.length,
+        );
+        final name = timelineToolNameOf(
+          d,
+          callId: callId,
+          fallback: L10n.t('工具', 'Tool'),
+        );
         if (!history) {
           _activeTools[callId] = name;
           _scheduleActivityFlush();
@@ -3623,7 +3648,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
+    showSessionToolsSheet(
+      context,
+      widget.store,
+      sid,
+      onTitleChanged: widget.onTitleChanged,
+    );
   }
 
   void _openSessionToolsFromActionRail() {
@@ -3677,12 +3707,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _openSessionFilesFromActionRail() {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    openSessionFiles(
-      context,
-      widget.store,
-      sid,
-      gitReadApi: widget.gitReadApi,
-    );
+    openSessionFiles(context, widget.store, sid, gitReadApi: widget.gitReadApi);
   }
 
   Future<void> _openGit() async {
@@ -3986,7 +4011,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           unloadedTurns: unloadedTurns,
                           activeTurn: _activeTurn,
                           busyTurn: _busyTurn,
-                          onNavigate: (anchor) => unawaited(_navigateToTurn(anchor)),
+                          onNavigate: (anchor) =>
+                              unawaited(_navigateToTurn(anchor)),
                         ),
                       ),
                     ),
@@ -4471,10 +4497,10 @@ class _ChatScreenState extends State<ChatScreen> {
         cancel: cancel,
         onProgress: (p) => progress.value = p,
       );
-      saved = await _filesChannel.invokeMethod<String>(
-        'saveFileFromPath',
-        {'path': result.file.path, 'name': name},
-      );
+      saved = await _filesChannel.invokeMethod<String>('saveFileFromPath', {
+        'path': result.file.path,
+        'name': name,
+      });
     } on DownloadCancelled {
       cancelled = true;
     } catch (e) {
