@@ -11,7 +11,6 @@ import '../git_models.dart';
 import '../l10n.dart';
 import '../store.dart';
 import '../theme.dart';
-import '../toast.dart';
 import '../widgets/git_file_history_body.dart';
 import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
@@ -62,7 +61,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     with TickerProviderStateMixin {
   _View _view = _View.tab;
   bool _temporaryGraph = false;
-  bool _previewFromCommit = false;
+
+  /// 预览返回目标：worktree 预览→tab，提交详情文件→commit，历史行→历史 surface。
+  _View _previewReturnView = _View.tab;
   String _previewKind = 'unstaged';
   String _previewPath = '';
   String? _previewOid;
@@ -76,12 +77,6 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   String? _historyRepositoryId;
   String? _pendingHistoryPath;
   bool _historyLinkHandled = false;
-  bool _historyFromRoute = false;
-  _View _viewBeforeHistory = _View.tab;
-  _View _commitReturnView = _View.tab;
-
-  /// 独立历史视图覆盖在预览上时，保活预览子树，返回后滚动/fold/markdown 不丢。
-  bool _keepPreviewAlive = false;
   int _lastTabIndex = 0;
   late final TabController _tabs;
   final ScrollController _branchScroll = ScrollController();
@@ -360,19 +355,13 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     widget.controller.openBranch(branch);
   }
 
-  Future<void> _showCommit(String oid, {_View? returnTo}) async {
-    final previous = returnTo ?? _view;
+  Future<void> _showCommit(String oid) async {
     setState(() => _openingOid = oid);
     await widget.controller.openCommit(oid);
     if (!mounted || _openingOid != oid) return;
     setState(() {
       _openingOid = null;
-      if (widget.controller.state.commit?.oid == oid) {
-        _commitReturnView = previous == _View.history
-            ? _View.history
-            : _View.tab;
-        _view = _View.commit;
-      }
+      if (widget.controller.state.commit?.oid == oid) _view = _View.commit;
     });
   }
 
@@ -380,10 +369,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     required String kind,
     required String path,
     String? oid,
-    required bool fromCommit,
+    required _View returnTo,
   }) async {
     setState(() {
-      _previewFromCommit = fromCommit;
+      _previewReturnView = returnTo;
       _previewKind = kind;
       _previewPath = path;
       _previewOid = oid;
@@ -427,26 +416,20 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     if (state.loading || state.repository == null) return;
     _historyLinkHandled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _openFileHistory(path, fromInitialRoute: true);
+      if (mounted) _openFileHistory(path);
     });
   }
 
   /// 深链到某文件的提交历史：已启用 history tab 则切 tab，否则显示独立历史视图。
-  void _openFileHistory(String path, {bool fromInitialRoute = false}) {
+  ///
+  /// 独立历史视图的返回键直接退出 Git 浏览器（不恢复进入前的预览/提交详情），
+  /// 避免“历史 → 预览 → 历史”的循环；tab 模式返回键在 tab 根退出。
+  void _openFileHistory(String path) {
     final state = widget.controller.state;
     if (!_historyEnabled(state)) {
-      if (fromInitialRoute) {
-        setState(() {
-          _historyFromRoute = true;
-          _viewBeforeHistory = _View.tab;
-          _view = _View.history;
-        });
-      } else {
-        showToast(
-          context,
-          L10n.t('当前宿主不支持文件提交历史', 'File history is not supported by this host'),
-        );
-      }
+      // 查看器入口在能力缺失时隐藏，因此这里只可能是初始深链：仍进入历史
+      // 视图，由 body 显示不可用提示，而不是静默丢掉深链。
+      setState(() => _view = _View.history);
       return;
     }
     final history = _ensureHistoryController(state);
@@ -454,32 +437,28 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     final tabIndex = _tabIds.indexOf('fileHistory');
     if (tabIndex >= 0) {
       // 设计决策（US11）：history tab 已启用时深链切换过去，不叠加独立历史视图。
-      // 因此从 diff 预览深链后，返回键行为与手动切到该 tab 一致——在 tab 根
-      // 退出 Git 浏览器，而不是恢复原 diff 预览。
+      // 返回键行为与手动切到该 tab 一致——在 tab 根退出 Git 浏览器。
       setState(() {
         _temporaryGraph = false;
         _view = _View.tab;
-        _historyFromRoute = false;
-        _keepPreviewAlive = false;
       });
       _tabs.animateTo(tabIndex);
       return;
     }
-    setState(() {
-      _historyFromRoute = fromInitialRoute;
-      _viewBeforeHistory = fromInitialRoute ? _View.tab : _view;
-      // 从查看器进入独立历史视图时保活预览子树，返回后 fold/markdown/滚动不丢。
-      _keepPreviewAlive = !fromInitialRoute && _viewBeforeHistory == _View.preview;
-      _view = _View.history;
-    });
+    if (_view == _View.preview) widget.controller.closePreview();
+    setState(() => _view = _View.history);
   }
 
-  void _openCommitFromHistory(String oid) {
-    unawaited(
-      _showCommit(
-        oid,
-        returnTo: _view == _View.history ? _View.history : _View.tab,
-      ),
+  /// 历史行点按：直接打开该文件在此提交上的 diff（不经过通用提交详情）。
+  Future<void> _openHistoryEntryDiff(String oid) async {
+    final path = _history?.selectedPath;
+    if (path == null || path.isEmpty) return;
+    final returnTo = _view == _View.history ? _View.history : _View.tab;
+    await _showPreview(
+      kind: 'commit',
+      path: path,
+      oid: oid,
+      returnTo: returnTo,
     );
   }
 
@@ -551,31 +530,21 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         widget.store != null || widget.fileBrowserPicker != null;
     return GitFileHistoryBody(
       controller: history,
-      onOpenCommit: _openCommitFromHistory,
+      onOpenCommitDiff: _openHistoryEntryDiff,
       onBrowseFiles: canBrowse ? _browseFilesForHistory : null,
     );
   }
 
   void _back() {
     if (_view == _View.history) {
-      if (_historyFromRoute) {
-        Navigator.of(context).pop();
-      } else {
-        setState(() {
-          _view = _viewBeforeHistory;
-          _historyFromRoute = false;
-          _keepPreviewAlive = false;
-        });
-      }
+      // 独立历史视图：返回直接退出 Git 浏览器到调用方（不恢复预览/提交详情），
+      // 这样重复“历史 → diff → 历史”也不会形成导航回环。
+      Navigator.of(context).pop();
     } else if (_view == _View.preview) {
       widget.controller.closePreview();
-      setState(() => _view = _previewFromCommit ? _View.commit : _View.tab);
+      setState(() => _view = _previewReturnView);
     } else if (_view == _View.commit) {
-      final returningToHistory = _commitReturnView == _View.history;
-      if (!returningToHistory) _keepPreviewAlive = false;
-      setState(
-        () => _view = returningToHistory ? _View.history : _View.tab,
-      );
+      setState(() => _view = _View.tab);
     } else if (_temporaryGraph) {
       setState(() => _temporaryGraph = false);
     } else {
@@ -590,9 +559,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       return;
     }
     final activeTab = _activeTab;
-    if (activeTab == 'worktree' ||
-        (_view == _View.preview && !_previewFromCommit)) {
-      final reloadingPreview = _view == _View.preview && !_previewFromCommit;
+    final worktreePreview = _view == _View.preview && _previewKind != 'commit';
+    if (activeTab == 'worktree' || worktreePreview) {
+      final reloadingPreview = worktreePreview;
       await widget.controller.loadWorktree(refresh: true);
       if (reloadingPreview &&
           mounted &&
@@ -679,7 +648,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               ),
             if (state.worktreeStale &&
                 (_activeTab == 'worktree' ||
-                    (_view == _View.preview && !_previewFromCommit)))
+                    (_view == _View.preview && _previewKind != 'commit')))
               MaterialBanner(
                 content: Text(
                   L10n.t(
@@ -720,19 +689,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   ),
                   if (_temporaryGraph && _view == _View.tab)
                     _tabBody('graph', state),
-                  // 预览在独立历史/从历史打开的提交详情期间保活（Offstage），
-                  // 返回时 fold 展开、Markdown 模式与滚动偏移都保持原样。
-                  // 顺序固定为 [预览, 提交详情, 历史]，避免 overlay 切换时因
-                  // Stack 子节点位置变化导致预览子树被重建。
-                  if (_view == _View.preview ||
-                      (_keepPreviewAlive &&
-                          (_view == _View.history ||
-                              (_view == _View.commit &&
-                                  _commitReturnView == _View.history))))
-                    Offstage(
-                      offstage: _view != _View.preview,
-                      child: _preview(state),
-                    ),
+                  if (_view == _View.preview) _preview(state),
                   if (_view == _View.commit) _detail(state),
                   if (_view == _View.history) _historySurface(state),
                 ],
@@ -947,7 +904,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               : () => _showPreview(
                   kind: kind,
                   path: file.path,
-                  fromCommit: false,
+                  returnTo: _View.tab,
                 ),
         ),
     ],
@@ -1316,7 +1273,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               kind: 'commit',
               path: file.path,
               oid: commit.oid,
-              fromCommit: true,
+              returnTo: _View.commit,
             ),
           ),
         if (state.loadingFilesPage)

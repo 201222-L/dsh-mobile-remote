@@ -178,7 +178,7 @@ void main() {
     );
   });
 
-  testWidgets('history rows show metadata, status and open existing commit detail', (
+  testWidgets('history rows show metadata/status and open the file diff at that commit', (
     tester,
   ) async {
     final api = HistoryGitApi();
@@ -208,13 +208,22 @@ void main() {
       find.byKey(const Key('git-history-row-aaaa111122223333')),
     );
     await tester.pumpAndSettle();
-    expect(find.text('History commit aaaa111122223333'), findsOneWidget);
-    expect(find.text('Commit details'), findsOneWidget);
 
-    // 从历史打开详情后，返回回到历史列表。
+    // A) 直接打开该文件在该提交上的 diff（kind=commit/path=selectedPath/oid=行 oid），
+    //    不经过通用提交详情。
+    expect(api.previews.last.kind, 'commit');
+    expect(api.previews.last.path, 'lib/a.dart');
+    expect(api.previews.last.oid, 'aaaa111122223333');
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+    expect(find.text('new line'), findsOneWidget);
+    expect(find.text('History commit aaaa111122223333'), findsNothing);
+    expect(find.text('Commit details'), findsNothing);
+
+    // C) 历史来源的 diff 返回原位历史 surface（这里是 fileHistory tab 根）。
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
     expect(find.text('Update a.dart'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
   });
 
   testWidgets('history pagination loads the next page near the bottom', (
@@ -254,12 +263,12 @@ void main() {
     expect(find.text('File history'), findsOneWidget);
     expect(find.text('Update a.dart'), findsOneWidget);
 
-    // 返回恢复原查看器状态（同一份 diff 预览）。
+    // B) 独立历史视图的返回直接退出 Git 浏览器到调用方，不恢复进入前的预览。
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
-    expect(find.text('Update a.dart'), findsNothing);
-    expect(find.text('new line'), findsOneWidget);
+    expect(find.text('host page'), findsOneWidget);
+    expect(find.byType(GitBrowserSheet), findsNothing);
+    expect(find.byKey(const Key('git-file-preview')), findsNothing);
   });
 
   testWidgets('deep link switches to the history tab when it is configured', (
@@ -315,7 +324,7 @@ void main() {
     );
   });
 
-  testWidgets('untracked and invalid-path files show clear empty states', (
+  testWidgets('untracked files show a clear not-tracked empty state', (
     tester,
   ) async {
     final api = HistoryGitApi();
@@ -331,12 +340,16 @@ void main() {
       find.text('File is not in the current HEAD (untracked or deleted)'),
       findsOneWidget,
     );
+  });
 
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
+  testWidgets('outside-repo/invalid path shows an error with reselect', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    await mountSheet(tester, api, pushed: true);
 
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('git-worktree-unstaged-bad.txt')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('git-file-history')));
@@ -498,43 +511,45 @@ void main() {
     expect(find.byKey(const Key('sf-history')), findsNothing);
   });
 
-  testWidgets('binary and untracked-binary previews keep the history action', (
+  testWidgets('binary worktree preview keeps the history action', (
     tester,
   ) async {
-    final api = HistoryGitApi()
-      ..binaryPaths.addAll(['lib/a.dart', 'new-file.txt']);
+    final api = HistoryGitApi()..binaryPaths.add('lib/a.dart');
     await mountSheet(tester, api, pushed: true);
-
-    // 二进制 staged 文件：预览不可读，但查看器头栏仍保留历史入口。
     await tester.tap(find.text('Worktree'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
     await tester.pumpAndSettle();
-    expect(
-      find.byKey(const Key('git-unavailable')),
-      findsOneWidget,
-    );
-    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-file-history')));
-    await tester.pumpAndSettle();
-    expect(find.text('Update a.dart'), findsOneWidget);
 
-    // 返回预览，再返回工作区。
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Back'));
-    await tester.pumpAndSettle();
-
-    // 未跟踪二进制文件：入口可见，进入后给出 not-tracked 空态。
-    await tester.tap(
-      find.byKey(const Key('git-worktree-untracked-new-file.txt')),
-    );
-    await tester.pumpAndSettle();
+    // 二进制 staged 文件：预览不可读，但查看器头栏仍保留历史入口。
     expect(find.byKey(const Key('git-unavailable')), findsOneWidget);
     expect(find.byKey(const Key('git-file-history')), findsOneWidget);
     await tester.tap(find.byKey(const Key('git-file-history')));
     await tester.pumpAndSettle();
-    expect(find.text('File is not in the current HEAD (untracked or deleted)'), findsOneWidget);
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(api.historyPaths, ['lib/a.dart']);
+  });
+
+  testWidgets('untracked binary preview opens the not-tracked history state', (
+    tester,
+  ) async {
+    final api = HistoryGitApi()..binaryPaths.add('new-file.txt');
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('git-worktree-untracked-new-file.txt')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('git-unavailable')), findsOneWidget);
+    expect(find.byKey(const Key('git-file-history')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('File is not in the current HEAD (untracked or deleted)'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('picker cancel then reopen resets the stale query', (tester) async {
@@ -623,29 +638,114 @@ void main() {
     expect(api.historyPaths, ['lib/a.dart']);
   });
 
-  testWidgets('standalone history back keeps expanded fold state', (
+  testWidgets('independent history -> diff -> history does not loop; back exits', (
     tester,
   ) async {
-    final api = HistoryGitApi()..longDiff = true;
+    final api = HistoryGitApi();
     await mountSheet(tester, api, pushed: true);
     await tester.tap(find.text('Worktree'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('git-context-fold-0')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('git-context-fold-0')));
-    await tester.pumpAndSettle();
-    expect(find.text('keep 7'), findsOneWidget);
-
     await tester.tap(find.byKey(const Key('git-file-history')));
     await tester.pumpAndSettle();
     expect(find.text('Update a.dart'), findsOneWidget);
+    expect(find.byType(TabBar), findsNothing);
+
+    // 历史行 → 直接 diff；返回回到独立历史视图（不回到进入前的 worktree 预览）。
+    await tester.tap(
+      find.byKey(const Key('git-history-row-aaaa111122223333')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(find.byType(TabBar), findsNothing);
+
+    // D) 历史来源 diff 里的「提交历史」回到同一个独立历史 surface，不叠加路由。
+    await tester.tap(
+      find.byKey(const Key('git-history-row-aaaa111122223333')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-file-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(find.byType(GitBrowserSheet), findsOneWidget);
+
+    // B) 独立历史返回直接退出 Git 浏览器，循环终止。
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('host page'), findsOneWidget);
+    expect(find.byType(GitBrowserSheet), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tab-enabled history-origin diff back returns to the history tab', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    await mountSheet(
+      tester,
+      api,
+      tabs: const ['branches', 'fileHistory'],
+      pushed: true,
+    );
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-history-file-lib/a.dart')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('git-history-row-aaaa111122223333')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+
+    // C) 返回原位 history tab（TabBar 恢复、历史列表仍在）。
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('Update a.dart'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
+
+    // tab 根返回退出 Git 浏览器。
+    await tester.tap(find.byTooltip('Back to chat'));
+    await tester.pumpAndSettle();
+    expect(find.text('host page'), findsOneWidget);
+  });
+
+  testWidgets('worktree preview back returns to the tab', (tester) async {
+    final api = HistoryGitApi();
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.text('Worktree'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-worktree-staged-lib/a.dart')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
 
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    // 预览子树保活（Offstage）：折叠展开状态还原后仍保持。
-    expect(find.text('keep 7'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(find.text('Staged (1)'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
+  });
+
+  testWidgets('commit-detail file preview back still returns to commit detail', (
+    tester,
+  ) async {
+    final api = HistoryGitApi();
+    await mountSheet(tester, api, pushed: true);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-commit-main-oid')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('git-file-lib/a.dart')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('git-file-preview')), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('Commit details'), findsOneWidget);
+    expect(find.byKey(const Key('git-file-preview')), findsNothing);
   });
 
   testWidgets('session files hides history when capability probe fails', (

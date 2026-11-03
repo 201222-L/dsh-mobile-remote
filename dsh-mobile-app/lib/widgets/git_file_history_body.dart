@@ -57,7 +57,7 @@ class GitFileHistoryBody extends StatefulWidget {
   const GitFileHistoryBody({
     super.key,
     required this.controller,
-    this.onOpenCommit,
+    this.onOpenCommitDiff,
     this.onBrowseFiles,
     this.autoOpenPickerWhenEmpty = true,
     this.keys = const GitFileHistoryKeys(),
@@ -65,8 +65,8 @@ class GitFileHistoryBody extends StatefulWidget {
 
   final GitFileHistoryController controller;
 
-  /// 点历史行：打开既有提交详情（由宿主决定跳转方式）。
-  final ValueChanged<String>? onOpenCommit;
+  /// 点历史行：直接打开该文件在该提交上的 diff（由宿主实现跳转）。
+  final ValueChanged<String>? onOpenCommitDiff;
 
   /// 主「选择/更换文件」入口：打开会话文件浏览器（选择后回到原历史视图）。
   ///
@@ -434,7 +434,7 @@ class _GitFileHistoryBodyState extends State<GitFileHistoryBody> {
     final theme = Theme.of(context);
     return ListTile(
       key: widget.keys.row(entry.oid),
-      onTap: () => widget.onOpenCommit?.call(entry.oid),
+      onTap: () => widget.onOpenCommitDiff?.call(entry.oid),
       onLongPress: () => _copyOid(context, entry.oid),
       leading: _StatusBadge(
         key: widget.keys.statusBadge(entry.oid),

@@ -37,6 +37,7 @@ class HistoryGitApi implements GitReadApi {
   final List<String?> fileQueries = [];
   final List<String?> historyPaths = [];
   final List<String?> historyCursors = [];
+  final List<({String kind, String path, String? oid})> previews = [];
 
   @override
   Future<GitReadCapabilities> capabilities(String sessionId) async {
@@ -126,7 +127,9 @@ class HistoryGitApi implements GitReadApi {
     required String path,
     String? snapshotId,
     String? oid,
-  }) async => GitFilePreview(
+  }) async {
+    previews.add((kind: kind, path: path, oid: oid));
+    return GitFilePreview(
     repositoryId: repositoryId,
     kind: kind,
     path: path,
@@ -142,7 +145,8 @@ class HistoryGitApi implements GitReadApi {
               '+++ source ++ marker\n'
               ' keep 4\n keep 5\n keep 6\n keep 7\n keep 8\n keep 9\n keep 10\n'
         : 'diff --git a/$path b/$path\n@@ -1 +1 @@\n-old line\n+new line\n',
-  );
+    );
+  }
 
   @override
   Future<GitFileList> files(
