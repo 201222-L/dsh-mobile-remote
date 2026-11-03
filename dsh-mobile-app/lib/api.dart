@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'download.dart';
@@ -75,9 +76,53 @@ abstract interface class GitReadApi {
     String? snapshotId,
     String? oid,
   });
+
+  /// HEAD 已跟踪文件列表（issue #42）。
+  ///
+  /// [q] 为大小写不敏感的路径子串；空 q 返回宿主排序后的前 [limit] 条。
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit,
+  });
+
+  /// 单个文件的提交历史（分页；[cursor] 由宿主签名，客户端不解释）。
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit,
+  });
 }
 
 class Api implements GitReadApi {
+  bool releaseUpdatesSupported = false;
+  int? pairedAppBuild;
+  String? pairedAppVersion;
+
+  Stream<List<int>> openPairedAppDownload() async* {
+    final client = http.Client();
+    try {
+      final request = http.Request('GET', _uri('/api/release-update/app'));
+      request.headers.addAll(_headers);
+      final response = await client
+          .send(request)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        throw ApiException('配对 App 尚未就绪', code: 'paired-app-not-ready');
+      }
+      yield* response.stream;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Same authenticated host across address failover; credentials never enter the ledger.
+  String get notificationScope => sha256
+      .convert(utf8.encode('${token.isEmpty ? baseUrl : token}\u0000$path'))
+      .toString();
   final http.Client _client;
 
   Api({http.Client? client}) : _client = client ?? http.Client();
@@ -225,6 +270,14 @@ class Api implements GitReadApi {
   /// 吸收 bootstrap 响应：合并服务器全部地址 + 记录插件版本（持久化，断线也可见）
   /// + 校正挂载路径（v3.0.0 review：服务端为权威来源）。
   void absorbBootstrap(Map<String, dynamic> d) {
+    final updates = d['capabilities']?['releaseUpdates'];
+    releaseUpdatesSupported = updates is Map && updates['supported'] == true;
+    pairedAppBuild = updates is Map && updates['app'] is Map
+        ? updates['app']['versionCode'] as int?
+        : null;
+    pairedAppVersion = updates is Map && updates['app'] is Map
+        ? updates['app']['versionName'] as String?
+        : null;
     final urls =
         (d['server']?['urls'] as List?)?.map((u) => u.toString()).toList() ??
         const <String>[];
@@ -265,9 +318,7 @@ class Api implements GitReadApi {
     turnOutlineCapabilities = capabilities is Map
         ? TurnOutlineCapabilities.fromJson(
             capabilities['turnOutline'] is Map
-                ? Map<String, dynamic>.from(
-                    capabilities['turnOutline'] as Map,
-                  )
+                ? Map<String, dynamic>.from(capabilities['turnOutline'] as Map)
                 : null,
           )
         : const TurnOutlineCapabilities();
@@ -525,9 +576,8 @@ class Api implements GitReadApi {
       }
       int? total;
       if (resp.statusCode == 206) {
-        final match = RegExp(
-          r'bytes \d+-\d+/(\d+)',
-        ).firstMatch(resp.headers['content-range'] ?? '');
+        final match = RegExp(r'bytes \d+-\d+/(\d+)')
+            .firstMatch(resp.headers['content-range'] ?? '');
         if (match != null) total = int.tryParse(match.group(1)!);
       } else {
         total = resp.contentLength;
@@ -648,8 +698,9 @@ class Api implements GitReadApi {
   }
 
   // ── 业务接口 ──
-  Future<Catalog> catalog({bool refresh = false}) async =>
-      Catalog.fromJson(await getJson(refresh ? '/api/catalog?refresh=1' : '/api/catalog'));
+  Future<Catalog> catalog({bool refresh = false}) async => Catalog.fromJson(
+    await getJson(refresh ? '/api/catalog?refresh=1' : '/api/catalog'),
+  );
   Future<SessionConfig> sessionConfig(
     String sessionId,
   ) async => SessionConfig.fromJson(
@@ -1357,6 +1408,43 @@ class Api implements GitReadApi {
         'snapshotId': ?snapshotId,
         'oid': ?oid,
       }),
+    ),
+  );
+
+  @override
+  Future<GitFileList> files(
+    String sessionId,
+    String repositoryId, {
+    String? q,
+    int limit = 200,
+  }) async => GitFileList.fromJson(
+    await getJson(
+      _gitQuery('/api/git/files', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'q': ?(q != null && q.isNotEmpty ? q : null),
+        'limit': '$limit',
+      }),
+    ),
+  );
+
+  @override
+  Future<GitFileHistoryPage> fileHistory(
+    String sessionId,
+    String repositoryId, {
+    required String path,
+    String? cursor,
+    int limit = 20,
+  }) async => GitFileHistoryPage.fromJson(
+    await getJson(
+      _gitQuery('/api/git/file-history', {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'path': path,
+        'cursor': ?cursor,
+        'limit': '$limit',
+      }),
+      timeout: const Duration(seconds: 40),
     ),
   );
 

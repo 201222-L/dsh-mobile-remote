@@ -75,8 +75,10 @@ void main() {
 
   group('通知 id', () {
     test('同一 key 永远得到同一 id', () {
-      expect(stableNotificationId('approval|s1|a1'),
-          stableNotificationId('approval|s1|a1'));
+      expect(
+        stableNotificationId('approval|s1|a1'),
+        stableNotificationId('approval|s1|a1'),
+      );
     });
 
     test('不同 key 得到不同 id（抽样 500 个）', () {
@@ -90,7 +92,11 @@ void main() {
     test('id 落在业务号段内', () {
       for (var i = 0; i < 200; i++) {
         final id = stableNotificationId('approval|s|a$i');
-        expect(AttentionLedger.isValidNotificationId(id), isTrue, reason: 'id=$id');
+        expect(
+          AttentionLedger.isValidNotificationId(id),
+          isTrue,
+          reason: 'id=$id',
+        );
       }
     });
 
@@ -114,45 +120,45 @@ void main() {
   });
 
   group('判据矩阵', () {
-    test('前台 + 正看该会话 → 只横幅', () {
+    test('前台 + 正看该会话 → 使用会话卡片', () {
       final d = decideAttention(
         _approval(),
         _snap(phase: AppPhase.foreground, visible: 's1'),
         seenRecently: false,
       );
       expect(d.system, isFalse);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
       expect(d.reason, 'viewing-session');
     });
 
-    test('前台 + 别的会话 → 系统通知 + 横幅', () {
+    test('前台 + 别的会话 → 只系统通知', () {
       final d = decideAttention(
         _approval(),
         _snap(phase: AppPhase.foreground, visible: 'other'),
         seenRecently: false,
       );
       expect(d.system, isTrue);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
     });
 
-    test('前台 + 不在任何会话 → 系统通知 + 横幅', () {
+    test('前台 + 不在任何会话 → 只系统通知', () {
       final d = decideAttention(
         _approval(),
         _snap(phase: AppPhase.foreground),
         seenRecently: false,
       );
       expect(d.system, isTrue);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
     });
 
-    test('inactive（分屏/弹窗）→ 系统通知 + 横幅', () {
+    test('inactive（分屏/弹窗）→ 只系统通知', () {
       final d = decideAttention(
         _approval(),
         _snap(phase: AppPhase.inactive),
         seenRecently: false,
       );
       expect(d.system, isTrue);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
     });
 
     test('后台 → 只系统通知', () {
@@ -165,14 +171,14 @@ void main() {
       expect(d.banner, isFalse);
     });
 
-    test('无通知权限 → 不发系统通知，但保留横幅', () {
+    test('后台无通知权限 → 不发系统通知和横幅', () {
       final d = decideAttention(
         _approval(),
         _snap(phase: AppPhase.background, permission: false),
         seenRecently: false,
       );
       expect(d.system, isFalse);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
       expect(d.reason, 'no-permission');
     });
 
@@ -196,16 +202,12 @@ void main() {
     });
 
     test('去重命中 → 两条通道都不发', () {
-      final d = decideAttention(
-        _approval(),
-        _snap(),
-        seenRecently: true,
-      );
+      final d = decideAttention(_approval(), _snap(), seenRecently: true);
       expect(d.any, isFalse);
       expect(d.reason, 'dedupe');
     });
 
-    test('回放帧即使去重命中也应该被吞（不重复提醒）', () {
+    test('首次看到的回放仍可提醒', () {
       final d = decideAttention(
         _approval(isReplay: true),
         _snap(phase: AppPhase.background),
@@ -214,14 +216,14 @@ void main() {
       expect(d.system, isTrue);
     });
 
-    test('正在看会话优先于无权限：仍只横幅', () {
+    test('正在看会话优先于无权限：使用会话卡片', () {
       final d = decideAttention(
         _approval(),
         _snap(visible: 's1', permission: false),
         seenRecently: false,
       );
       expect(d.system, isFalse);
-      expect(d.banner, isTrue);
+      expect(d.banner, isFalse);
       expect(d.reason, 'viewing-session');
     });
   });
@@ -236,8 +238,14 @@ void main() {
 
     test('同批两帧不同会话都能占位', () {
       final ledger = AttentionLedger();
-      expect(ledger.reserve(_approval(sessionId: 's1', approvalId: 'a1')), isTrue);
-      expect(ledger.reserve(_approval(sessionId: 's2', approvalId: 'a2')), isTrue);
+      expect(
+        ledger.reserve(_approval(sessionId: 's1', approvalId: 'a1')),
+        isTrue,
+      );
+      expect(
+        ledger.reserve(_approval(sessionId: 's2', approvalId: 'a2')),
+        isTrue,
+      );
       expect(ledger.activeEntries.length, 2);
     });
 
@@ -255,10 +263,7 @@ void main() {
       final e = _approval();
       ledger.reserve(e);
       ledger.mark(e.key, AttentionStatus.resolved);
-      expect(
-        ledger.seenRecently(e.key, now: e.at),
-        isFalse,
-      );
+      expect(ledger.seenRecently(e.key, now: e.at), isFalse);
     });
 
     test('按 identity 撤销返回 id', () {
@@ -326,11 +331,17 @@ void main() {
       final ledger = AttentionLedger(capacity: 3);
       final base = DateTime(2026, 10, 29, 10);
       for (var i = 0; i < 3; i++) {
-        final e = _approval(approvalId: 'old$i', at: base.add(Duration(minutes: i)));
+        final e = _approval(
+          approvalId: 'old$i',
+          at: base.add(Duration(minutes: i)),
+        );
         ledger.reserve(e);
         ledger.mark(e.key, AttentionStatus.resolved);
       }
-      final keep = _approval(approvalId: 'keep', at: base.add(const Duration(minutes: 9)));
+      final keep = _approval(
+        approvalId: 'keep',
+        at: base.add(const Duration(minutes: 9)),
+      );
       ledger.reserve(keep);
       expect(ledger.byKey(keep.key), isNotNull);
       expect(ledger.entries.length, lessThanOrEqualTo(3));
@@ -340,13 +351,12 @@ void main() {
     test('回放到旧事件不会把新条目挤掉（时间回拨）', () {
       final ledger = AttentionLedger(capacity: 2);
       final base = DateTime(2026, 10, 29, 10);
-      final newer = _approval(approvalId: 'new', at: base.add(const Duration(minutes: 5)));
-      ledger.reserve(newer);
-      final older = _approval(
-        approvalId: 'old',
-        at: base,
-        isReplay: true,
+      final newer = _approval(
+        approvalId: 'new',
+        at: base.add(const Duration(minutes: 5)),
       );
+      ledger.reserve(newer);
+      final older = _approval(approvalId: 'old', at: base, isReplay: true);
       ledger.reserve(older);
       expect(ledger.byKey(newer.key), isNotNull);
     });

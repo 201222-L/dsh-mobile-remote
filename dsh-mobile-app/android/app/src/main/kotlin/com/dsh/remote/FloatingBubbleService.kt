@@ -147,7 +147,6 @@ class FloatingBubbleService : Service() {
     private var lastNotifAt = 0L
     @Volatile private var firstJobsFrame = true // 首个 jobs 帧是连接回放：只学习不通知
     // v2.7.2 review：已弹通知 id 集合（去重，上限 200）
-    private val seenNotifIds = java.util.LinkedHashSet<String>()
 
     // v2.7.2：屏幕尺寸与贴边状态跟踪（旋转后按新尺寸重贴边）
     private var lastScreenW = 0
@@ -274,6 +273,9 @@ class FloatingBubbleService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.hasExtra("notification_unread") == true) {
+            applyUnreadSnapshot(intent.getIntExtra("notification_unread", 0))
+        }
         intent?.getStringExtra("balance")?.let { onBalance(it) }
         // 余额预警配置（App 端推送：开关 + 阈值，宠物面板的充值按钮以此为准）
         intent?.getBooleanExtra("alert_enabled", alertEnabled)?.let { alertEnabled = it }
@@ -1119,9 +1121,7 @@ class FloatingBubbleService : Service() {
                 i++
             }
         }
-        // 打开面板 = 已读：清红点
-        notifCount = 0
-        mainHandler.removeCallbacks(clearNotifRunnable)
+        // Opening the pet panel does not mark host notifications read.
         postState()
         refreshPanelData()
         // 用量与额度：先落节流/在途标记再渲染——fetchAllowance 同步置 in-flight 后，
@@ -1250,8 +1250,7 @@ class FloatingBubbleService : Service() {
 
             mainHandler.post {
                 // 面板打开 = 已看：更新未读基线（下次增量从当前起算）
-                lastUnreadCount = unreadCount
-                firstUnreadCheck = false
+                applyUnreadSnapshot(unreadCount)
                 renderPanel(running, notifs, unreadCount)
             }
         }, "dsh-bubble-panel").apply { isDaemon = true; start() }
@@ -1541,26 +1540,11 @@ class FloatingBubbleService : Service() {
         renderPet(animate = false)
     }
 
-    /** 通知红点：同 key 5 秒内合并（SSE 回放/重复事件防抖），60 秒后自动消退。 */
-    private fun markNotif(key: String, text: String) {
-        // v3.0.0：整段收敛到主线程——SSE 线程(:connectSse/handleFrame)与主线程调用点可能并发，
-        // 非原子 ++ / 非 volatile 读写会丢计数、去重误判；post 后串行执行即无竞态
-        mainHandler.post {
-            val now = System.currentTimeMillis()
-            if (key == lastNotifKey && now - lastNotifAt < 5000) return@post
-            lastNotifKey = key
-            lastNotifAt = now
-            notifCount++
-            lastNotif = now
-            setState(); showTip(text)
-            // 红点 60 秒后自动消退（用户没看也不残留）
-            mainHandler.removeCallbacks(clearNotifRunnable)
-            mainHandler.postDelayed(clearNotifRunnable, 60000)
-        }
-    }
-
-    private val clearNotifRunnable = Runnable {
-        notifCount = 0
+    /** Presentation only: unread counts come from the host notification center. */
+    private fun applyUnreadSnapshot(unread: Int) {
+        notifCount = unread.coerceAtLeast(0)
+        lastUnreadCount = notifCount
+        firstUnreadCheck = false
         postState()
     }
 
@@ -1629,6 +1613,7 @@ class FloatingBubbleService : Service() {
             // v2.7.2：通知（含审批/提问 needs-answer）统一由插件端 mobile/notify 帧驱动，
             // mobile/frame 只承载弹窗数据（App 消费），悬浮球不再自行 markNotif，避免双弹
             "mobile/notify" -> handleNotify(o)
+            "notifications/changed" -> checkUnreadDelta()
             // v2.7.2 review：顶层 agent/status 帧——running 立即亮，idle 且无近期活动则暗；
             // 忽略子代理帧（child=true，插件端已标记），避免子代理状态干扰全局球
             "agent/status" -> {
@@ -1648,30 +1633,11 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    /** v2.7.2：插件端真结束判定后推送的通知（完成/失败/需要回答），与 App 通知中心同源。 */
+    /** Events animate the pet; the badge always uses an authoritative snapshot. */
     private fun handleNotify(o: JSONObject) {
-        val n = o.optJSONObject("notification") ?: return
-        val kind = n.optString("kind")
-        val sid = n.optString("sessionId")
-        val label = when (kind) {
-            "completed" -> text("任务完成", "Task done")
-            "failed" -> text("任务失败", "Task failed")
-            "needs-answer" -> text("需要你回答", "Your input needed")
-            else -> text("通知", "Notification")
-        }
-        val short = if (sid.length > 8) sid.take(8) else sid
-        // v2.7.2 review：seen 集合按通知 id 去重（重连补发同一通知不再重复弹），有上限
-        val nid = "notif-${n.optString("id")}"
-        if (!seenNotifIds.add(nid)) return
-        if (seenNotifIds.size > 200) {
-            val it = seenNotifIds.iterator()
-            if (it.hasNext()) {
-                it.next()
-                it.remove()
-            }
-        }
-        markNotif(nid, "$label · $short")
-        applyPetChange(petReducer.onNotify(kind))
+        val kind = o.optJSONObject("notification")?.optString("kind") ?: return
+        mainHandler.post { applyPetChange(petReducer.onNotify(kind)) }
+        checkUnreadDelta()
     }
 
     private fun handleSessionEvent(o: JSONObject) {
@@ -2054,35 +2020,14 @@ class FloatingBubbleService : Service() {
     /** 状态是否为"执行中/停止中"（jobs 判定）。 */
     private fun isBusy(st: String) = st == "running" || st == "stopping"
 
-    /** 未读增量对比：重连/离线期间新增的通知也能提示（不只靠实时事件）。
-     *  Phase 0 收敛：HTTP 失败直接跳过——基线只在首次成功时建立，
-     *  瞬时失败不会把基线清零导致下次误报存量（review 确认：比旧逻辑更稳）。 */
     private fun checkUnreadDelta() {
-        if (panelVisible) return // 面板开着=正在看，不打扰
         Thread({
             try {
                 val txt = httpGet("notifications") ?: return@Thread
-                val unread = JSONObject(txt).optInt("unread")
-                mainHandler.post {
-                    if (firstUnreadCheck) {
-                        // 首次（服务启动）：只记录基线，不提示存量
-                        firstUnreadCheck = false
-                        lastUnreadCount = unread
-                        return@post
-                    }
-                    if (unread > lastUnreadCount) {
-                        val diff = unread - lastUnreadCount
-                        // 防抖：事件驱动刚提示过（60 秒内）则只更新基线，避免重复气泡
-                        if (System.currentTimeMillis() - lastNotifAt > 60000) {
-                            markNotif("unread-delta", text("有 $diff 条新通知", "$diff new notification" + if (diff > 1) "s" else ""))
-                        }
-                        lastUnreadCount = unread
-                    } else {
-                        lastUnreadCount = unread
-                    }
-                }
-            } catch (_: Exception) {}
-        }, "dsh-bubble-unread").apply { isDaemon = true; start() }
+                val count = JSONObject(txt).optInt("unread")
+                mainHandler.post { applyUnreadSnapshot(count) }
+            } catch (_: Exception) { /* Preserve last successful snapshot. */ }
+        }, "dsh-pet-notifications").apply { isDaemon = true; start() }
     }
 
     private fun exitBubble(why: String) {

@@ -1,9 +1,9 @@
 // Issue #1：可见事件协议的无损指针/未知事件/工具关联回归。
 // 需要 DSH_MOBILE_PLUGIN 指向可加载的插件模块；与现有 hotfix07-unit-check 同一导入策略。
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 const configuredPath = process.env.DSH_MOBILE_PLUGIN;
-const selectedPath = configuredPath ?? new URL("../lib/index.js", import.meta.url).pathname;
+const selectedPath = configuredPath ?? fileURLToPath(new URL("../lib/index.js", import.meta.url));
 const importPath = /^[a-zA-Z]:[\\/]/.test(selectedPath) ? pathToFileURL(selectedPath).href : selectedPath;
 let mod;
 try {

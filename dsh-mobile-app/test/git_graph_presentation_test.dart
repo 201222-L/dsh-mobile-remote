@@ -108,30 +108,182 @@ void main() {
     );
   });
 
-  test('graph decorations prioritize current ref and compact overflow', () {
-    const current = GitBranch(
-      name: 'refs/heads/main',
-      displayName: 'main',
-      oid: 'tip',
-      kind: 'local',
-      current: true,
-    );
-    final labels = compactGitGraphLabels(
-      refs: const [
-        'refs/heads/feature',
-        'HEAD -> refs/heads/main',
-        'origin/other',
+  test('graph shows every ref and tag on one line in HEAD -> local -> remote -> tag order', () {
+    const decoration = GitDecoration(
+      refs: [
+        GitRefDetail(
+          kind: 'remoteBranch',
+          name: 'refs/remotes/origin/main',
+          shortName: 'origin/main',
+        ),
+        GitRefDetail(
+          kind: 'localBranch',
+          name: 'refs/heads/feature',
+          shortName: 'feature',
+        ),
+        GitRefDetail(
+          kind: 'head',
+          name: 'refs/heads/main',
+          shortName: 'main',
+          current: true,
+        ),
+        GitRefDetail(
+          kind: 'localBranch',
+          name: 'refs/heads/release',
+          shortName: 'release',
+        ),
       ],
-      tags: const ['v1', 'v2'],
-      selected: const [current],
-      currentBranch: 'refs/heads/main',
+      tags: [
+        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1', annotated: true),
+        GitTagDetail(name: 'refs/tags/v2', shortName: 'v2'),
+      ],
     );
+
+    final labels = gitGraphLabels(decoration);
 
     expect(labels.map((label) => label.text).toList(), [
       'main',
       'feature',
-      '+3',
+      'release',
+      'origin/main',
+      'v1',
+      'v2',
     ]);
-    expect(labels.last.overflow, isTrue);
+    // 全量展示：不再有 +N 折叠 pill。
+    expect(
+      labels.where(
+        (label) =>
+            label.text.startsWith('+') || label.text.contains('overflow'),
+      ),
+      isEmpty,
+    );
+    expect(labels.first.kind, GitGraphLabelKind.head);
+    expect(labels.map((label) => label.kind).toList(), [
+      GitGraphLabelKind.head,
+      GitGraphLabelKind.localBranch,
+      GitGraphLabelKind.localBranch,
+      GitGraphLabelKind.remoteBranch,
+      GitGraphLabelKind.tag,
+      GitGraphLabelKind.tag,
+    ]);
+    expect(labels.first.annotated, isFalse);
+    expect(labels[4].annotated, isTrue);
+  });
+
+  test(
+    'graph labels dedupe by kind/shortName and hide stash and remote HEAD',
+    () {
+      const decoration = GitDecoration(
+        refs: [
+          GitRefDetail(
+            kind: 'localBranch',
+            name: 'refs/heads/main',
+            shortName: 'main',
+          ),
+          GitRefDetail(
+            kind: 'localBranch',
+            name: 'refs/heads/main',
+            shortName: 'main',
+          ),
+          GitRefDetail(kind: 'other', name: 'refs/stash', shortName: 'stash'),
+          GitRefDetail(
+            kind: 'remoteBranch',
+            name: 'refs/remotes/origin/HEAD',
+            shortName: 'origin/HEAD',
+          ),
+        ],
+        tags: [
+          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+        ],
+      );
+
+      final labels = gitGraphLabels(decoration);
+
+      // `refs/stash`、`refs/remotes/*/HEAD` 不展示；同 kind+shortName 只留一个。
+      expect(labels.map((label) => label.text).toList(), ['main', 'v1']);
+    },
+  );
+
+  test(
+    'legacy ref strings fall back to ordered labels without annotated metadata',
+    () {
+      final decoration = GitDecoration.fromLegacy(
+        refs: const [
+          'refs/heads/feature',
+          'HEAD -> refs/heads/main',
+          'refs/remotes/origin/main',
+          'tag: refs/tags/v1',
+          'origin/other',
+        ],
+        tags: const ['v2'],
+      );
+
+      final labels = gitGraphLabels(decoration);
+      // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
+      // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
+      expect(labels.map((label) => label.text).toList(), [
+        'HEAD',
+        'feature',
+        'main',
+        'origin/main',
+        'origin/other',
+        'v1',
+        'v2',
+      ]);
+      expect(labels.first.kind, GitGraphLabelKind.head);
+      expect(labels.first.text, 'HEAD');
+      expect(labels[1].kind, GitGraphLabelKind.localBranch);
+      expect(labels[2].kind, GitGraphLabelKind.localBranch);
+      expect(labels[2].text, 'main');
+      expect(
+        labels.where((label) => label.tag).every((l) => !l.annotated),
+        isTrue,
+      );
+      // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
+      expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
+      // refs 行不混入 tag。
+      expect(gitRefLabels(decoration).where((label) => label.tag), isEmpty);
+    },
+  );
+
+  test('label colors distinguish HEAD, local, remote and tag', () {
+    const scheme = ColorScheme.light();
+    const head = GitGraphLabel('main', kind: GitGraphLabelKind.head);
+    const local = GitGraphLabel('feature', kind: GitGraphLabelKind.localBranch);
+    const remote = GitGraphLabel(
+      'origin/main',
+      kind: GitGraphLabelKind.remoteBranch,
+    );
+    const tag = GitGraphLabel('v1', kind: GitGraphLabelKind.tag);
+
+    final headColors = gitGraphLabelColors(
+      head,
+      scheme: scheme,
+      brightness: Brightness.light,
+    );
+    final localColors = gitGraphLabelColors(
+      local,
+      scheme: scheme,
+      brightness: Brightness.light,
+    );
+    final remoteColors = gitGraphLabelColors(
+      remote,
+      scheme: scheme,
+      brightness: Brightness.light,
+    );
+    final tagColors = gitGraphLabelColors(
+      tag,
+      scheme: scheme,
+      brightness: Brightness.light,
+    );
+
+    expect(headColors.background, isNot(localColors.background));
+    expect(headColors.border, isNotNull);
+    expect(localColors.foreground, isNot(remoteColors.foreground));
+    expect(remoteColors.border, isNotNull);
+    expect(tagColors.background, scheme.tertiaryContainer);
+    expect(tagColors.foreground, scheme.onTertiaryContainer);
+    expect(headColors.foreground, scheme.primary);
   });
 }

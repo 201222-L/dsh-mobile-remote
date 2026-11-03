@@ -16,6 +16,9 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+if (providers.gradleProperty("officialRelease").orNull == "true" && !keystorePropertiesFile.exists()) {
+    throw GradleException("Official release signing configuration is required")
+}
 
 android {
     namespace = "com.dsh.remote"

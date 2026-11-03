@@ -18,7 +18,12 @@ sealed class PreviewVerdict {
 
 /// 可展示的文本预览。
 class PreviewText extends PreviewVerdict {
-  const PreviewText({required this.text, required this.truncated, required this.bytesShown});
+  const PreviewText({
+    required this.text,
+    required this.truncated,
+    required this.bytesShown,
+    this.encodingLabel = '',
+  });
 
   /// 已解码的文本（可能只是前缀）。
   final String text;
@@ -28,7 +33,19 @@ class PreviewText extends PreviewVerdict {
 
   /// 实际参与解码的字节数。
   final int bytesShown;
+
+  /// 编码提示（如 `UTF-8`）；统一查看器在头栏展示，空串表示未知。
+  final String encodingLabel;
 }
+
+/// 编码的人类可读名称（统一查看器头栏用）。
+String previewEncodingLabel(PreviewEncoding encoding) => switch (encoding) {
+  PreviewEncoding.utf8 => 'UTF-8',
+  PreviewEncoding.utf16le => 'UTF-16 LE',
+  PreviewEncoding.utf16be => 'UTF-16 BE',
+  PreviewEncoding.gb18030 => 'GB18030',
+  PreviewEncoding.binary => 'BINARY',
+};
 
 /// 不可预览，附人类可读原因。
 class PreviewUnavailable extends PreviewVerdict {
@@ -159,11 +176,7 @@ bool _isCommonTextUnit(int unit) {
   return false;
 }
 
-_Score _scoreUtf16Endian(
-  List<int> bytes,
-  int usable, {
-  required bool little,
-}) {
+_Score _scoreUtf16Endian(List<int> bytes, int usable, {required bool little}) {
   final units = <int>[];
   for (var i = 0; i + 1 < usable; i += 2) {
     units.add(
@@ -221,7 +234,8 @@ _Score _scoreUtf16Endian(
 String decodePreviewText(List<int> bytes, PreviewEncoding encoding) {
   switch (encoding) {
     case PreviewEncoding.utf8:
-      final start = bytes.length >= 3 &&
+      final start =
+          bytes.length >= 3 &&
               bytes[0] == 0xEF &&
               bytes[1] == 0xBB &&
               bytes[2] == 0xBF
@@ -230,7 +244,8 @@ String decodePreviewText(List<int> bytes, PreviewEncoding encoding) {
       return utf8.decode(bytes.sublist(start), allowMalformed: true);
     case PreviewEncoding.utf16le:
     case PreviewEncoding.utf16be:
-      final start = bytes.length >= 2 &&
+      final start =
+          bytes.length >= 2 &&
               ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
                   (bytes[0] == 0xFE && bytes[1] == 0xFF))
           ? 2
@@ -275,6 +290,7 @@ PreviewVerdict buildPreview(
     text: decodePreviewText(slice, detected),
     truncated: cut,
     bytesShown: slice.length,
+    encodingLabel: previewEncodingLabel(detected),
   );
 }
 
@@ -320,7 +336,9 @@ List<({String label, String path})> browseBreadcrumbs(String path, String sep) {
     crumbs.add((label: sep, path: sep));
   }
   for (var i = 0; i < parts.length; i++) {
-    acc = acc == sep ? '$sep${parts[i]}' : (acc.isEmpty ? parts[i] : '$acc$sep${parts[i]}');
+    acc = acc == sep
+        ? '$sep${parts[i]}'
+        : (acc.isEmpty ? parts[i] : '$acc$sep${parts[i]}');
     crumbs.add((label: parts[i], path: acc));
   }
   return crumbs;
@@ -357,7 +375,7 @@ String normalizeBrowsePath(String path) {
 
 /// 目录条目在渲染上限内的切分结果。
 ({List<String> dirs, List<String> files, int hiddenCount, int total})
-    limitDirEntries(List<String> dirs, List<String> files) {
+limitDirEntries(List<String> dirs, List<String> files) {
   final total = dirs.length + files.length;
   if (total <= kDirEntryRenderLimit) {
     return (dirs: dirs, files: files, hiddenCount: 0, total: total);
@@ -367,7 +385,9 @@ String normalizeBrowsePath(String path) {
       ? dirs
       : dirs.sublist(0, kDirEntryRenderLimit);
   final remaining = kDirEntryRenderLimit - keptDirs.length;
-  final keptFiles = files.length <= remaining ? files : files.sublist(0, remaining < 0 ? 0 : remaining);
+  final keptFiles = files.length <= remaining
+      ? files
+      : files.sublist(0, remaining < 0 ? 0 : remaining);
   return (
     dirs: keptDirs,
     files: keptFiles,
@@ -438,4 +458,3 @@ List<String> chunkMarkdownText(String text, {int maxChars = 4000}) {
   flush();
   return chunks;
 }
-

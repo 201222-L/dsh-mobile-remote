@@ -79,6 +79,7 @@ void main() {
         '分支',
         '工作区',
         '图谱',
+        '文件历史',
       ], reason: '设置弹窗应立即按已选标签顺序展示');
       await tester.tap(find.text('保存'));
       await tester.pumpAndSettle();
@@ -88,7 +89,7 @@ void main() {
       await openPreferenceDialog(tester, restored);
       expect(restored.gitTabs, ['branches', 'worktree', 'graph']);
       expect(find.text('分支 · 工作区 · 图谱'), findsOneWidget);
-      expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱']);
+      expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱', '文件历史']);
       expect(find.byTooltip('上移 工作区'), findsOneWidget);
     },
   );
@@ -102,7 +103,7 @@ void main() {
     await tester.tap(find.byTooltip('下移 图谱'));
     await tester.pumpAndSettle();
 
-    expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱']);
+    expect(displayedGitTabNames(tester), ['分支', '工作区', '图谱', '文件历史']);
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(store.gitTabs, ['branches', 'worktree', 'graph']);
@@ -124,7 +125,34 @@ void main() {
       '分支',
       '工作区',
       '图谱',
+      '文件历史',
     ]);
     expect(rows.last.value, isFalse);
+  });
+
+  testWidgets('offers four git tab candidates while still capping at three', (
+    tester,
+  ) async {
+    final store = await makeStore();
+    await openPreferenceDialog(tester, store);
+
+    expect(displayedGitTabNames(tester), ['分支', '图谱', '工作区', '文件历史']);
+    // 旧宿主没有该能力时 tab 降级为不可用提示，弹窗里需给出说明（US16）。
+    expect(find.byKey(const Key('git-tabs-file-history-note')), findsOneWidget);
+    final rows = tester
+        .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+        .toList();
+    // 已选满 3 个时，未选的第四项不可勾选（维持 1–3 规则）。
+    expect(rows.last.value, isFalse);
+    expect(rows.last.onChanged, isNull);
+
+    // 取消一个、勾选「文件历史」，仍是最多 3 个且默认顺序不变。
+    await tester.tap(find.text('图谱').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件历史'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(store.gitTabs, ['branches', 'worktree', 'fileHistory']);
   });
 }

@@ -1,0 +1,149 @@
+name: Prepare and publish release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag or commit to build (preparation only)
+        default: main
+        required: false
+      tag:
+        description: Existing version tag (required only for publication)
+        required: false
+      publish:
+        description: Publish the signed artifacts to GitHub and configured npm packages
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: official-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build and verify signed artifacts
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.request.outputs.tag }}
+      commit: ${{ steps.request.outputs.commit }}
+    env:
+      OFFICIAL_NPM_SCOPE: ${{ vars.OFFICIAL_NPM_SCOPE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || (inputs.publish && inputs.tag || inputs.source_ref || 'main') }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate source, versions and publication intent
+        id: request
+        env:
+          RELEASE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
+          RELEASE_TAG: ${{ inputs.tag || '' }}
+        run: node tools/release-request.mjs
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.0'
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci --ignore-scripts --legacy-peer-deps
+      - run: npm test && npm run check
+      - working-directory: dsh-mobile-app
+        run: flutter pub get --enforce-lockfile && flutter analyze && flutter test
+      - name: Configure existing official Android signature
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: python3 tools/ci-signing.py
+      - name: Build signed APK and run native tests
+        env:
+          ORG_GRADLE_PROJECT_officialRelease: 'true'
+        working-directory: dsh-mobile-app
+        run: |
+          flutter build apk --release
+          cd android
+          bash gradlew :app:testDebugUnitTest
+      - name: Verify APK identity and prepare signed release manifest
+        env:
+          TAG: ${{ steps.request.outputs.tag }}
+          RELEASE_SIGNING_SEED: ${{ secrets.RELEASE_SIGNING_SEED }}
+          RELEASE_KEY_ID: ${{ vars.RELEASE_KEY_ID || 'dsh-release-2026' }}
+        run: python3 tools/prepare-release.py "$TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-${{ steps.request.outputs.tag }}
+          path: release-dist/
+          if-no-files-found: error
+      - name: Record preparation result
+        env:
+          TAG: ${{ steps.request.outputs.tag }}
+          COMMIT: ${{ steps.request.outputs.commit }}
+        run: |
+          echo "Signed artifacts prepared for $TAG ($COMMIT)." >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the signed-release artifact below. Preparation does not publish packages or create tags.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove signing material
+        if: always()
+        run: rm -f dsh-mobile-app/android/key.properties dsh-mobile-app/android/ci-release.jks
+  publish:
+    name: Publish verified release
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      OFFICIAL_NPM_SCOPE: ${{ vars.OFFICIAL_NPM_SCOPE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release-${{ needs.prepare.outputs.tag }}
+          path: release-dist/
+      - run: npm ci --ignore-scripts --legacy-peer-deps
+      - name: Revalidate the immutable publication tag
+        env:
+          RELEASE_PUBLISH: 'true'
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: node tools/release-request.mjs
+      - name: Verify signed artifact bundle
+        run: node tools/verify-release.mjs release-dist
+      - name: Refuse overwriting an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; publish a new version instead.'
+            exit 1
+          fi
+      - name: Publish npm carrier then plugin with OIDC
+        if: env.OFFICIAL_NPM_SCOPE != ''
+        run: |
+          node tools/prepare-npm.mjs release-dist npm-dist
+          node tools/publish-npm.mjs npm-dist
+      - name: Publish GitHub artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=()
+          if [[ "$TAG" == *-* ]]; then FLAGS+=(--prerelease); fi
+          gh release create "$TAG" release-dist/* --verify-tag --title "DSH Remote $TAG" --generate-notes "${FLAGS[@]}"

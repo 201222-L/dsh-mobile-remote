@@ -164,6 +164,9 @@ class GitBrowserController extends ChangeNotifier {
 
   GitBrowserState get state => _state;
 
+  /// 只读 Git API：sheet 里的文件历史等附加视图复用同一注入实现（测试可替换）。
+  GitReadApi get readApi => _api;
+
   @override
   void dispose() {
     _disposed = true;

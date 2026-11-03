@@ -88,7 +88,7 @@ class LocalNotifier {
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
-  final AttentionDeduper _dedupe = AttentionDeduper();
+  Future<void>? _initializing;
   AndroidFlutterLocalNotificationsPlugin? _android;
   bool _ready = false;
   bool _foreground = true;
@@ -100,6 +100,47 @@ class LocalNotifier {
 
   /// 点击通知时回调（携带 sessionId），由 main.dart 接到 openChat。
   void Function(String sessionId)? onOpenSession;
+  void Function()? onOpenUpdates;
+  bool _pendingOpenUpdates = false;
+
+  bool consumePendingUpdate() {
+    final pending = _pendingOpenUpdates;
+    _pendingOpenUpdates = false;
+    return pending;
+  }
+
+  bool _isUpdatePayload(String? payload) {
+    try {
+      return jsonDecode(payload ?? '')['update'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> showAppUpdate(String version, int build) async {
+    await init();
+    final permission = await _android?.areNotificationsEnabled() ?? false;
+    if (!permission) return false;
+    try {
+      await _plugin.show(
+        id: 0xDBC,
+        title: 'DSH Remote 更新已就绪',
+        body: '配对 App $version+$build 可安装，点击查看。',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'dsh_updates',
+            '应用更新',
+            importance: Importance.defaultImportance,
+            onlyAlertOnce: true,
+          ),
+        ),
+        payload: jsonEncode({'update': true}),
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 冷启动时由通知点开的会话（此时 main.dart 还没挂上 onOpenSession）。
   String? _pendingOpenSession;
@@ -136,7 +177,9 @@ class LocalNotifier {
 
   set foreground(bool value) => _foreground = value;
 
-  Future<void> init() async {
+  Future<void> init() => _initializing ??= _initialize();
+
+  Future<void> _initialize() async {
     if (!Platform.isAndroid) {
       AppLog.instance.log('通知：非 Android 平台，跳过本地通知');
       return;
@@ -148,10 +191,12 @@ class LocalNotifier {
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         ),
         onDidReceiveNotificationResponse: (response) {
+          if (_isUpdatePayload(response.payload)) {
+            onOpenUpdates?.call();
+            return;
+          }
           final sessionId = sessionIdFromPayload(response.payload);
-          AppLog.instance.log(
-            '通知：点击（session=${sessionId ?? "空"}）→ 打开会话',
-          );
+          AppLog.instance.log('通知：点击（session=${sessionId ?? "空"}）→ 打开会话');
           if (sessionId != null && sessionId.isNotEmpty) {
             onOpenSession?.call(sessionId);
           }
@@ -159,7 +204,8 @@ class LocalNotifier {
       );
       final android = _plugin
           .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
+            AndroidFlutterLocalNotificationsPlugin
+          >();
       await android?.createNotificationChannel(
         const AndroidNotificationChannel(
           _channelId,
@@ -177,6 +223,9 @@ class LocalNotifier {
       try {
         final launch = await _plugin.getNotificationAppLaunchDetails();
         if (launch?.didNotificationLaunchApp == true) {
+          _pendingOpenUpdates = _isUpdatePayload(
+            launch?.notificationResponse?.payload,
+          );
           final sid = sessionIdFromPayload(
             launch?.notificationResponse?.payload,
           );
@@ -191,6 +240,54 @@ class LocalNotifier {
     } catch (e) {
       _ready = false;
       AppLog.instance.log('通知：初始化失败（$e）');
+    }
+  }
+
+  /// Read current permission and channel state without prompting from the background.
+  Future<({bool permission, bool channel})> availability() async {
+    await init();
+    final android = _android;
+    if (android == null) return (permission: false, channel: false);
+    try {
+      _ready = await android.areNotificationsEnabled() ?? false;
+      final channels = await android.getNotificationChannels();
+      final channel = channels?.where((c) => c.id == _channelId).firstOrNull;
+      return (
+        permission: _ready,
+        channel: channel?.importance != Importance.none,
+      );
+    } catch (_) {
+      return (permission: false, channel: false);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> activeLedgerRows() async {
+    await init();
+    try {
+      final rows = <Map<String, dynamic>>[];
+      for (final n in await _plugin.getActiveNotifications()) {
+        if (n.id == null || !AttentionLedger.isValidNotificationId(n.id!)) {
+          continue;
+        }
+        try {
+          final row = jsonDecode(n.payload ?? '');
+          if (row is! Map || row['key'] is! String || row['s'] is! String) {
+            continue;
+          }
+          rows.add({
+            'key': row['key'],
+            'id': n.id,
+            'kind': row['k'],
+            'sessionId': row['s'],
+            'source': row['source'] ?? '',
+            'at': row['at'] ?? 0,
+            'status': 'active',
+          });
+        } catch (_) {}
+      }
+      return rows;
+    } catch (_) {
+      return [];
     }
   }
 
@@ -224,18 +321,17 @@ class LocalNotifier {
     String? reason,
     String? prompt,
     String? sessionTitle,
+    String source = '',
+    DateTime? at,
   }) async {
     AppLog.instance.log(
       '通知：请求展示 kind=$kind key=$key id=$id session=$sessionId '
       'ready=$_ready foreground=$_foreground visible=$visibleSession',
     );
-    if (!_ready) {
-      // 权限可能在系统设置里被改过：再查一次，避免"必须重启 App 才生效"。
-      _ready = await ensurePermission();
-      if (!_ready) {
-        AppLog.instance.log('通知：跳过——未获得通知权限（ready=false）');
-        return AttentionShowResult.blocked;
-      }
+    final available = await availability();
+    if (!available.permission || !available.channel) {
+      AppLog.instance.log('通知：权限或渠道不可用');
+      return AttentionShowResult.blocked;
     }
     final copy = attentionCopy(
       kind: kind,
@@ -258,9 +354,17 @@ class LocalNotifier {
             importance: Importance.high,
             priority: Priority.high,
             category: AndroidNotificationCategory.message,
+            onlyAlertOnce: true,
           ),
         ),
-        payload: jsonEncode({'s': sessionId, 'k': kind, 'key': key, 'id': id}),
+        payload: jsonEncode({
+          's': sessionId,
+          'k': kind,
+          'key': key,
+          'id': id,
+          'source': source,
+          'at': at?.millisecondsSinceEpoch,
+        }),
       );
       AppLog.instance.log('通知：已展示 id=$id（$kind key=$key）');
       return AttentionShowResult.shown;
@@ -273,60 +377,12 @@ class LocalNotifier {
 
   /// 撤销一条系统通知（按 id 精确撤，**不要**用 cancelAll）。
   Future<void> cancel(int id) async {
-    if (!_ready) return;
+    if (_android == null) return;
     try {
       await _plugin.cancel(id: id);
       AppLog.instance.log('通知：已撤销 id=$id');
     } catch (e) {
       AppLog.instance.log('通知：撤销失败 id=$id（$e）');
     }
-  }
-
-  /// 旧入口（保留兼容）：内部改用固定 key，仍按 sessionId 派生 id。
-  ///
-  /// 新代码请用 [showAttentionEvent]，它接受 ledger 派生的稳定 id。
-  Future<void> showAttention({
-    required String kind,
-    required String rpcId,
-    required String sessionId,
-    String? toolName,
-    String? reason,
-    String? prompt,
-    String? sessionTitle,
-  }) async {
-    if (!_ready) {
-      _ready = await ensurePermission();
-      if (!_ready) return;
-    }
-    if (_foreground && visibleSession == sessionId) {
-      AppLog.instance.log('通知：跳过——正在看该会话（前台只走应用内卡片/横幅）');
-      return;
-    }
-    if (!_dedupe.shouldNotify('$kind:$rpcId')) {
-      AppLog.instance.log('通知：跳过——去重命中（$kind:$rpcId 已在窗口期内提醒过）');
-      return;
-    }
-    await showAttentionEvent(
-      id: stableNotificationId(attentionKey(
-        kind: kind,
-        sessionId: sessionId,
-        identity: rpcId,
-      )),
-      key: attentionKey(kind: kind, sessionId: sessionId, identity: rpcId),
-      kind: kind,
-      sessionId: sessionId,
-      toolName: toolName,
-      reason: reason,
-      prompt: prompt,
-      sessionTitle: sessionTitle,
-    );
-  }
-
-  /// 回到前台时清掉已过时的提醒（卡片已在 App 内呈现）。
-  Future<void> clearAll() async {
-    if (!_ready) return;
-    try {
-      await _plugin.cancelAll();
-    } catch (_) {}
   }
 }

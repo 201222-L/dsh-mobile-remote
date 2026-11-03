@@ -41,7 +41,7 @@ test("capabilities and repository are read-only and authorized only through a se
     const caps = await service.capabilitiesForSession('session-1');
     assert.equal(caps.available, true);
     assert.equal(caps.readOnly, true);
-    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true, worktree: true, preview: true });
+    assert.deepEqual(caps.features, { repository: true, branches: true, graph: true, commit: true, worktree: true, preview: true, refsDetail: true, fileHistory: true });
     const repository = await service.repositoryForSession("session-1");
     assert.match(repository.repositoryId, /^repo_[A-Za-z0-9_-]+$/);
     assert.equal(repository.name, root.split("/").at(-1));
@@ -194,8 +194,8 @@ test("provider subscriptions do not require server-side worktree polling", async
     writeFileSync(`${root}/tracked`, "changed");
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.deepEqual(events, []);
-    service.stop();
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    await service.stop();
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 3 }); }
 });
 
 test("branches identify local, remote, current, upstream, ahead and behind", async () => {
@@ -315,15 +315,17 @@ test("worktree snapshot separates staged, unstaged and untracked; previews reval
     writeFileSync(`${root}/changed.txt`, "base\\n"); git(root, "add", "changed.txt"); git(root, "commit", "-m", "base");
     writeFileSync(`${root}/changed.txt`, "staged\\n"); git(root, "add", "changed.txt"); writeFileSync(`${root}/changed.txt`, "worktree\\n");
     writeFileSync(`${root}/untracked[magic].txt`, "new\\n");
-    symlinkSync("/etc/passwd", `${root}/link`);
+    if (process.platform !== "win32") symlinkSync("/etc/passwd", `${root}/link`);
     const service = createGitReadService(context(root)); const { repositoryId } = await service.repositoryForSession("session-1");
     const snapshot = await service.worktree("session-1", repositoryId);
     assert.equal(snapshot.staged[0].path, "changed.txt"); assert.equal(snapshot.unstaged[0].path, "changed.txt");
     assert.ok(snapshot.untracked.some(({ path }) => path === "untracked[magic].txt"));
     const preview = await service.preview("session-1", repositoryId, { kind: "staged", snapshotId: snapshot.snapshotId, path: "changed.txt" });
     assert.match(preview.diff, /staged/); assert.equal(preview.repositoryId, repositoryId);
-    const safe = await service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: "link" });
-    assert.match(safe.notice, /symlink/); assert.doesNotMatch(safe.diff, /root:/);
+    if (process.platform !== "win32") {
+      const safe = await service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: "link" });
+      assert.match(safe.notice, /symlink/); assert.doesNotMatch(safe.diff, /root:/);
+    }
     await assert.rejects(() => service.preview("session-1", repositoryId, { kind: "unstaged", snapshotId: snapshot.snapshotId, path: "../etc/passwd" }), (e) => e.status === 400);
     await assert.rejects(() => service.preview("session-1", repositoryId, { kind: "untracked", snapshotId: snapshot.snapshotId, path: ":(glob)**" }), (e) => e.status === 404);
     writeFileSync(`${root}/changed.txt`, "newer\\n");
@@ -345,9 +347,10 @@ test("tracked previews retain context for folding; mode-only changes return an e
     assert.match(preview.diff, /line-0/); assert.match(preview.diff, /line-19/);
 
     git(root, "checkout", "--", "context.txt");
-    chmodSync(`${root}/context.txt`, 0o755);
+    // Git index mode changes work on Windows too, without Unix chmod semantics.
+    git(root, "update-index", "--chmod=+x", "context.txt");
     const modeSnapshot = await service.worktree("session-1", repositoryId);
-    const modeOnly = await service.preview("session-1", repositoryId, { kind: "unstaged", snapshotId: modeSnapshot.snapshotId, path: "context.txt" });
+    const modeOnly = await service.preview("session-1", repositoryId, { kind: "staged", snapshotId: modeSnapshot.snapshotId, path: "context.txt" });
     assert.match(modeOnly.notice, /mode changed/); assert.equal(modeOnly.diff, "");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -365,7 +368,7 @@ test("untracked preview is bounded and accurately marks large-file truncation", 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("porcelain NUL parsing preserves rename names and reports merge conflicts", async () => {
+test("porcelain NUL parsing preserves rename names and reports merge conflicts", { skip: process.platform === "win32" ? "POSIX-only filename characters" : false }, async () => {
   const root = mkdtempSync(`${tmpdir()}/git-read-status-`);
   try {
     fixture(root);
@@ -403,7 +406,7 @@ test("commit preview supports root and merge commits against first parent", asyn
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("commit file pagination preserves NUL-delimited tab and newline filenames", async () => {
+test("commit file pagination preserves NUL-delimited tab and newline filenames", { skip: process.platform === "win32" ? "POSIX-only filename characters" : false }, async () => {
   const root = mkdtempSync(`${tmpdir()}/git-read-nul-`);
   try {
     fixture(root);
@@ -435,7 +438,11 @@ test("commit details omit secrets and page root, rename, and binary changed file
     const repository = await service.repositoryForSession("session-1");
     const first = await service.commit("session-1", repository.repositoryId, rootOid, { filesLimit: 2 });
     assert.equal(first.parents.length, 0); assert.equal(first.author, "Alice"); assert.equal(first.message, "root subject\n\nroot body");
-    assert.equal("email" in first, false); assert.equal("patch" in first, false); assert.deepEqual(first.refs, []); assert.deepEqual(first.tags, []);
+    assert.equal("email" in first, false); assert.equal("patch" in first, false); assert.deepEqual(first.tags, []);
+    // v1.1.0 keeps the legacy decoration strings and projects them additively.
+    assert.ok(first.refs.some((ref) => ref === "HEAD -> refs/heads/main"));
+    assert.deepEqual(first.refsDetail.map(({ kind, shortName, oid }) => ({ kind, shortName, oid })), [{ kind: "head", shortName: "HEAD", oid: rootOid }, { kind: "localBranch", shortName: "main", oid: rootOid }]);
+    assert.deepEqual(first.tagsDetail, []);
     assert.equal(first.files.items.length, 2); assert.equal(first.files.total, 3); assert.ok(first.files.nextCursor); assert.deepEqual(first.stats, { additions: 2, deletions: 0, files: 3 });
     const second = await service.commit("session-1", repository.repositoryId, rootOid, { filesCursor: first.files.nextCursor, filesLimit: 2 });
     const rootFiles = [...first.files.items, ...second.files.items];

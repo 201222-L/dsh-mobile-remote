@@ -33,15 +33,6 @@ enum BrowseStage {
   error,
 }
 
-/// 预览的呈现方式。
-enum PreviewMode {
-  /// Markdown 渲染（仅对 `.md` / `.markdown` 可用）。
-  rendered,
-
-  /// 带行号的纯文本源码视图（对所有文本文件可用）。
-  source,
-}
-
 class SessionFilesController extends ChangeNotifier {
   /// [apiClient] 只为测试注入；生产必须走全局 [api] 单例（与 chat_screen 的
   /// `_api` 同一约定）。
@@ -87,27 +78,6 @@ class SessionFilesController extends ChangeNotifier {
   String previewPath = '';
   PreviewVerdict? preview;
 
-  /// 预览呈现方式：Markdown 文件默认渲染，其余默认源码。
-  PreviewMode previewMode = PreviewMode.source;
-
-  /// Markdown 渲染分片（[PreviewMode.rendered] 时使用），加载时算好，
-  /// 避免每帧 build 把 256KB 文本重切一遍。
-  List<String> previewChunks = const [];
-
-  /// 源码视图的行（[PreviewMode.source] 时使用），同样在加载时算好。
-  List<String> previewSourceLines = const [];
-
-  /// 当前预览是否可按 Markdown 渲染。
-  bool get previewIsMarkdown => isMarkdownPath(previewPath);
-
-  /// 切换预览方式（仅当两者都可用时有意义）。
-  void setPreviewMode(PreviewMode mode) {
-    if (previewMode == mode) return;
-    previewMode = mode;
-    _rebuildPreviewCaches();
-    notifyListeners();
-  }
-
   /// 错误原因；`stage == BrowseStage.error` 时有效。
   String errorReason = '';
 
@@ -134,10 +104,7 @@ class SessionFilesController extends ChangeNotifier {
       }
       return crumbs;
     }
-    return [
-      (label: _rootLabel(), path: root),
-      ...all.sublist(rootIdx + 1),
-    ];
+    return [(label: _rootLabel(), path: root), ...all.sublist(rootIdx + 1)];
   }
 
   /// 是否位于浏览根（不允许再向上）。
@@ -204,7 +171,8 @@ class SessionFilesController extends ChangeNotifier {
   }
 
   /// 进入子目录。
-  Future<void> openDir(String name) => loadDir(joinBrowsePath(currentPath, name, sep));
+  Future<void> openDir(String name) =>
+      loadDir(joinBrowsePath(currentPath, name, sep));
 
   /// 返回上一级；已在根则不动。
   Future<void> goUp() async {
@@ -220,6 +188,8 @@ class SessionFilesController extends ChangeNotifier {
   Future<void> openFile(String name) async {
     final path = joinBrowsePath(currentPath, name, sep);
     stage = BrowseStage.loading;
+    // 先发布 previewPath：加载态也要能显示 in-content 返回按钮与历史入口。
+    previewPath = path;
     notifyListeners();
     try {
       final prefix = await _api.downloadFilePrefix(path, kPreviewByteLimit);
@@ -236,6 +206,7 @@ class SessionFilesController extends ChangeNotifier {
             text: text,
             truncated: prefix.truncated,
             bytesShown: bytes.length,
+            encodingLabel: previewEncodingLabel(PreviewEncoding.gb18030),
           );
         } catch (_) {
           preview = const PreviewUnavailable('GB18030 文件：系统解码失败');
@@ -248,8 +219,6 @@ class SessionFilesController extends ChangeNotifier {
         );
       }
       previewPath = path;
-      previewMode = isMarkdownPath(path) ? PreviewMode.rendered : PreviewMode.source;
-      _rebuildPreviewCaches();
       lastLoadedAt = DateTime.now();
       stage = BrowseStage.preview;
     } catch (e) {
@@ -259,33 +228,12 @@ class SessionFilesController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 依据当前 [preview] 重算渲染分片与源码行。
-  ///
-  /// 放在这里（而不是 UI 的 build 里）是因为两者都是 O(n)：256KB 的 md
-  /// 在 60fps 下每帧重切一遍等于直接卡死。
-  void _rebuildPreviewCaches() {
-    final v = preview;
-    if (v is! PreviewText) {
-      previewChunks = const [];
-      previewSourceLines = const [];
-      return;
-    }
-    previewSourceLines = previewLines(v.text);
-    previewChunks =
-        previewMode == PreviewMode.rendered && previewIsMarkdown
-            ? chunkMarkdownText(v.text)
-            : const [];
-  }
-
   static const MethodChannel _filesChannel = MethodChannel('dsh/files');
 
   /// 从预览返回所在目录。
   Future<void> closePreview() async {
     preview = null;
     previewPath = '';
-    previewMode = PreviewMode.source;
-    previewChunks = const [];
-    previewSourceLines = const [];
     await loadDir(currentPath);
   }
 

@@ -24,6 +24,7 @@ import '../fmt.dart';
 import 'sheets.dart';
 import 'providers_screen.dart';
 import 'usage_screen.dart';
+import 'update_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final AppStore store;
@@ -103,9 +104,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 开关是"开"但服务没跑（冷启动时 Activity 尚未 resumed、或被系统杀过）：
     // 设置页在前台，这里补一次启动，失败把原因显示出来。
     if (on && !BackgroundKeepAlive.instance.running) {
-      final ok = await BackgroundKeepAlive.instance.setEnabled(true, appVisible: true);
+      final ok = await BackgroundKeepAlive.instance.setEnabled(
+        true,
+        appVisible: true,
+      );
       NotifyDiag.keepAliveRunning = ok;
-      AppLog.instance.log('保活：设置页补启动 → $ok（${BackgroundKeepAlive.instance.lastError ?? "无错误"}）');
+      AppLog.instance.log(
+        '保活：设置页补启动 → $ok（${BackgroundKeepAlive.instance.lastError ?? "无错误"}）',
+      );
       if (mounted) setState(() {});
     }
     // 读一次原生状态（服务是否真在跑、跑了多久），并每 5 秒刷新，便于现场观察。
@@ -129,7 +135,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() => _keepAliveOn = false);
         showToast(
           context,
-          L10n.t('需要通知权限才能后台提醒，请在系统设置中允许', 'Notification permission is required for background alerts'),
+          L10n.t(
+            '需要通知权限才能后台提醒，请在系统设置中允许',
+            'Notification permission is required for background alerts',
+          ),
         );
         return;
       }
@@ -140,12 +149,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await widget.store.setFloatingEnabled(false);
         if (!mounted) return;
         setState(() => _bubbleOn = false);
-        showToast(context, L10n.t('已关闭桌面宠物（两者互斥）', 'Desktop pet turned off (mutually exclusive)'));
+        showToast(
+          context,
+          L10n.t(
+            '已关闭桌面宠物（两者互斥）',
+            'Desktop pet turned off (mutually exclusive)',
+          ),
+        );
       }
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(BackgroundKeepAlive.prefKey, v);
-    final ok = await BackgroundKeepAlive.instance.setEnabled(v, appVisible: true);
+    final ok = await BackgroundKeepAlive.instance.setEnabled(
+      v,
+      appVisible: true,
+    );
     if (!mounted) return;
     setState(() => _keepAliveOn = v);
     if (v && !ok) {
@@ -170,7 +188,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await prefs.setBool(BackgroundKeepAlive.prefKey, false);
         if (mounted) {
           setState(() => _keepAliveOn = false);
-          showToast(context, L10n.t('已关闭后台提醒（两者互斥）', 'Background alerts turned off (mutually exclusive)'));
+          showToast(
+            context,
+            L10n.t(
+              '已关闭后台提醒（两者互斥）',
+              'Background alerts turned off (mutually exclusive)',
+            ),
+          );
         }
       }
       final ok = await Floating.canDrawOverlay();
@@ -214,10 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } catch (e) {
         if (mounted) {
           setState(() => _bubbleOn = false);
-          showToast(
-            context,
-            '${L10n.t('桌面宠物启动失败：', 'Pet start failed: ')}$e',
-          );
+          showToast(context, '${L10n.t('桌面宠物启动失败：', 'Pet start failed: ')}$e');
         }
         return;
       }
@@ -327,6 +348,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     'branches' => L10n.t('分支', 'Branches'),
     'graph' => L10n.t('图谱', 'Graph'),
     'worktree' => L10n.t('工作区', 'Worktree'),
+    'fileHistory' => L10n.t('文件历史', 'History'),
     _ => id,
   };
 
@@ -348,6 +370,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   '选择 1–3 项并调整顺序；第一项为默认页。',
                   'Choose 1–3 tabs and reorder them; the first is the default.',
                 ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                L10n.t(
+                  '“文件历史”需要宿主支持；旧版宿主上该 tab 会降级为不可用提示。',
+                  'File history requires host support; on older hosts the tab degrades to an unavailable notice.',
+                ),
+                key: const Key('git-tabs-file-history-note'),
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
               for (final id in [
@@ -844,7 +875,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Row(
               children: [
-                Text(L10n.t('主题皮肤', 'Theme skin'), style: const TextStyle(fontSize: 14)),
+                Text(
+                  L10n.t('主题皮肤', 'Theme skin'),
+                  style: const TextStyle(fontSize: 14),
+                ),
                 const Spacer(),
                 Text(
                   widget.store.skin.labelFor(en),
@@ -877,7 +911,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Row(
               children: [
-                Text(L10n.t('App 图标', 'App icon'), style: const TextStyle(fontSize: 14)),
+                Text(
+                  L10n.t('App 图标', 'App icon'),
+                  style: const TextStyle(fontSize: 14),
+                ),
                 const Spacer(),
                 Text(
                   AppIconStyle.byId(widget.store.appIcon).labelFor(en),
@@ -911,7 +948,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 mainAxisSpacing: 10,
                 crossAxisSpacing: 8,
                 childAspectRatio: 0.82,
-                children: [for (final icon in AppIconStyle.all) _iconTile(icon)],
+                children: [
+                  for (final icon in AppIconStyle.all) _iconTile(icon),
+                ],
               ),
           ],
         ),
@@ -941,18 +980,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final en = L10n.lang == 'en';
     final selected = widget.store.skin == s;
     // 预览用「签名色」：深潜/星海展示暗色，汽水/默认展示亮色，避免四张卡都发白。
-    final previewBrightness =
-        s == DshSkin.abyss || s == DshSkin.whale ? Brightness.dark : Brightness.light;
+    final previewBrightness = s == DshSkin.abyss || s == DshSkin.whale
+        ? Brightness.dark
+        : Brightness.light;
     final p = DshPalette.of(s, previewBrightness);
     return Expanded(
       child: InkWell(
         onTap: () async {
           await widget.store.setSkin(s);
           if (!mounted) return;
-          showToast(
-            context,
-            L10n.t('已切换皮肤：${s.label}', 'Skin: ${s.labelEn}'),
-          );
+          showToast(context, L10n.t('已切换皮肤：${s.label}', 'Skin: ${s.labelEn}'));
         },
         borderRadius: BorderRadius.circular(12),
         child: AnimatedContainer(
@@ -1059,7 +1096,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(
               fontSize: 8.5,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-              color: selected ? DshColors.brand(context) : DshColors.ink2(context),
+              color: selected
+                  ? DshColors.brand(context)
+                  : DshColors.ink2(context),
             ),
           ),
         ],
@@ -1456,12 +1495,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           _row(
             leading: const Icon(Icons.notifications_paused_outlined),
-            title: L10n.t('后台提醒（常驻通知）', 'Background alerts (persistent notice)'),
+            title: L10n.t(
+              '后台提醒（常驻通知）',
+              'Background alerts (persistent notice)',
+            ),
             sub: NotifyDiag.summary(
               keepAliveEnabled: _keepAliveOn,
               keepAliveError: BackgroundKeepAlive.instance.lastError,
             ),
-            trailing: DshSwitch(value: _keepAliveOn, onChanged: _toggleKeepAlive),
+            trailing: DshSwitch(
+              value: _keepAliveOn,
+              onChanged: _toggleKeepAlive,
+            ),
           ),
           if (_keepAliveOn)
             _row(
@@ -1475,10 +1520,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () async {
-                final ok = await BackgroundKeepAlive.instance.openBatterySettings();
+                final ok = await BackgroundKeepAlive.instance
+                    .openBatterySettings();
                 if (!mounted) return;
                 if (!ok) {
-                  showToast(this.context, L10n.t('打不开系统设置，请手动进入「电池 → 应用省电策略」', 'Cannot open settings; go to Battery → App battery usage'));
+                  showToast(
+                    this.context,
+                    L10n.t(
+                      '打不开系统设置，请手动进入「电池 → 应用省电策略」',
+                      'Cannot open settings; go to Battery → App battery usage',
+                    ),
+                  );
                 }
               },
             ),
@@ -1528,6 +1580,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ]),
         _card(L10n.t('关于', 'About'), [
+          if (api.releaseUpdatesSupported)
+            ListTile(
+              leading: const Icon(Icons.system_update),
+              title: const Text('检查更新'),
+              subtitle: Text(
+                api.pairedAppVersion == null
+                    ? '插件与 App 配对更新'
+                    : '配对 App ${api.pairedAppVersion}+${api.pairedAppBuild} 已就绪',
+              ),
+              onTap: () => Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const UpdateScreen())),
+            ),
+
           _row(
             leading: const Icon(Icons.info_outline),
             title: L10n.t('版本', 'Version'),
@@ -1681,7 +1747,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 (
                   L10n.t('状态气泡', 'Status bubble'),
-                  L10n.t('显示当前任务与进度，点它打开面板', 'Shows the task and progress; tap for panel'),
+                  L10n.t(
+                    '显示当前任务与进度，点它打开面板',
+                    'Shows the task and progress; tap for panel',
+                  ),
                 ),
               ]),
               const SizedBox(height: 10),
@@ -1707,7 +1776,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 (
                   L10n.t('贴边 5 秒', '5s at the edge'),
-                  L10n.t('缩进边缘并虚化，点一下滑出', 'Tucks in and fades; tap to slide out'),
+                  L10n.t(
+                    '缩进边缘并虚化，点一下滑出',
+                    'Tucks in and fades; tap to slide out',
+                  ),
                 ),
               ]),
               const SizedBox(height: 10),
@@ -1725,7 +1797,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 (
                   L10n.t('关闭宠物', 'Turn off pet'),
-                  L10n.t('面板底部的「关闭宠物」', 'Use "Turn off pet" at the bottom of the panel'),
+                  L10n.t(
+                    '面板底部的「关闭宠物」',
+                    'Use "Turn off pet" at the bottom of the panel',
+                  ),
                 ),
               ]),
             ],

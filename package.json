@@ -1,6 +1,6 @@
 {
   "name": "dsh-mobile-remote",
-  "version": "3.2.3",
+  "version": "3.2.4-alpha.1",
   "description": "DSH Mobile：把 DeepSeek Harness 变成随身控制台——手机远程发消息派活、看进度、收通知、审批决策、管理会话；配套 Flutter App（当前 Android 端，iOS 未开发）",
   "type": "module",
   "main": "lib/index.js",
@@ -36,7 +36,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "tar": "^7.5.7",
+    "semver": "^7.7.4"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-credentials": ">=0.1.0-rc.6 <0.3.0",
@@ -50,5 +52,27 @@
     "dsh-codex-connect": {
       "optional": true
     }
+  },
+  "scripts": {
+    "test": "node tools/test.mjs",
+    "check": "node tools/check.mjs",
+    "release:prepare": "node tools/release.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@deepseek-ai/dsh-credentials": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-scope": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.8",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-attachment": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-brand": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-timeout": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.8"
   }
 }
