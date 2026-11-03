@@ -1527,6 +1527,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: _showBubbleGuide,
           ),
         ]),
+        _card(L10n.t('文件浏览', 'File browsing'), [
+          _row(
+            leading: const Icon(Icons.visibility_outlined),
+            title: L10n.t('显示隐藏文件', 'Show hidden files'),
+            sub: L10n.t(
+              '会话文件浏览中显示点开头的文件与目录（.git 始终隐藏；不影响目录选择器）',
+              'Show dot-prefixed files and folders in session file browsing (.git stays hidden; directory picker unaffected)',
+            ),
+            trailing: DshSwitch(
+              value: widget.store.showHiddenFiles,
+              onChanged: (v) => widget.store.setShowHiddenFiles(v),
+            ),
+          ),
+        ]),
         _card(L10n.t('关于', 'About'), [
           _row(
             leading: const Icon(Icons.info_outline),

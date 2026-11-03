@@ -818,8 +818,9 @@ String dirSepOf(List<String> roots, String? serverSep) {
 Future<void> showDirPicker(
   BuildContext context,
   AppStore store,
-  void Function(String path) onPicked,
-) async {
+  void Function(String path) onPicked, {
+  Api? apiClient,
+}) async {
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -827,13 +828,17 @@ Future<void> showDirPicker(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(DshTheme.radiusLg)),
     ),
-    builder: (_) => _DirPickerSheet(onPicked: onPicked),
+    builder: (_) => _DirPickerSheet(onPicked: onPicked, apiClient: apiClient),
   );
 }
 
 class _DirPickerSheet extends StatefulWidget {
   final void Function(String path) onPicked;
-  const _DirPickerSheet({required this.onPicked});
+
+  /// 测试注入；为 null 时走全局 [api] 单例（生产行为）。
+  final Api? apiClient;
+
+  const _DirPickerSheet({required this.onPicked, this.apiClient});
 
   @override
   State<_DirPickerSheet> createState() => _DirPickerSheetState();
@@ -853,6 +858,7 @@ Future<String?> showFilePicker(BuildContext context) async {
 }
 
 class _DirPickerSheetState extends State<_DirPickerSheet> {
+  Api get _api => widget.apiClient ?? api;
   final dirStack = <String>[];
   String current = '';
   List<String> dirs = [];
@@ -878,16 +884,16 @@ class _DirPickerSheetState extends State<_DirPickerSheet> {
     try {
       if (path.isEmpty) {
         try {
-          workspaces = await api.workspaces();
+          workspaces = await _api.workspaces();
         } catch (_) {
           workspaces = [];
         }
-        final listing = await api.directories('');
+        final listing = await _api.directories('');
         dirs = listing.dirs;
         sep = dirSepOf(dirs, listing.sep);
       } else {
         workspaces = [];
-        final listing = await api.directories(path);
+        final listing = await _api.directories(path);
         dirs = listing.dirs;
       }
     } catch (e) {

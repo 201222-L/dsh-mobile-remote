@@ -49,6 +49,8 @@ class AppStore extends ChangeNotifier {
   DshSkin skin = DshSkin.dsh; // 主题皮肤（默认 / 深潜夜航 / 海盐汽水 / 鲸落星海）
   String appIcon = 'default'; // 桌面图标样式 id（default/deepsea/shell/moon/sticker/stamp/neon/mono）
   bool showReasoning = false; // 活动条思考面板是否显示内容（默认关：只显示状态，防英文思考刷屏）
+  /// 会话文件浏览是否显示点开头的隐藏条目（默认开；`.git` 始终排除）。
+  bool showHiddenFiles = true;
   bool reasoningDefaultExpanded = false; // 思维链默认展开还是折叠（默认折叠：防英文思考刷屏；单条消息仍可点按切换）
   bool timelineDebug = false; // 普通/调试模式：默认普通，调试显示原始事件详情
   /// 思维链折叠手动状态（会话 -> 消息key -> 手动展开值；滚动/重进/重启持久，null=跟随设置默认）
@@ -277,6 +279,7 @@ class AppStore extends ChangeNotifier {
   static const _kSession = 'dsh_mr_session';
   static const _kDark = 'dsh_mr_darkmode';
   static const _kReasoning = 'dsh_mr_show_reasoning';
+  static const _kShowHiddenFiles = 'dsh_mr_show_hidden_files';
   static const _kReasoningDefaultExpanded = 'dsh_mr_reasoning_default_expanded';
   static const _kTimelineDebug = 'dsh_mr_timeline_debug';
   static const _kReasoningOverrides = 'dsh_mr_reasoning_overrides';
@@ -303,6 +306,7 @@ class AppStore extends ChangeNotifier {
     appIcon = prefs.getString(_kAppIcon) ?? 'default';
     iconMigrationTipShown = prefs.getBool(_kIconMigrationTip) ?? false;
     showReasoning = prefs.getBool(_kReasoning) ?? false;
+    showHiddenFiles = prefs.getBool(_kShowHiddenFiles) ?? true;
     reasoningDefaultExpanded =
         prefs.getBool(_kReasoningDefaultExpanded) ?? false;
     timelineDebug = prefs.getBool(_kTimelineDebug) ?? false;
@@ -802,6 +806,13 @@ class AppStore extends ChangeNotifier {
     showReasoning = v;
     notifyListeners();
     await _persistPrefs(_kReasoning, v);
+  }
+
+  /// 会话文件浏览「显示隐藏文件」开关（默认开；只作用于会话文件浏览）。
+  Future<void> setShowHiddenFiles(bool v) async {
+    showHiddenFiles = v;
+    notifyListeners();
+    await _persistPrefs(_kShowHiddenFiles, v);
   }
 
   Future<void> setReasoningDefaultExpanded(bool v) async {

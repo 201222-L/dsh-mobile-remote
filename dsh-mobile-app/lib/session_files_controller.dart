@@ -177,7 +177,11 @@ class SessionFilesController extends ChangeNotifier {
     stage = BrowseStage.loading;
     notifyListeners();
     try {
-      final listing = await _api.directories(path);
+      // 设置只影响会话文件浏览；目录选择器仍用默认（不显示隐藏条目）。
+      final listing = await _api.directories(
+        path,
+        includeHidden: store.showHiddenFiles,
+      );
       // 服务端只在「根视图」响应里带 sep，普通目录响应没有这个字段，
       // 因此不能靠它判断分隔符（目录选择器的 dirSepOf 也是同样思路）。
       if (listing.sep != null && listing.sep!.isNotEmpty) {
@@ -185,7 +189,11 @@ class SessionFilesController extends ChangeNotifier {
       } else if (sep == '/' && path.contains('\\')) {
         sep = '\\';
       }
-      final limited = limitDirEntries(listing.dirs, listing.files);
+      // 即使宿主返回 `.git`（旧 host / 第三方实现），客户端也绝不展示。
+      final limited = limitDirEntries(
+        withoutGitEntries(listing.dirs),
+        withoutGitEntries(listing.files),
+      );
       dirs = limited.dirs;
       files = limited.files;
       hiddenCount = limited.hiddenCount;

@@ -1,5 +1,6 @@
 import 'package:dsh_mobile_app/screens/settings_screen.dart';
 import 'package:dsh_mobile_app/store.dart';
+import 'package:dsh_mobile_app/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -126,5 +127,44 @@ void main() {
       '图谱',
     ]);
     expect(rows.last.value, isFalse);
+  });
+
+  testWidgets('文件浏览 → 显示隐藏文件开关默认开、可切换并持久化', (tester) async {
+    final store = await makeStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SettingsScreen(store: store, onReconfigure: () async {}),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final rowText = find.text('显示隐藏文件');
+    await tester.scrollUntilVisible(
+      rowText,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(store.showHiddenFiles, isTrue);
+
+    final toggle = find.descendant(
+      of: find.ancestor(of: rowText, matching: find.byType(InkWell)).first,
+      matching: find.byType(DshSwitch),
+    );
+    expect(toggle, findsOneWidget);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(store.showHiddenFiles, isFalse);
+
+    // 持久化：新 store 加载后仍为关闭。
+    final restored = await makeStore();
+    expect(restored.showHiddenFiles, isFalse);
+
+    // 再切回开启。
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(store.showHiddenFiles, isTrue);
   });
 }

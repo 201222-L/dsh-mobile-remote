@@ -1227,10 +1227,20 @@ class Api implements GitReadApi {
 
   /// 目录浏览：path 为空返回盘符/根；否则返回子目录名列表（附服务端分隔符，v3.1.1；
   /// v3.1.2 增返回 files 文件列表，供文件选择器使用）。
-  Future<DirListing> directories(String path) async {
-    final data = await getJson(
-      '/api/directories?path=${Uri.encodeQueryComponent(path)}',
-    );
+  ///
+  /// [includeHidden] 仅会话文件浏览按设置传入（`includeHidden=1`）；目录选择器
+  /// 保持默认 false。旧宿主忽略该参数时不返回隐藏条目，静默降级、不报错。
+  Future<DirListing> directories(
+    String path, {
+    bool includeHidden = false,
+  }) async {
+    final query = Uri(
+      queryParameters: {
+        'path': path,
+        if (includeHidden) 'includeHidden': '1',
+      },
+    ).query;
+    final data = await getJson('/api/directories?$query');
     return (
       dirs: (data['dirs'] as List? ?? []).map((e) => e.toString()).toList(),
       files: (data['files'] as List? ?? []).map((e) => e.toString()).toList(),
