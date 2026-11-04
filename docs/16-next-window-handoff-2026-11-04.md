@@ -20,11 +20,15 @@ main 是发布线，remote main 仍为 1ff8b0388998b2a0fce6a23c40d63b3d0fc6ff46�
 - 后续 USB 真机验收使用独立 QA 包，下载断点恢复与最终哈希、原生宠物冷启动/16 动作及通知职责通过，正式 App 未覆盖；详见 [真机可靠性报告](18-device-reliability-acceptance-2026-11-04.md)。不限速的 USB 测试中，32 MiB 点选至文件写满约 1.49 秒，不能代表 Wi-Fi。
 - 最新事实、完整验证结果和各 issue 的未完成部分见 [剩余工作复核](17-remaining-work-review-2026-11-04.md)。PR #69 随 develop 扩展为这些开发改动与验收记录的草稿。
 
+## issue 后续状态
+
+#58 已回复贡献者并以 completed 关闭；详见 [本轮 issue 后续记录](19-issue-followup-2026-11-04.md)。#20 按维护者最新要求暂不处理。
+
 ## 仍未完成
 
-- [#68](https://github.com/201222-L/dsh-mobile-remote/issues/68)：续传实现已补；全路径信任边界有文档，未把工作区列表伪装成授权。独立 QA 包的进程退出后恢复、系统下载目录保存与哈希已通过；息屏请求后观察约 65 秒，未证明进入全机 Asleep/Doze。长时间省电策略、Wi-Fi 和不同 ROM 仍需覆盖；未新增 dataSync 前台服务，不承诺锁屏连续下载。
-- [#58](https://github.com/201222-L/dsh-mobile-remote/issues/58)：资源去重及通知职责代码已处理；当前源码已用独立 QA 包验证原生冷启动、16 个动作解码/停播/恢复、首页互动、通知去重/撤销/未读同步及宠物/保活互斥；完整范围见真机可靠性报告。旧内部 FloatingBubbleService 名称是兼容保留，不能恢复已取消的圆形悬浮球。
-- [#20](https://github.com/201222-L/dsh-mobile-remote/issues/20)：0.2.1-rc.5 和 0.2.2-alpha.3 的公开包仍有老 seeded 日志构造路径问题；最新 alpha 已用真实构造器和合成日志独立复现。插件错误分类/降级/恢复 17 项回归通过，兼容分支继续保留，等待上游及原受影响日志复核。
-- [#60](https://github.com/201222-L/dsh-mobile-remote/issues/60)：官方 npm scope/包名未决定，实际 npm OIDC 发行未验证。继续保持 GitHub 默认来源，不查询第三方同名包，不发布。
+- [#68](https://github.com/201222-L/dsh-mobile-remote/issues/68)：续传实现已补；全路径信任边界有文档，未把工作区列表伪装成授权。独立 QA 包的进程退出后恢复、系统下载目录保存与哈希已通过；息屏请求后观察约 65 秒，未证明进入全机 Asleep/Doze。长时间省电策略、Wi-Fi 和不同 ROM 仍需覆盖；后续新增下载专用 dataSync 前台服务与通知暂停/系统超时收尾，自动化通过；补测时 ADB 无设备，新服务真机待连接后验证，不能沿用前次报告算作已通过。
 
-以上 issue 保持开放；自动化测试不能替代手机锁屏验收，之前模拟的 GitHub 发行响应不能算公开 CDN 或 npm OIDC 已验证。先前代码审阅未启动 Harness 或改写手机；后续 USB 验收只启动全新隔离 Web，安装并清理独立 QA/探针包，未触碰桌面 Harness、正式 App 数据或私有会话日志。
+- [#20](https://github.com/201222-L/dsh-mobile-remote/issues/20)：0.2.1-rc.5 和 0.2.2-alpha.3 的公开包仍有老 seeded 日志构造路径问题；最新 alpha 已用真实构造器和合成日志独立复现。插件错误分类/降级/恢复 17 项回归通过，兼容分支继续保留，等待上游及原受影响日志复核。
+- [#60](https://github.com/201222-L/dsh-mobile-remote/issues/60)：维护者委托选定拟用 @201222-l/dsh-mobile-remote 和 @201222-l/dsh-mobile-app；本机 npm 身份查询 401，scope 控制权与实际 OIDC 发行未验证。scoped 安装更新修复及隔离 registry 的真实 npm 验证已补。继续保持 GitHub 默认来源，不查询第三方同名包，不发布。
+
+除已关闭的 #58 外，其余 issue 保持开放；自动化测试不能替代手机锁屏验收，之前模拟的 GitHub 发行响应不能算公开 CDN 或 npm OIDC 已验证。先前代码审阅未启动 Harness 或改写手机；后续 USB 验收只启动全新隔离 Web，安装并清理独立 QA/探针包，未触碰桌面 Harness、正式 App 数据或私有会话日志。
