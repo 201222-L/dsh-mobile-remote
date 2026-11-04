@@ -70,7 +70,9 @@ class ResumableDownloads {
         final value = jsonDecode(await entry.readAsString());
         if (value is! Map || value['remotePath'] is! String) continue;
         final path = value['remotePath'] as String;
-        if (entry.path != _record(path).path) continue;
+        if (File(entry.path).absolute.uri != _record(path).absolute.uri) {
+          continue;
+        }
         final stat = await entry.stat();
         final target = _target(path);
         if (DateTime.now().difference(stat.modified).inDays >= 7 ||

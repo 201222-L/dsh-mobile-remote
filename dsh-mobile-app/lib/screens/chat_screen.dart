@@ -16,6 +16,7 @@ import '../api.dart';
 import '../chat_copy.dart';
 import '../download.dart';
 import '../download_error.dart';
+import '../download_foreground.dart';
 import '../resumable_download.dart';
 import 'download_resume_picker.dart';
 import '../logger.dart';
@@ -4458,6 +4459,7 @@ class _ChatScreenState extends State<ChatScreen> {
       const DownloadProgress(received: 0),
     );
     final cancel = DownloadCancelToken();
+    DownloadForegroundLease? foreground;
     var dialogVisible = true;
 
     unawaited(
@@ -4474,8 +4476,12 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 Text(
                   L10n.t(
-                    '锁屏或切后台可能暂停，返回下载入口可继续。',
-                    'Locking or backgrounding may pause the transfer. Resume from Downloads.',
+                    foreground?.backgroundActive == true
+                        ? '后台下载已开启，可从通知暂停。系统中断后可从下载入口继续。'
+                        : '当前为前台下载；切后台可能暂停，可从下载入口继续。',
+                    foreground?.backgroundActive == true
+                        ? 'Background download is active. Pause from its notification; resume after interruption from Downloads.'
+                        : 'Foreground download. Backgrounding may pause it; resume from Downloads.',
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -4508,11 +4514,27 @@ class _ChatScreenState extends State<ChatScreen> {
     Object? failure;
     var cancelled = false;
     try {
+      foreground = await DownloadForeground.instance.start(cancel);
+      if (!foreground.backgroundActive &&
+          foreground.unavailableReason != null &&
+          mounted) {
+        showToast(
+          context,
+          L10n.t(
+            '后台下载不可用，本次保持前台下载',
+            'Background download unavailable. Keep the app open.',
+          ),
+        );
+      }
       result = await downloads.download(
         remotePath,
         cancel: cancel,
-        onProgress: (p) => progress.value = p,
+        onProgress: (p) {
+          progress.value = p;
+          foreground?.progress(p);
+        },
       );
+      if (cancel.cancelled) throw const DownloadCancelled();
       saved = await _filesChannel.invokeMethod<String>('saveFileFromPath', {
         'path': result.file.path,
         'name': name,
@@ -4528,6 +4550,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       failure = e;
     } finally {
+      await foreground?.close();
       // 先把进度弹窗关掉，再弹结果——否则结果弹窗会盖在"下载中"上面
       if (mounted && dialogVisible) {
         Navigator.of(context, rootNavigator: true).pop();
@@ -4538,7 +4561,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (cancelled) {
       showToast(
         context,
-        L10n.t('已暂停，可从下载入口继续', 'Paused. Resume from Downloads'),
+        foreground?.pauseReason == 'system-time-limit'
+            ? L10n.t(
+                '系统后台下载时限已到，进度已保留',
+                'The system background limit was reached. Progress is saved.',
+              )
+            : L10n.t('已暂停，可从下载入口继续', 'Paused. Resume from Downloads'),
       );
       return;
     }

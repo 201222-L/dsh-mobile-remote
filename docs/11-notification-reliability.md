@@ -16,6 +16,8 @@ Android 的常驻服务提升存活概率，不能承诺强制停止、系统清
 
 `FloatingBubbleService`、`Floating`、`dsh/floating` 等内部名称暂时保留用于兼容已有服务 / 偏好；当前产品是桌面宠物，不再是旧版圆形悬浮球。
 
+文件下载的 `DownloadService` 使用独立 `dsh_downloads` 通知渠道、通知 ID 和 `dataSync` 类型，仅显示用户发起传输的进度与暂停入口；它不接收 SSE、不参与审批或任务通知判定，不改变桌面宠物与提醒保活的互斥设置。Android 15+ 系统超时会停止服务并保留断点；该服务不承诺绕过 Doze 或厂商冻结。
+
 ## 提醒矩阵
 
 | 状态 | 系统通知 | 应用内横幅 |

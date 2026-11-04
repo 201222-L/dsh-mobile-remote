@@ -24,6 +24,7 @@ class MainActivity : FlutterActivity() {
     private var filesChannel: MethodChannel? = null
     private var iconChannel: MethodChannel? = null
     private var keepAliveChannel: MethodChannel? = null
+    private var downloadBridge: DownloadBridge? = null
     // v3.1.2（csborbbnc 反馈）：系统文件选择器（ACTION_OPEN_DOCUMENT）结果回传暂存
     private var pendingPick: MethodChannel.Result? = null
     private val pickFileRequestCode = 2001
@@ -56,6 +57,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        downloadBridge = DownloadBridge(this, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dsh/update").setMethodCallHandler { call, result ->
             if (call.method != "install") {
                 result.notImplemented()
@@ -266,12 +268,20 @@ class MainActivity : FlutterActivity() {
     // onStop 而非 onDestroy：进程被杀时 onDestroy 不保证回调，onStop 一定会到。
     override fun onStart() {
         super.onStart()
+        downloadBridge?.foreground = true
         FloatingBubbleService.onAppVisibilityChanged(true)
     }
 
     override fun onStop() {
         super.onStop()
+        downloadBridge?.foreground = false
         FloatingBubbleService.onAppVisibilityChanged(false)
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        downloadBridge?.close()
+        downloadBridge = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     /** 解析悬浮球面板动作 extra；onCreate（冷启动）与 onNewIntent（热启动）共用。 */

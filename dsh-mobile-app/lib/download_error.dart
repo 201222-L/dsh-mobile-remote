@@ -47,7 +47,10 @@ DownloadFailure describeDownloadError(Object error) {
     final code = error.code;
     if (status == 401 || status == 403) {
       return DownloadFailure(
-        summary: L10n.t('电脑端拒绝了这次访问（口令不对或已失效）', 'The computer rejected this request (bad or expired token)'),
+        summary: L10n.t(
+          '电脑端拒绝了这次访问（口令不对或已失效）',
+          'The computer rejected this request (bad or expired token)',
+        ),
         hint: L10n.t(
           '在电脑上打开连接页，用二维码重新扫码连接一次。',
           'Open the connect page on the computer and scan the QR code again.',
@@ -57,35 +60,56 @@ DownloadFailure describeDownloadError(Object error) {
     }
     if (status == 404) {
       return DownloadFailure(
-        summary: L10n.t('电脑上找不到这个文件', 'The file no longer exists on the computer'),
-        hint: L10n.t('可能已被移动或删除，回到文件列表刷新后重试。', 'It may have been moved or deleted. Refresh the file list and retry.'),
+        summary: L10n.t(
+          '电脑上找不到这个文件',
+          'The file no longer exists on the computer',
+        ),
+        hint: L10n.t(
+          '可能已被移动或删除，回到文件列表刷新后重试。',
+          'It may have been moved or deleted. Refresh the file list and retry.',
+        ),
         detail: detailOf(error),
       );
     }
     if (status != null && status >= 500) {
       return DownloadFailure(
         summary: L10n.t('电脑端插件出错了', 'The computer-side plugin failed'),
-        hint: L10n.t('稍后重试；若持续失败，看电脑端插件日志。', 'Retry in a moment; if it keeps failing, check the plugin log on the computer.'),
+        hint: L10n.t(
+          '稍后重试；若持续失败，看电脑端插件日志。',
+          'Retry in a moment; if it keeps failing, check the plugin log on the computer.',
+        ),
         detail: detailOf(error),
       );
     }
     if (code == 'file-too-large') {
       return DownloadFailure(
-        summary: L10n.t('文件太大，电脑端拒绝发送', 'The file is too large for the plugin to send'),
-        hint: L10n.t('换小一点的文件，或让电脑端先压缩。', 'Try a smaller file, or compress it on the computer first.'),
+        summary: L10n.t(
+          '文件太大，电脑端拒绝发送',
+          'The file is too large for the plugin to send',
+        ),
+        hint: L10n.t(
+          '换小一点的文件，或让电脑端先压缩。',
+          'Try a smaller file, or compress it on the computer first.',
+        ),
         detail: detailOf(error),
       );
     }
     return DownloadFailure(
       summary: L10n.t('电脑端返回了错误', 'The computer returned an error'),
-      hint: L10n.t('可以重试一次；不行就把详情发给开发者。', 'Retry once; if it persists, share the details with the developer.'),
+      hint: L10n.t(
+        '可以重试一次；不行就把详情发给开发者。',
+        'Retry once; if it persists, share the details with the developer.',
+      ),
       detail: detailOf(error),
     );
   }
 
   if (error is TimeoutException) {
     return DownloadFailure(
-      summary: L10n.t('下载超时：电脑长时间没有响应', 'Download timed out: the computer stopped responding'),
+      summary: L10n.t(
+        '下载超时：电脑长时间没有响应',
+        'Download timed out: the computer stopped responding',
+      ),
       hint: L10n.t(
         '确认电脑没休眠、插件还在运行；网络不稳时重试。',
         'Make sure the computer is awake and the plugin is running, then retry.',
@@ -108,7 +132,10 @@ DownloadFailure describeDownloadError(Object error) {
   if (error is http.ClientException) {
     return DownloadFailure(
       summary: L10n.t('连接中途断了', 'The connection dropped mid-transfer'),
-      hint: L10n.t('网络恢复后点“继续下载”，也可稍后从下载入口恢复。', 'Resume when the network is back, or return to Downloads later.'),
+      hint: L10n.t(
+        '网络恢复后点“继续下载”，也可稍后从下载入口恢复。',
+        'Resume when the network is back, or return to Downloads later.',
+      ),
       detail: detailOf(error),
     );
   }
@@ -116,14 +143,30 @@ DownloadFailure describeDownloadError(Object error) {
   if (error is HandshakeException) {
     return DownloadFailure(
       summary: L10n.t('安全连接建立失败', 'Secure connection failed'),
-      hint: L10n.t('如果用反代 HTTPS，检查电脑端证书是否有效。', 'If you use an HTTPS reverse proxy, check the certificate.'),
+      hint: L10n.t(
+        '如果用反代 HTTPS，检查电脑端证书是否有效。',
+        'If you use an HTTPS reverse proxy, check the certificate.',
+      ),
       detail: detailOf(error),
     );
   }
 
   if (error is PlatformException) {
+    if (error.code == 'download-in-progress') {
+      return DownloadFailure(
+        summary: L10n.t('已有文件正在下载', 'Another file is downloading'),
+        hint: L10n.t(
+          '先完成或暂停当前下载，再下载其他文件。',
+          'Finish or pause the current transfer before starting another.',
+        ),
+        detail: detailOf(error),
+      );
+    }
     return DownloadFailure(
-      summary: L10n.t('文件已经下载，但保存到手机失败', 'Downloaded, but saving to the phone failed'),
+      summary: L10n.t(
+        '文件已经下载，但保存到手机失败',
+        'Downloaded, but saving to the phone failed',
+      ),
       hint: L10n.t('检查存储空间是否够用，或稍后重试。', 'Check free storage space and retry.'),
       detail: detailOf(error),
     );
@@ -131,7 +174,10 @@ DownloadFailure describeDownloadError(Object error) {
 
   return DownloadFailure(
     summary: L10n.t('下载失败', 'Download failed'),
-    hint: L10n.t('可以重试一次；不行就把详情发给开发者。', 'Retry once; if it persists, share the details with the developer.'),
+    hint: L10n.t(
+      '可以重试一次；不行就把详情发给开发者。',
+      'Retry once; if it persists, share the details with the developer.',
+    ),
     detail: detailOf(error),
   );
 }
