@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { signManifest, validPackage, validVersion, verifyManifest, trustedReleaseKeys } from '../lib/release-manifest.js';
+import { npmReleasePackages } from '../lib/official-npm.js';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((items, arg, i, list) =>
   arg.startsWith('--') ? [...items, [arg.slice(2), list[i + 1]]] : items, []));
@@ -31,7 +32,7 @@ const payload = {
 };
 const scope = process.env.OFFICIAL_NPM_SCOPE;
 if (scope) {
-  const plugin = `${scope}/dsh-mobile-remote`, carrier = `${scope}/dsh-mobile-remote-app`;
+  const { plugin, carrier } = npmReleasePackages(scope);
   if (!validPackage(plugin) || !validPackage(carrier)) throw new Error('official-npm-scope-invalid');
   payload.npm = { plugin, carrier };
 }

@@ -2,7 +2,9 @@
 
 ## 当前能力与边界
 
-插件默认从本仓库 GitHub Releases 检查签名更新清单；npm 是可选来源，官方 scope 未配置时不会查询无 scope 的同名包。旧发行版没有 `release-manifest.json` 时会提示使用现有 Release 下载方式。检查不会安装依赖、改写 profile 或重启宿主。
+插件默认从本仓库 GitHub Releases 检查签名更新清单；npm 是需要显式选择的可选来源，不查询无 scope 的同名包。旧发行版没有 `release-manifest.json` 时会提示使用现有 Release 下载方式。检查不会安装依赖、改写 profile 或重启宿主。
+
+维护者委托选定的包名为 `@201222-l/dsh-mobile-remote`（插件）与 `@201222-l/dsh-mobile-app`（配对载体），统一由 `lib/official-npm.js` 定义。这是拟用身份；截至 2026-11-04，本机 npm 身份查询返回 401，尚未确认该 scope 的账号/组织控制权，也未建立或验证公开包的 Trusted Publisher。因此不启用公开 npm 发行，不能把“已选名称”写成“已拥有并发布”。同名第三方 `dsh-mobile-remote` 和 fork 的 scope 不作为默认官方来源。
 
 电脑端“连接移动端设备”和手机设置的“检查更新”提供同一流程：检查 → 用户选择下载 → 校验插件与配对 App → 用户确认插件安装 → 等待宿主退出 / 受控重启 → 新插件实际运行 → 手机下载配对 APK → Android 系统确认覆盖安装。APK 不以“发起安装”冒充“安装成功”。
 
@@ -16,11 +18,15 @@
 updates:
   source: github                 # github | npm；不静默跨来源降级
   channel: stable                # stable | alpha | rc；默认不跨通道
-  # npmPackage: '@你的scope/dsh-mobile-remote'
+  # npmPackage: '@201222-l/dsh-mobile-remote'
   # profileDirectory: /绝对路径/.dsh/profiles/web
 ```
 
 `profileDirectory` 留空时只检查、下载与校验，不准备安装。npm 的 registry、scope registry 和认证遵循宿主 npm 的有效配置；凭据不传给手机、也不进入更新记录。配对 App 载体必须是清单内的官方 scoped package 和精确版本，optionalDependency 缺失不能当作 App 已就绪。
+
+载体与插件使用两个独立包名、同一个精确版本，不沿用 fork 的同名 `-app` 版本约定。检查、下载与验证都在宿主进行；切到 npm 失败不会偷偷改用 GitHub。认证失败、拒绝访问、找不到包/版本及 registry 不可达使用稳定错误码区分，原始 npm 诊断不写入手机响应或公开日志。
+
+安装已验签的本地 tgz 时保留 profile 原有依赖键：已用 scoped 包的 profile 原位更新该键，不另加一个未被 Cordis 引用的旧无 scope 名称；同一 profile 同时声明两种身份时拒绝自动更新，要求先消除歧义。GitHub-only 清单也保留本项目既有 scoped 安装。
 
 Web 受控部署可另加 `stopCommand`、`restartCommand` 数组和 `healthUrl`，例如由管理员提供的服务管理程序；命令使用 `shell:false`，不接受客户端提供的命令。健康地址只允许 loopback；推荐指向本实例 `/m/api/release-update/health`。桌面形态忽略这些重启命令。
 
@@ -57,8 +63,10 @@ GitHub 只有在默认分支存在该工作流后才提供手动运行入口，�
 维护者在 GitHub `release` environment 设置：
 
 - Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`、`RELEASE_SIGNING_SEED`。
-- Variables：`OFFICIAL_NPM_SCOPE`（例如 `@你的账号`；留空只发 GitHub）、`RELEASE_KEY_ID`（默认 `dsh-release-2026`）。
+- Variables：`OFFICIAL_NPM_SCOPE`（确认控制权后才可设为 `@201222-l`；目前留空，只保留 GitHub 发行准备）、`RELEASE_KEY_ID`（默认 `dsh-release-2026`，已有配置无需重配）。
 - npm：由维护者建立两个官方包，并分别配置指向本仓库 `release.yml` 的 Trusted Publisher；为恢复部分发布失败允许 publish 和 dist-tag 操作。用 npm OIDC，不提交长期发布 token。
+
+未发布验证：`node --test test/npm-update.test.mjs` 使用本地临时 registry 与测试凭据，实际执行 npm view / pack 和离线安装，覆盖 scope registry 优先级、认证、清单验签、载体配对、profile 依赖名保持及凭据不进入更新状态。这是隔离协议验证，不是公开 npm OIDC 发行成功。
 
 签名清单复用存档更新器中的既有公开密钥；对应私钥由维护者配置。若要换钥，先完成受信公钥的兼容迁移，不能通过关掉验签解决。正式发布未提供 Android 签名时构建失败；日常 debug 构建照常。
 
