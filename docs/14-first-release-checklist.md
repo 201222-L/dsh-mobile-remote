@@ -1,18 +1,16 @@
-# 第一次发布前的当前步骤
+# 发布前的当前状态
 
-已完成：`release` 环境、main / `v*` 范围规则、Android 签名四项 Secrets、更新清单私钥 Secret、`RELEASE_KEY_ID`。本地已验证更新清单私钥与客户端信任公钥匹配。npm scope 暂未决定，不影响 GitHub 来源的构建与发布。
+2026-11-04：维护者要求完成验收后继续暂停发布，先在其他窗口处理剩余 issue 和 PR。不要创建版本标签，不要勾选 publish，不发布 GitHub Release 或 npm 包。
 
-现在执行：审阅并合并 [PR #64](https://github.com/201222-L/dsh-mobile-remote/pull/64)，让工作流进入默认 main 分支。合并本身只运行 Checks，不会公开发布。
+## 已完成
 
-合并后打开 [Actions](https://github.com/201222-L/dsh-mobile-remote/actions)，选择 **Prepare and publish release → Run workflow**：
+- GitHub release 环境、分支范围、五项签名 Secrets 和 RELEASE_KEY_ID 已配置，并经过干净 CI 的实际签名构建验证。npm scope 尚未确定。
+- PR #64、#65 已合并。main 提交为 1ff8b0388998b2a0fce6a23c40d63b3d0fc6ff46。
+- [main 常规 CI](https://github.com/201222-L/dsh-mobile-remote/actions/runs/41782802522) 与 [main 签名演练](https://github.com/201222-L/dsh-mobile-remote/actions/runs/41782911398) 成功。演练 publish=false，发布作业跳过；下载产物的清单签名、哈希和 APK 正式证书已核验。
+- 真机升级验收发现手动重启后的状态阻塞，修复位于 develop，随 3.2.4-alpha.3 / App build 34 验收。[修复 CI](https://github.com/201222-L/dsh-mobile-remote/actions/runs/41790623577) 已通过；细节见 [验收报告](15-upgrade-acceptance-2026-11-04.md)。
 
-| 字段 | 第一次演练填写 |
-|---|---|
-| Use workflow from | `main` |
-| source_ref | `main` |
-| tag | 留空 |
-| publish | 未勾选 |
+## 后续顺序
 
-完成后进入该次运行，下方 **Artifacts → signed-release-v<版本>** 下载 APK、插件 tgz 和签名清单。这个过程使用 GitHub Secrets，可确认五项签名配置在干净 CI 环境中确实可用。本地通过或 Secrets 名称齐全，都不能代替这一次云端完整演练。
+先处理 [交接清单](16-next-window-handoff-2026-11-04.md) 中的修复审阅与剩余 issue / PR，再由维护者决定发布版本、重新验收和发布时机。预览版本不是已公开发行版本。
 
-确认产物与真机验收后再决定公开发布；App 下一次覆盖升级要求 versionCode 大于手机现有 build 32。公开发布必须手动填写 main 上的已有版本标签并勾选 publish；新版本内容不得覆盖旧版。首次公开发布前保持 npm scope 未配置即可只发 GitHub。
+今后需要只构建时，Actions → Prepare and publish release → Run workflow：Use workflow from=main，source_ref=要验证的分支或提交，tag 留空，publish 不勾选。详细发布约束见 [发布与配对更新](10-release-updates.md)。
