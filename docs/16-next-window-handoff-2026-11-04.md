@@ -17,13 +17,14 @@ main 是发布线，remote main 仍为 1ff8b0388998b2a0fce6a23c40d63b3d0fc6ff46�
 - PR #67 已审阅、36 项文件历史定向测试通过，以 2f23333 合入 develop。
 - PR #66 已先改目标为 develop，保留设置页两组冲突测试；22 项宿主、31 项 App 定向测试通过，以 ceb5b76 合入 develop。#66/#67 集成提交的 Windows / Ubuntu / Flutter CI 均通过。
 - 新增文件私有断点、恢复/暂停/删除入口、If-Range 与完整长度校验；宠物资源统一到 Flutter assets，合计约 8.3 MiB → 6.2 MiB。当前仍保留桌面宠物产品和通知职责边界。
+- 后续 USB 真机验收使用独立 QA 包，下载断点恢复与最终哈希、原生宠物冷启动/16 动作及通知职责通过，正式 App 未覆盖；详见 [真机可靠性报告](18-device-reliability-acceptance-2026-11-04.md)。不限速的 USB 测试中，32 MiB 点选至文件写满约 1.49 秒，不能代表 Wi-Fi。
 - 最新事实、完整验证结果和各 issue 的未完成部分见 [剩余工作复核](17-remaining-work-review-2026-11-04.md)。PR #69 随 develop 扩展为这些开发改动与验收记录的草稿。
 
 ## 仍未完成
 
-- [#68](https://github.com/201222-L/dsh-mobile-remote/issues/68)：续传实现已补；全路径信任边界有文档，未把工作区列表伪装成授权。尚需真机长时间锁屏、进程回收与恢复保存测试；未新增 dataSync 前台服务，不承诺锁屏连续下载。
-- [#58](https://github.com/201222-L/dsh-mobile-remote/issues/58)：资源去重及通知职责代码已处理；尚需当前构建上的原生宠物冷恢复、完整互动、减弱动效和后台通知组合真机复核。旧内部 FloatingBubbleService 名称是兼容保留，不能恢复已取消的圆形悬浮球。
+- [#68](https://github.com/201222-L/dsh-mobile-remote/issues/68)：续传实现已补；全路径信任边界有文档，未把工作区列表伪装成授权。独立 QA 包的进程退出后恢复、系统下载目录保存与哈希已通过；息屏请求后观察约 65 秒，未证明进入全机 Asleep/Doze。长时间省电策略、Wi-Fi 和不同 ROM 仍需覆盖；未新增 dataSync 前台服务，不承诺锁屏连续下载。
+- [#58](https://github.com/201222-L/dsh-mobile-remote/issues/58)：资源去重及通知职责代码已处理；当前源码已用独立 QA 包验证原生冷启动、16 个动作解码/停播/恢复、首页互动、通知去重/撤销/未读同步及宠物/保活互斥；完整范围见真机可靠性报告。旧内部 FloatingBubbleService 名称是兼容保留，不能恢复已取消的圆形悬浮球。
 - [#20](https://github.com/201222-L/dsh-mobile-remote/issues/20)：0.2.1-rc.5 和 0.2.2-alpha.3 的公开包仍有老 seeded 日志构造路径问题；最新 alpha 已用真实构造器和合成日志独立复现。插件错误分类/降级/恢复 17 项回归通过，兼容分支继续保留，等待上游及原受影响日志复核。
 - [#60](https://github.com/201222-L/dsh-mobile-remote/issues/60)：官方 npm scope/包名未决定，实际 npm OIDC 发行未验证。继续保持 GitHub 默认来源，不查询第三方同名包，不发布。
 
-以上 issue 保持开放；自动化测试不能替代手机锁屏验收，之前模拟的 GitHub 发行响应不能算公开 CDN 或 npm OIDC 已验证。本轮没有启动 Harness、改写手机或读取私有会话日志。
+以上 issue 保持开放；自动化测试不能替代手机锁屏验收，之前模拟的 GitHub 发行响应不能算公开 CDN 或 npm OIDC 已验证。先前代码审阅未启动 Harness 或改写手机；后续 USB 验收只启动全新隔离 Web，安装并清理独立 QA/探针包，未触碰桌面 Harness、正式 App 数据或私有会话日志。
