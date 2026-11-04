@@ -67,6 +67,31 @@ void main() {
     },
   );
 
+  test('adopts normalized repository-relative path from host response', () async {
+    final api = HistoryGitApi()..normalizedHistoryPath = 'CHANGELOG.md';
+    final controller = make(api);
+    addTearDown(controller.dispose);
+
+    // 会话文件浏览深链传入的是工作区绝对路径；宿主 file-history 会归一化。
+    await controller.selectFile('/home/mark/projects/dsh-mobile-remote/CHANGELOG.md');
+    expect(controller.selectedPath, 'CHANGELOG.md');
+    expect(api.historyPaths.first, '/home/mark/projects/dsh-mobile-remote/CHANGELOG.md');
+
+    // 后续刷新/分页使用归一化路径，历史行预览也会拿到仓库相对路径。
+    await controller.refresh();
+    expect(api.historyPaths.last, 'CHANGELOG.md');
+  });
+
+  test('keeps the original path when history reports path-invalid', () async {
+    final api = HistoryGitApi();
+    final controller = make(api);
+    addTearDown(controller.dispose);
+
+    await controller.selectFile('/home/mark/projects/dsh-mobile-remote/bad-file');
+    expect(controller.isPathInvalid, isTrue);
+    expect(controller.selectedPath, '/home/mark/projects/dsh-mobile-remote/bad-file');
+  });
+
   test('refresh cancels a stuck load-more spinner', () async {
     final api = HistoryGitApi()..pageOneCount = 20;
     final gate = Completer<GitFileHistoryPage>();

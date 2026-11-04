@@ -123,6 +123,15 @@ class GitFileHistoryController extends ChangeNotifier {
     await _loadFirstPage();
   }
 
+  /// 宿主 file-history 响应会返回归一化后的仓库相对路径；采用它，
+  /// 避免把会话文件浏览深链传入的工作区绝对路径继续传给只接受仓库相对
+  /// 路径的 `/api/git/preview`（否则 preview-invalid）。
+  void _adoptNormalizedPath(GitFileHistoryPage page) {
+    final normalized = page.path.trim();
+    if (normalized.isEmpty || page.reason == 'path-invalid') return;
+    if (normalized != selectedPath) selectedPath = normalized;
+  }
+
   Future<void> _loadFirstPage() async {
     final path = selectedPath;
     if (path == null || _disposed) return;
@@ -140,6 +149,7 @@ class GitFileHistoryController extends ChangeNotifier {
         limit: pageSize,
       );
       if (generation != _historyGeneration || _disposed) return;
+      _adoptNormalizedPath(page);
       entries = page.entries;
       nextCursor = page.nextCursor;
       truncated = page.truncated;
@@ -179,6 +189,7 @@ class GitFileHistoryController extends ChangeNotifier {
         return;
       }
       if (_disposed) return;
+      _adoptNormalizedPath(page);
       final seen = entries.map((entry) => entry.oid).toSet();
       entries = List.unmodifiable([
         ...entries,
