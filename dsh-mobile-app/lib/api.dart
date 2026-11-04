@@ -443,98 +443,164 @@ class Api implements GitReadApi {
     }
   }
 
-  /// v3.2.3：流式下载到临时文件（大文件不整块进内存）。
-  ///
-  /// - [startOffset] > 0 时发 `Range: bytes=N-`，服务端回 206 则追加；
-  ///   旧插件回 200 则从头写（自动降级）；
-  /// - [onProgress] 每个 chunk 回调一次；[cancel] 取消后删除半成品并抛
-  ///   [DownloadCancelled]。
-  ///
-  /// 注意：这里刻意**不用** `resp.stream.timeout(...)` —— 它内部的定时器不在
-  /// 调用方 zone，widget 测试推进假时钟时事件永远不派发（表现为界面一直转圈）。
-  /// 需要空闲超时请用 [downloadFilePrefix] 里那套手动 Timer。
+  /// 流式写入私有文件；续传必须连续且完整，文件改变时拒绝拼接。
+  /// [keepPartialOnCancel] 供可恢复下载的“暂停”使用；普通取消仍删除半成品。
   Future<DownloadResult> downloadFileToFile(
     String remotePath,
     File target, {
     DownloadCancelToken? cancel,
     void Function(DownloadProgress)? onProgress,
+    Future<void> Function(DownloadMetadata)? onMetadata,
     int startOffset = 0,
+    String? expectedEtag,
+    bool keepPartialOnCancel = false,
     Duration connectTimeout = const Duration(seconds: 15),
+    Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
   }) async {
+    if (startOffset < 0 ||
+        (startOffset > 0 &&
+            (!await target.exists() || await target.length() != startOffset))) {
+      throw ArgumentError.value(
+        startOffset,
+        'startOffset',
+        'local file mismatch',
+      );
+    }
     final client = downloadClient ?? http.Client();
     final ownsClient = downloadClient == null;
-    IOSink? sink;
+    RandomAccessFile? output;
+    StreamIterator<List<int>>? input;
+    var cancelled = false;
+    Future<T> interruptible<T>(Future<T> operation, Duration timeout) {
+      final completion = Completer<T>();
+      final stopListening = cancel?.listen(() {
+        if (!completion.isCompleted) {
+          completion.completeError(const DownloadCancelled());
+        }
+      });
+      final timer = Timer(timeout, () {
+        if (!completion.isCompleted) {
+          completion.completeError(
+            TimeoutException('download idle timeout', timeout),
+          );
+        }
+      });
+      operation.then(
+        (value) {
+          if (!completion.isCompleted) completion.complete(value);
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!completion.isCompleted) completion.completeError(error, stack);
+        },
+      );
+      return completion.future.whenComplete(() {
+        timer.cancel();
+        stopListening?.call();
+      });
+    }
+
     try {
+      if (cancel?.cancelled ?? false) throw const DownloadCancelled();
       final req = http.Request(
         'GET',
         _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
       );
       req.headers.addAll(_headers);
       req.headers.remove('content-type');
-      if (startOffset > 0) req.headers['range'] = 'bytes=$startOffset-';
-      final resp = await client.send(req).timeout(connectTimeout);
+      req.headers['accept-encoding'] = 'identity';
+      if (startOffset > 0) {
+        req.headers['range'] = 'bytes=$startOffset-';
+        if (expectedEtag != null) req.headers['if-range'] = expectedEtag;
+      }
+      final resp = await interruptible(client.send(req), connectTimeout);
+      if (resp.statusCode == 416 && startOffset > 0) {
+        throw const DownloadChanged();
+      }
       if (resp.statusCode != 200 && resp.statusCode != 206) {
-        String detail = 'HTTP ${resp.statusCode}';
+        var detail = 'HTTP ${resp.statusCode}';
         try {
-          final text = await resp.stream.bytesToString();
+          final text = await interruptible(
+            resp.stream.bytesToString(),
+            idleTimeout,
+          );
           final body = jsonDecode(text);
-          if (body is Map && body['detail'] is String) {
-            detail = body['detail'] as String;
-          }
+          if (body is Map && body['detail'] is String) detail = body['detail'];
+        } on DownloadCancelled {
+          rethrow;
         } catch (_) {}
         throw ApiException(detail, status: resp.statusCode);
       }
       final resumed = startOffset > 0 && resp.statusCode == 206;
-      if (resumed) {
-        final contentRange = resp.headers['content-range'] ?? '';
-        if (!contentRange.startsWith('bytes $startOffset-')) {
-          throw ApiException('服务端 Range 响应不连续：$contentRange');
+      int? total = resp.contentLength;
+      if (resp.statusCode == 206) {
+        final range = RegExp(r'^bytes (\d+)-(\d+)/(\d+)$')
+            .firstMatch(resp.headers['content-range'] ?? '');
+        final begin = int.tryParse(range?.group(1) ?? '');
+        final end = int.tryParse(range?.group(2) ?? '');
+        total = int.tryParse(range?.group(3) ?? '');
+        if (begin != startOffset ||
+            end == null ||
+            total == null ||
+            end < begin! ||
+            end != total - 1 ||
+            (resp.contentLength != null &&
+                resp.contentLength != end - begin + 1)) {
+          throw ApiException('服务端 Range 响应不连续或不完整');
+        }
+        if (resumed &&
+            expectedEtag != null &&
+            resp.headers['etag'] != expectedEtag) {
+          throw const DownloadChanged();
         }
       }
-      final remaining = resp.contentLength;
-      final total = remaining == null
-          ? null
-          : (resumed ? startOffset + remaining : remaining);
-      final out = target.openWrite(
+      // 先打开/截断，再更新元数据，避免进程在两步之间退出后把旧字节标成新文件。
+      output = await target.open(
         mode: resumed ? FileMode.append : FileMode.write,
       );
-      sink = out;
+      await onMetadata?.call(
+        DownloadMetadata(
+          etag: resp.headers['etag'],
+          total: total,
+          contentType: resp.headers['content-type'],
+        ),
+      );
       var received = resumed ? startOffset : 0;
       onProgress?.call(DownloadProgress(received: received, total: total));
-      await for (final chunk in resp.stream) {
-        if (cancel?.cancelled ?? false) break;
-        out.add(chunk);
+      input = StreamIterator(resp.stream);
+      while (await interruptible(input.moveNext(), idleTimeout)) {
+        if (cancel?.cancelled ?? false) throw const DownloadCancelled();
+        final chunk = input.current;
+        if (total != null && received + chunk.length > total) {
+          throw ApiException('下载数据超出声明长度');
+        }
+        await output.writeFrom(chunk);
         received += chunk.length;
         onProgress?.call(DownloadProgress(received: received, total: total));
       }
-      await out.flush();
-      await out.close();
-      sink = null;
-      if (cancel?.cancelled ?? false) {
-        try {
-          await target.delete();
-        } catch (_) {}
-        throw const DownloadCancelled();
-      }
-      if (!resumed && remaining != null && received != remaining) {
-        throw ApiException('下载不完整：$received/$remaining');
+      if (cancel?.cancelled ?? false) throw const DownloadCancelled();
+      await output.flush();
+      if (total != null && received != total) {
+        throw ApiException('下载不完整：$received/$total');
       }
       return DownloadResult(
         file: target,
         bytes: received,
         contentType: resp.headers['content-type'],
       );
-    } on TimeoutException {
-      throw ApiException('下载超时（长时间无数据）');
+    } on DownloadCancelled {
+      cancelled = true;
+      rethrow;
     } catch (e) {
       AppLog.instance.log('GET /api/files（流式）失败: $e');
       rethrow;
     } finally {
-      try {
-        await sink?.close();
-      } catch (_) {}
       if (ownsClient) client.close();
+      await input?.cancel();
+      await output?.close();
+      if (cancelled && !keepPartialOnCancel && await target.exists()) {
+        await target.delete();
+      }
     }
   }
 
@@ -1286,10 +1352,7 @@ class Api implements GitReadApi {
     bool includeHidden = false,
   }) async {
     final query = Uri(
-      queryParameters: {
-        'path': path,
-        if (includeHidden) 'includeHidden': '1',
-      },
+      queryParameters: {'path': path, if (includeHidden) 'includeHidden': '1'},
     ).query;
     final data = await getJson('/api/directories?$query');
     return (

@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { apply } from "../lib/index.js";
@@ -405,6 +405,35 @@ test("files：If-None-Match 命中返回 304", async () => {
 		});
 		assert.equal(second.status, 304);
 		assert.equal(second.raw.length, 0);
+	} finally {
+		clean();
+	}
+});
+
+test("files：If-Range 仅在文件标记匹配时续传，变化或弱标记返回完整文件", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const path = join(root, "README.md");
+		const url = `/m/api/files?path=${encodeURIComponent(path)}`;
+		utimesSync(path, 1_600_000_000, 1_600_000_000);
+		const full = await call(route, { url });
+		const originalStat = statSync(path);
+		const resumed = await call(route, { url, headers: { range: "bytes=3-", "if-range": full.headers.etag } });
+		assert.equal(resumed.status, 206);
+		assert.deepEqual(resumed.raw, full.raw.subarray(3));
+		for (const validator of ['"stale"', `W/${full.headers.etag}`, full.headers["last-modified"]]) {
+			const restarted = await call(route, { url, headers: { range: "bytes=9999-", "if-range": validator } });
+			assert.equal(restarted.status, 200);
+			assert.equal(restarted.headers["content-range"], undefined);
+			assert.deepEqual(restarted.raw, full.raw);
+		}
+		const replacement = Buffer.alloc(full.raw.length, 0x78);
+		writeFileSync(path, replacement);
+		utimesSync(path, originalStat.atime, originalStat.mtime);
+		const changed = await call(route, { url, headers: { range: "bytes=3-", "if-range": full.headers.etag } });
+		assert.equal(changed.status, 200);
+		assert.deepEqual(changed.raw, replacement);
 	} finally {
 		clean();
 	}

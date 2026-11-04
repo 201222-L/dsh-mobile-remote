@@ -51,6 +51,36 @@ class DownloadPrefix {
 /// 下载取消令牌；不持有 http.Client，避免取消时打断其它 API 请求。
 class DownloadCancelToken {
   bool _cancelled = false;
+  final Set<void Function()> _listeners = {};
   bool get cancelled => _cancelled;
-  void cancel() => _cancelled = true;
+  void Function() listen(void Function() callback) {
+    if (_cancelled) {
+      callback();
+    } else {
+      _listeners.add(callback);
+    }
+    return () => _listeners.remove(callback);
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    for (final callback in _listeners.toList()) {
+      callback();
+    }
+    _listeners.clear();
+  }
+}
+
+/// 已核对响应头；在写入正文前持久化，供进程重启后的续传使用。
+class DownloadMetadata {
+  const DownloadMetadata({this.etag, this.total, this.contentType});
+  final String? etag;
+  final int? total;
+  final String? contentType;
+}
+
+/// 服务端文件已变化，旧断点不能再用于拼接。
+class DownloadChanged implements Exception {
+  const DownloadChanged();
 }

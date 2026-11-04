@@ -337,8 +337,9 @@
 > **隐藏条目（issue #45，纯增量）**：`GET /m/api/directories?path=<非空>&includeHidden=1` 时，
 > 点开头的目录与文件会同时出现在 `dirs` / `files` / `fileEntries` 三条列表里（排序规则不变）；
 > 缺省或 `includeHidden` 不是 `1` 时保持旧行为，全部隐藏点开头条目。无论是否 `includeHidden`，
-> 名称恰为 `.git` 的条目（**文件或目录**）永远不返回——避免暴露对象库与可能含凭据的 `.git/config`，
-> 列表也不提供进入其内部的入口。根视图（`path` 为空）与 `POST /m/api/directories` 不受该参数影响；
+> 名称恰为 `.git` 的条目（**文件或目录**）永远不返回，列表不提供进入其内部的入口。
+> 这只是列表可见性规则，显式路径仍可读取 `.git/config`，不构成访问控制。
+> 根视图（`path` 为空）与 `POST /m/api/directories` 不受该参数影响；
 > `/m/api/files` 下载/预览通道对隐藏文件与普通文件一视同仁（可按普通文件路径读取隐藏文件）。
 > 隐藏判定只看**名字是否以 `.` 开头**（Windows 隐藏属性不在本次范围）；显式按路径发起的列表/读取
 > 仍沿用既有只读信任模型，本参数只影响目录列表的可见性。旧客户端不传该参数即可，契约纯增量，
@@ -700,8 +701,13 @@
 ### 6.17 文件传输（v3.1.2，B站 csborbbnc 反馈）
 
 **GET `/m/api/files?path=…`** — 下载电脑文件
-- 响应：`200` 文件流（`content-type` 按扩展名推断、`content-disposition: attachment` 带 UTF-8 文件名）；路径不存在或非文件 → `404 file-not-found`；缺 `path` → `400 bad-request`
+- 响应：`200` 文件流（`content-type` 按扩展名推断、`content-disposition: attachment` 带 UTF-8 文件名）；路径不存在 → `404 file-not-found`；非普通文件 → `400 not-a-file`；缺 `path` → `400 bad-request`
 - 与目录选择器（§6.1）同信任模型：口令鉴权 + 现有限流，路径由手机显式指定
+- 支持 `HEAD`、单区间 `Range`、`ETag`、`If-None-Match`；有效区间返回 `206 + Content-Range`，越界返回 `416`。
+- 续传携带 `Range: bytes=N-` 与此前保存的 `If-Range: <ETag>`。只有标记一致才返回区间；不一致、弱标记或日期标记均返回完整 `200`，客户端截断旧文件后从头写。
+- App 在私有支持目录保留断点，按地址、API 路径和认证身份的摘要隔离；不持久化口令。恢复时核对 ETag、实际本地长度、完整区间和最终总长度；旧宿主缺标记时从头下载。
+- 暂停、断网、锁屏中断和进程退出后，可从聊天页下载入口继续；保存到系统下载目录失败时保留已下载文件以便重试保存。恢复列表最多八项，七天后在下次打开该宿主的下载入口时清理，可手动删除。
+- 不承诺锁屏连续下载；当前未新增 Android `dataSync` 前台服务。真实长时间锁屏、ROM 冻结和进程回收验收单独记录，不能由 Range 测试代替。
 
 **POST `/m/api/files/upload`** — 上传文件到电脑（写会话工作目录）
 ```json

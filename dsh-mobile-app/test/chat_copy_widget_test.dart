@@ -99,7 +99,12 @@ void main() {
           home: ChatScreen(store: store, onTitleChanged: () {}),
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (find.text('你好世界').evaluate().isEmpty &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await tester.pump();
+      }
     });
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));

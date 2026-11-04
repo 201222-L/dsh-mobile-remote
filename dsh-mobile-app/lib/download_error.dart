@@ -108,7 +108,7 @@ DownloadFailure describeDownloadError(Object error) {
   if (error is http.ClientException) {
     return DownloadFailure(
       summary: L10n.t('连接中途断了', 'The connection dropped mid-transfer'),
-      hint: L10n.t('重试即可；大文件请保持手机不要锁屏切换网络。', 'Retry; for large files keep the phone awake and on the same network.'),
+      hint: L10n.t('网络恢复后点“继续下载”，也可稍后从下载入口恢复。', 'Resume when the network is back, or return to Downloads later.'),
       detail: detailOf(error),
     );
   }
