@@ -141,3 +141,24 @@ test('a previously observed version cannot silently change contents', async t =>
   const restarted = new ReleaseUpdater({ currentVersion: '3.2.3', directory, keys, fetchImpl: github(signed) });
   await assert.rejects(restarted.check(), /version-content-changed/);
 });
+
+test('manual restart exposes the paired APK after the installed plugin is actually running', async t => {
+  const { updater, directory, manifest } = await fixture(t);
+  const status = await updater.check();
+  await updater.stage(status.candidate.digest);
+  const journal = join(directory, status.candidate.digest, 'install-journal.json');
+  await writeFile(journal, JSON.stringify({ phase: 'awaiting-start', version: manifest.version }));
+  const old = new ReleaseUpdater({ currentVersion: '3.2.3', directory, keys });
+  assert.equal((await old.refresh()).phase, 'awaiting-start');
+  await assert.rejects(old.appArtifact(), /plugin-version-not-active/);
+  const next = new ReleaseUpdater({ currentVersion: manifest.version, directory, keys });
+  assert.equal((await next.refresh()).phase, 'plugin-ready');
+  assert.equal((await next.refresh()).phase, 'plugin-ready');
+  assert.equal((await next.appArtifact()).spec.versionCode, 32);
+  await writeFile(journal, JSON.stringify({ phase: 'awaiting-start', version: '9.9.9' }));
+  assert.equal((await next.refresh()).phase, 'awaiting-start');
+  for (const phase of ['failed', 'rolled-back', 'recovery-required', 'awaiting-exit', 'installing']) {
+    await writeFile(journal, JSON.stringify({ phase, version: manifest.version }));
+    assert.equal((await next.refresh()).phase, phase);
+  }
+});
