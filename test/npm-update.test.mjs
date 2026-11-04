@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash, generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { c as tar } from 'tar';
 import { officialNpm, npmReleasePackages, installedPluginDependency } from '../lib/official-npm.js';
 import { ReleaseUpdater } from '../lib/release-updater.js';
-import { applyPreparedUpdate } from '../lib/update-helper.js';
+import { applyPreparedUpdate, preparePluginInstall } from '../lib/update-helper.js';
 import { runNpm, npmFailure } from '../lib/package-command.js';
 import { signManifest } from '../lib/release-manifest.js';
 
@@ -36,6 +36,21 @@ test('npm errors distinguish authentication, missing packages and registry failu
     assert.equal(npmFailure({}, '', `npm error code ${code}\nAuthorization: private-fixture-secret`).message, expected);
   }
   assert.equal(npmFailure({ killed: true }).message, 'npm-timeout');
+});
+
+test('ambiguous dependency identity is refused before preparing a restart or spawning a helper', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-npm-ambiguous-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile'), stage = join(root, 'stage');
+  await mkdir(profile); await mkdir(stage);
+  await writeFile(join(profile, 'package-lock.json'), '{}');
+  await writeFile(join(profile, 'package.json'), JSON.stringify({ dependencies: {
+    [officialNpm.plugin]: '3.2.3', 'dsh-mobile-remote': 'file:old.tgz',
+  } }));
+  await assert.rejects(preparePluginInstall({ manifest: { npm: officialNpm }, stage, profile, form: 'desktop', config: {} }),
+    /ambiguous-plugin-dependency/);
+  await assert.rejects(stat(join(stage, 'install.lock')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(stage, 'install-request.json')), { code: 'ENOENT' });
 });
 
 test('real npm honors scoped registry/auth, stages a signed carrier and updates the scoped profile offline', async t => {
