@@ -109,6 +109,9 @@ async function call(route, { url, method = "GET", headers = {} } = {}) {
 function makeWorkspace() {
 	const root = mkdtempSync(join(tmpdir(), "wb-http-"));
 	mkdirSync(join(root, "src"));
+	mkdirSync(join(root, ".hidden-dir"));
+	mkdirSync(join(root, ".git"));
+	writeFileSync(join(root, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
 	writeFileSync(join(root, "README.md"), "hello 世界\n");
 	writeFileSync(join(root, ".hidden-file"), "secret\n");
 	writeFileSync(join(root, "data.bin"), Buffer.from([0, 1, 2, 3]));
@@ -402,6 +405,125 @@ test("files：If-None-Match 命中返回 304", async () => {
 		});
 		assert.equal(second.status, 304);
 		assert.equal(second.raw.length, 0);
+	} finally {
+		clean();
+	}
+});
+
+// ── issue #45：会话文件浏览可选显示隐藏条目（includeHidden=1） ──
+
+test("directories：默认仍隐藏点开头条目，.git 永不出现（旧客户端行为不变）", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+		const res = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}` });
+		assert.equal(res.status, 200);
+		assert.deepEqual(res.body.dirs, ["src"], "默认隐藏 .hidden-dir 与 .git");
+		assert.ok(res.body.files.includes("README.md"));
+		for (const hidden of [".hidden-file", ".gitignore"]) {
+			assert.ok(!res.body.files.includes(hidden), `默认必须隐藏 ${hidden}`);
+		}
+		assert.ok(!res.body.files.includes(".git"));
+		assert.ok(!(res.body.fileEntries ?? []).some((entry) => String(entry.name).startsWith(".")), "fileEntries 与 files 同一规则");
+
+		// 显式 includeHidden=0 / 其它值等价于不传，旧客户端不会因新参数改变行为。
+		for (const query of ["includeHidden=0", "includeHidden=false", "includeHidden="]) {
+			const same = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}&${query}` });
+			assert.equal(same.status, 200);
+			assert.deepEqual(same.body.dirs, res.body.dirs);
+			assert.deepEqual(same.body.files, res.body.files);
+			assert.deepEqual(same.body.fileEntries, res.body.fileEntries);
+		}
+	} finally {
+		clean();
+	}
+});
+
+test("directories：includeHidden=1 显示点开头文件/目录与 fileEntries，但 .git 永远排除", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+		writeFileSync(join(root, ".hidden-dir", "inside.txt"), "inside\n");
+		const localSort = (names) => [...names].sort((a, b) => a.localeCompare(b, "zh-CN"));
+		const res = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}&includeHidden=1` });
+		assert.equal(res.status, 200);
+
+		// 目录：点开头目录出现，.git 目录仍排除；排序规则与默认一致（locale sort）。
+		assert.ok(res.body.dirs.includes(".hidden-dir"), "includeHidden=1 应显示点开头目录");
+		assert.ok(!res.body.dirs.includes(".git"), ".git 目录永不进入 dirs");
+		assert.deepEqual(res.body.dirs, localSort(res.body.dirs), "隐藏条目不改变排序规则");
+
+		// 文件：点开头文件出现；.git 即便以文件形式存在也不返回。
+		for (const name of [".hidden-file", ".gitignore", "README.md", "data.bin"]) {
+			assert.ok(res.body.files.includes(name), `includeHidden=1 应显示 ${name}`);
+		}
+		assert.ok(!res.body.files.includes(".git"), ".git 永不进入 files");
+		assert.deepEqual(res.body.files, localSort(res.body.files));
+
+		// fileEntries：与 files 完全同一集合与顺序，且带元数据。
+		const entries = res.body.fileEntries ?? [];
+		assert.deepEqual(entries.map((entry) => entry.name), res.body.files, "fileEntries 与 files 同一规则");
+		const hiddenEntry = entries.find((entry) => entry.name === ".hidden-file");
+		assert.ok(hiddenEntry, "隐藏文件也应有元数据");
+		assert.equal(hiddenEntry.size, Buffer.byteLength("secret\n", "utf8"));
+		assert.equal(typeof hiddenEntry.mtimeMs, "number");
+		assert.equal(typeof hiddenEntry.mime, "string");
+		assert.ok(hiddenEntry.mime.length > 0, "隐藏条目的 MIME 元数据与普通文件同源");
+		assert.ok(!entries.some((entry) => entry.name === ".git"));
+
+		// 隐藏目录可按显式路径作为普通目录浏览（不在本次范围额外屏蔽；只保证列表不暴露 .git）。
+		const nested = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(join(root, ".hidden-dir"))}` });
+		assert.equal(nested.status, 200);
+		assert.deepEqual(nested.body.files, ["inside.txt"], "显式路径进入点开头目录仍可用");
+	} finally {
+		clean();
+	}
+});
+
+test("directories：.git 作为文件（worktree 指针）时同样永不返回", async () => {
+	const { route, clean } = createHarness();
+	const root = mkdtempSync(join(tmpdir(), "wb-gitfile-"));
+	try {
+		writeFileSync(join(root, ".git"), "gitdir: /tmp/worktrees/example\n");
+		writeFileSync(join(root, ".hidden-file"), "secret\n");
+		writeFileSync(join(root, "visible.txt"), "visible\n");
+
+		const withHidden = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}&includeHidden=1` });
+		assert.equal(withHidden.status, 200);
+		assert.deepEqual(withHidden.body.dirs, []);
+		assert.deepEqual([...withHidden.body.files].sort(), [".hidden-file", "visible.txt"]);
+		assert.ok(!withHidden.body.files.includes(".git"), ".git 文件永不进入 files");
+		assert.ok(!(withHidden.body.fileEntries ?? []).some((entry) => entry.name === ".git"));
+
+		const byDefault = await call(route, { url: `/m/api/directories?path=${encodeURIComponent(root)}` });
+		assert.deepEqual(byDefault.body.files, ["visible.txt"], "默认请求隐藏点开头条目");
+	} finally {
+		clean();
+	}
+});
+
+test("directories：根视图忽略 includeHidden（只影响会话文件浏览的子目录列表）", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const plain = await call(route, { url: "/m/api/directories?path=" });
+		const withHidden = await call(route, { url: "/m/api/directories?path=&includeHidden=1" });
+		assert.equal(withHidden.status, 200);
+		assert.deepEqual(withHidden.body, plain.body, "根视图响应不因 includeHidden 改变");
+	} finally {
+		clean();
+	}
+});
+
+test("files：隐藏文件内容照常可预览（includeHidden 不改变下载通道）", async () => {
+	const { route, clean } = createHarness();
+	try {
+		const root = makeWorkspace();
+		const res = await call(route, { url: `/m/api/files?path=${encodeURIComponent(join(root, ".hidden-file"))}` });
+		assert.equal(res.status, 200);
+		assert.equal(res.raw.toString("utf8"), "secret\n", "隐藏文件必须能按普通文件读取");
+		assert.equal(res.headers["connection"], "close");
 	} finally {
 		clean();
 	}

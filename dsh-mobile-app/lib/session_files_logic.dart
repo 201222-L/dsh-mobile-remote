@@ -373,6 +373,14 @@ String normalizeBrowsePath(String path) {
   return s;
 }
 
+/// 防御性过滤：名称恰为 `.git` 的条目始终不展示。
+///
+/// 宿主契约要求 `includeHidden=1` 时也永不返回 `.git`；客户端再兜底一次，
+/// 避免旧/第三方 host 暴露对象库或 `.git/config`。只排除精确名，其余点开头
+/// 条目（`.gitignore`、`.github/` 等）正常展示。
+List<String> withoutGitEntries(List<String> entries) =>
+    List.unmodifiable(entries.where((entry) => entry != '.git'));
+
 /// 目录条目在渲染上限内的切分结果。
 ({List<String> dirs, List<String> files, int hiddenCount, int total})
 limitDirEntries(List<String> dirs, List<String> files) {
