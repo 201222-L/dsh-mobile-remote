@@ -70,6 +70,8 @@ flutter:
     - assets/deepseek-logo.png
     - assets/icon-1024.png
     - assets/pet/
+    - assets/pet-manifest.json
+    - assets/PET-LICENSE.txt
     - assets/icons/
 
   # An image asset can refer to one or more resolution-specific "variants", see

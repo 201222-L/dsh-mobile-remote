@@ -452,7 +452,7 @@ class FloatingBubbleService : Service() {
             return
         }
         val manifest = runCatching {
-            assets.open("pet-manifest.json").use {
+            assets.open(PetAssets.key(this, "pet-manifest.json")).use {
                 PetManifest.parse(it.bufferedReader(Charsets.UTF_8).readText())
             }
         }.getOrElse {

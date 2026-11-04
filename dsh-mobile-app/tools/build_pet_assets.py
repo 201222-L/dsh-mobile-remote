@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import shutil
@@ -43,6 +44,7 @@ def build(source: Path, out_dir: Path, scale: float, step: int, quality: int) ->
 
     clips: dict[str, dict] = {}
     total = 0
+    encoded_files: dict[str, str] = {}
     for name, clip in source_manifest["clips"].items():
         source_frames = clip["frames"][::step]
         # 抽帧后补上最后一帧，保证一次性动作的落点完整。
@@ -69,11 +71,19 @@ def build(source: Path, out_dir: Path, scale: float, step: int, quality: int) ->
             alpha_quality=ALPHA_QUALITY,
             method=6,
         )
-        output = clips_out / f"{name}.webp"
-        output.write_bytes(buffer.getvalue())
-        total += len(buffer.getvalue())
+        encoded = buffer.getvalue()
+        digest = hashlib.sha256(encoded).hexdigest()
+        filename = encoded_files.get(digest)
+        if filename is None:
+            filename = f"{name}.webp"
+            (clips_out / filename).write_bytes(encoded)
+            encoded_files[digest] = filename
+            total += len(encoded)
+        else:
+            # 清除上次生成的同名副本，避免重复动画继续进入 APK。
+            (clips_out / f"{name}.webp").unlink(missing_ok=True)
         clips[name] = {
-            "file": f"{name}.webp",
+            "file": filename,
             "frames": len(images),
             "frameMs": round(clip["frameMs"] * step),
             "loop": clip["loop"],
@@ -114,12 +124,8 @@ def main() -> None:
         "--out",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "android"
-        / "app"
-        / "src"
-        / "main"
         / "assets",
-        help="Android assets root (default: app/src/main/assets)",
+        help="shared Flutter assets root (default: assets)",
     )
     parser.add_argument("--scale", type=float, default=DEFAULT_SCALE)
     parser.add_argument("--step", type=int, default=DEFAULT_STEP, help="take every Nth frame")

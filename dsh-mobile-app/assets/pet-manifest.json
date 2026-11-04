@@ -1,104 +1,104 @@
 {
   "version": 1,
   "canvas": {
-    "width": 288,
-    "height": 229
+    "width": 264,
+    "height": 210
   },
   "clips": {
     "idle": {
       "file": "idle.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "waiting": {
       "file": "waiting.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "thinking": {
       "file": "thinking.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "working": {
       "file": "working.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "working_search": {
-      "file": "working_search.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "file": "waiting.webp",
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "working_command": {
       "file": "working_command.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": true
     },
     "success": {
       "file": "success.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": false
     },
     "error": {
       "file": "error.webp",
-      "frames": 60,
-      "frameMs": 84,
+      "frames": 40,
+      "frameMs": 125,
       "loop": false
     },
     "dragging": {
       "file": "dragging.webp",
-      "frames": 73,
-      "frameMs": 84,
+      "frames": 49,
+      "frameMs": 125,
       "loop": true
     },
     "dragging_release": {
       "file": "dragging_release.webp",
-      "frames": 25,
-      "frameMs": 84,
+      "frames": 17,
+      "frameMs": 125,
       "loop": false
     },
     "head_pat": {
       "file": "head_pat.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 61,
+      "frameMs": 167,
       "loop": false
     },
     "poke": {
       "file": "poke.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 61,
+      "frameMs": 167,
       "loop": false
     },
     "tail": {
       "file": "tail.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 61,
+      "frameMs": 167,
       "loop": false
     },
     "eat_token": {
       "file": "eat_token.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": false
     },
     "idle_stretch": {
       "file": "idle_stretch.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": false
     },
     "idle_yawn": {
       "file": "idle_yawn.webp",
-      "frames": 121,
-      "frameMs": 84,
+      "frames": 81,
+      "frameMs": 125,
       "loop": false
     }
   },
@@ -144,6 +144,7 @@
     "license": "MIT",
     "scale": 0.7,
     "step": 2,
-    "quality": 50
+    "quality": 50,
+    "layout": "shared Flutter assets for Android desktop pet and App home"
   }
 }

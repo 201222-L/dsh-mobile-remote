@@ -133,7 +133,7 @@ class PetView(context: Context) : FrameLayout(context) {
     private fun load(clip: PetClip): Drawable? {
         return try {
             if (Build.VERSION.SDK_INT >= 28) {
-                val source = ImageDecoder.createSource(context.assets, "pet/${clip.file}")
+                val source = ImageDecoder.createSource(context.assets, PetAssets.key(context, "pet/${clip.file}"))
                 val drawable = ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
                     // 动画 WebP 走软件分配，避免硬件位图 + AnimatedImageDrawable 的兼容问题。
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -142,7 +142,7 @@ class PetView(context: Context) : FrameLayout(context) {
                     if (clip.loop) AnimatedImageDrawable.REPEAT_INFINITE else 0
                 drawable
             } else {
-                context.assets.open("pet/${clip.file}").use { stream ->
+                context.assets.open(PetAssets.key(context, "pet/${clip.file}")).use { stream ->
                     BitmapFactory.decodeStream(stream)?.let { BitmapDrawable(resources, it) }
                 }
             }

@@ -32,7 +32,7 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    // 宠物动画 WebP 不压缩：运行时直接 mmap/流式解码，避免每次启动解压 14MB 素材。
+    // 共享宠物动画 WebP 不压缩，原生服务直接读取 Flutter asset bundle。
     androidResources {
         noCompress += "webp"
     }
