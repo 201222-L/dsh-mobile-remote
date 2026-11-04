@@ -12,7 +12,7 @@ PR #64、#65 已合并，remote main 为 1ff8b0388998b2a0fce6a23c40d63b3d0fc6ff4
 
 ## 本窗口已处理
 
-main 签名 CI 和下载产物验签通过；[真机报告](15-upgrade-acceptance-2026-11-04.md) 记录安装到 alpha.3+34。新增更新器手动重启状态修复，代码提交 9ba54d680c58f88d25d4bc60a7e0bafa65e06519，[对应 CI](https://github.com/201222-L/dsh-mobile-remote/actions/runs/41790623577) 全通过。修复需审阅后合并 main；本窗口不代替维护者合并。
+main 签名 CI 和下载产物验签通过；[真机报告](15-upgrade-acceptance-2026-11-04.md) 记录安装到 alpha.3+34。新增更新器手动重启状态修复，代码提交 9ba54d680c58f88d25d4bc60a7e0bafa65e06519，[对应 CI](https://github.com/201222-L/dsh-mobile-remote/actions/runs/41790623577) 全通过。修复与验收报告已放入[草稿 PR #69](https://github.com/201222-L/dsh-mobile-remote/pull/69)，需审阅后合并 main；本窗口不代替维护者合并。
 
 ## 仍开放的 PR
 
