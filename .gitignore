@@ -22,3 +22,4 @@ AGENT-RULES.md
 release-dist/
 npm-dist/
 dsh-mobile-app/android/.kotlin/
+__pycache__/
