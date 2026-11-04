@@ -157,6 +157,10 @@ class KeepAliveService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // 真机结论（HyperOS / Android 16）：IMPORTANCE_MIN 只让这条通知不再响铃、
+        // 不再占可视区，但国产 ROM 仍会把前台服务的通知固定在通知栏顶部（"正在运行"）。
+        // 这是系统对 FGS 的硬性展示要求，App 侧无法消除；再往下只能把 setOngoing 置 false
+        // 允许用户手动划掉，但划掉后可能被 ROM 连带杀服务，故不采用。
         // 旧渠道只用不建：已存在的 v2 会留在用户设备上（渠道删不掉，只能不再使用），
         // 这里顺手把它的重要度压到 MIN，避免老的残留渠道继续显眼。
         runCatching {
