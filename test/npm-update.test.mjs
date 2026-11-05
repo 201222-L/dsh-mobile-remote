@@ -15,6 +15,9 @@ import { runNpm, npmFailure } from '../lib/package-command.js';
 import { signManifest } from '../lib/release-manifest.js';
 
 test('official npm names are explicit; scoped profiles retain the configured dependency key', () => {
+  assert.equal(officialNpm.scope, '@polaris-l');
+  assert.equal(officialNpm.plugin, '@polaris-l/dsh-mobile-remote');
+  assert.equal(officialNpm.carrier, '@polaris-l/dsh-mobile-remote-app');
   assert.deepEqual(npmReleasePackages(officialNpm.scope), { plugin: officialNpm.plugin, carrier: officialNpm.carrier });
   assert.throws(() => npmReleasePackages('dsh-mobile-remote'), /scope-invalid/);
   const manifest = { npm: { plugin: officialNpm.plugin } };
