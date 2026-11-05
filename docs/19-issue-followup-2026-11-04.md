@@ -1,6 +1,6 @@
 # 2026-11-04 issue 后续处理
 
-维护者要求关闭做完的问题并回复贡献者，继续处理 #68 / #60，暂不处理 #20；继续暂停一切标签、GitHub Release 和 npm 发行。
+维护者要求关闭做完的问题并回复贡献者，继续处理 #68 / #60，暂不处理 #20；继续暂停一切标签、GitHub Release 和 npm 发行。维护者本地终端为 PowerShell；`npm whoami` 返回 `polaris-l`。
 
 ## #58 已回复并关闭
 
@@ -22,13 +22,13 @@
 
 ## #60 拟用身份与 scoped 安装修复
 
-维护者委托选择名称后，拟定 `@201222-l/dsh-mobile-remote` 和 `@201222-l/dsh-mobile-app`，统一记录在 `lib/official-npm.js`；GitHub 仍为默认来源，只有显式选择 npm 才查询 scoped 包。release 准备仍要求显式启用 OFFICIAL_NPM_SCOPE，不自动配置发行变量。
+维护者给出的 npm `whoami` 为 `polaris-l`。公开 registry 的 `@polaris-l/dsh-mobile-remote@2.4.1` maintainer 为 `polaris-l`，repository 指向本仓库；维护者确认该包是其此前上传的，因此沿用作插件包。配对载体定名为 `@polaris-l/dsh-mobile-remote-app`；截至 2026-11-05 registry 返回 404，尚未创建。此前的 `@201222-l` 名称已废弃。名称统一记录在 `lib/official-npm.js`；GitHub 仍为默认来源，只有显式选择 npm 才查询 scoped 包。
 
-本机 `npm whoami --registry=https://registry.npmjs.org` 返回 401，尚不能证明 scope 的账号/组织控制权。没有登录、创建 npm 账号/组织或包，没有配置或验证 OIDC 发布，也没有使用 fork 的 scope 或第三方无 scope 同名包；#60 保持开放。
+`npm whoami` 返回 `polaris-l`，与公开插件包 maintainer 记录一致；维护者确认该包由其此前上传。载体包尚不存在，也未配置或验证载体的 Trusted Publisher/OIDC。没有创建包、没有发布，没有使用 fork scope 或第三方无 scope 同名包；#60 保持开放。
 
 修复 helper 安装时固定使用旧无 scope 依赖名的问题：如果 profile 引用 scoped 插件，安装已验签的本地 tgz 时保留该依赖键，确保 Cordis 后续仍通过同一名称加载新版本，不留下一个继续生效的旧 scoped 包和一个未被使用的新无 scope 包。GitHub-only 清单也保留既有官方 scoped 安装；两种依赖身份并存则拒绝自动更新。
 
-隔离测试在本机临时 registry 提供合成插件/载体和独立测试凭据，使用真实 npm view / pack，再执行真实离线安装；验证 scope registry 优先级、认证请求、签名清单与载体配对、安装后通过原 scoped 名解析/导入新代码，以及凭据不进入更新记录。公开 registry、账号控制权和 npm OIDC 仍未验证。
+隔离测试在本机临时 registry 提供合成插件/载体和独立测试凭据，使用真实 npm view / pack，再执行真实离线安装；验证 scope registry 优先级、认证请求、签名清单与载体配对、安装后通过原 scoped 名解析/导入新代码，以及凭据不进入更新记录。公开 OIDC 发行仍未验证。
 
 npm 的认证失败、权限不足、找不到包/版本和 registry 不可达现在使用不同的稳定错误码，不回传可能包含凭据的原始 stderr；不静默切换到 GitHub。
 

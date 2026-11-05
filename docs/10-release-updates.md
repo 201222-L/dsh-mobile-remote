@@ -4,7 +4,7 @@
 
 插件默认从本仓库 GitHub Releases 检查签名更新清单；npm 是需要显式选择的可选来源，不查询无 scope 的同名包。旧发行版没有 `release-manifest.json` 时会提示使用现有 Release 下载方式。检查不会安装依赖、改写 profile 或重启宿主。
 
-维护者委托选定的包名为 `@201222-l/dsh-mobile-remote`（插件）与 `@201222-l/dsh-mobile-app`（配对载体），统一由 `lib/official-npm.js` 定义。这是拟用身份；截至 2026-11-04，本机 npm 身份查询返回 401，尚未确认该 scope 的账号/组织控制权，也未建立或验证公开包的 Trusted Publisher。因此不启用公开 npm 发行，不能把“已选名称”写成“已拥有并发布”。同名第三方 `dsh-mobile-remote` 和 fork 的 scope 不作为默认官方来源。
+维护者的 `npm whoami` 返回 `polaris-l`。公开 registry 显示 `@polaris-l/dsh-mobile-remote@2.4.1` 的维护者也是 `polaris-l`，repository 指向本仓库；沿用它作为插件包名。配对载体采用 `@polaris-l/dsh-mobile-remote-app`，截至 2026-11-05 尚不存在，首次发布前仍需建立 Trusted Publisher。两个名称统一由 `lib/official-npm.js` 定义。此前拟用的 `@201222-l` 已废弃。同名无 scope 第三方包和其它 fork 不作为官方来源。
 
 电脑端“连接移动端设备”和手机设置的“检查更新”提供同一流程：检查 → 用户选择下载 → 校验插件与配对 App → 用户确认插件安装 → 等待宿主退出 / 受控重启 → 新插件实际运行 → 手机下载配对 APK → Android 系统确认覆盖安装。APK 不以“发起安装”冒充“安装成功”。
 
@@ -18,7 +18,7 @@
 updates:
   source: github                 # github | npm；不静默跨来源降级
   channel: stable                # stable | alpha | rc；默认不跨通道
-  # npmPackage: '@201222-l/dsh-mobile-remote'
+  # npmPackage: '@polaris-l/dsh-mobile-remote'
   # profileDirectory: /绝对路径/.dsh/profiles/web
 ```
 
@@ -63,7 +63,7 @@ GitHub 只有在默认分支存在该工作流后才提供手动运行入口，�
 维护者在 GitHub `release` environment 设置：
 
 - Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`、`RELEASE_SIGNING_SEED`。
-- Variables：`OFFICIAL_NPM_SCOPE`（确认控制权后才可设为 `@201222-l`；目前留空，只保留 GitHub 发行准备）、`RELEASE_KEY_ID`（默认 `dsh-release-2026`，已有配置无需重配）。
+- Variables：`OFFICIAL_NPM_SCOPE`（插件包的 registry maintainer 已核对为 `polaris-l`；载体尚未建立 Trusted Publisher，因此目前留空）、`RELEASE_KEY_ID`（默认 `dsh-release-2026`，已有配置无需重配）。
 - npm：由维护者建立两个官方包，并分别配置指向本仓库 `release.yml` 的 Trusted Publisher；为恢复部分发布失败允许 publish 和 dist-tag 操作。用 npm OIDC，不提交长期发布 token。
 
 未发布验证：`node --test test/npm-update.test.mjs` 使用本地临时 registry 与测试凭据，实际执行 npm view / pack 和离线安装，覆盖 scope registry 优先级、认证、清单验签、载体配对、profile 依赖名保持及凭据不进入更新状态。这是隔离协议验证，不是公开 npm OIDC 发行成功。
