@@ -7,6 +7,8 @@
 - 文件下载保留私有断点，暂停或中断后可从下载入口恢复；以 ETag / If-Range 防止拼接不同版本，校验续传区间与最终长度，保存失败可重试保存。
 - Android 下载期间增加独立 dataSync 前台服务与进度/暂停通知，结束即退出；系统超时暂停并保留断点，服务不可用时明确使用前台下载。修复 Windows 路径分隔符使恢复列表遗漏记录。
 - npm 更新保留已安装的 scoped 依赖名，避免另装无 scope 副本后旧插件仍生效；隔离 registry 的真实 npm 检查/下载/离线安装通过。沿用已由 polaris-l 维护的 @polaris-l/dsh-mobile-remote；拟用载体 @polaris-l/dsh-mobile-remote-app 尚未创建或配置 OIDC，不发布。
+- DSH v0.2.2-rc.1 核查：修正 peer prerelease 范围，使 npm 可解析 0.2.1/0.2.2 RC 与 alpha；API 源码核对结果和仍保留的 issue #20 seeded 限制见 docs/20-dsh-022-compatibility-2026-11-05.md。
+- 上游 peer 范围修复由最新 47 项宿主兼容测试及 npm dry-run 解析 20 项 RC 依赖覆盖；Node 最低版本取决于 DSH 宿主（v0.2.2-rc.1 要求 >=24.9），不提升仍支持旧宿主的插件全局 engine 下限。
 - 首页和桌面宠物共用资源，移除重复动画，资源总量由约 8.3 MiB 降到约 6.2 MiB；保留桌面宠物和既有通知职责。
 - 补充文件接口的全路径信任边界，以及当前上游 seeded 会话的独立复现工具。继续暂停发布，未替换 alpha.3+34 验收产物。
 

@@ -41,10 +41,10 @@
     "semver": "^7.7.4"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": ">=0.1.0-rc.6 <0.3.0",
-    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.3.0",
-    "@deepseek-ai/dsh-sandbox-policy": ">=0.1.0-rc.6 <0.3.0",
-    "@deepseek-ai/dsh-scope": ">=0.1.0-rc.6 <0.3.0",
+    "@deepseek-ai/dsh-credentials": ">=0.1.0-rc.6 <0.3.0 || >=0.2.0-0 <0.2.0 || >=0.2.1-0 <0.2.1 || >=0.2.2-0 <0.2.2",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.3.0 || >=0.2.0-0 <0.2.0 || >=0.2.1-0 <0.2.1 || >=0.2.2-0 <0.2.2",
+    "@deepseek-ai/dsh-sandbox-policy": ">=0.1.0-rc.6 <0.3.0 || >=0.2.0-0 <0.2.0 || >=0.2.1-0 <0.2.1 || >=0.2.2-0 <0.2.2",
+    "@deepseek-ai/dsh-scope": ">=0.1.0-rc.6 <0.3.0 || >=0.2.0-0 <0.2.0 || >=0.2.1-0 <0.2.1 || >=0.2.2-0 <0.2.2",
     "@deepseek-ai/schemastery": ">=3.18.1",
     "dsh-codex-connect": ">=0.1.0-alpha.4.5"
   },
