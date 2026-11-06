@@ -24,11 +24,15 @@ main 是发布线，remote main 仍为 1ff8b0388998b2a0fce6a23c40d63b3d0fc6ff46�
 
 #58 已回复贡献者并以 completed 关闭；详见 [本轮 issue 后续记录](19-issue-followup-2026-11-04.md)。#20 按维护者最新要求暂不处理。
 
-## 仍未完成
+## 2026-11-06 最新进展
 
 DSH 最新 prerelease 为 `0.2.2-rc.1`；四项 peer prerelease 范围此前实际拒绝 0.2.x RC，已修复。47 项代际兼容测试、针对上游 API 形状的源码核对及 npm `--dry-run` 真实解析 20 项依赖通过。全量 Node 282 项、Python 8 项、npm run check 和 Flutter 3.47.0 analyze 均通过。Node 下限随 DSH 宿主提升至 24.9；本机为 24.15。`readSession()` seeded 旧日志缺陷仍在，#20 按维护者要求不处理。上游 `master` 为 `fcc0ad4`，即该 RC 发布合并，没有发现更新的公开发行版。详见 [DSH 0.2.2 兼容审查](20-dsh-022-compatibility-2026-11-05.md)。
 
-本次检查发现的新 PR 为 #70（常驻通知静音 / 通知权限设置入口），仍开放、目标 main，现有 CI 全绿。改动不触及插件依赖的 DSH API；本轮只审阅，没有合并或改目标。
+scoped npm 安装身份修复已完成：helper 用 profile 实际依赖名核对安装结果，带 scope 的 profile 不会在装完新代码后误报 `installed-plugin-version-mismatch`；npm 错误仍只暴露稳定错误码。真实隔离 registry 的 npm view / pack / 离线安装及 15 项更新器定向测试通过。
+
+PR #70（常驻通知静音 / 通知权限设置入口）已按分支约定改目标为 `develop` 并合入。复核时结合最新下载桥，Flutter analyze 无问题、完整 Flutter 测试 700/700、`:app:testDebugUnitTest` 通过；另补设置页回归，覆盖权限关闭时显示恢复入口和点击调用 `openNotificationSettings`。远端 `develop` 最新验证提交为 `c703504a554807f5b04a34278fc1bb3e5847097e`，两组 Checks 均成功。
+
+## 仍未完成
 
 - [#68](https://github.com/201222-L/dsh-mobile-remote/issues/68)：续传实现已补；全路径信任边界有文档，未把工作区列表伪装成授权。独立 QA 包的进程退出后恢复、系统下载目录保存与哈希已通过；息屏请求后观察约 65 秒，未证明进入全机 Asleep/Doze。长时间省电策略、Wi-Fi 和不同 ROM 仍需覆盖；后续新增下载专用 dataSync 前台服务与通知暂停/系统超时收尾，自动化通过；补测时 ADB 无设备，新服务真机待连接后验证，不能沿用前次报告算作已通过。
 
