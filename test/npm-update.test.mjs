@@ -33,6 +33,10 @@ test('official npm names are explicit; scoped profiles retain the configured dep
 test('npm errors distinguish authentication, missing packages and registry failure without exposing diagnostics', () => {
   for (const [code, expected] of [['E401', 'npm-auth-required'], ['E403', 'npm-access-denied'],
     ['E404', 'npm-package-not-found'], ['ETARGET', 'npm-version-not-found'], ['ENOTFOUND', 'npm-registry-unavailable'],
+    ['ECONNREFUSED', 'npm-registry-unavailable'], ['ENOTCACHED', 'npm-offline-cache-miss'],
+    ['ERESOLVE', 'npm-dependency-conflict'], ['EINTEGRITY', 'npm-integrity-failed'],
+    ['EUNSUPPORTEDPROTOCOL', 'npm-package-spec-invalid'], ['EINVALIDPACKAGENAME', 'npm-package-spec-invalid'],
+    ['ENOENT', 'npm-local-file-missing'],
     ['UNKNOWN', 'npm-command-failed']]) {
     const output = JSON.stringify({ error: { code, detail: 'Bearer private-fixture-secret' } });
     assert.equal(npmFailure({}, output).message, expected);
@@ -63,7 +67,7 @@ test('real npm honors scoped registry/auth, stages a signed carrier and updates 
   await mkdir(join(packageDir, 'lib'), { recursive: true });
   await mkdir(profile);
   const version = '3.2.4', identity = npmReleasePackages('@device-fixture');
-  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: 'dsh-mobile-remote', version, type: 'module', main: 'lib/index.js' }));
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: identity.plugin, version, type: 'module', main: 'lib/index.js' }));
   await writeFile(join(packageDir, 'lib/index.js'), 'export const installedFromSignedArtifact = true;\n');
   const pluginPath = join(root, 'plugin.tgz');
   await tar({ cwd: source, file: pluginPath, gzip: true, portable: true }, ['package']);
@@ -108,7 +112,7 @@ test('real npm honors scoped registry/auth, stages a signed carrier and updates 
     `@device-fixture:registry=http://127.0.0.1:${port}/`,
     `//127.0.0.1:${port}/:_authToken=${registryToken}`,
     `cache=${join(root, 'npm-cache').replaceAll('\\', '/')}`,
-    'audit=false', 'fund=false', 'fetch-retries=0',
+    'audit=false', 'fund=false', 'fetch-retries=0', 'noproxy=127.0.0.1,localhost',
   ].join('\n'));
   const originalProfile = JSON.stringify({ name: 'isolated-npm-profile', version: '1.0.0',
     dependencies: { [identity.plugin]: '3.2.3' } });
