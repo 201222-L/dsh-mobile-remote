@@ -29,7 +29,10 @@ class BackgroundKeepAlive {
   String? get lastError => _lastError;
 
   /// 读取用户开关（默认关）。
-  Future<void> load(bool Function() readFlag, void Function(bool) writeFlag) async {
+  Future<void> load(
+    bool Function() readFlag,
+    void Function(bool) writeFlag,
+  ) async {
     _enabled = readFlag();
     AppLog.instance.log('保活：开关读取 → enabled=$_enabled');
     try {
@@ -77,11 +80,14 @@ class BackgroundKeepAlive {
       final beats = (res['beatCount'] as num?)?.toInt() ?? 0;
       final beatAt = (res['beatAt'] as num?)?.toInt() ?? 0;
       NotifyDiag.serviceBeats = beats;
-      NotifyDiag.lastServiceBeatAt =
-          beatAt > 0 ? DateTime.fromMillisecondsSinceEpoch(beatAt) : null;
+      NotifyDiag.lastServiceBeatAt = beatAt > 0
+          ? DateTime.fromMillisecondsSinceEpoch(beatAt)
+          : null;
       // 通知权限：被永久拒绝时保活仍在跑，但提醒不可见，设置页要给出「去开启」入口。
       try {
-        final enabled = await _channel.invokeMethod<bool>('notificationsEnabled');
+        final enabled = await _channel.invokeMethod<bool>(
+          'notificationsEnabled',
+        );
         if (enabled != null) NotifyDiag.notificationsEnabled = enabled;
       } catch (_) {
         // 通道不可用时保持旧值
@@ -107,7 +113,8 @@ class BackgroundKeepAlive {
   /// 此时保活仍在跑，但常驻通知与审批提醒都不可见。
   Future<bool> openNotificationSettings() async {
     try {
-      return await _channel.invokeMethod<bool>('openNotificationSettings') ?? false;
+      return await _channel.invokeMethod<bool>('openNotificationSettings') ??
+          false;
     } catch (_) {
       return false;
     }

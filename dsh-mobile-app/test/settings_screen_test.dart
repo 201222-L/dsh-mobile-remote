@@ -1,13 +1,19 @@
 import 'package:dsh_mobile_app/screens/settings_screen.dart';
+import 'package:dsh_mobile_app/keep_alive.dart';
+import 'package:dsh_mobile_app/notify_diag.dart';
 import 'package:dsh_mobile_app/store.dart';
 import 'package:dsh_mobile_app/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  setUp(() => SharedPreferences.setMockInitialValues({}));
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    NotifyDiag.notificationsEnabled = true;
+  });
 
   Future<AppStore> makeStore() async {
     final store = AppStore();
@@ -41,6 +47,60 @@ void main() {
       .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
       .map((tile) => (tile.title! as Text).data)
       .toList();
+
+  testWidgets('notification permission recovery opens system settings', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({BackgroundKeepAlive.prefKey: true});
+    const channel = MethodChannel('dsh/keepalive');
+    final calls = <String>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return switch (call.method) {
+        'status' => {
+          'running': true,
+          'error': '',
+          'startedAt': 1,
+          'beatCount': 0,
+          'beatAt': 0,
+        },
+        'start' => {'ok': true, 'error': ''},
+        'notificationsEnabled' => false,
+        'openNotificationSettings' => true,
+        _ => null,
+      };
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final store = await makeStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SettingsScreen(store: store, onReconfigure: () async {}),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final recovery = find.text('通知权限未开启');
+    await tester.scrollUntilVisible(
+      recovery,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(recovery, findsOneWidget);
+    expect(find.text('保活在跑，但提醒不会显示——点这里去开启'), findsOneWidget);
+
+    await tester.tap(
+      find.ancestor(of: recovery, matching: find.byType(InkWell)).first,
+    );
+    await tester.pumpAndSettle();
+    expect(calls, contains('notificationsEnabled'));
+    expect(calls, contains('openNotificationSettings'));
+  });
 
   testWidgets('selects one tab and disables removing the last tab', (
     tester,

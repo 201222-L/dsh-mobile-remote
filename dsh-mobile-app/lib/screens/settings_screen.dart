@@ -1519,11 +1519,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () async {
-                final ok =
-                    await BackgroundKeepAlive.instance.openNotificationSettings();
+                final ok = await BackgroundKeepAlive.instance
+                    .openNotificationSettings();
                 if (!mounted) return;
                 if (!ok) {
-                  showToast(this.context, L10n.t('打不开系统设置，请手动进入「应用 → 通知」', 'Cannot open settings; go to App → Notifications'));
+                  showToast(
+                    this.context,
+                    L10n.t(
+                      '打不开系统设置，请手动进入「应用 → 通知」',
+                      'Cannot open settings; go to App → Notifications',
+                    ),
+                  );
                 }
               },
             ),
