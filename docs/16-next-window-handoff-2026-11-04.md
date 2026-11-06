@@ -30,6 +30,8 @@ DSH 最新 prerelease 为 `0.2.2-rc.1`；四项 peer prerelease 范围此前实�
 
 scoped npm 安装身份修复已完成：helper 用 profile 实际依赖名核对安装结果，带 scope 的 profile 不会在装完新代码后误报 `installed-plugin-version-mismatch`；npm 错误仍只暴露稳定错误码。真实隔离 registry 的 npm view / pack / 离线安装及 15 项更新器定向测试通过。
 
+2026-11-06 复核修正：实际发布 tgz 内部仍是源包名 `dsh-mobile-remote`，而 scoped profile 的依赖键是 `@polaris-l/dsh-mobile-remote`；原测试 fixture 使用 scoped 包内名，未覆盖真实组合。helper 现已分别核对依赖键、项目允许的包内名称和版本，并用真实无 scope tgz 分别验证 scoped 与旧无 scope profile 的原位安装和导入。
+
 PR #70（常驻通知静音 / 通知权限设置入口）已按分支约定改目标为 `develop` 并合入。复核时结合最新下载桥，Flutter analyze 无问题、完整 Flutter 测试 700/700、`:app:testDebugUnitTest` 通过；另补设置页回归，覆盖权限关闭时显示恢复入口和点击调用 `openNotificationSettings`。远端 `develop` 最新验证提交为 `c703504a554807f5b04a34278fc1bb3e5847097e`，两组 Checks 均成功。
 
 ## 仍未完成

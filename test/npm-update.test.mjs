@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { c as tar } from 'tar';
-import { officialNpm, npmReleasePackages, installedPluginDependency } from '../lib/official-npm.js';
+import { officialNpm, npmReleasePackages, installedPluginDependency, verifyInstalledPluginIdentity } from '../lib/official-npm.js';
 import { ReleaseUpdater } from '../lib/release-updater.js';
 import { applyPreparedUpdate, preparePluginInstall } from '../lib/update-helper.js';
 import { runNpm, npmFailure } from '../lib/package-command.js';
@@ -28,6 +28,16 @@ test('official npm names are explicit; scoped profiles retain the configured dep
   assert.throws(() => installedPluginDependency({ dependencies: {
     [officialNpm.plugin]: '3.2.3', 'dsh-mobile-remote': 'file:old.tgz',
   } }, manifest), /ambiguous-plugin-dependency/);
+  const release = { version: '3.2.4', npm: { plugin: officialNpm.plugin } };
+  assert.doesNotThrow(() => verifyInstalledPluginIdentity(release, officialNpm.plugin,
+    { name: 'dsh-mobile-remote', version: release.version }),
+  'the signed release tgz retains its legacy package name');
+  assert.doesNotThrow(() => verifyInstalledPluginIdentity(release, officialNpm.plugin,
+    { name: officialNpm.plugin, version: release.version }));
+  assert.throws(() => verifyInstalledPluginIdentity(release, officialNpm.plugin,
+    { name: '@third-party/dsh-mobile-remote', version: release.version }), /installed-plugin-version-mismatch/);
+  assert.throws(() => verifyInstalledPluginIdentity(release, officialNpm.plugin,
+    { name: 'dsh-mobile-remote', version: '9.9.9' }), /installed-plugin-version-mismatch/);
 });
 
 test('npm errors distinguish authentication, missing packages and registry failure without exposing diagnostics', () => {
@@ -60,14 +70,17 @@ test('ambiguous dependency identity is refused before preparing a restart or spa
   await assert.rejects(stat(join(stage, 'install-request.json')), { code: 'ENOENT' });
 });
 
-test('real npm honors scoped registry/auth, stages a signed carrier and updates the scoped profile offline', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-npm-e2e-'));
+async function realNpmInstallCase(t, { kind, dependencyKey }) {
+  const root = await mkdtemp(join(tmpdir(), `dsh-npm-e2e-${kind}-`));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'source'), profile = join(root, 'profile'), packageDir = join(source, 'package');
   await mkdir(join(packageDir, 'lib'), { recursive: true });
   await mkdir(profile);
   const version = '3.2.4', identity = npmReleasePackages('@device-fixture');
-  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: identity.plugin, version, type: 'module', main: 'lib/index.js' }));
+  // Release tgz files retain the source package name even when the npm identity is scoped.
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({
+    name: 'dsh-mobile-remote', version, type: 'module', main: 'lib/index.js',
+  }));
   await writeFile(join(packageDir, 'lib/index.js'), 'export const installedFromSignedArtifact = true;\n');
   const pluginPath = join(root, 'plugin.tgz');
   await tar({ cwd: source, file: pluginPath, gzip: true, portable: true }, ['package']);
@@ -115,7 +128,7 @@ test('real npm honors scoped registry/auth, stages a signed carrier and updates 
     'audit=false', 'fund=false', 'fetch-retries=0', 'noproxy=127.0.0.1,localhost',
   ].join('\n'));
   const originalProfile = JSON.stringify({ name: 'isolated-npm-profile', version: '1.0.0',
-    dependencies: { [identity.plugin]: '3.2.3' } });
+    dependencies: { [dependencyKey]: '3.2.3' } });
   await writeFile(join(profile, 'package.json'), originalProfile);
   await writeFile(join(profile, 'package-lock.json'), JSON.stringify({ name: 'isolated-npm-profile', lockfileVersion: 3, packages: {} }));
   const commands = [], npm = async (args, options) => {
@@ -140,15 +153,27 @@ test('real npm honors scoped registry/auth, stages a signed carrier and updates 
   await writeFile(request, JSON.stringify({ schemaVersion: 1, hostPid: process.pid + 1, stage, profile, version, restart: null }));
   await applyPreparedUpdate(request, { npm, keys, isAlive: () => false, delay: async () => {} });
   const installedProfile = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'));
-  assert.ok(installedProfile.dependencies[identity.plugin].startsWith('file:'));
-  assert.equal(installedProfile.dependencies['dsh-mobile-remote'], undefined, 'Do not leave the scoped plugin unchanged and add an unused legacy copy');
-  const installed = JSON.parse(await readFile(join(profile, 'node_modules', identity.plugin, 'package.json'), 'utf8'));
+  assert.ok(installedProfile.dependencies[dependencyKey].startsWith('file:'));
+  assert.deepEqual(Object.keys(installedProfile.dependencies), [dependencyKey],
+    'Do not add a second unused dependency identity');
+  const installed = JSON.parse(await readFile(join(profile, 'node_modules', dependencyKey, 'package.json'), 'utf8'));
+  assert.equal(installed.name, 'dsh-mobile-remote');
   assert.equal(installed.version, version);
-  const resolved = createRequire(join(profile, 'package.json')).resolve(identity.plugin);
+  const resolved = createRequire(join(profile, 'package.json')).resolve(dependencyKey);
   assert.equal((await import(pathToFileURL(resolved).href)).installedFromSignedArtifact, true);
-  assert.equal(await readFile(join(profile, 'node_modules', identity.plugin, 'lib/index.js'), 'utf8'),
+  assert.equal(await readFile(join(profile, 'node_modules', dependencyKey, 'lib/index.js'), 'utf8'),
     'export const installedFromSignedArtifact = true;\n');
   assert.equal(JSON.parse(await readFile(join(stage, 'install-journal.json'), 'utf8')).phase, 'awaiting-start');
   const state = await readFile(join(root, 'updates/state.json'), 'utf8');
   assert.ok(!state.includes(registryToken));
+}
+
+test('real npm updates scoped and legacy profiles using the unscoped signed release artifact', async t => {
+  const identity = npmReleasePackages('@device-fixture');
+  await t.test('scoped profile keeps its scoped dependency key', async t => {
+    await realNpmInstallCase(t, { kind: 'scoped', dependencyKey: identity.plugin });
+  });
+  await t.test('legacy profile keeps its unscoped dependency key', async t => {
+    await realNpmInstallCase(t, { kind: 'legacy', dependencyKey: 'dsh-mobile-remote' });
+  });
 });

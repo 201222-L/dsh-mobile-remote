@@ -26,7 +26,7 @@ updates:
 
 载体与插件使用两个独立包名、同一个精确版本，不沿用 fork 的同名 `-app` 版本约定。检查、下载与验证都在宿主进行；切到 npm 失败不会偷偷改用 GitHub。认证失败、拒绝访问、找不到包/版本及 registry 不可达使用稳定错误码区分，原始 npm 诊断不写入手机响应或公开日志。
 
-安装已验签的本地 tgz 时保留 profile 原有依赖键：已用 scoped 包的 profile 原位更新该键，不另加一个未被 Cordis 引用的旧无 scope 名称；同一 profile 同时声明两种身份时拒绝自动更新，要求先消除歧义。GitHub-only 清单也保留本项目既有 scoped 安装。
+安装已验签的本地 tgz 时保留 profile 原有依赖键：已用 scoped 包的 profile 原位更新该键，不另加一个未被 Cordis 引用的旧无 scope 名称；同一 profile 同时声明两种身份时拒绝自动更新，要求先消除歧义。发布 tgz 内部仍保留源包名 `dsh-mobile-remote`，npm 以 scoped 依赖键安装 file tgz 时不会改写该包内名称；helper 分别核对依赖键、包内允许身份和版本，不要求这两个名称字符串相等。GitHub-only 清单也保留本项目既有 scoped 安装。
 
 Web 受控部署可另加 `stopCommand`、`restartCommand` 数组和 `healthUrl`，例如由管理员提供的服务管理程序；命令使用 `shell:false`，不接受客户端提供的命令。健康地址只允许 loopback；推荐指向本实例 `/m/api/release-update/health`。桌面形态忽略这些重启命令。
 
