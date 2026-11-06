@@ -36,6 +36,12 @@ class NotifyDiag {
   /// 保活服务本次启动的时间（用于显示已运行多久）。
   static DateTime? keepAliveStartedAt;
 
+  /// 通知总开关是否开启（`NotificationManager.areNotificationsEnabled()`）。
+  ///
+  /// 被永久拒绝时保活仍在跑，但常驻通知与审批提醒都不可见——设置页据此给出
+  /// 「去系统设置开启」的入口（`requestNotificationsPermission()` 只在第一次有效）。
+  static bool notificationsEnabled = true;
+
   /// 原生服务心跳（服务自己每 30 秒 +1）。
   static int serviceBeats = 0;
   static DateTime? lastServiceBeatAt;

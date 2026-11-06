@@ -79,6 +79,13 @@ class BackgroundKeepAlive {
       NotifyDiag.serviceBeats = beats;
       NotifyDiag.lastServiceBeatAt =
           beatAt > 0 ? DateTime.fromMillisecondsSinceEpoch(beatAt) : null;
+      // 通知权限：被永久拒绝时保活仍在跑，但提醒不可见，设置页要给出「去开启」入口。
+      try {
+        final enabled = await _channel.invokeMethod<bool>('notificationsEnabled');
+        if (enabled != null) NotifyDiag.notificationsEnabled = enabled;
+      } catch (_) {
+        // 通道不可用时保持旧值
+      }
     } catch (_) {
       // 通道不可用时保持旧值
     }
@@ -88,6 +95,19 @@ class BackgroundKeepAlive {
   Future<bool> openBatterySettings() async {
     try {
       return await _channel.invokeMethod<bool>('openBatterySettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 打开本应用的系统通知设置页。
+  ///
+  /// 为什么需要：Android 的 `requestNotificationsPermission()` 只在第一次弹窗有效，
+  /// 用户点过「拒绝」之后代码再调只返回 false，App 内没有任何入口能恢复——
+  /// 此时保活仍在跑，但常驻通知与审批提醒都不可见。
+  Future<bool> openNotificationSettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('openNotificationSettings') ?? false;
     } catch (_) {
       return false;
     }

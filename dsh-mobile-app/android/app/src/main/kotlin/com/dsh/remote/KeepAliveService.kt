@@ -33,8 +33,11 @@ import android.os.IBinder
 class KeepAliveService : Service() {
 
     companion object {
-        // v2：渠道重要度创建后不可修改，只能换 id。LOW 在 MIUI 上会被折叠，改用 DEFAULT。
-        const val CHANNEL_ID = "dsh_keepalive_v2"
+        // v3：渠道重要度创建后不可修改，只能换 id。
+        // v1(默认) → v2(DEFAULT，LOW 在 MIUI 上会被折叠) → v3(IMPORTANCE_MIN)。
+        // v3 的动机是"别老在通知栏挂一条占地方的横幅"：MIN 会折叠到通知栏底部、
+        // 不出声、不占可视区。Android 要求前台服务必须有通知，MIN 是能做到的最低存在感。
+        const val CHANNEL_ID = "dsh_keepalive_v3"
         const val NOTIFICATION_ID = 0xDBB
         const val ACTION_START = "com.dsh.remote.keepalive.START"
         const val ACTION_STOP = "com.dsh.remote.keepalive.STOP"
@@ -154,13 +157,35 @@ class KeepAliveService : Service() {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // 真机结论（HyperOS / Android 16）：IMPORTANCE_MIN 只让这条通知不再响铃、
+        // 不再占可视区，但国产 ROM 仍会把前台服务的通知固定在通知栏顶部（"正在运行"）。
+        // 这是系统对 FGS 的硬性展示要求，App 侧无法消除；再往下只能把 setOngoing 置 false
+        // 允许用户手动划掉，但划掉后可能被 ROM 连带杀服务，故不采用。
+        // 旧渠道只用不建：已存在的 v2 会留在用户设备上（渠道删不掉，只能不再使用），
+        // 这里顺手把它的重要度压到 MIN，避免老的残留渠道继续显眼。
+        runCatching {
+            nm.getNotificationChannel("dsh_keepalive_v2")?.let { old ->
+                if (old.importance > NotificationManager.IMPORTANCE_MIN) {
+                    nm.createNotificationChannel(
+                        NotificationChannel(
+                            "dsh_keepalive_v2",
+                            old.name,
+                            NotificationManager.IMPORTANCE_MIN,
+                        ).apply {
+                            description = old.description
+                            setShowBadge(false)
+                        },
+                    )
+                }
+            }
+        }
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 "后台连接",
-                NotificationManager.IMPORTANCE_DEFAULT,
+                NotificationManager.IMPORTANCE_MIN,
             ).apply {
-                description = "保持连接以便在后台收到审批提醒"
+                description = "保持连接以便在后台收到审批提醒（静默）"
                 setShowBadge(false)
             },
         )
@@ -185,7 +210,7 @@ class KeepAliveService : Service() {
         builder
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("DSH Remote")
-            .setContentText("已连接 · 审批会即时提醒")
+            .setContentText("后台提醒已开启")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)

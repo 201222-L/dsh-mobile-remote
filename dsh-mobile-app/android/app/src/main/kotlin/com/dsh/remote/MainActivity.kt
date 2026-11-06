@@ -165,6 +165,35 @@ class MainActivity : FlutterActivity() {
                         ),
                     )
                 }
+                // 通知权限被永久拒绝后没有出口：Android 的 requestNotificationsPermission()
+                // 只在第一次生效，用户点过「拒绝」之后代码再调只返回 false。这里给一个直达入口，
+                // 设置页在 notificationsEnabled == false 时显示「去开启」。
+                "notificationsEnabled" -> {
+                    val nm = getSystemService(android.app.NotificationManager::class.java)
+                    result.success(nm?.areNotificationsEnabled() ?: false)
+                }
+                "openNotificationSettings" -> {
+                    val ok = try {
+                        startActivity(
+                            Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                        true
+                    } catch (e: Exception) {
+                        // 极个别 ROM 不认上面的 action，退回应用详情页
+                        try {
+                            startActivity(
+                                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                    .setData(android.net.Uri.parse("package:$packageName")),
+                            )
+                            true
+                        } catch (e2: Exception) {
+                            false
+                        }
+                    }
+                    result.success(ok)
+                }
                 // 多数国产 ROM（MIUI/HyperOS 等）默认会冻结后台应用，连前台服务也照冻。
                 // 用户把本应用设为「不受限制」后才能真正常驻，这里给一个直达入口。
                 "openBatterySettings" -> {
