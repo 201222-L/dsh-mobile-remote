@@ -199,7 +199,8 @@ test("summary 投影：deliverables/presented 只下发 name/display/description
 	assert.ok(presented, "presented 事件应进入移动时间线");
 	assert.deepEqual(presented.data.files.map((file) => file.name), ["a.ts", "秘密报告.pdf", "inside.txt", "gone.txt"]);
 	const first = presented.data.files[0];
-	assert.deepEqual(Object.keys(first).sort(), ["description", "display", "name"], "只允许 name/display/description");
+	assert.deepEqual(Object.keys(first).sort(), ["description", "display", "id", "name"], "只允许 id/name/display/description（id 为不泄路径的稳定身份）");
+	assert.match(first.id, /^[0-9a-f]{16}$/, "id 是路径摘要，不得含主机路径");
 	assert.equal(first.display, "src/a.ts", "工作目录内给相对路径");
 	assert.equal(presented.data.files[1].display, "秘密报告.pdf", "工作区外只给 basename");
 	assert.equal(presented.data.files[2].display, "rel/inside.txt");

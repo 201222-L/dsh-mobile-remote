@@ -102,17 +102,25 @@ class DeliverableFile {
   final int seq;
   final int index;
 
+  /// 服务端下发的**不泄路径稳定身份**（路径摘要）。旧服务端/旧事件可能缺省。
+  final String? id;
+
   const DeliverableFile({
     required this.name,
     required this.display,
     this.description,
     required this.seq,
     required this.index,
+    this.id,
   });
 
-  /// 同轮多次 present 的去重键：优先显示路径（工作区外文件 display 可能是裸
-  /// basename，因此不能再退化成 basename 去重，否则不同目录同名文件会被误合并）。
-  String get dedupeKey => display.isNotEmpty ? display : name;
+  /// 同轮多次 present 的去重键（issue #60 R08）：
+  /// - 有稳定 id：同一文件跨声明合并；
+  /// - 无 id：只能用坐标作身份，**保守保留多条**（display 是脱敏展示值，不同目录
+  ///   同名文件可能相同，不能拿它当唯一身份静默丢掉合法坐标）。
+  String get dedupeKey => id != null && id!.isNotEmpty
+      ? 'id:$id'
+      : 'coord:$seq:$index';
 }
 
 /// 从 `deliverables/presented` 摘要 data 解析交付文件（保持事件内下标）。
@@ -139,6 +147,9 @@ List<DeliverableFile> deliverableFilesOf(
             : null,
         seq: eventSeq ?? 0,
         index: index,
+        id: (item['id'] ?? '').toString().isNotEmpty
+            ? item['id'].toString()
+            : null,
       ),
     );
   }

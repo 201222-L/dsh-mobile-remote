@@ -77,12 +77,12 @@ void main() {
     test('同轮多次 present 按路径去重、说明取最后一次声明', () {
       final merged = mergeDeliverableDeclarations(
         [
-          const DeliverableFile(name: 'a.ts', display: 'src/a.ts', description: '旧说明', seq: 1, index: 0),
-          const DeliverableFile(name: 'x.png', display: 'x.png', seq: 1, index: 1),
+          const DeliverableFile(name: 'a.ts', display: 'src/a.ts', description: '旧说明', seq: 1, index: 0, id: 'id-a'),
+          const DeliverableFile(name: 'x.png', display: 'x.png', seq: 1, index: 1, id: 'id-x'),
         ],
         [
-          const DeliverableFile(name: 'a.ts', display: 'src/a.ts', description: '新说明', seq: 5, index: 0),
-          const DeliverableFile(name: 'y.md', display: 'docs/y.md', seq: 5, index: 1),
+          const DeliverableFile(name: 'a.ts', display: 'src/a.ts', description: '新说明', seq: 5, index: 0, id: 'id-a'),
+          const DeliverableFile(name: 'y.md', display: 'docs/y.md', seq: 5, index: 1, id: 'id-y'),
         ],
       );
       expect(merged.length, 3);
@@ -100,6 +100,7 @@ void main() {
         description: 'NEW',
         seq: 20,
         index: 0,
+        id: 'same-file',
       );
       const older = DeliverableFile(
         name: 'a.ts',
@@ -107,6 +108,7 @@ void main() {
         description: 'OLD',
         seq: 10,
         index: 0,
+        id: 'same-file',
       );
       // 实时：先旧后新。
       final live = mergeDeliverableDeclarations(const [older], const [newer]);
@@ -123,6 +125,7 @@ void main() {
         description: 'OLDEST',
         seq: 5,
         index: 1,
+        id: 'same-file',
       );
       for (final order in <List<DeliverableFile>>[
         const [oldest, older, newer],
@@ -136,6 +139,43 @@ void main() {
         expect(merged.single.description, 'NEW');
         expect(merged.single.seq, 20);
       }
+    });
+  });
+
+  group('R08 display 冲突不静默合并', () {
+    test('不同目录同名文件（display 相同、id 不同）都保留', () {
+      final merged = mergeDeliverableDeclarations(
+        const [],
+        const [
+          DeliverableFile(
+            name: 'report.pdf',
+            display: 'report.pdf',
+            seq: 10,
+            index: 0,
+            id: 'id-review-a',
+          ),
+          DeliverableFile(
+            name: 'report.pdf',
+            display: 'report.pdf',
+            seq: 20,
+            index: 0,
+            id: 'id-review-b',
+          ),
+        ],
+      );
+      expect(merged.length, 2, reason: '脱敏 display 相同但身份不同，不得丢掉合法坐标');
+      expect(merged.map((file) => file.id), containsAll(['id-review-a', 'id-review-b']));
+    });
+
+    test('无稳定 id 的旧数据按坐标保守保留，而不是按 display 合并', () {
+      final merged = mergeDeliverableDeclarations(
+        const [],
+        const [
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 10, index: 0),
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 20, index: 0),
+        ],
+      );
+      expect(merged.length, 2);
     });
   });
 

@@ -206,7 +206,8 @@ const presentedFiles = presentedSummary.data?.files ?? [];
 check(
   "deliverables/presented 只下发 name/display/description（无 path/绝对路径）",
   presentedFiles.length === 4
-    && presentedFiles.every((file) => Object.keys(file).every((key) => ["name", "display", "description"].includes(key)))
+    && presentedFiles.every((file) => Object.keys(file).every((key) => ["id", "name", "display", "description"].includes(key)))
+    && presentedFiles.every((file) => typeof file.id === "string" && /^[0-9a-f]{16}$/.test(file.id))
     && !JSON.stringify(presentedSummary.data).includes("/home/mark")
     && !JSON.stringify(presentedSummary.data).includes("/opt/"),
   JSON.stringify(presentedSummary.data),
