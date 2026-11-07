@@ -35,6 +35,8 @@ import '../fmt.dart';
 import '../git_browser_controller.dart';
 import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
+import '../tool_cards.dart';
+import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
 import '../widgets/turn_tail_cards.dart';
@@ -2799,6 +2801,13 @@ class _ChatScreenState extends State<ChatScreen> {
       detailAvailable: lifecycle.detailAvailable,
       rawData: old?.rawData,
       detailLoading: isResult ? false : (old?.detailLoading ?? false),
+      // issue #54：结构化摘要随 call/result 事件合并；缺失保持上一次（旧插件恒 null）。
+      callSummary: ev.type == 'tool/call'
+          ? (ev.callSummary ?? old?.callSummary)
+          : old?.callSummary,
+      resultSummary: ev.type == 'tool/result'
+          ? (ev.resultSummary ?? old?.resultSummary)
+          : old?.resultSummary,
     );
     if (index >= 0) {
       final settled =
@@ -5818,6 +5827,8 @@ class _ChatScreenState extends State<ChatScreen> {
       item: item,
       debug: widget.store.timelineDebug,
       sessionId: _mySessionId ?? '',
+      // issue #54：仅服务端声明支持的工具有专用卡；旧插件/未知工具一律通用卡。
+      toolCardsEnabled: _api.toolCardsCapabilities.supports(item.toolName),
       onLoadDetail: _api.timelineCapabilities.detail &&
               item.detailAvailable &&
               item.detailSeq != null
@@ -6487,6 +6498,10 @@ class _MsgItem {
 
   /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
   final int? detailTextChars;
+
+  /// issue #54（M3 Batch 1）：工具卡结构化摘要（tool/call 与 tool/result 分别投影）。
+  final ToolCallSummary? callSummary;
+  final ToolResultSummary? resultSummary;
   _MsgItem.user(
     this.text, {
     this.seq,
@@ -6513,7 +6528,9 @@ class _MsgItem {
        detailLoading = false,
        detailDegraded = false,
        detailMode = null,
-       detailErrorCode = null;
+       detailErrorCode = null,
+       callSummary = null,
+       resultSummary = null;
   _MsgItem.assistant(
     this.text, {
     this.usage,
@@ -6540,7 +6557,9 @@ class _MsgItem {
        toolResult = '',
        toolStatus = 'complete',
        toolError = false,
-       eventType = null;
+       eventType = null,
+       callSummary = null,
+       resultSummary = null;
   _MsgItem.divider(this.text, {this.seq})
     : kind = _MsgKind.divider,
       latestSeq = seq,
@@ -6565,7 +6584,9 @@ class _MsgItem {
       detailLoading = false,
       detailDegraded = false,
       detailMode = null,
-      detailErrorCode = null;
+      detailErrorCode = null,
+      callSummary = null,
+      resultSummary = null;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -6585,6 +6606,8 @@ class _MsgItem {
     this.detailMode,
     this.detailErrorCode,
     this.detailTextChars,
+    this.callSummary,
+    this.resultSummary,
   }) : kind = _MsgKind.tool,
        text = toolResult.isNotEmpty ? toolResult : toolArguments,
        usage = null,
@@ -6622,7 +6645,9 @@ class _MsgItem {
        toolName = null,
        toolArguments = '',
        toolResult = '',
-       toolStatus = 'complete';
+       toolStatus = 'complete',
+       callSummary = null,
+       resultSummary = null;
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
@@ -6659,6 +6684,8 @@ class _MsgItem {
     String? detailMode,
     String? detailErrorCode,
     bool clearDetailError = false,
+    ToolCallSummary? callSummary,
+    ToolResultSummary? resultSummary,
   }) => _MsgItem.tool(
     toolCallId: toolCallId,
     toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
@@ -6680,6 +6707,8 @@ class _MsgItem {
         ? null
         : (detailErrorCode ?? this.detailErrorCode),
     detailTextChars: detailTextChars,
+    callSummary: callSummary ?? this.callSummary,
+    resultSummary: resultSummary ?? this.resultSummary,
   );
 
   _MsgItem copyAssistant({
@@ -6849,6 +6878,9 @@ class _ToolActivityCard extends StatefulWidget {
   final _MsgItem item;
   final bool debug;
   final String sessionId;
+
+  /// issue #54：服务端能力位声明的工具集合包含当前工具（旧插件 false → 通用卡）。
+  final bool toolCardsEnabled;
   final bool? expandedOverride;
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
@@ -6858,6 +6890,7 @@ class _ToolActivityCard extends StatefulWidget {
     required this.item,
     required this.debug,
     required this.sessionId,
+    this.toolCardsEnabled = false,
     this.expandedOverride,
     this.onExpandedOverride,
     this.onLoadDetail,
@@ -7010,6 +7043,135 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     ),
   );
 
+  // ── issue #54（M3 Batch 1）：专用工具卡投影（fail-open 到通用卡） ──────────
+
+  IconData _kindIcon(ToolCardKind kind) => switch (kind) {
+    ToolCardKind.command => Icons.terminal,
+    ToolCardKind.file => Icons.description_outlined,
+    ToolCardKind.search => Icons.search,
+    ToolCardKind.web => Icons.language,
+    ToolCardKind.image => Icons.image_outlined,
+  };
+
+  Widget _chip(String text, Color color) => Container(
+    margin: const EdgeInsets.only(left: 5),
+    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .10),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      text,
+      maxLines: 1,
+      style: TextStyle(fontSize: 10.5, color: color, fontFamily: 'monospace'),
+    ),
+  );
+
+  /// 折叠行：`$ command` / 路径+行范围 / pattern / URL + 统计/退出码/命中数胶囊。
+  Widget _foldRow(ToolCallSummary call) {
+    final ink3 = DshColors.ink3(context);
+    final text = toolFoldText(call) ?? '';
+    final stats = toolFileStats(call);
+    final exit = toolExitBadge(widget.item.resultSummary);
+    final count = toolResultCountBadge(call, widget.item.resultSummary);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: ink3,
+                fontFamily: call.isCommand ? 'monospace' : null,
+              ),
+            ),
+          ),
+          if (stats != null) _chip(stats, DshColors.ink3(context)),
+          if (exit != null) _chip(exit, Colors.redAccent),
+          if (count != null) _chip(count, DshColors.ink3(context)),
+        ],
+      ),
+    );
+  }
+
+  /// 展开态专用内容；返回空列表时由调用方回退通用参数/结果块。
+  List<Widget> _specializedBody(ToolCallSummary call) {
+    final resultText = widget.item.toolResult;
+    switch (call.kind) {
+      case ToolCardKind.command:
+        return [
+          if (resultText.isNotEmpty)
+            _code(L10n.t('输出', 'Output'), resultText)
+          else
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                L10n.t('无输出', 'No output'),
+                style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+              ),
+            ),
+        ];
+      case ToolCardKind.file:
+        // write/edit：服务端给了内联 diff 就直接用统一查看器（issue #54 §4）。
+        if (toolHasInlineDiff(call)) {
+          return [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: SizedBox(
+                height: 320,
+                child: GitFileViewer(
+                  key: const Key('tool-diff-viewer'),
+                  mode: GitFileViewerMode.diff,
+                  path: call.filePath,
+                  diff: call.diff!,
+                  keys: const GitFileViewerKeys(prefix: 'tool-diff'),
+                ),
+              ),
+            ),
+          ];
+        }
+        if (call.diffTruncated) {
+          return [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                L10n.t(
+                  'diff 较大，未内联展示（可查看参数/结果）',
+                  'Diff too large to inline (see arguments/result)',
+                ),
+                style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+              ),
+            ),
+            if (resultText.isNotEmpty)
+              _code(L10n.t('结果', 'Result'), resultText),
+          ];
+        }
+        // read 或没有 diff 的 write/edit：保留只读结果文本。
+        if (resultText.isNotEmpty) {
+          return [_code(L10n.t('结果', 'Result'), resultText)];
+        }
+        return const [];
+      case ToolCardKind.search:
+        return resultText.isEmpty
+            ? const []
+            : [_code(L10n.t('结果', 'Result'), resultText)];
+      case ToolCardKind.web:
+        if (resultText.isEmpty) return const [];
+        return [
+          _looksMarkdown(resultText) && !widget.debug
+              ? _markdownResult(resultText)
+              : _code(L10n.t('结果', 'Result'), resultText),
+        ];
+      case ToolCardKind.image:
+        // 图片本体仍由既有 images 元数据网格渲染（下方通用块）。
+        return const [];
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
@@ -7026,6 +7188,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         rawData['schema'] ??
         rawData['inputSchema'];
     final accent = item.toolError ? Colors.redAccent : DshColors.brand(context);
+    // issue #54：能力位声明支持 + 摘要可渲染才启用专用卡；否则完整回退通用卡。
+    final call = item.callSummary;
+    final specialized = widget.toolCardsEnabled && call != null && call.renderable;
+    final fold = specialized ? toolFoldText(call) : null;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -7047,7 +7213,11 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               child: Row(
                 children: [
                   Icon(
-                    item.toolError ? Icons.error_outline : Icons.build_outlined,
+                    item.toolError
+                        ? Icons.error_outline
+                        : specialized
+                        ? _kindIcon(call.kind)
+                        : Icons.build_outlined,
                     size: 16,
                     color: accent,
                   ),
@@ -7083,6 +7253,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               ),
             ),
           ),
+          if (specialized && fold != null) _foldRow(call),
           if (expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
@@ -7097,12 +7268,18 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                         color: DshColors.ink3(context),
                       ),
                     ),
-                  if (item.toolArguments.isNotEmpty)
-                    _code(L10n.t('参数', 'Arguments'), item.toolArguments),
-                  if (item.toolResult.isNotEmpty)
-                    _looksMarkdown(item.toolResult) && !widget.debug
-                        ? _markdownResult(item.toolResult)
-                        : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  if (specialized) ...[
+                    ..._specializedBody(call),
+                    if (widget.debug && item.toolArguments.isNotEmpty)
+                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                  ] else ...[
+                    if (item.toolArguments.isNotEmpty)
+                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                    if (item.toolResult.isNotEmpty)
+                      _looksMarkdown(item.toolResult) && !widget.debug
+                          ? _markdownResult(item.toolResult)
+                          : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  ],
                   if (item.images.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),

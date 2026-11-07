@@ -1303,6 +1303,13 @@ class AppStore extends ChangeNotifier {
               Map<String, dynamic>.from(capabilities['turnTail'] as Map),
             )
           : const TurnTailCapabilities();
+      // issue #54：工具卡能力位（bootstrap 与 hello 同判据；旧插件 → 全部通用卡）。
+      api.toolCardsCapabilities =
+          capabilities is Map && capabilities['toolCards'] is Map
+          ? ToolCardsCapabilities.fromJson(
+              Map<String, dynamic>.from(capabilities['toolCards'] as Map),
+            )
+          : const ToolCardsCapabilities();
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _setConnState('connected');
       _catchup();
