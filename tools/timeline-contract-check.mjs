@@ -322,16 +322,16 @@ check(
     && toolCallProjection("mystery", "{}") === undefined,
   JSON.stringify([toolCallProjection("bash", "{not json"), toolCallProjection("mystery", "{}")]),
 );
-const toolResultProjection = (text, meta) => mod.summarizeEvent({
+const toolResultProjection = (text, meta, name) => mod.summarizeEvent({
   seq: 51,
   type: "tool/result",
-  data: { message: { content: [{ type: "text", text }] }, ...(meta === undefined ? {} : { meta }) },
+  data: { ...(name === undefined ? {} : { name }), message: { content: [{ type: "text", text }] }, ...(meta === undefined ? {} : { meta }) },
 }).data?.summary;
 check(
   "tool/result 从原始文本标记解析 exitCode/signal（长输出不被 2000 字 clamp 截掉）",
-  toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`)?.exitCode === 7
-    && toolResultProjection("[killed by signal: SIGTERM]")?.signal === "SIGTERM",
-  JSON.stringify([toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`), toolResultProjection("[killed by signal: SIGTERM]")]),
+  toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`, undefined, "bash")?.exitCode === 7
+    && toolResultProjection("[killed by signal: SIGTERM]", undefined, "bash")?.signal === "SIGTERM",
+  JSON.stringify([toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`, undefined, "bash"), toolResultProjection("[killed by signal: SIGTERM]", undefined, "bash")]),
 );
 check(
   "tool/result grep/glob 匹配总数：meta 优先、文本兜底、解析不到缺省",

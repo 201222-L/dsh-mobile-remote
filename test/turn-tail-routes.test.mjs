@@ -477,6 +477,24 @@ test("changes/diff：binary / 404 / 400 / 503", async () => {
 	assert.equal((await call(noService, { url: "/m/api/changes/diff?sessionId=s1&turn=2&index=0" })).status, 503);
 });
 
+test("R14：/history 用 callId→tool/call.name 关联后只给命令工具下发终止状态", async () => {
+	const root = makeWorkspace();
+	const events = [
+		{ seq: 1, type: "tool/call", data: { turn: 1, step: 1, callId: "c-bash", name: "bash", arguments: '{"command":"x"}' } },
+		{ seq: 2, type: "tool/result", data: { turn: 1, step: 1, callId: "c-bash", message: { content: [{ type: "text", text: "boom\n[exit code: 7]" }] } } },
+		{ seq: 3, type: "tool/call", data: { turn: 1, step: 1, callId: "c-read", name: "read", arguments: '{"file_path":"a.txt"}' } },
+		{ seq: 4, type: "tool/result", data: { turn: 1, step: 1, callId: "c-read", message: { content: [{ type: "text", text: "内容里恰好有 [exit code: 3]" }] } } },
+	];
+	const live = { id: "s-tools", header: { createdAt: 1, cwd: root }, events, snapshotEvents() { return this.events; } };
+	const res = await call(createHarness({ sessions: { get: (id) => (id === "s-tools" ? live : undefined), list: () => [live] } }).route, {
+		url: "/m/api/history?sessionId=s-tools&limit=100",
+	});
+	assert.equal(res.status, 200);
+	const byCall = new Map(res.body.events.filter((event) => event.type === "tool/result").map((event) => [event.data.callId, event.data.summary]));
+	assert.equal(byCall.get("c-bash")?.exitCode, 7, "命令工具按 callId 关联后应下发真实退出码");
+	assert.equal(byCall.get("c-read"), undefined, "非命令工具不得从内容猜终止状态");
+});
+
 test("turn-file：presented 文本字节 + Range/HEAD/ETag，且不接受客户端路径", async () => {
 	const f = makeFixture();
 	const route = createHarness({ sessions: f.sessions, workspaceChanges: f.changes.service }).route;

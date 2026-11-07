@@ -26,11 +26,17 @@ const _allTools = [
 ];
 
 class _ToolsBackend {
-  _ToolsBackend({List<String>? tools, this.writeDiffTruncated = false})
-    : tools = tools ?? _allTools;
+  _ToolsBackend({
+    List<String>? tools,
+    this.writeDiffTruncated = false,
+    this.readResultSummary,
+  }) : tools = tools ?? _allTools;
 
   final List<String> tools;
   final bool writeDiffTruncated;
+
+  /// 模拟旧服务端/异常数据：read 结果竟带 exitCode，App 必须按 call kind 忽略。
+  final Map<String, dynamic>? readResultSummary;
 
   late final Api api = Api(client: MockClient(_handle))
     ..baseUrl = 'http://tools-chat.test'
@@ -182,6 +188,8 @@ class _ToolsBackend {
               'name': 'read',
               'text': 'line two',
               'isError': false,
+              if (readResultSummary != null)
+                ..._summary(readResultSummary!),
             },
           },
           {
@@ -318,6 +326,21 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('参数'), findsOneWidget);
     expect(find.text('结果'), findsOneWidget);
+  });
+
+  testWidgets('R14：非命令工具即使结果摘要带终止字段也不显示退出码胶囊', (tester) async {
+    final backend = _ToolsBackend(
+      readResultSummary: {'exitCode': 3, 'signal': 'SIGTERM'},
+    );
+    final store = AppStore()
+      ..sessionId = 'session-tools'
+      ..stepDisplayMode = WorkStepDisplayMode.expanded;
+    await _pumpChat(tester, store, backend);
+
+    expect(find.text('exit 3'), findsNothing);
+    expect(find.text('signal: SIGTERM'), findsNothing);
+    // 同一列表里的命令卡仍显示自己的退出码。
+    expect(find.text('exit 2'), findsOneWidget);
   });
 
   testWidgets('能力位逐工具生效：未声明的工具走通用卡', (tester) async {

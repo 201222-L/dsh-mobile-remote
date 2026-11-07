@@ -7222,7 +7222,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     final ink3 = DshColors.ink3(context);
     final text = toolFoldText(call) ?? '';
     final stats = toolFileStats(call);
-    final exit = toolExitBadge(widget.item.resultSummary);
+    // issue #60 R14：退出码/信号只对**已关联 command 工具**的卡片展示；非命令工具即便
+    // 结果摘要带了终止字段（旧服务端/伪造内容）也不显示。
+    final exit = call.isCommand ? toolExitBadge(widget.item.resultSummary) : null;
     final count = toolResultCountBadge(call, widget.item.resultSummary);
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
