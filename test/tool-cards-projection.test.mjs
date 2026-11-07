@@ -137,6 +137,22 @@ test("result：bash/pwsh 从原始文本末尾解析 exitCode/signal/stopped（�
 	assert.equal(summaryOf(result("read", "[exit code: 3]")), undefined);
 });
 
+test("R13：只解析结果末尾的宿主终止 trailer（最后一条），不取 stdout 正文中的首个标记", () => {
+	// 真实命令：stdout 打印 expected marker [exit code: 0]，实际退出 7，宿主在末尾追加 7。
+	const misleading = summaryOf(result("bash", "expected marker: [exit code: 0]\nboom\n[exit code: 7]"));
+	assert.equal(misleading.exitCode, 7, "必须使用末尾真实终止状态，而不是 stdout 首个匹配");
+	// 反向：末尾 0 覆盖正文里的非零假标记。
+	const recovered = summaryOf(result("bash", "failed: [exit code: 5]\nrecovered\n[exit code: 0]"));
+	assert.equal(recovered.exitCode, 0);
+	// 标记不在末尾（命令仍在输出/被截断）→ 不猜，缺省。
+	assert.equal(summaryOf(result("bash", "still running [exit code: 7]\nmore output")), undefined);
+	// 多种终止标记互斥：最后一条是 signal 时不再给 exit/stopped。
+	const precedence = summaryOf(result("bash", "[stopped: cancelled]\n[killed by signal: SIGTERM]"));
+	assert.equal(precedence.signal, "SIGTERM");
+	assert.equal(precedence.exitCode, undefined);
+	assert.equal(precedence.stopped, undefined);
+});
+
 test("result：grep/glob 匹配总数优先取 meta.total，缺失时按文本解析，解析不到缺省", () => {
 	assert.equal(summaryOf(result("grep", "Found 3 of 9 matches", { shape: "matches", total: 9 })).resultCount, 9);
 	assert.equal(summaryOf(result("grep", "Found 3 matches")).resultCount, 3);
