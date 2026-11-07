@@ -113,18 +113,18 @@ void main() {
     );
     expect(find.byKey(TurnTailCardKeys.deliveredCard), findsOneWidget);
     expect(find.text('交付文件 6 个'), findsOneWidget);
-    expect(find.byKey(TurnTailCardKeys.deliveredRow(0)), findsOneWidget);
-    expect(find.byKey(TurnTailCardKeys.deliveredRow(4)), findsNothing);
+    expect(find.byKey(TurnTailCardKeys.deliveredRow(seq: 7, index: 0)), findsOneWidget);
+    expect(find.byKey(TurnTailCardKeys.deliveredRow(seq: 7, index: 4)), findsNothing);
     expect(find.text('说明 0'), findsOneWidget);
 
-    await tester.tap(find.byKey(TurnTailCardKeys.deliveredRow(1)));
+    await tester.tap(find.byKey(TurnTailCardKeys.deliveredRow(seq: 7, index: 1)));
     expect(opened, [1]);
-    await tester.tap(find.byKey(TurnTailCardKeys.deliveredActions(2)));
+    await tester.tap(find.byKey(TurnTailCardKeys.deliveredActions(seq: 7, index: 2)));
     expect(actions, [2]);
 
     await tester.tap(find.byKey(TurnTailCardKeys.deliveredToggle));
     await tester.pumpAndSettle();
-    expect(find.byKey(TurnTailCardKeys.deliveredRow(5)), findsOneWidget);
+    expect(find.byKey(TurnTailCardKeys.deliveredRow(seq: 7, index: 5)), findsOneWidget);
   });
 
   testWidgets('交付卡空态不占位', (tester) async {
@@ -139,5 +139,38 @@ void main() {
       ),
     );
     expect(find.byKey(TurnTailCardKeys.deliveredCard), findsNothing);
+  });
+
+  testWidgets('R09：跨 present 事件同 index 不产生重复兄弟 Key', (tester) async {
+    final files = [
+      const DeliverableFile(
+        name: 'a.md',
+        display: 'a.md',
+        seq: 10,
+        index: 0,
+        id: 'id-a',
+      ),
+      const DeliverableFile(
+        name: 'b.md',
+        display: 'b.md',
+        seq: 20,
+        index: 0,
+        id: 'id-b',
+      ),
+    ];
+    // 修复前行 Key 都是 -0，debug 构建会抛 Duplicate keys；这里断言正常构建且两行都在。
+    await tester.pumpWidget(
+      _wrap(
+        DeliveredFilesCard(
+          turn: 2,
+          files: files,
+          onOpen: (_) {},
+          onActions: (_) {},
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(TurnTailCardKeys.deliveredRow(seq: 10, index: 0)), findsOneWidget);
+    expect(find.byKey(TurnTailCardKeys.deliveredRow(seq: 20, index: 0)), findsOneWidget);
   });
 }

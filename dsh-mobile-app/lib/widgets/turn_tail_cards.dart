@@ -24,9 +24,13 @@ class TurnTailCardKeys {
   static const deliveredToggle = Key('turn-tail-delivered-toggle');
 
   static Key changedRow(int index) => Key('turn-tail-changed-row-$index');
-  static Key deliveredRow(int index) => Key('turn-tail-delivered-row-$index');
-  static Key deliveredActions(int index) =>
-      Key('turn-tail-delivered-actions-$index');
+
+  /// issue #60 R09：交付行/操作 Key 必须含**完整记录坐标**（seq+index）——同一轮多次
+  /// present 时不同事件的 index 会重复，只用 index 会生成重复兄弟 Key。
+  static Key deliveredRow({required int seq, required int index}) =>
+      Key('turn-tail-delivered-row-$seq-$index');
+  static Key deliveredActions({required int seq, required int index}) =>
+      Key('turn-tail-delivered-actions-$seq-$index');
 }
 
 /// 折叠时最多显示的文件行数（issue #53 §3/§4）。
@@ -321,7 +325,10 @@ class _DeliveredFilesCardState extends State<DeliveredFilesCard> {
           ),
           for (var index = 0; index < visible.length; index += 1)
             _DeliveredFileRow(
-              key: TurnTailCardKeys.deliveredRow(visible[index].index),
+              key: TurnTailCardKeys.deliveredRow(
+                seq: visible[index].seq,
+                index: visible[index].index,
+              ),
               file: visible[index],
               onOpen: () => widget.onOpen(visible[index]),
               onActions: () => widget.onActions(visible[index]),
@@ -397,7 +404,10 @@ class _DeliveredFileRow extends StatelessWidget {
               ),
             ),
             IconButton(
-              key: TurnTailCardKeys.deliveredActions(file.index),
+              key: TurnTailCardKeys.deliveredActions(
+                seq: file.seq,
+                index: file.index,
+              ),
               tooltip: L10n.t('更多操作', 'More actions'),
               visualDensity: VisualDensity.compact,
               icon: Icon(Icons.more_vert, size: 18, color: ink2),
