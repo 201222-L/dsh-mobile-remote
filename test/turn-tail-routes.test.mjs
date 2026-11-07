@@ -337,6 +337,70 @@ test("changes/summary：200 上限截断并保留全量 total", async () => {
 	assert.equal(res.body.truncated, true);
 });
 
+test("R05：changes/summary 不信任宿主绝对 display（重新派生）", async () => {
+	const f = makeFixture();
+	const service = {
+		summary(sessionId, seq) {
+			if (sessionId !== "s1" || seq !== 2) return undefined;
+			return {
+				turn: 2,
+				cwd: f.root,
+				files: [
+					// 合法宿主形状：工作区外文件的 display 可能是绝对路径。
+					{ path: "/var/shared/customer-a/private/report.txt", display: "/var/shared/customer-a/private/report.txt", added: 1, deleted: 0 },
+					{ path: "src/a.ts", display: "/var/shared/also/absolute/a.ts", added: 2, deleted: 1 },
+				],
+				total: 2,
+				added: 3,
+				deleted: 1,
+			};
+		},
+		async diff() { return undefined; },
+	};
+	const res = await call(createHarness({ sessions: f.sessions, workspaceChanges: service }).route, {
+		url: "/m/api/changes/summary?sessionId=s1&turn=2",
+	});
+	assert.equal(res.status, 200);
+	assert.ok(!res.text.includes("/var/shared"), `summary 不得泄露宿主绝对路径：${res.text}`);
+	assert.equal(res.body.files[0].display, "report.txt", "工作区外只给 basename");
+	assert.equal(res.body.files[1].display, "src/a.ts", "cwd 内重新派生相对路径");
+});
+
+test("R05：changes/diff 的 display 与 ---/+++ 标头不信任宿主绝对路径", async () => {
+	const f = makeFixture();
+	const service = {
+		async diff(sessionId, seq, index) {
+			if (sessionId !== "s1" || seq !== 2 || index !== 0) return undefined;
+			return {
+				kind: "text",
+				path: "/var/shared/customer-b/secret/a.ts",
+				display: "/var/shared/customer-b/secret/a.ts",
+				before: true,
+				after: true,
+				coarse: false,
+				hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] }],
+			};
+		},
+		summary() { return undefined; },
+	};
+	const route = createHarness({ sessions: f.sessions, workspaceChanges: service }).route;
+	const text = await call(route, { url: "/m/api/changes/diff?sessionId=s1&turn=2&index=0" });
+	assert.equal(text.status, 200);
+	assert.ok(!text.text.includes("/var/shared"), `diff 响应不得泄露宿主绝对路径：${text.text}`);
+	assert.equal(text.body.diff.display, "a.ts");
+	assert.ok(text.body.diff.diff.startsWith("--- a/a.ts\n+++ b/a.ts\n"), text.body.diff.diff);
+	const binary = await call(createHarness({
+		sessions: f.sessions,
+		workspaceChanges: {
+			summary() { return undefined; },
+			async diff() { return { kind: "binary", path: "/var/shared/secret/bin.dat", display: "/var/shared/secret/bin.dat" }; },
+		},
+	}).route, { url: "/m/api/changes/diff?sessionId=s1&turn=2&index=0" });
+	assert.equal(binary.status, 200);
+	assert.equal(binary.body.diff.display, "bin.dat", "binary 分支同样重派生");
+	assert.ok(!binary.text.includes("/var/shared"));
+});
+
 test("changes/diff：hunks 渲染为统一 diff 文本", async () => {
 	const f = makeFixture();
 	const res = await call(createHarness({ sessions: f.sessions, workspaceChanges: f.changes.service }).route, {
