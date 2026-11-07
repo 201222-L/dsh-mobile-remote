@@ -7250,6 +7250,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     );
   }
 
+  /// 通用参数/结果块（issue #60 R12：无内联 diff 时普通模式也要可达参数，不只是结果）。
+  List<Widget> _genericBody() => [
+    if (widget.item.toolArguments.isNotEmpty)
+      _code(L10n.t('参数', 'Arguments'), widget.item.toolArguments),
+    if (widget.item.toolResult.isNotEmpty)
+      _looksMarkdown(widget.item.toolResult) && !widget.debug
+          ? _markdownResult(widget.item.toolResult)
+          : _code(L10n.t('结果', 'Result'), widget.item.toolResult),
+  ];
+
   /// 展开态专用内容；返回空列表时由调用方回退通用参数/结果块。
   List<Widget> _specializedBody(ToolCallSummary call) {
     final resultText = widget.item.toolResult;
@@ -7304,27 +7314,25 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
             ),
           ];
         }
+        // issue #60 R12：缺 diff / 超过 8 KiB 被截断时，按规格回退**通用参数+结果**
+        // （普通模式参数必须可达），而不是只给一句提示。
         if (call.diffTruncated) {
           return [
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 L10n.t(
-                  'diff 较大，未内联展示（可查看参数/结果）',
-                  'Diff too large to inline (see arguments/result)',
+                  'diff 较大，未内联展示；以下为参数/结果',
+                  'Diff too large to inline; showing arguments/result',
                 ),
                 style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
               ),
             ),
-            if (resultText.isNotEmpty)
-              _code(L10n.t('结果', 'Result'), resultText),
+            ..._genericBody(),
           ];
         }
-        // read 或没有 diff 的 write/edit：保留只读结果文本。
-        if (resultText.isNotEmpty) {
-          return [_code(L10n.t('结果', 'Result'), resultText)];
-        }
-        return const [];
+        // read 或没有内联 diff 的 write/edit：回退通用参数+结果。
+        return _genericBody();
       case ToolCardKind.search:
         return resultText.isEmpty
             ? const []

@@ -12,12 +12,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-const _tools = [
-  'edit',
-  'write',
-  'read_image',
-];
-
 class _Backend {
   _Backend({this.editFailure = false, this.imageFailure = false, this.truncatedWrite = false});
 
@@ -217,5 +211,16 @@ void main() {
     await tester.tap(_card('call-image', 3));
     await tester.pumpAndSettle();
     expect(find.textContaining('cannot read image'), findsOneWidget);
+  });
+
+  testWidgets('R12：diff 截断时回退通用参数+结果（普通模式参数可达）', (tester) async {
+    await _pumpChat(tester, _Backend(truncatedWrite: true));
+    await tester.tap(_card('call-write', 3));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('diff 较大'), findsOneWidget);
+    expect(find.text('参数'), findsOneWidget, reason: '普通模式也必须能查看参数');
+    expect(find.textContaining('FIRST-LINE-CONTENT'), findsOneWidget);
+    expect(find.text('结果'), findsOneWidget);
+    expect(find.textContaining('wrote src/big.ts'), findsOneWidget);
   });
 }
