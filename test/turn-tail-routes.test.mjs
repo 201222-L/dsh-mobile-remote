@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply, mobileDisplayPath, renderUnifiedDiffText, turnTailCapabilityOf, turnTailOf, turnTailsOf } from "../lib/index.js";
 
@@ -444,8 +444,10 @@ test("turn-file：record-not-found / file-not-found / 503 / 400 且错误体脱�
 });
 
 test("纯函数：mobileDisplayPath / renderUnifiedDiffText", () => {
-	assert.equal(mobileDisplayPath("/home/mark/proj/src/a.ts", "/home/mark/proj"), "src/a.ts");
-	assert.equal(mobileDisplayPath("/home/mark/.config/x", "/home/mark/proj"), "~/.config/x");
+	// HOME 在不同环境（CI/verify 隔离）会变，家目录用例必须用运行时 homedir() 构造。
+	const home = homedir();
+	assert.equal(mobileDisplayPath(`${home}/proj/src/a.ts`, `${home}/proj`), "src/a.ts");
+	assert.equal(mobileDisplayPath(`${home}/.config/x`, `${home}/proj`), "~/.config/x");
 	assert.equal(mobileDisplayPath("/opt/other/y", "/home/mark/proj"), "y");
 	assert.equal(mobileDisplayPath("rel/z.ts", undefined), "rel/z.ts");
 	assert.equal(mobileDisplayPath("", "/tmp"), "");
