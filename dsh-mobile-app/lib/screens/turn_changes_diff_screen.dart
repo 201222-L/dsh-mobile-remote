@@ -38,6 +38,10 @@ class _TurnChangesDiffScreenState extends State<TurnChangesDiffScreen> {
   String? _error;
   ChangesDiff? _diff;
 
+  /// issue #60 R10：请求代际。切文件后旧响应（成功/失败/loading 收尾）一律丢弃，
+  /// 不允许把 A 的 diff 显示在 B 的标题下。
+  int _loadGeneration = 0;
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +57,8 @@ class _TurnChangesDiffScreenState extends State<TurnChangesDiffScreen> {
       });
       return;
     }
+    final generation = ++_loadGeneration;
+    final fileIndex = widget.files[_index].index;
     setState(() {
       _loading = true;
       _error = null;
@@ -61,14 +67,18 @@ class _TurnChangesDiffScreenState extends State<TurnChangesDiffScreen> {
       final diff = await widget.api.changesDiff(
         widget.sessionId,
         widget.turn,
-        widget.files[_index].index,
+        fileIndex,
       );
+      // 只有仍是当前请求代际（且文件下标未变）时才允许回写。
+      if (!mounted || generation != _loadGeneration) return;
       _diff = diff;
-    } catch (e) {
-      _error = L10n.t('无法读取对比：$e', 'Cannot load diff: $e');
-    } finally {
       _loading = false;
-      if (mounted) setState(() {});
+      setState(() {});
+    } catch (e) {
+      if (!mounted || generation != _loadGeneration) return;
+      _error = L10n.t('无法读取对比：$e', 'Cannot load diff: $e');
+      _loading = false;
+      setState(() {});
     }
   }
 
@@ -78,6 +88,8 @@ class _TurnChangesDiffScreenState extends State<TurnChangesDiffScreen> {
     setState(() {
       _index = next;
       _diff = null;
+      _loading = true;
+      _error = null;
     });
     _load();
   }
