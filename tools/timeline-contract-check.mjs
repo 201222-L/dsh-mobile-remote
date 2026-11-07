@@ -260,6 +260,93 @@ check(
   JSON.stringify(tailSignals),
 );
 
+// issue #54（M3 Batch 1）：工具卡结构化投影。
+const toolCardsCaps = mod.toolCardsCapabilityOf();
+check(
+  "toolCards 能力位声明本插件实际投影的 10 个工具",
+  toolCardsCaps?.version === 1
+    && JSON.stringify(toolCardsCaps?.tools) === JSON.stringify(["bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image"]),
+  JSON.stringify(toolCardsCaps),
+);
+const toolCallProjection = (name, args) => mod.summarizeEvent({
+  seq: 50,
+  type: "tool/call",
+  data: { turn: 1, step: 1, callId: "call-x", name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
+}, { cwd: "/home/mark/proj" }).data?.summary;
+const bashProjection = toolCallProjection("bash", { command: "ls\n-la", workdir: "/home/mark/proj/src", run_in_background: true, description: "List\nfiles" });
+check(
+  "tool/call bash 投影：command 压平/workdir display/background/description",
+  bashProjection?.kind === "command"
+    && bashProjection.command === "ls -la"
+    && bashProjection.workdir === "src"
+    && bashProjection.background === true
+    && bashProjection.description === "List files",
+  JSON.stringify(bashProjection),
+);
+const writeProjection = toolCallProjection("write", { file_path: "/home/mark/proj/src/a.ts", content: "one\ntwo\n" });
+check(
+  "tool/call write 投影：display 路径 + NKB + 全新增 diff，且无绝对路径",
+  writeProjection?.filePath === "src/a.ts"
+    && writeProjection.sizeKb === 1
+    && writeProjection.diff === "--- /dev/null\n+++ b/src/a.ts\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+    && !JSON.stringify(writeProjection).includes("/home/mark/proj"),
+  JSON.stringify(writeProjection),
+);
+const editProjection = toolCallProjection("edit", { file_path: "src/a.ts", old_string: "a\nb", new_string: "c" });
+check(
+  "tool/call edit 投影：added/deleted 行数 + 统一 diff",
+  editProjection?.added === 1 && editProjection.deleted === 2 && editProjection.diff?.startsWith("--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,1 @@"),
+  JSON.stringify(editProjection),
+);
+const searchProjection = toolCallProjection("grep", { pattern: "foo", path: "/home/mark/proj/lib", include: "*.ts" });
+check(
+  "tool/call search 投影：pattern/path display/include",
+  searchProjection?.kind === "search" && searchProjection.pattern === "foo" && searchProjection.path === "lib" && searchProjection.include === "*.ts",
+  JSON.stringify(searchProjection),
+);
+check(
+  "tool/call web/image 投影：url/query/filePath",
+  toolCallProjection("web_fetch", { url: "https://example.test/x" })?.url === "https://example.test/x"
+    && toolCallProjection("web_search", { queries: ["q1"] })?.query === "q1"
+    && toolCallProjection("read_image", { file_path: "/home/mark/proj/p.png" })?.filePath === "p.png",
+  JSON.stringify([
+    toolCallProjection("web_fetch", { url: "https://example.test/x" }),
+    toolCallProjection("web_search", { queries: ["q1"] }),
+    toolCallProjection("read_image", { file_path: "/home/mark/proj/p.png" }),
+  ]),
+);
+check(
+  "tool/call 非法 JSON/未知工具 fail-open 到通用卡",
+  toolCallProjection("bash", "{not json")?.kind === "command"
+    && toolCallProjection("bash", "{not json")?.command === undefined
+    && toolCallProjection("mystery", "{}") === undefined,
+  JSON.stringify([toolCallProjection("bash", "{not json"), toolCallProjection("mystery", "{}")]),
+);
+const toolResultProjection = (text, meta) => mod.summarizeEvent({
+  seq: 51,
+  type: "tool/result",
+  data: { message: { content: [{ type: "text", text }] }, ...(meta === undefined ? {} : { meta }) },
+}).data?.summary;
+check(
+  "tool/result 从原始文本标记解析 exitCode/signal（长输出不被 2000 字 clamp 截掉）",
+  toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`)?.exitCode === 7
+    && toolResultProjection("[killed by signal: SIGTERM]")?.signal === "SIGTERM",
+  JSON.stringify([toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`), toolResultProjection("[killed by signal: SIGTERM]")]),
+);
+check(
+  "tool/result grep/glob 匹配总数：meta 优先、文本兜底、解析不到缺省",
+  toolResultProjection("Found 3 matches", { shape: "matches", total: 9 })?.resultCount === 9
+    && toolResultProjection("Found 3 matches")?.resultCount === 3
+    && toolResultProjection("No matches found")?.resultCount === 0
+    && toolResultProjection("(Showing 20 of 87 paths")?.resultCount === 87,
+  JSON.stringify([
+    toolResultProjection("Found 3 matches", { shape: "matches", total: 9 }),
+    toolResultProjection("Found 3 matches"),
+    toolResultProjection("No matches found"),
+    toolResultProjection("(Showing 20 of 87 paths"),
+  ]),
+);
+
 // 最小真实路由 harness：验证 bootstrap/history/event-detail 走同一鉴权/路由入口，
 // 同时覆盖 active session 与 session-query 的 dormant fallback。
 if (typeof mod.apply === "function" && typeof mod.Config === "function") {
@@ -497,6 +584,12 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         && bootstrap.json?.capabilities?.turnTail?.changed === true
         && bootstrap.json?.capabilities?.turnTail?.changesDiff === true,
       JSON.stringify(bootstrap.json?.capabilities?.turnTail),
+    );
+    check(
+      "bootstrap 声明 toolCards 能力位（version/tools 与纯函数同形）",
+      bootstrap.json?.capabilities?.toolCards?.version === 1
+        && JSON.stringify(bootstrap.json?.capabilities?.toolCards?.tools) === JSON.stringify(toolCardsCaps.tools),
+      JSON.stringify(bootstrap.json?.capabilities?.toolCards),
     );
     const tailHistory = await call("/m/api/history?sessionId=session-tail&limit=100");
     check(
@@ -1125,7 +1218,7 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     const sse = response();
     route?.handler(request("/m/api/events"), sse);
     await new Promise((resolve) => setTimeout(resolve, 15));
-    check("SSE hello 宣布 eventTimeline 与 turnTail capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}'), sse.text.slice(0, 400));
+    check("SSE hello 宣布 eventTimeline / turnTail / toolCards capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}') && sse.text.includes('"toolCards":{"version":1,"tools":'), sse.text.slice(0, 500));
     const sessionEvent = hooks.get("session/event");
     sessionEvent?.(active, { seq: 30, type: "future/live", data: { visible: true } });
     sessionEvent?.(active, { seq: 31, type: "request/header", data: { systemPrompt: "SECRET" } });
