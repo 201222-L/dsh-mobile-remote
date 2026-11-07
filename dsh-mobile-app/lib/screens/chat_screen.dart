@@ -334,6 +334,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<_MsgItem> _olderItems = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
+  // ── issue #61：工具名兜底映射（session 级 callId → toolName） ───────────
+  // 历史分页截断/流式增量缺 `name` 时，用本会话此前事件里学到的工具名补名。
+  // 与 [_activeTools]（活动条瞬时态，结果到达即删）不同：这里保留整会话，
+  // 因为历史重建（_load 重放）可能只剩 result、没有 call。会话切换时清空。
+  final Map<String, String> _toolNamesByCallId = {};
+  String? _toolNamesSessionId;
   // Shared pure projection owns seq de-duplication/call correlation for both live and history paths;
   // _MsgItem remains the richer Flutter rendering adapter.
   final TimelineReducer _timelineReducer = TimelineReducer();
@@ -2719,6 +2725,33 @@ class _ChatScreenState extends State<ChatScreen> {
   String _toolActivityKey(Map<String, dynamic> data, int? seq, int fallback) =>
       timelineCallIdOf(data, seq, fallback);
 
+  /// issue #61：记录本会话已知的工具名（`tool/call` 与带 toolCall 的流式增量）。
+  ///
+  /// 与 [TimelineReducer] 的合并状态不同，这份映射**只增不减**、且跨 `_load` 重建保留
+  /// （同一会话内历史重放可能只剩 `tool/result`，那时 reducer 已重置、拿不到 call 的 name）。
+  /// 会话变化（页面重绑/切会话）时整体清空，不跨会话串名。
+  void _recordToolName(ChatEvent ev) {
+    final type = ev.type;
+    if (type != 'tool/call' &&
+        type != 'assistant/chunk' &&
+        type != 'assistant/live-chunk') {
+      return;
+    }
+    final data = ev.data ?? const <String, dynamic>{};
+    if (type != 'tool/call' &&
+        data['toolCall'] == null &&
+        data['argumentsDelta'] == null) {
+      return;
+    }
+    if (_toolNamesSessionId != _mySessionId) {
+      _toolNamesSessionId = _mySessionId;
+      _toolNamesByCallId.clear();
+    }
+    final callId = timelineCallIdOf(data, ev.seq, _toolNamesByCallId.length);
+    final name = timelineToolNameOf(data, callId: callId, fallback: '');
+    if (name.isNotEmpty) _toolNamesByCallId[callId] = name;
+  }
+
   void _rebuildActiveToolsFromHistory(List<ChatEvent> events) {
     _activeTools.clear();
     for (final ev in events) {
@@ -2786,9 +2819,23 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           seq: ev.seq,
         );
+    // issue #61：工具名解析顺序——事件 name → 现有条目 name → session 映射 → 合并态 name
+    // → 「工具调用」占位。缺 call 事件的历史/流式事件因此仍有可读标题。
+    final eventName = timelineToolNameOf(d, callId: callId, fallback: '');
+    final previousName = old?.toolName;
+    final mappedName = _toolNamesByCallId[callId];
+    final resolvedName = eventName.isNotEmpty
+        ? eventName
+        : !_isPlaceholderToolName(previousName)
+        ? previousName!
+        : !_isPlaceholderToolName(mappedName)
+        ? mappedName!
+        : !_isPlaceholderToolName(lifecycle.name)
+        ? lifecycle.name
+        : L10n.t('工具调用', 'Tool call');
     final item = _MsgItem.tool(
       toolCallId: lifecycle.id,
-      toolName: lifecycle.name,
+      toolName: resolvedName,
       toolArguments: lifecycle.arguments,
       toolResult: lifecycle.result,
       toolStatus: lifecycle.status,
@@ -2862,6 +2909,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }) {
     final d = ev.data;
     if (hiddenTimelineTypes.contains(ev.type)) return;
+    // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
+    _recordToolName(ev);
     // issue #52：轮次过程投影与时间线条目同步观察（历史/实时/分页重叠都收敛到同一结构）。
     _turnProcess.observe(ev);
     _processVersion++;
@@ -5665,19 +5714,23 @@ class _ChatScreenState extends State<ChatScreen> {
     // 强制展开（未结束 / 有插话 / 异常结束）时摘要不可点——点了也收不起来，
     // 与其给一个无效点按，不如禁用并保留箭头缺失的静态态。
     final forced = process.forceExpanded;
-    final children = <Widget>[
-      _ProcessSummaryRow(
-        text: plan.segment.summary,
-        expanded: plan.expanded,
-        onTap: forced
-            ? null
-            : () => setState(() {
-                  _turnExpansions[plan.intervalKey] = !plan.expanded;
-                  _invalidateProcessPlan();
-                }),
-      ),
-    ];
-    if (plan.expanded) {
+    final children = <Widget>[];
+    // issue #61：摘要行只作折叠态的「展开入口」；展开后组抬头/过程行已经表达了同一信息，
+    // 再挂整轮摘要会造成层级重复（alpha.7 真机截图问题 1）。
+    if (!plan.expanded) {
+      children.add(
+        _ProcessSummaryRow(
+          text: plan.segment.summary,
+          expanded: false,
+          onTap: forced
+              ? null
+              : () => setState(() {
+                    _turnExpansions[plan.intervalKey] = true;
+                    _invalidateProcessPlan();
+                  }),
+        ),
+      );
+    } else {
       final groupList = plan.segment.groups;
       if (plan.grouping) {
         for (var gi = 0; gi < groupList.length; gi++) {
@@ -5691,10 +5744,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 policy: policy,
                 turnRunning: !process.ended,
               );
-          final groupRunning = group.running ||
-              (!process.ended &&
-                  plan.isLastSegmentOfTurn &&
-                  gi == groupList.length - 1);
+          // issue #61（note 1791）：抬头只信真实运行态——组内还有未 settled 的工具行，
+          // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
+          // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
+          final groupRunning = group.running && !process.ended;
           children.add(_ProcessGroupHeader(
             text: processGroupHeader(
               group,
@@ -5758,6 +5811,19 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       }
+      // issue #61：展开后摘要行不在，收起的入口改为过程块末尾的行内控件
+      // （非卡片底色、chevron 向上）。强制展开时保持不可收起语义。
+      if (!forced) {
+        children.add(
+          _CollapseProcessRow(
+            key: ValueKey<String>('collapse-process:${plan.intervalKey}'),
+            onTap: () => setState(() {
+              _turnExpansions[plan.intervalKey] = false;
+              _invalidateProcessPlan();
+            }),
+          ),
+        );
+      }
     }
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -5796,7 +5862,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return Padding(
         padding: const EdgeInsets.only(left: 24, bottom: 6),
         child: Text(
-          '${row.toolName ?? L10n.t('工具', 'Tool')} · '
+          '${_isPlaceholderToolName(row.toolName) ? L10n.t('工具调用', 'Tool call') : row.toolName} · '
           '${switch (row.status) {
             'success' => L10n.t('成功', 'Succeeded'),
             'failed' => L10n.t('失败', 'Failed'),
@@ -6857,6 +6923,50 @@ class _InjectedBubble extends StatelessWidget {
   }
 }
 
+/// issue #61：通用占位名（不是真实工具名）。工具卡标题/摘要据此判断「缺名」。
+bool _isPlaceholderToolName(String? name) =>
+    name == null ||
+    name.isEmpty ||
+    name == L10n.t('工具', 'Tool') ||
+    name == L10n.t('工具调用', 'Tool call');
+
+/// issue #61：缺名工具卡的折叠行摘要——优先参数 JSON 的 `description`，其次参数首行，
+/// 再次结果首行；压平成一行、截断 ≤[max] 字。都没有时返回空串（不占位）。
+String _genericToolSummary(
+  String arguments,
+  String result, {
+  int max = 80,
+}) {
+  String firstLine(String text) {
+    for (final raw in text.split('\n')) {
+      final line = raw.trim();
+      if (line.isNotEmpty) return line;
+    }
+    return '';
+  }
+
+  var text = '';
+  final args = arguments.trim();
+  if (args.isNotEmpty) {
+    try {
+      final decoded = jsonDecode(args);
+      if (decoded is Map) {
+        final description = decoded['description'];
+        if (description is String && description.trim().isNotEmpty) {
+          text = description.trim();
+        }
+      }
+    } catch (_) {
+      // 参数不是合法 JSON（旧内核/半截 delta）：退回首行文本。
+    }
+    if (text.isEmpty) text = firstLine(args);
+  }
+  if (text.isEmpty) text = firstLine(result);
+  final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (flat.length <= max) return flat;
+  return '${flat.substring(0, max)}…';
+}
+
 String _detailErrorLabel(String code) {
   switch (code) {
     case 'session-not-found':
@@ -7067,6 +7177,46 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     ),
   );
 
+  /// issue #61：当前条目是否缺真实工具名（占位名不算已知名称）。
+  bool get _nameUnknown => _isPlaceholderToolName(widget.item.toolName);
+
+  /// issue #61：缺名通用卡的折叠行。摘要可读；调试模式额外保留原始 callId/事件类型。
+  Widget _genericFoldRow(String summary) {
+    final ink3 = DshColors.ink3(context);
+    final debugLine = 'callId: ${widget.item.toolCallId} · '
+        '${widget.item.eventType ?? 'tool/activity'}';
+    if (summary.isEmpty && !widget.debug) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (summary.isNotEmpty)
+            Text(
+              summary,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: ink3),
+            ),
+          if (widget.debug)
+            Padding(
+              padding: EdgeInsets.only(top: summary.isEmpty ? 0 : 2),
+              child: Text(
+                debugLine,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: ink3,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// 折叠行：`$ command` / 路径+行范围 / pattern / URL + 统计/退出码/命中数胶囊。
   Widget _foldRow(ToolCallSummary call) {
     final ink3 = DshColors.ink3(context);
@@ -7224,7 +7374,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                   const SizedBox(width: 7),
                   Expanded(
                     child: Text(
-                      item.toolName ?? L10n.t('工具', 'Tool'),
+                      // issue #61：缺名时明确是「工具调用」，不再用信息量为零的「工具」。
+                      _nameUnknown
+                          ? L10n.t('工具调用', 'Tool call')
+                          : item.toolName!,
                       style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -7253,7 +7406,13 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               ),
             ),
           ),
-          if (specialized && fold != null) _foldRow(call),
+          if (specialized && fold != null)
+            _foldRow(call)
+          else if (_nameUnknown)
+            // issue #61：通用卡缺名时给一行可读摘要（description → 参数首行 → 结果首行）。
+            _genericFoldRow(
+              _genericToolSummary(item.toolArguments, item.toolResult),
+            ),
           if (expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
@@ -8487,6 +8646,41 @@ class _ProcessGroupHeader extends StatelessWidget {
               color: running ? brand : ink3,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// issue #61：展开态过程块末尾的紧凑「收起过程」控件。
+///
+/// 行内样式（无卡片底色/边框），与 [_ProcessGroupHeader] 的文字/图标层级一致；
+/// chevron 向上表示「点这里收起」。只在非强制展开的过程块出现。
+class _CollapseProcessRow extends StatelessWidget {
+  final VoidCallback onTap;
+  const _CollapseProcessRow({super.key, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final ink3 = DshColors.ink3(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.keyboard_arrow_up, size: 15, color: ink3),
+              const SizedBox(width: 4),
+              Text(
+                L10n.t('收起过程', 'Collapse process'),
+                style: TextStyle(fontSize: 11.5, color: ink3),
+              ),
+            ],
+          ),
         ),
       ),
     );

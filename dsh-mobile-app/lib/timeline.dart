@@ -78,6 +78,20 @@ const debugOnlyTimelineTypes = <String>{
   'tool-workflow/agent-end',
   'tool-workflow/run-start',
   'tool-workflow/run-end',
+  // issue #61：协议生命周期事件不构成对话内容——后台任务在会话头部呈现、问询/审批在
+  // 弹卡与工具行内呈现，独立成卡会与 `ask_user_question` 工具卡重复。普通模式不渲染
+  // 裸协议卡；调试模式仍可审阅（事件仍保留在时间线模型与详情指针里）。
+  // 注意：待答/审批弹卡来自 store 的 pending 快照与 `mobile/frame` 帧（chat_screen
+  // 的 `_question`/`_approval`），不依赖这些历史事件卡，因此归入调试不影响待答能力。
+  'job/registered',
+  'job/settled',
+  'session/jobs',
+  'question/requested',
+  'question/resolved',
+  'approval/requested',
+  'approval/resolved',
+  'approval/asked',
+  'approval/decided',
 };
 
 /// LLM 请求快照的段边界匹配（与服务端 `LLM_REQUEST_TYPE_PATTERN` 同规则）：
