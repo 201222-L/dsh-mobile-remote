@@ -2,6 +2,7 @@
 //
 // 偏好只存手机本地（SharedPreferences），默认「标准」+「回答结束后」；改动即时写回。
 
+import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/screens/settings_screen.dart';
 import 'package:dsh_mobile_app/store.dart';
 import 'package:dsh_mobile_app/turn_process.dart';
@@ -16,6 +17,14 @@ void main() {
   Future<AppStore> makeStore() async {
     final store = AppStore();
     await store.loadPrefs();
+    // issue #53（§6.20）：展示模式设置只在服务端声明 turnTail 能力位时显示
+    // （旧插件隐藏）；这里模拟新插件契约。
+    store.api.turnTailCapabilities = const TurnTailCapabilities(
+      version: 1,
+      presented: true,
+      changed: true,
+      changesDiff: true,
+    );
     return store;
   }
 

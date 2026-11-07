@@ -1296,6 +1296,13 @@ class AppStore extends ChangeNotifier {
               Map<String, dynamic>.from(capabilities['turnOutline'] as Map),
             )
           : const TurnOutlineCapabilities();
+      // issue #53：轮末产出物能力位（bootstrap 与 hello 同判据；旧插件不下发 → 降级隐藏）。
+      api.turnTailCapabilities =
+          capabilities is Map && capabilities['turnTail'] is Map
+          ? TurnTailCapabilities.fromJson(
+              Map<String, dynamic>.from(capabilities['turnTail'] as Map),
+            )
+          : const TurnTailCapabilities();
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _setConnState('connected');
       _catchup();
@@ -1607,6 +1614,10 @@ class AppStore extends ChangeNotifier {
           data: ce.data,
           sessionId: fsid as String?,
           detailAvailable: ce.detailAvailable,
+          // issue #52/#53：实时摘要的 time 与 turn/end 的 tail 必须原样带给时间线，
+          // 否则 live 轮次页脚没有用时、轮末卡片要等重进会话才出现。
+          time: ce.time,
+          tail: ce.tail,
         ),
       );
     } else if (type == 'agent/status') {

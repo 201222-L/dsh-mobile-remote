@@ -28,6 +28,8 @@ import '../theme.dart';
 import '../turn_navigation.dart';
 import '../turn_process.dart';
 import '../turn_outline.dart';
+import '../turn_tail.dart';
+import '../turn_file_actions.dart';
 import '../md.dart';
 import '../fmt.dart';
 import '../git_browser_controller.dart';
@@ -35,9 +37,12 @@ import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
 import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
+import '../widgets/turn_tail_cards.dart';
 import 'sheets.dart';
 import 'session_files_screen.dart';
 import 'session_tools_sheet.dart';
+import 'turn_changes_diff_screen.dart';
+import 'turn_file_preview_screen.dart';
 
 /// v3.0.0(热修 07)：服务端"明确拒绝"的错误码白名单——这些代表消息**未被投递且服务端无回执**，
 /// 可直接判失败；其余（`bridge-unavailable`、`receipt-pending`、传输层 reset/超时等）一律走回执
@@ -340,6 +345,14 @@ class _ChatScreenState extends State<ChatScreen> {
   final Map<String, bool> _groupExpansions = {}; // 过程组手动展开（turn:segment:step）
   final Map<String, bool> _reasoningRowExpansions = {}; // 思考行手动展开（turn:seq）
   final Map<int, int> _processRowLimits = {}; // 分批展示：turn → 已展示行数
+  // ── issue #53（ADR 0027 §3）：轮末产出物（两卡 + 按坐标预览） ─────────
+  final Map<int, TurnTail> _turnTails = {}; // 轮号 → turnTails/tail 信号
+  final Map<int, List<DeliverableFile>> _deliverablesByTurn = {};
+  final TurnTailSummaryCache _changedSummaryCache = TurnTailSummaryCache();
+  final Set<int> _changedSummaryRequested = {};
+  final Map<int, String> _changedSummaryErrors = {};
+  final Map<int, ({int version, TurnFileLinkResolver resolver})> _linkResolvers = {};
+  int _turnTailVersion = 0;
   String _reasoning = '';
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
@@ -1153,6 +1166,7 @@ class _ChatScreenState extends State<ChatScreen> {
     AppLog.instance.log(reset ? 'Chat: 重同步会话（按新表面重载）$id' : 'Chat: 打开会话 $id');
     try {
       final page = await _api.historyPage(id, limit: _liveMax);
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       AppLog.instance.log(
         'Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}',
@@ -1217,6 +1231,13 @@ class _ChatScreenState extends State<ChatScreen> {
         // issue #52：条目按新表面重建时，轮次过程结构与会话内手动折叠状态一并失效
         // （「离开会话即失」——重建等价于重新进入）。
         _turnProcess.reset();
+        _turnTails.clear();
+        _deliverablesByTurn.clear();
+        _changedSummaryCache.clear();
+        _changedSummaryRequested.clear();
+        _changedSummaryErrors.clear();
+        _linkResolvers.clear();
+        _turnTailVersion++;
         _processTurns = const [];
         _processTurnMap = const {};
         _processVersion++;
@@ -1348,6 +1369,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _earliestSeq,
         limit: limit,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return _PrependOutcome.skipped;
@@ -1579,6 +1601,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _earliestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -1627,6 +1650,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _histOldestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -1665,6 +1689,7 @@ class _ChatScreenState extends State<ChatScreen> {
         after: _histNewestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -2229,6 +2254,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted || generation != _loadGeneration || id != _mySessionId) {
           return;
         }
+        _absorbTurnTails(page.turnTails);
         // v3.1.6（app-audit ②）：守卫之后才写降级标记（过期响应不得改写横幅）
         if (page.degraded) _historyDegraded = true;
         final fresh = <ChatEvent>[];
@@ -2822,6 +2848,16 @@ class _ChatScreenState extends State<ChatScreen> {
     // discard the duplicate because _handleEvent already owns the visible stream.
     if (!_timelineReducer.apply(ev) && !history) return;
     switch (ev.type) {
+      case 'deliverables/presented':
+        // issue #53（§6.20）：交付文件声明收进轮末交付卡，不生成通用事件卡；
+        // 旧插件没有投影 data 时退回 default（调试可见），普通模式不出现空白卡。
+        final deliveredTurn = (d?['turn'] as num?)?.toInt();
+        final deliveredFiles = deliverableFilesOf(ev.seq, d);
+        if (deliveredTurn != null && deliveredFiles.isNotEmpty) {
+          _absorbDeliverables(deliveredTurn, deliveredFiles);
+          return;
+        }
+        _appendVisibleEvent(out, ev, history: history);
       case 'user/message':
         final text = d?['text'] as String? ?? '';
         // 已知 runtime context 噪声保留 seq/model 对账，但系统提示词与上下文快照在所有模式均隐藏。
@@ -3015,6 +3051,12 @@ class _ChatScreenState extends State<ChatScreen> {
           out.add(item);
         } else {
           out.insert(0, item);
+        }
+        // issue #53（§6.20）：实时轮末信号 `tail` 由服务端随 turn/end 摘要下发。
+        final endedTurn = (d?['turn'] as num?)?.toInt();
+        final endedTail = ev.tail ?? TurnTail.fromJson(d?['tail']);
+        if (endedTurn != null && endedTail != null) {
+          _absorbTurnTail(endedTurn, endedTail);
         }
       default:
         // 未知 Visible event 不再静默丢弃；普通模式显示类型摘要，调试模式可展开原始详情。
@@ -5771,6 +5813,224 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── issue #53（ADR 0027 §3 / docs/03-api.md §6.20–§6.23）：轮末产出物 ──────
+
+  String? get _tailSessionId => _mySessionId ?? widget.store.sessionId;
+
+  /// 合并 `/history` 的 `turnTails`（只增不减：历史页/实时页可能先后到达）。
+  void _absorbTurnTails(Map<int, TurnTail> tails) {
+    if (tails.isEmpty) return;
+    tails.forEach((turn, tail) => _absorbTurnTail(turn, tail));
+    _turnTailVersion++;
+  }
+
+  void _absorbTurnTail(int turn, TurnTail tail) {
+    final previous = _turnTails[turn];
+    final merged = TurnTail(
+      changes: tail.changes || (previous?.changes ?? false),
+      presented: tail.presented || (previous?.presented ?? false),
+    );
+    if (merged == previous) return;
+    _turnTails[turn] = merged;
+    _turnTailVersion++;
+  }
+
+  /// 同轮多次 `present`：按路径去重、说明取最后一次声明（§6.20）。
+  void _absorbDeliverables(int turn, List<DeliverableFile> files) {
+    _deliverablesByTurn[turn] = mergeDeliverableDeclarations(
+      _deliverablesByTurn[turn] ?? const <DeliverableFile>[],
+      files,
+    );
+    _absorbTurnTail(turn, const TurnTail(presented: true));
+    _turnTailVersion++;
+  }
+
+  /// 行内链接解析器：只吃本轮**已到达**的记录（交付声明 + 已加载改动摘要）。
+  TurnFileLinkResolver? _fileLinkResolverForTurn(int turn) {
+    final cached = _linkResolvers[turn];
+    if (cached != null && cached.version == _turnTailVersion) {
+      return cached.resolver;
+    }
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return null;
+    final presented = _deliverablesByTurn[turn] ?? const <DeliverableFile>[];
+    final summary = _changedSummaryCache.lookup(turn);
+    final changed = summary != null && summary.state == ChangesState.available
+        ? summary.files
+        : const <ChangedFile>[];
+    if (presented.isEmpty && changed.isEmpty) return null;
+    final resolver = TurnFileLinkResolver(
+      sessionId: sessionId,
+      presented: presented,
+      changed: changed,
+    );
+    _linkResolvers[turn] = (version: _turnTailVersion, resolver: resolver);
+    return resolver;
+  }
+
+  /// 懒加载本轮改动摘要：`tail.changes` 为真时才拉；失败静默重试 1 次后整卡不显示
+  /// （调试模式留原因行）。`absent/unavailable` 由缓存短 TTL 承担负结果节流。
+  void _scheduleChangedSummary(int turn) {
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return;
+    if (_changedSummaryRequested.contains(turn)) return;
+    _changedSummaryRequested.add(turn);
+    unawaited(_loadChangedSummary(sessionId, turn));
+  }
+
+  Future<void> _loadChangedSummary(String sessionId, int turn) async {
+    for (var attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        final summary = await _api.changesSummary(sessionId, turn);
+        if (!mounted || sessionId != _tailSessionId) return;
+        _changedSummaryCache.store(turn, summary);
+        _changedSummaryErrors.remove(turn);
+        setState(() => _turnTailVersion++);
+        return;
+      } catch (e) {
+        _changedSummaryErrors[turn] = e.toString();
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          if (!mounted) return;
+        }
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 轮末两卡：改动卡（懒加载摘要）→ 交付卡。无文件不占位；能力位缺失不渲染。
+  Widget _buildTurnTailSection(int turn, {required bool historyView}) {
+    final caps = _api.turnTailCapabilities;
+    if (!caps.available) return const SizedBox.shrink();
+    final children = <Widget>[];
+
+    if (caps.changed && (_turnTails[turn]?.changes ?? false)) {
+      final summary = _changedSummaryCache.lookup(turn);
+      if (summary == null) {
+        _scheduleChangedSummary(turn);
+      } else if (summary.state == ChangesState.available &&
+          summary.files.isNotEmpty) {
+        children.add(
+          ChangedFilesCard(
+            turn: turn,
+            summary: summary,
+            onOpenFile: (file) => _openTurnFile(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.changed,
+                seq: file.seq,
+                index: file.index,
+              ),
+              display: file.display,
+              name: file.name,
+            ),
+            onOpenDiff: (index) => _openTurnChangesDiff(
+              turn,
+              summary.files,
+              index,
+            ),
+          ),
+        );
+      }
+    }
+
+    if (caps.presented) {
+      final delivered = _deliverablesByTurn[turn] ?? const <DeliverableFile>[];
+      if (delivered.isNotEmpty) {
+        children.add(
+          DeliveredFilesCard(
+            turn: turn,
+            files: delivered,
+            onOpen: (file) => _openTurnFile(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.presented,
+                seq: file.seq,
+                index: file.index,
+              ),
+              display: file.display,
+              name: file.name,
+            ),
+            onActions: (file) => _openTurnFileActions(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.presented,
+                seq: file.seq,
+                index: file.index,
+              ),
+              file.name,
+            ),
+          ),
+        );
+      }
+    }
+
+    if (children.isEmpty) {
+      final error = _changedSummaryErrors[turn];
+      if (widget.store.timelineDebug && error != null) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            L10n.t('改动摘要不可用：$error', 'Changed-files summary unavailable: $error'),
+            style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+          ),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
+    );
+  }
+
+  void _openTurnFile(
+    TurnFileCoordinate coordinate, {
+    required String display,
+    required String name,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TurnFilePreviewScreen(
+          api: _api,
+          coordinate: coordinate,
+          display: display,
+          name: name,
+        ),
+      ),
+    );
+  }
+
+  void _openTurnFileActions(TurnFileCoordinate coordinate, String name) {
+    unawaited(
+      showTurnFileActions(
+        context,
+        api: _api,
+        coordinate: coordinate,
+        name: name,
+      ),
+    );
+  }
+
+  void _openTurnChangesDiff(int turn, List<ChangedFile> files, int index) {
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TurnChangesDiffScreen(
+          api: _api,
+          sessionId: sessionId,
+          turn: turn,
+          files: files,
+          initialIndex: index,
+        ),
+      ),
+    );
+  }
+
   Widget _buildTurnFooter(int turn, {required bool historyView}) {
     final process = _ensureProcessTurnMap()[turn];
     if (process == null || !process.ended) return const SizedBox.shrink();
@@ -5913,6 +6173,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final turn = _turnProcess.turnOfSeq(item.seq);
         final inProcess = turn != null &&
             _planFor(history: historyView).anchoredTurns.contains(turn);
+        // issue #53 §6：收尾正文的行内文件链接只认本轮记录内的路径（精确优先、
+        // 唯一 basename 次之、歧义不链接）。
+        final linkResolver =
+            turn == null ? null : _fileLinkResolverForTurn(turn);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -5938,6 +6202,21 @@ class _ChatScreenState extends State<ChatScreen> {
                       );
                       setState(() {});
                     },
+              codeTap: linkResolver == null
+                  ? null
+                  : (code) {
+                      final coordinate = linkResolver.resolve(code);
+                      if (coordinate == null) return null;
+                      final name = code.split('/').last;
+                      return () => _openTurnFile(
+                        coordinate,
+                        display: code,
+                        name: name,
+                      );
+                    },
+              codeTapKey: linkResolver == null
+                  ? ''
+                  : '$_turnTailVersion:$turn',
             ),
             if (item.detailDegraded)
               Padding(
@@ -6105,7 +6384,14 @@ class _ChatScreenState extends State<ChatScreen> {
           if (_turnProcess.endSeqOfTurn(endTurn) != seq) {
             return const SizedBox.shrink();
           }
-          return _buildTurnFooter(endTurn, historyView: historyView);
+          // issue #53：轮末顺序 = 过程(折叠) → 最终回答 → 改动卡 → 交付卡 → 页脚。
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTurnTailSection(endTurn, historyView: historyView),
+              _buildTurnFooter(endTurn, historyView: historyView),
+            ],
+          );
         }
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -7239,6 +7525,11 @@ class _AssistantBubble extends StatefulWidget {
   // 用户手动切换的覆盖值（null = 跟随设置项）；提升到界面层按消息持久化，列表回收重建不丢
   final bool? expandedOverride;
   final ValueChanged<bool>? onOverride;
+  // issue #53 §6：行内代码 → 本轮记录内文件链接（null = 不可链接）。
+  final InlineCodeTap? codeTap;
+
+  /// 解析缓存附加键：记录集合变化（新交付声明/改动摘要到达）时强制重新解析。
+  final String codeTapKey;
   const _AssistantBubble({
     required this.text,
     this.usage,
@@ -7249,6 +7540,8 @@ class _AssistantBubble extends StatefulWidget {
     this.defaultExpanded = false,
     this.expandedOverride,
     this.onOverride,
+    this.codeTap,
+    this.codeTapKey = '',
   });
 
   @override
@@ -7264,12 +7557,14 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   Widget build(BuildContext context) {
     // v2.9.0 review(M4)：缓存键含亮度——切深/浅色后已渲染气泡颜色需重建
     // （原仅按文本缓存 key,渲染颜色已烘焙进 Widget,切换主题不刷新）
-    final cacheKey = '${widget.text}\u0000${Theme.of(context).brightness}';
+    final cacheKey =
+        '${widget.text}\u0000${Theme.of(context).brightness}\u0000${widget.codeTapKey}';
     if (cacheKey != _parsedFor) {
       _parsedFor = cacheKey;
       _blocks = renderMarkdownBlocks(
         widget.text.isEmpty ? '…' : widget.text,
         context,
+        codeTap: widget.codeTap,
       );
       if (_parseLogs < 3) {
         _parseLogs++;

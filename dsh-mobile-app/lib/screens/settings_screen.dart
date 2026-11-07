@@ -1441,26 +1441,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           // issue #52（ADR 0027 §2）：轮次过程折叠的工作步骤展示模式与收起时机。
           // 偏好只存手机本地；改动即时重算时间线（store.notifyListeners）。
-          _row(
-            leading: const Icon(Icons.tune_outlined),
-            title: L10n.t('工作步骤展示模式', 'Work-step display mode'),
-            sub: _stepDisplayModeSummary(store.stepDisplayMode),
-            onTap: () => _pickStepDisplayMode(store),
-          ),
-          _row(
-            leading: const Icon(Icons.unfold_less_outlined),
-            title: L10n.t('过程收起时机', 'Process fold timing'),
-            sub: store.turnFoldTiming == TurnFoldTiming.onNewMessage
-                ? L10n.t(
-                    '下次有新消息时收起上一轮（含电脑端发来的）',
-                    'Fold the previous turn when the next message arrives (including from desktop)',
-                  )
-                : L10n.t(
-                    '回答结束后立即收起已完成轮次的过程',
-                    'Fold a completed turn as soon as its answer ends',
-                  ),
-            onTap: () => _pickTurnFoldTiming(store),
-          ),
+          //
+          // issue #53（§6.20）：这三个能力位是旧插件缺失的增量契约——旧插件下两卡与
+          // 展示模式设置都不显示（不按宿主/App 版本推断，只看服务端显式声明）。
+          if (store.api.turnTailCapabilities.available) ...[
+            _row(
+              leading: const Icon(Icons.tune_outlined),
+              title: L10n.t('工作步骤展示模式', 'Work-step display mode'),
+              sub: _stepDisplayModeSummary(store.stepDisplayMode),
+              onTap: () => _pickStepDisplayMode(store),
+            ),
+            _row(
+              leading: const Icon(Icons.unfold_less_outlined),
+              title: L10n.t('过程收起时机', 'Process fold timing'),
+              sub: store.turnFoldTiming == TurnFoldTiming.onNewMessage
+                  ? L10n.t(
+                      '下次有新消息时收起上一轮（含电脑端发来的）',
+                      'Fold the previous turn when the next message arrives (including from desktop)',
+                    )
+                  : L10n.t(
+                      '回答结束后立即收起已完成轮次的过程',
+                      'Fold a completed turn as soon as its answer ends',
+                    ),
+              onTap: () => _pickTurnFoldTiming(store),
+            ),
+          ],
           _row(
             leading: const Icon(Icons.bug_report_outlined),
             title: L10n.t('对话调试模式', 'Conversation debug mode'),
