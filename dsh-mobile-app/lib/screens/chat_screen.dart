@@ -7253,6 +7253,24 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   /// 展开态专用内容；返回空列表时由调用方回退通用参数/结果块。
   List<Widget> _specializedBody(ToolCallSummary call) {
     final resultText = widget.item.toolResult;
+    // issue #60 R11：write/edit 的内联 diff 来自**调用参数**，不代表执行成功；失败时
+    // 必须保留真实结果原因（old_string 未找到/沙箱拒绝/read_image 读取失败）。
+    // 红色 Failed 抬头不能替代失败原因。
+    final failed = widget.item.toolError || widget.item.toolStatus == 'failed';
+    if (failed) {
+      return [
+        if (resultText.isNotEmpty)
+          _code(L10n.t('错误', 'Error'), resultText)
+        else
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              L10n.t('工具失败（无错误详情）', 'Tool failed (no error detail)'),
+              style: TextStyle(fontSize: 11.5, color: Colors.redAccent),
+            ),
+          ),
+      ];
+    }
     switch (call.kind) {
       case ToolCardKind.command:
         return [
