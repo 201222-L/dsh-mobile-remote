@@ -2,7 +2,7 @@
 // 需要 DSH_MOBILE_PLUGIN 指向可加载的插件模块；与现有 hotfix07-unit-check 同一导入策略。
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const configuredPath = process.env.DSH_MOBILE_PLUGIN;
@@ -188,14 +188,16 @@ const userWithFile = mod.summarizeEvent({
 });
 check("user/message 仍下发附件元数据", userWithFile.data?.files?.length === 1 && userWithFile.data.files[0].name === "a.md", JSON.stringify(userWithFile.data?.files));
 
-// issue #53（§6.20）：轮末产出物投影——只下发 name/display/description，绝不泄露主机路径
+// issue #53（§6.20）：轮末产出物投影——只下发 name/display/description，绝不泄露主机路径。
+// HOME 在 verify 的隔离环境里会被改写，因此家目录用例必须用运行时的 homedir() 构造。
+const contractHome = homedir();
 const presentedSummary = mod.summarizeEvent({
   seq: 40,
   time: 1_700_000_000_000,
   type: "deliverables/presented",
   data: { turn: 2, callId: "call-x", files: [
     { path: "/home/mark/proj/src/a.ts", description: "最终交付" },
-    { path: "/home/mark/.config/secret.json" },
+    { path: `${contractHome}/.config/secret.json` },
     { path: "/opt/elsewhere/report.pdf" },
     { path: "rel/z.ts" },
   ] },
