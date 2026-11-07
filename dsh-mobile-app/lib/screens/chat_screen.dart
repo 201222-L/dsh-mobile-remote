@@ -303,6 +303,9 @@ class ChatScreen extends StatefulWidget {
   final Api? apiClient;
   final GitReadApi? gitReadApi;
   final GitBrowserControllerFactory? gitControllerFactory;
+
+  /// issue #60 R06：仅测试注入（TTL 行为需要可控时钟/短 TTL）；生产用默认缓存。
+  final TurnTailSummaryCache? changedSummaryCache;
   const ChatScreen({
     super.key,
     required this.store,
@@ -311,6 +314,7 @@ class ChatScreen extends StatefulWidget {
     this.apiClient,
     this.gitReadApi,
     this.gitControllerFactory,
+    this.changedSummaryCache,
   });
 
   @override
@@ -348,8 +352,12 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── issue #53（ADR 0027 §3）：轮末产出物（两卡 + 按坐标预览） ─────────
   final Map<int, TurnTail> _turnTails = {}; // 轮号 → turnTails/tail 信号
   final Map<int, List<DeliverableFile>> _deliverablesByTurn = {};
-  final TurnTailSummaryCache _changedSummaryCache = TurnTailSummaryCache();
+  late final TurnTailSummaryCache _changedSummaryCache =
+      widget.changedSummaryCache ?? TurnTailSummaryCache();
+  /// 只表示 **in-flight**：完成/失败后移除，TTL 到期可重新拉取（issue #60 R06）。
   final Set<int> _changedSummaryRequested = {};
+  /// 失败退避：避免完成后立刻被重建无限重试；仅抑制一段时间，不阻止 TTL 恢复。
+  final Map<int, DateTime> _changedSummaryRetryAfter = {};
   final Map<int, String> _changedSummaryErrors = {};
   final Map<int, ({int version, TurnFileLinkResolver resolver})> _linkResolvers = {};
   int _turnTailVersion = 0;
@@ -1235,6 +1243,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _deliverablesByTurn.clear();
         _changedSummaryCache.clear();
         _changedSummaryRequested.clear();
+        _changedSummaryRetryAfter.clear();
         _changedSummaryErrors.clear();
         _linkResolvers.clear();
         _turnTailVersion++;
@@ -5874,28 +5883,42 @@ class _ChatScreenState extends State<ChatScreen> {
     final sessionId = _tailSessionId;
     if (sessionId == null) return;
     if (_changedSummaryRequested.contains(turn)) return;
+    final retryAfter = _changedSummaryRetryAfter[turn];
+    if (retryAfter != null && retryAfter.isAfter(DateTime.now())) return;
     _changedSummaryRequested.add(turn);
     unawaited(_loadChangedSummary(sessionId, turn));
   }
 
+  /// 失败退避时长：只抑制短时间内的重复请求；负结果的正规节流由缓存 TTL 承担。
+  static const Duration _changedSummaryFailureBackoff = Duration(seconds: 60);
+
   Future<void> _loadChangedSummary(String sessionId, int turn) async {
-    for (var attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        final summary = await _api.changesSummary(sessionId, turn);
-        if (!mounted || sessionId != _tailSessionId) return;
-        _changedSummaryCache.store(turn, summary);
-        _changedSummaryErrors.remove(turn);
-        setState(() => _turnTailVersion++);
-        return;
-      } catch (e) {
-        _changedSummaryErrors[turn] = e.toString();
-        if (attempt == 0) {
-          await Future<void>.delayed(const Duration(milliseconds: 400));
-          if (!mounted) return;
+    try {
+      for (var attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          final summary = await _api.changesSummary(sessionId, turn);
+          if (!mounted || sessionId != _tailSessionId) return;
+          _changedSummaryCache.store(turn, summary);
+          _changedSummaryErrors.remove(turn);
+          _changedSummaryRetryAfter.remove(turn);
+          setState(() => _turnTailVersion++);
+          return;
+        } catch (e) {
+          _changedSummaryErrors[turn] = e.toString();
+          if (attempt == 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+            if (!mounted) return;
+          }
         }
       }
+      // 两次都失败：记录下来并退避；**不**阻止 TTL/重建后的恢复性重试。
+      _changedSummaryRetryAfter[turn] =
+          DateTime.now().add(_changedSummaryFailureBackoff);
+      if (mounted) setState(() {});
+    } finally {
+      // in-flight 门闩必须总是释放：否则缓存 TTL 到期后卡片永久消失（issue #60 R06）。
+      _changedSummaryRequested.remove(turn);
     }
-    if (mounted) setState(() {});
   }
 
   /// 轮末两卡：改动卡（懒加载摘要）→ 交付卡。无文件不占位；能力位缺失不渲染。

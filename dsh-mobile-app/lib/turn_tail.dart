@@ -386,16 +386,20 @@ class TurnTailSummaryCache {
   TurnTailSummaryCache({
     this.negativeTtl = const Duration(seconds: 60),
     this.availableTtl = const Duration(minutes: 5),
-  });
+    DateTime Function()? clock,
+  }) : _clock = clock ?? DateTime.now;
 
   final Duration negativeTtl;
   final Duration availableTtl;
+
+  /// 时钟注入：仅用于测试 TTL（widget 测试的假时钟不会推进 `DateTime.now()`）。
+  final DateTime Function() _clock;
   final Map<int, _CachedSummary> _entries = {};
 
   ChangesSummary? lookup(int turn) {
     final entry = _entries[turn];
     if (entry == null) return null;
-    if (entry.expiresAt.isBefore(DateTime.now())) {
+    if (entry.expiresAt.isBefore(_clock())) {
       _entries.remove(turn);
       return null;
     }
@@ -406,7 +410,7 @@ class TurnTailSummaryCache {
     final ttl = summary.state == ChangesState.available
         ? availableTtl
         : negativeTtl;
-    _entries[turn] = _CachedSummary(summary, DateTime.now().add(ttl));
+    _entries[turn] = _CachedSummary(summary, _clock().add(ttl));
   }
 
   void clear() => _entries.clear();
