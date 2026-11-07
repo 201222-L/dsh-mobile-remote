@@ -92,6 +92,53 @@ void main() {
     });
   });
 
+  group('R07 多次 present 按持久坐标取最新', () {
+    test('到达顺序颠倒也以 seq/index 更大的声明为准', () {
+      const newer = DeliverableFile(
+        name: 'a.ts',
+        display: 'src/a.ts',
+        description: 'NEW',
+        seq: 20,
+        index: 0,
+      );
+      const older = DeliverableFile(
+        name: 'a.ts',
+        display: 'src/a.ts',
+        description: 'OLD',
+        seq: 10,
+        index: 0,
+      );
+      // 实时：先旧后新。
+      final live = mergeDeliverableDeclarations(const [older], const [newer]);
+      expect(live.single.description, 'NEW');
+      expect(live.single.seq, 20);
+      // 历史倒序/补页：先新后旧（旧声明后到）——必须仍保留 NEW/seq20。
+      final replay = mergeDeliverableDeclarations(const [newer], const [older]);
+      expect(replay.single.description, 'NEW', reason: '不能按到达顺序退回旧声明');
+      expect(replay.single.seq, 20);
+      // 三次声明任意顺序都收敛。
+      const oldest = DeliverableFile(
+        name: 'a.ts',
+        display: 'src/a.ts',
+        description: 'OLDEST',
+        seq: 5,
+        index: 1,
+      );
+      for (final order in <List<DeliverableFile>>[
+        const [oldest, older, newer],
+        const [newer, oldest, older],
+        const [older, newer, oldest],
+      ]) {
+        final merged = mergeDeliverableDeclarations(
+          order.take(1).toList(),
+          order.skip(1).toList(),
+        );
+        expect(merged.single.description, 'NEW');
+        expect(merged.single.seq, 20);
+      }
+    });
+  });
+
   group('行内链接解析', () {
     final resolver = TurnFileLinkResolver(
       sessionId: 's1',

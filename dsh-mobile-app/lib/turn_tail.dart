@@ -146,18 +146,40 @@ List<DeliverableFile> deliverableFilesOf(
 }
 
 /// 同轮多次 `present` 的合并：按路径去重、说明取该轮**最后一次**声明（§6.20）。
+///
+/// issue #60 R07：历史回放是倒序/分页到达的，"最后一次声明"必须按**持久坐标**
+/// (seq, index) 判定，而不是按到达顺序覆盖；实时/初载/补页因此收敛到同一结果。
+/// 输出按 (seq, index) 升序，保证不同到达顺序得到相同列表。
 List<DeliverableFile> mergeDeliverableDeclarations(
   List<DeliverableFile> existing,
   List<DeliverableFile> incoming,
 ) {
   final merged = <String, DeliverableFile>{};
+  void absorb(DeliverableFile file) {
+    final current = merged[file.dedupeKey];
+    if (current == null || _isLaterDeclaration(file, current)) {
+      merged[file.dedupeKey] = file;
+    }
+  }
+
   for (final file in existing) {
-    merged[file.dedupeKey] = file;
+    absorb(file);
   }
   for (final file in incoming) {
-    merged[file.dedupeKey] = file;
+    absorb(file);
   }
-  return merged.values.toList(growable: false);
+  final out = merged.values.toList(growable: false)
+    ..sort((a, b) {
+      final bySeq = a.seq.compareTo(b.seq);
+      return bySeq != 0 ? bySeq : a.index.compareTo(b.index);
+    });
+  return List.unmodifiable(out);
+}
+
+/// 持久坐标更晚（seq 优先、同 seq 比 index）的声明胜出。
+bool _isLaterDeclaration(DeliverableFile candidate, DeliverableFile current) {
+  if (candidate.seq != current.seq) return candidate.seq > current.seq;
+  return candidate.index > current.index;
 }
 
 /// 本轮改动文件（`/changes/summary` 的 `files[]`，§6.21）。
