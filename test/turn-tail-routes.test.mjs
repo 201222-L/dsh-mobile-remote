@@ -288,6 +288,10 @@ test("changes/summary：available 映射（seq/index 坐标、截断、不泄露
 	assert.equal(res.body.files[0].index, 0);
 	assert.equal(res.body.files[0].display, "src/a.ts");
 	assert.equal(res.body.files[0].name, "a.ts");
+	// round4-2：summary files 与 presented 共用路径摘要 id（16 hex，不含可拼路径）。
+	assert.match(res.body.files[0].id, /^[0-9a-f]{16}$/);
+	assert.equal(res.body.files[0].id, res.body.files[0].id.toLowerCase());
+	assert.ok(!JSON.stringify(res.body).includes(f.root));
 	assert.equal(res.body.files[0].added, 12);
 	assert.equal(res.body.files[1].binary, true);
 	assert.equal(res.body.total, 2);

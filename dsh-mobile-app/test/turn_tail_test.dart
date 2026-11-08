@@ -286,4 +286,52 @@ void main() {
       expect(isPreviewableImageName('noext'), isFalse);
     });
   });
+
+  group('round4-2 F2 行内链接按逻辑身份合并', () {
+    test('同一 src/a.ts 的 presented+changed 同一服务端 id → 可链接且代表坐标优先 presented', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(
+            name: 'a.ts',
+            display: 'src/a.ts',
+            seq: 10,
+            index: 0,
+            id: 'same-logical',
+          ),
+        ],
+        changed: const [
+          ChangedFile(
+            seq: 20,
+            index: 0,
+            display: 'src/a.ts',
+            name: 'a.ts',
+            added: 1,
+            deleted: 0,
+            id: 'same-logical',
+          ),
+        ],
+      );
+      final hit = resolver.resolve('src/a.ts');
+      expect(hit, isNotNull, reason: '同一逻辑文件跨来源不得误判歧义');
+      expect(hit?.kind, TurnFileKind.presented, reason: '代表坐标优先 presented');
+      expect(hit?.seq, 10);
+    });
+
+    test('旧插件无 id：presented+changed 精确同 display 保守合并；basename 不跨路径合并', () {
+      final legacy = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'a.ts', display: 'src/a.ts', seq: 10, index: 0),
+        ],
+        changed: const [
+          ChangedFile(seq: 20, index: 0, display: 'src/a.ts', name: 'a.ts', added: 1, deleted: 0),
+          ChangedFile(seq: 21, index: 0, display: 'lib/a.ts', name: 'a.ts', added: 1, deleted: 0),
+        ],
+      );
+      expect(legacy.resolve('src/a.ts')?.kind, TurnFileKind.presented);
+      // basename `a.ts` 在 presented 与 changed(lib/a.ts) 间是不同路径，不得合并。
+      expect(legacy.resolve('a.ts'), isNull);
+    });
+  });
 }

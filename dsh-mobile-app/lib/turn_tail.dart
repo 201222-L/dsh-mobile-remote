@@ -204,6 +204,9 @@ class ChangedFile {
   final bool binary;
   final bool oversized;
 
+  /// issue #60 round4-2：服务端路径摘要身份（与 presented 同一 helper）；旧插件缺省。
+  final String? id;
+
   const ChangedFile({
     required this.seq,
     required this.index,
@@ -213,6 +216,7 @@ class ChangedFile {
     required this.deleted,
     this.binary = false,
     this.oversized = false,
+    this.id,
   });
 
   static ChangedFile? fromJson(Object? json) {
@@ -229,6 +233,7 @@ class ChangedFile {
       deleted: (json['deleted'] as num?)?.toInt() ?? 0,
       binary: json['binary'] == true,
       oversized: json['oversized'] == true,
+      id: (json['id'] ?? '').toString().isNotEmpty ? json['id'].toString() : null,
     );
   }
 }
@@ -342,10 +347,13 @@ bool isPreviewableImageName(String name) {
 /// 规则：**精确路径优先**（display / name 精确匹配），唯一 basename 次之，
 /// 有歧义或未记录一律不链接（不猜测、不链接未记录文件）。
 class TurnFileLinkResolver {
-  /// issue #60 recheck-10（R08 邻近残留）：display 在脱敏后可能相同（不同目录同名
-  /// 文件），因此精确键也必须保存**坐标集合**；只有唯一命中才链接，歧义返回 null。
-  final Map<String, Set<TurnFileCoordinate>> _exact = {};
-  final Map<String, Set<TurnFileCoordinate>> _byBasename = {};
+  /// issue #60 round4-2（R08）：display 是脱敏展示值，不能当文件身份。按**逻辑身份**
+  /// （优先服务端路径摘要 id；旧数据用 kind+seq+index 兼容）分组：
+  /// - 同一 display 下所有候选同一 logicalId → 合并为一个逻辑文件（代表坐标优先 presented，
+  ///   其次更大 (seq,index)），可链接；
+  /// - 同 display 出现不同 logicalId（不同目录同名文件）→ 歧义返回 null。
+  final Map<String, List<_LinkCandidate>> _exact = {};
+  final Map<String, List<_LinkCandidate>> _byBasename = {};
 
   TurnFileLinkResolver({
     required String sessionId,
@@ -353,7 +361,7 @@ class TurnFileLinkResolver {
     List<ChangedFile> changed = const [],
   }) {
     for (final file in presented) {
-      _add(file.display, file.name, TurnFileCoordinate(
+      _add(file.display, file.name, file.id, TurnFileCoordinate(
         sessionId: sessionId,
         kind: TurnFileKind.presented,
         seq: file.seq,
@@ -361,7 +369,7 @@ class TurnFileLinkResolver {
       ));
     }
     for (final file in changed) {
-      _add(file.display, file.name, TurnFileCoordinate(
+      _add(file.display, file.name, file.id, TurnFileCoordinate(
         sessionId: sessionId,
         kind: TurnFileKind.changed,
         seq: file.seq,
@@ -386,36 +394,81 @@ class TurnFileLinkResolver {
     return slash >= 0 ? text.substring(slash + 1) : text;
   }
 
-  void _add(String display, String name, TurnFileCoordinate coordinate) {
+  void _add(String display, String name, String? serverId, TurnFileCoordinate coordinate) {
     final path = _normalize(display);
+    final candidate = _LinkCandidate(
+      coordinate: coordinate,
+      serverId: serverId != null && serverId.isNotEmpty ? serverId : null,
+    );
     if (path.isNotEmpty) {
-      _exact.putIfAbsent(path, () => <TurnFileCoordinate>{}).add(coordinate);
+      _exact.putIfAbsent(path, () => <_LinkCandidate>[]).add(candidate);
     }
     final rawName = _normalize(name);
     if (rawName.isNotEmpty) {
-      // basename 精确匹配只作为次优候选；同一坐标不重复计数。
-      _byBasename.putIfAbsent(_basenameOf(path.isNotEmpty ? path : rawName), () => <TurnFileCoordinate>{})
-          .add(coordinate);
+      final base = _basenameOf(path.isNotEmpty ? path : rawName);
+      if (base.isNotEmpty) {
+        _byBasename.putIfAbsent(base, () => <_LinkCandidate>[]).add(candidate);
+      }
       final nameBase = _basenameOf(rawName);
-      if (nameBase.isNotEmpty) {
-        _byBasename.putIfAbsent(nameBase, () => <TurnFileCoordinate>{}).add(coordinate);
+      if (nameBase.isNotEmpty && nameBase != base) {
+        _byBasename.putIfAbsent(nameBase, () => <_LinkCandidate>[]).add(candidate);
       }
     }
   }
 
-  /// 行内代码文本 → 预览坐标；未命中/歧义返回 null。
+  /// 行内代码文本 → 预览坐标；未命中/存在不同逻辑文件歧义返回 null。
   TurnFileCoordinate? resolve(String code) {
     final token = _normalize(code);
     if (token.isEmpty) return null;
     final exact = _exact[token];
     if (exact != null) {
-      // 精确路径优先，但同名不同 id 的两条记录会让它变成歧义 → 不链接。
-      return exact.length == 1 ? exact.single : null;
+      return _resolveCandidates(exact, legacyExactDisplayMerge: true);
     }
-    final candidates = _byBasename[_basenameOf(token)];
-    if (candidates == null || candidates.length != 1) return null;
-    return candidates.single;
+    return _resolveCandidates(_byBasename[_basenameOf(token)]);
   }
+
+  TurnFileCoordinate? _resolveCandidates(
+    List<_LinkCandidate>? candidates, {
+    bool legacyExactDisplayMerge = false,
+  }) {
+    if (candidates == null || candidates.isEmpty) return null;
+    final withId = candidates.where((c) => c.serverId != null).toList();
+    if (withId.length == candidates.length) {
+      final ids = withId.map((c) => c.serverId!).toSet();
+      if (ids.length != 1) return null;
+      return _representative(candidates);
+    }
+    if (withId.isNotEmpty) {
+      // 新旧混合：无法证明是同一文件，保守不链接。
+      return null;
+    }
+    // 旧数据无 id：**仅精确 display 命中**时，presented + changed 可保守视作同一逻辑
+    // 文件；basename 命中不同路径的同名文件仍按歧义处理（不跨路径合并）。
+    if (legacyExactDisplayMerge) {
+      final hasPresented = candidates.any((c) => c.coordinate.kind == TurnFileKind.presented);
+      final hasChanged = candidates.any((c) => c.coordinate.kind == TurnFileKind.changed);
+      if (hasPresented && hasChanged) return _representative(candidates);
+    }
+    return candidates.length == 1 ? candidates.single.coordinate : null;
+  }
+
+  /// 代表坐标：presented 优先；同类取更大 (seq,index)。
+  static TurnFileCoordinate _representative(List<_LinkCandidate> candidates) {
+    final sorted = [...candidates]..sort((a, b) {
+      final aPresented = a.coordinate.kind == TurnFileKind.presented;
+      final bPresented = b.coordinate.kind == TurnFileKind.presented;
+      if (aPresented != bPresented) return aPresented ? -1 : 1;
+      final bySeq = b.coordinate.seq.compareTo(a.coordinate.seq);
+      return bySeq != 0 ? bySeq : b.coordinate.index.compareTo(a.coordinate.index);
+    });
+    return sorted.first.coordinate;
+  }
+}
+
+class _LinkCandidate {
+  const _LinkCandidate({required this.coordinate, this.serverId});
+  final TurnFileCoordinate coordinate;
+  final String? serverId;
 }
 
 /// 改动摘要的负结果短 TTL 缓存（issue #53 §7）。

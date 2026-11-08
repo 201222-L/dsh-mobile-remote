@@ -240,6 +240,14 @@ check(
     && mod.isLiveTimelineRecord({ seq: 41, type: "workspace/changes", data: { turn: 2 } }) === false
     && mod.isDetailVisibleType("workspace/changes") === false,
 );
+check(
+  "recordFileId 为不可逆 16 位 hex，presented 与 changes/summary 同源",
+  typeof mod.recordFileId === "function"
+    && /^[0-9a-f]{16}$/.test(mod.recordFileId("/a/b/c.ts"))
+    && mod.recordFileId("/a/b/c.ts") === mod.recordFileId("/a/b/c.ts")
+    && mod.recordFileId("/a/b/c.ts") !== mod.recordFileId("/a/b/d.ts"),
+  String(mod.recordFileId?.("/a/b/c.ts")),
+);
 const tailSignals = mod.turnTailsOf([
   { type: "workspace/changes", data: { turn: 2 } },
   { type: "deliverables/presented", data: { turn: 2, files: [{ path: "/tmp/a" }] } },
@@ -509,6 +517,8 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         && tailSummary.json?.files?.[0]?.seq === 2
         && tailSummary.json?.files?.[0]?.index === 0
         && tailSummary.json?.files?.[0]?.name === "a.txt"
+        && typeof tailSummary.json?.files?.[0]?.id === "string"
+        && /^[0-9a-f]{16}$/.test(tailSummary.json?.files?.[0]?.id ?? "")
         && !JSON.stringify(tailSummary.json).includes(turnTailCwd)
         && !("cwd" in (tailSummary.json ?? {})),
       JSON.stringify(tailSummary.json),
