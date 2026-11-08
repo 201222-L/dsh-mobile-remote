@@ -356,6 +356,9 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.changedSummaryCache ?? TurnTailSummaryCache();
   /// 只表示 **in-flight**：完成/失败后移除，TTL 到期可重新拉取（issue #60 R06）。
   final Set<int> _changedSummaryRequested = {};
+  /// issue #60 recheck-11：reset/重同步会清空门闩与缓存；旧请求完成必须按代际丢弃，
+  /// 不得回填缓存或移除新请求的门闩。
+  int _tailLoadGeneration = 0;
   /// 失败退避：避免完成后立刻被重建无限重试；仅抑制一段时间，不阻止 TTL 恢复。
   final Map<int, DateTime> _changedSummaryRetryAfter = {};
   final Map<int, String> _changedSummaryErrors = {};
@@ -1246,6 +1249,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _changedSummaryRetryAfter.clear();
         _changedSummaryErrors.clear();
         _linkResolvers.clear();
+        _tailLoadGeneration++;
         _turnTailVersion++;
         _processTurns = const [];
         _processTurnMap = const {};
@@ -5893,31 +5897,40 @@ class _ChatScreenState extends State<ChatScreen> {
   static const Duration _changedSummaryFailureBackoff = Duration(seconds: 60);
 
   Future<void> _loadChangedSummary(String sessionId, int turn) async {
+    final generation = _tailLoadGeneration;
+    final stillCurrent = () =>
+        mounted && generation == _tailLoadGeneration && sessionId == _tailSessionId;
     try {
       for (var attempt = 0; attempt < 2; attempt += 1) {
         try {
           final summary = await _api.changesSummary(sessionId, turn);
-          if (!mounted || sessionId != _tailSessionId) return;
+          // issue #60 recheck-11：reset/重同步后旧请求完成 → 丢弃，不回填缓存。
+          if (!stillCurrent()) return;
           _changedSummaryCache.store(turn, summary);
           _changedSummaryErrors.remove(turn);
           _changedSummaryRetryAfter.remove(turn);
           setState(() => _turnTailVersion++);
           return;
         } catch (e) {
+          if (!stillCurrent()) return;
           _changedSummaryErrors[turn] = e.toString();
           if (attempt == 0) {
             await Future<void>.delayed(const Duration(milliseconds: 400));
-            if (!mounted) return;
+            if (!stillCurrent()) return;
           }
         }
       }
+      if (!stillCurrent()) return;
       // 两次都失败：记录下来并退避；**不**阻止 TTL/重建后的恢复性重试。
       _changedSummaryRetryAfter[turn] =
           DateTime.now().add(_changedSummaryFailureBackoff);
       if (mounted) setState(() {});
     } finally {
       // in-flight 门闩必须总是释放：否则缓存 TTL 到期后卡片永久消失（issue #60 R06）。
-      _changedSummaryRequested.remove(turn);
+      // 旧代际完成不得移除 reset 后新请求的门闩（recheck-11）。
+      if (generation == _tailLoadGeneration) {
+        _changedSummaryRequested.remove(turn);
+      }
     }
   }
 

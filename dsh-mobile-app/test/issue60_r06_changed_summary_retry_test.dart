@@ -77,7 +77,7 @@ class _RetryBackend {
     }
     if (request.url.path == '/m/api/changes/summary') {
       summaryRequests += 1;
-      if (summaryGate != null) await summaryGate!.future;
+      if (summaryGate != null && summaryRequests == 1) await summaryGate!.future;
       final payload = summaryPayloads[
           (summaryRequests - 1).clamp(0, summaryPayloads.length - 1)];
       return _json({'ok': true, 'turn': 1, ...payload});
@@ -228,5 +228,40 @@ void main() {
     gate.complete();
     await tester.pumpAndSettle();
     expect(find.byKey(TurnTailCardKeys.changedCard), findsOneWidget);
+  });
+
+  testWidgets('recheck-11：reset 后旧请求完成不得回填缓存/移除新门闩', (tester) async {
+    final gate = Completer<void>();
+    final backend = _RetryBackend(
+      summaryPayloads: [
+        {'state': 'unavailable', 'files': <Object>[]},
+        _availableSummary(),
+      ],
+      summaryGate: gate,
+    );
+    final cache = TurnTailSummaryCache();
+    final store = await _pumpChat(tester, backend, cache);
+    expect(backend.summaryRequests, 1);
+    expect(find.byKey(TurnTailCardKeys.changedCard), findsNothing);
+
+    // 触发会话重同步（reset）：清空门闩/缓存并重新拉历史 → 新请求应立即发起并成功。
+    store.injectFrame({
+      'type': 'session/event',
+      'sessionId': 'session-r06',
+      'event': {'seq': 99, 'type': 'compaction/end', 'data': <String, dynamic>{}},
+    });
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(backend.summaryRequests, 2, reason: 'reset 后新请求不得被旧 in-flight 门闩挡住');
+    expect(find.byKey(TurnTailCardKeys.changedCard), findsOneWidget);
+
+    // 旧请求此时才完成（unavailable）：不得回填缓存让卡片消失，也不得移除新门闩。
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(find.byKey(TurnTailCardKeys.changedCard), findsOneWidget, reason: '旧代际结果必须丢弃');
+    expect(backend.summaryRequests, 2);
+    // 收尾：停掉 SSE/去抖计时器，避免 dispose 后仍有 pending timer 断言。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
   });
 }
