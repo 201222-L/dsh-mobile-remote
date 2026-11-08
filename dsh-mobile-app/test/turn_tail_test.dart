@@ -333,5 +333,19 @@ void main() {
       // basename `a.ts` 在 presented 与 changed(lib/a.ts) 间是不同路径，不得合并。
       expect(legacy.resolve('a.ts'), isNull);
     });
+
+    test('round5-2：两个 presented + 一个 changed 同 display 仍为歧义 → null', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 10, index: 0),
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 20, index: 0),
+        ],
+        changed: const [
+          ChangedFile(seq: 30, index: 0, display: 'report.pdf', name: 'report.pdf', added: 1, deleted: 0),
+        ],
+      );
+      expect(resolver.resolve('report.pdf'), isNull, reason: '每类必须恰好一个去重坐标才允许旧数据合并');
+    });
   });
 }

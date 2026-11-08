@@ -445,9 +445,25 @@ class TurnFileLinkResolver {
     // 旧数据无 id：**仅精确 display 命中**时，presented + changed 可保守视作同一逻辑
     // 文件；basename 命中不同路径的同名文件仍按歧义处理（不跨路径合并）。
     if (legacyExactDisplayMerge) {
-      final hasPresented = candidates.any((c) => c.coordinate.kind == TurnFileKind.presented);
-      final hasChanged = candidates.any((c) => c.coordinate.kind == TurnFileKind.changed);
-      if (hasPresented && hasChanged) return _representative(candidates);
+      // issue #60 round5-2：旧插件无 id 时只允许「presented 恰好 1 个去重坐标 +
+      // changed 恰好 1 个去重坐标」保守视作同一逻辑文件；多个同源坐标（如两个
+      // presented report.pdf）仍是歧义，绝不能合并后打开较新的那个错误文件。
+      final presentedCoords = candidates
+          .where((c) => c.coordinate.kind == TurnFileKind.presented)
+          .map((c) => '${c.coordinate.seq}:${c.coordinate.index}')
+          .toSet();
+      final changedCoords = candidates
+          .where((c) => c.coordinate.kind == TurnFileKind.changed)
+          .map((c) => '${c.coordinate.seq}:${c.coordinate.index}')
+          .toSet();
+      if (presentedCoords.length + changedCoords.length == 1) {
+        // 只有一个来源的一个坐标：就是它本身（精确 display 命中）。
+        return _representative(candidates);
+      }
+      if (presentedCoords.length == 1 && changedCoords.length == 1) {
+        return _representative(candidates);
+      }
+      return null;
     }
     return candidates.length == 1 ? candidates.single.coordinate : null;
   }
