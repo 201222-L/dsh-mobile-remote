@@ -7251,10 +7251,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   }
 
   /// 通用参数/结果块（issue #60 R12：无内联 diff 时普通模式也要可达参数，不只是结果）。
-  List<Widget> _genericBody() => [
+  List<Widget> _genericBody({bool includeResult = true}) => [
     if (widget.item.toolArguments.isNotEmpty)
       _code(L10n.t('参数', 'Arguments'), widget.item.toolArguments),
-    if (widget.item.toolResult.isNotEmpty)
+    if (includeResult && widget.item.toolResult.isNotEmpty)
       _looksMarkdown(widget.item.toolResult) && !widget.debug
           ? _markdownResult(widget.item.toolResult)
           : _code(L10n.t('结果', 'Result'), widget.item.toolResult),
@@ -7268,6 +7268,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     // 红色 Failed 抬头不能替代失败原因。
     final failed = widget.item.toolError || widget.item.toolStatus == 'failed';
     if (failed) {
+      // issue #60 recheck-5（R12 交叉场景）：失败也必须是"错误原因 + 通用参数/结果"，
+      // 失败的大 write/edit（diffTruncated/无 diff）在普通模式仍要能看到参数。
       return [
         if (resultText.isNotEmpty)
           _code(L10n.t('错误', 'Error'), resultText)
@@ -7279,6 +7281,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               style: TextStyle(fontSize: 11.5, color: Colors.redAccent),
             ),
           ),
+        // 结果已作为错误原因展示，这里只补参数，避免重复。
+        ..._genericBody(includeResult: false),
       ];
     }
     switch (call.kind) {

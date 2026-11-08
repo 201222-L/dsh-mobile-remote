@@ -13,11 +13,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 class _Backend {
-  _Backend({this.editFailure = false, this.imageFailure = false, this.truncatedWrite = false});
+  _Backend({
+    this.editFailure = false,
+    this.imageFailure = false,
+    this.truncatedWrite = false,
+    this.writeFailure = false,
+  });
 
   final bool editFailure;
   final bool imageFailure;
   final bool truncatedWrite;
+
+  /// 失败的大 write：diffTruncated + isError，用于验证"错误原因 + 参数/结果"交叉场景。
+  final bool writeFailure;
 
   late final Api api = Api(client: MockClient(_handle))
     ..baseUrl = 'http://r11.test'
@@ -135,8 +143,10 @@ class _Backend {
           'step': 1,
           'callId': 'call-write',
           'name': 'write',
-          'text': 'wrote src/big.ts',
-          'isError': false,
+          'text': writeFailure
+              ? 'sandbox denied: cannot write src/big.ts'
+              : 'wrote src/big.ts',
+          'isError': writeFailure,
         },
       });
     }
@@ -222,5 +232,14 @@ void main() {
     expect(find.textContaining('FIRST-LINE-CONTENT'), findsOneWidget);
     expect(find.text('结果'), findsOneWidget);
     expect(find.textContaining('wrote src/big.ts'), findsOneWidget);
+  });
+
+  testWidgets('recheck-5（R12）：失败的大 write 普通模式同时显示错误原因与参数', (tester) async {
+    await _pumpChat(tester, _Backend(truncatedWrite: true, writeFailure: true));
+    await tester.tap(_card('call-write', 3));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('sandbox denied'), findsOneWidget, reason: '失败原因必须可达');
+    expect(find.text('参数'), findsOneWidget, reason: '失败的大 diff 也必须能查看参数');
+    expect(find.textContaining('FIRST-LINE-CONTENT'), findsOneWidget);
   });
 }
