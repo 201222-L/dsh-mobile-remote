@@ -279,7 +279,8 @@ test("SSE：hello 带同判据 turnTail，turn/end 摘要带 tail", async () => 
 
 test("changes/summary：available 映射（seq/index 坐标、截断、不泄露 path/cwd）", async () => {
 	const f = makeFixture();
-	const res = await call(createHarness({ sessions: f.sessions, workspaceChanges: f.changes.service }).route, {
+	const { route } = createHarness({ sessions: f.sessions, workspaceChanges: f.changes.service });
+	const res = await call(route, {
 		url: "/m/api/changes/summary?sessionId=s1&turn=2",
 	});
 	assert.equal(res.status, 200);
@@ -288,9 +289,17 @@ test("changes/summary：available 映射（seq/index 坐标、截断、不泄露
 	assert.equal(res.body.files[0].index, 0);
 	assert.equal(res.body.files[0].display, "src/a.ts");
 	assert.equal(res.body.files[0].name, "a.ts");
-	// round4-2：summary files 与 presented 共用路径摘要 id（16 hex，不含可拼路径）。
+	// round4-2 / round6-3 F2：summary files 与 presented 共用路径摘要 id（16 hex，不含
+	// 可拼路径）；本 fixture 正是 presented 绝对路径 + changed 相对路径的混合形状。
 	assert.match(res.body.files[0].id, /^[0-9a-f]{16}$/);
 	assert.equal(res.body.files[0].id, res.body.files[0].id.toLowerCase());
+	const history = await call(route, { url: "/m/api/history?sessionId=s1&limit=100" });
+	const presented = history.body.events.find((event) => event.type === "deliverables/presented");
+	assert.equal(
+		res.body.files[0].id,
+		presented.data.files[0].id,
+		"abs(presented)/rel(changed) 混合路径必须得到同一逻辑身份 id",
+	);
 	assert.ok(!JSON.stringify(res.body).includes(f.root));
 	assert.equal(res.body.files[0].added, 12);
 	assert.equal(res.body.files[1].binary, true);
@@ -298,6 +307,35 @@ test("changes/summary：available 映射（seq/index 坐标、截断、不泄露
 	assert.equal(res.body.truncated, false);
 	assert.ok(!("cwd" in res.body), "不得下发宿主 cwd");
 	assert.ok(!("path" in res.body.files[0]), "不得下发可拼接 path");
+});
+
+test("round6-3 F2：abs/rel 与 rel/abs 混合形状的 presented/changed id 相等", async () => {
+	for (const shape of ["abs_presented_rel_changed", "rel_presented_abs_changed"]) {
+		const root = makeWorkspace();
+		const absPath = join(root, "src", "a.ts");
+		const relPath = "src/a.ts";
+		const presentedPath = shape === "abs_presented_rel_changed" ? absPath : relPath;
+		const changedPath = shape === "abs_presented_rel_changed" ? relPath : absPath;
+		const events = [
+			{ seq: 1, type: "turn/start", data: { turn: 2 } },
+			{ seq: 2, type: "workspace/changes", data: { turn: 2 } },
+			{ seq: 3, type: "deliverables/presented", data: { turn: 2, files: [{ path: presentedPath }] } },
+			{ seq: 4, type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } },
+		];
+		const live = { id: "s1", header: { createdAt: 1, cwd: root }, events, snapshotEvents() { return this.events; } };
+		const sessions = { get: (id) => (id === "s1" ? live : undefined), list: () => [live] };
+		const changes = {
+			summary: () => ({ cwd: root, files: [{ path: changedPath, display: "src/a.ts", added: 1, deleted: 0 }], total: 1, added: 1, deleted: 0 }),
+			async diff() { return undefined; },
+		};
+		const { route } = createHarness({ sessions, workspaceChanges: changes });
+		const history = await call(route, { url: "/m/api/history?sessionId=s1&limit=100" });
+		const summary = await call(route, { url: "/m/api/changes/summary?sessionId=s1&turn=2" });
+		const presented = history.body.events.find((event) => event.type === "deliverables/presented");
+		assert.equal(presented.data.files[0].id, summary.body.files[0].id, `${shape}: 两份投影 id 必须相等`);
+		assert.equal(summary.body.files[0].display, "src/a.ts");
+		assert.ok(!JSON.stringify({ history: history.body, summary: summary.body }).includes(root), `${shape}: 不得泄露绝对路径`);
+	}
 });
 
 test("changes/summary：absent / unavailable（休眠、服务缺失、摘要失效）", async () => {
