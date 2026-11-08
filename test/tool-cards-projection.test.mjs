@@ -14,6 +14,7 @@ import {
 	toolCallSummaryOf,
 	toolCardsCapabilityOf,
 	toolNamesOf,
+	toolResultCallIdOf,
 	toolResultSummaryOf,
 } from "../lib/index.js";
 
@@ -185,4 +186,34 @@ test("result：grep/glob 匹配总数优先取 meta.total，缺失时按文本�
 
 test("result：meta 形状可识别搜索工具（结果事件无名字时）", () => {
 	assert.equal(summaryOf(result(undefined, "", { shape: "paths", total: 12 })).resultCount, 12);
+});
+
+test("recheck-4：真实 tool/result 形状（message.source.callId / content[].toolCallId）恢复命令状态", () => {
+	// 当前 DSH 的真实形状：event.data 没有 callId；callId 在 message.source.callId、
+	// message.toolCallId 与 content[].toolCallId。
+	const event = {
+		seq: 77,
+		type: "tool/result",
+		data: {
+			turn: 1,
+			step: 1,
+			message: {
+				role: "tool",
+				toolCallId: "call-real",
+				source: { kind: "tool", callId: "call-real" },
+				content: [{
+					type: "tool-result",
+					toolCallId: "call-real",
+					content: [{ type: "text", text: "boom\n[exit code: 7]" }],
+				}],
+			},
+		},
+	};
+	assert.equal(toolResultCallIdOf(event), "call-real");
+	const summarized = summarizeEvent(event, { resolvedToolName: "bash" });
+	assert.equal(summarized.data?.callId, "call-real");
+	assert.equal(summarized.data?.summary?.exitCode, 7, "真实形状必须能恢复 exitCode，否则命令状态丢失");
+	// history/SSE 用同一坐标做 callId→name 关联。
+	const names = toolNamesOf([{ type: "tool/call", data: { callId: "call-real", name: "bash" } }]);
+	assert.equal(names.get(toolResultCallIdOf(event)), "bash");
 });

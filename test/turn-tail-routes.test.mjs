@@ -585,3 +585,36 @@ test("纯函数：mobileDisplayPath / renderUnifiedDiffText", () => {
 	assert.equal(truncated.truncated, true);
 	assert.ok(truncated.text.startsWith("--- /dev/null\n+++ b/a.txt\n@@ -1,0 +1,1 @@"));
 });
+
+test("R14 recheck-4：真实 tool/result 形状经 /history 关联后恢复 exitCode", async () => {
+	const root = makeWorkspace();
+	const events = [
+		{ seq: 1, type: "tool/call", data: { turn: 1, step: 1, callId: "call-real", name: "bash", arguments: '{"command":"false"}' } },
+		{
+			seq: 2,
+			type: "tool/result",
+			data: {
+				turn: 1,
+				step: 1,
+				message: {
+					role: "tool",
+					toolCallId: "call-real",
+					source: { kind: "tool", callId: "call-real" },
+					content: [{
+						type: "tool-result",
+						toolCallId: "call-real",
+						content: [{ type: "text", text: "boom\n[exit code: 7]" }],
+					}],
+				},
+			},
+		},
+	];
+	const live = { id: "s-real", header: { createdAt: 1, cwd: root }, events, snapshotEvents() { return this.events; } };
+	const res = await call(createHarness({ sessions: { get: (id) => (id === "s-real" ? live : undefined), list: () => [live] } }).route, {
+		url: "/m/api/history?sessionId=s-real&limit=100",
+	});
+	assert.equal(res.status, 200);
+	const result = res.body.events.find((event) => event.type === "tool/result");
+	assert.equal(result.data.callId, "call-real", "真实形状的 callId 必须被解析");
+	assert.equal(result.data.summary?.exitCode, 7, "callId→name 关联后应下发真实退出码");
+});
