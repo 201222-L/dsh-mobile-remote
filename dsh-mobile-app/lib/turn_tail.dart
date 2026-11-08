@@ -342,7 +342,9 @@ bool isPreviewableImageName(String name) {
 /// 规则：**精确路径优先**（display / name 精确匹配），唯一 basename 次之，
 /// 有歧义或未记录一律不链接（不猜测、不链接未记录文件）。
 class TurnFileLinkResolver {
-  final Map<String, TurnFileCoordinate> _exact = {};
+  /// issue #60 recheck-10（R08 邻近残留）：display 在脱敏后可能相同（不同目录同名
+  /// 文件），因此精确键也必须保存**坐标集合**；只有唯一命中才链接，歧义返回 null。
+  final Map<String, Set<TurnFileCoordinate>> _exact = {};
   final Map<String, Set<TurnFileCoordinate>> _byBasename = {};
 
   TurnFileLinkResolver({
@@ -386,7 +388,9 @@ class TurnFileLinkResolver {
 
   void _add(String display, String name, TurnFileCoordinate coordinate) {
     final path = _normalize(display);
-    if (path.isNotEmpty) _exact.putIfAbsent(path, () => coordinate);
+    if (path.isNotEmpty) {
+      _exact.putIfAbsent(path, () => <TurnFileCoordinate>{}).add(coordinate);
+    }
     final rawName = _normalize(name);
     if (rawName.isNotEmpty) {
       // basename 精确匹配只作为次优候选；同一坐标不重复计数。
@@ -404,7 +408,10 @@ class TurnFileLinkResolver {
     final token = _normalize(code);
     if (token.isEmpty) return null;
     final exact = _exact[token];
-    if (exact != null) return exact;
+    if (exact != null) {
+      // 精确路径优先，但同名不同 id 的两条记录会让它变成歧义 → 不链接。
+      return exact.length == 1 ? exact.single : null;
+    }
     final candidates = _byBasename[_basenameOf(token)];
     if (candidates == null || candidates.length != 1) return null;
     return candidates.single;

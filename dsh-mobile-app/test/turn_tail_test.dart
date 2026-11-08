@@ -179,6 +179,27 @@ void main() {
     });
   });
 
+  group('recheck-10 R08 同名不同 id 的行内链接歧义', () {
+    test('两条同 display 不同 id 的交付文件 → report.pdf 不链接', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 10, index: 0, id: 'id-a'),
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 20, index: 0, id: 'id-b'),
+        ],
+      );
+      expect(resolver.resolve('report.pdf'), isNull, reason: '同 display 不同身份是歧义，不得链接第一条');
+      // 唯一条目仍可精确命中。
+      final unique = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'a.ts', display: 'src/a.ts', seq: 1, index: 0, id: 'id-a'),
+        ],
+      );
+      expect(unique.resolve('src/a.ts')?.seq, 1);
+    });
+  });
+
   group('行内链接解析', () {
     final resolver = TurnFileLinkResolver(
       sessionId: 's1',
