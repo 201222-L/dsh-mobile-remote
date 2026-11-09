@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
@@ -4087,7 +4087,32 @@ class _ChatScreenState extends State<ChatScreen> {
   void _openSessionFilesFromActionRail() {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    openSessionFiles(context, widget.store, sid, gitReadApi: widget.gitReadApi);
+    openSessionFiles(
+      context,
+      widget.store,
+      sid,
+      gitReadApi: widget.gitReadApi,
+      apiClient: _api,
+    );
+  }
+
+  /// issue #67：工具卡折叠行路径点击 → 直接定位到该文件的预览。
+  ///
+  /// 只把服务端下发的 `relative` 原样交给页面，**不在卡片/页面里拼绝对路径**；
+  /// 拼接与夹取由 [SessionFilesController] 唯一负责。返回时 ChatScreen 未重建，
+  /// 滚动位置与展开态天然保持。
+  void _openFilePathPreview(String relativePath) {
+    if (!mounted) return;
+    final sid = _mySessionId ?? widget.store.sessionId;
+    if (sid == null) return;
+    openSessionFiles(
+      context,
+      widget.store,
+      sid,
+      gitReadApi: widget.gitReadApi,
+      initialRelativePath: relativePath,
+      apiClient: _api,
+    );
   }
 
   Future<void> _openGit() async {
@@ -6256,6 +6281,8 @@ class _ChatScreenState extends State<ChatScreen> {
       // issue #66：待答问询入口——构建时实时读取当前会话的 pending 问询（resolved 后自然为空）。
       pendingQuestionIds: _pendingQuestionIdsForCards,
       onOpenQuestion: _openPendingQuestion,
+      // issue #67：折叠行路径可点进预览（服务端两字段同现时才渲染为链接）。
+      onOpenFilePath: _openFilePathPreview,
       onLoadDetail: _api.timelineCapabilities.detail &&
               item.detailAvailable &&
               item.detailSeq != null
@@ -7368,6 +7395,9 @@ class _ToolActivityCard extends StatefulWidget {
 
   /// issue #66：点「打开问询」的回调（复用既有问询卡作答；行内不出现作答控件）。
   final VoidCallback? onOpenQuestion;
+
+  /// issue #67：折叠行路径点击回调（参数是服务端下发的 cwd 相对路径，原样透传）。
+  final ValueChanged<String>? onOpenFilePath;
   final bool? expandedOverride;
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
@@ -7380,6 +7410,7 @@ class _ToolActivityCard extends StatefulWidget {
     this.toolCardsEnabled = false,
     this.pendingQuestionIds = const <String>{},
     this.onOpenQuestion,
+    this.onOpenFilePath,
     this.expandedOverride,
     this.onExpandedOverride,
     this.onLoadDetail,
@@ -7394,6 +7425,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool expanded = false;
   bool requested = false;
   bool userOverride = false;
+
+  /// issue #67：折叠行路径段的点击识别器（与 State 同生命周期，dispose 必须释放）。
+  TapGestureRecognizer? _pathTap;
+
+  @override
+  void dispose() {
+    _pathTap?.dispose();
+    _pathTap = null;
+    super.dispose();
+  }
 
   bool get _failed =>
       widget.item.toolError || widget.item.toolStatus == 'failed';
@@ -7600,6 +7641,11 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   }
 
   /// 折叠行：`$ command` / 路径+行范围 / pattern / URL + 统计/退出码/命中数胶囊。
+  ///
+  /// issue #67：file/image 卡在服务端两字段同现时，把**路径段**渲染成品牌色 + 下划线的
+  /// 行内链接（Text.rich 两段 span，`toPlainText()` 仍是整行原字符串，既有 find.text 不破）；
+  /// 不可点时保持原纯 Text 代码路径与视觉（零布局位移）。点击只把 `relative` 交给页面，
+  /// 不在卡片里拼路径；卡片标题的手势与本行无关，点击路径不改变展开态。
   Widget _foldRow(ToolCallSummary call) {
     final ink3 = DshColors.ink3(context);
     final text = toolFoldText(call) ?? '';
@@ -7612,22 +7658,57 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     final showOpenQuestion =
         widget.onOpenQuestion != null &&
         questionCallPending(call, widget.pendingQuestionIds);
+    final tapParts = _previewTapParts(call);
+    final baseStyle = TextStyle(
+      fontSize: 11.5,
+      color: ink3,
+      fontFamily: call.isCommand ? 'monospace' : null,
+    );
+    final Widget foldText;
+    if (tapParts == null) {
+      // B/D 态：与 issue #54/#66 完全同形（无手势、无下划线、无 key）。
+      foldText = Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: baseStyle,
+      );
+    } else {
+      final pathText = tapParts.path;
+      final suffix = tapParts.suffix;
+      final relative = tapParts.relative;
+      final linkStyle = baseStyle.copyWith(
+        color: DshColors.brand(context),
+        decoration: TextDecoration.underline,
+        decorationColor: DshColors.brand(context),
+      );
+      foldText = Semantics(
+        label: L10n.t('打开文件预览：$pathText', 'Open file preview: $pathText'),
+        link: true,
+        onTap: () => widget.onOpenFilePath?.call(relative),
+        excludeSemantics: true,
+        child: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(text: pathText, style: linkStyle, recognizer: _pathTap),
+              // suffix（如 ` · 行 2–5`）沿用折叠行 ink3 基础样式。
+              TextSpan(text: suffix),
+            ],
+          ),
+          key: Key(
+            'tool-path-fold:${widget.item.toolCallId ?? widget.item.seq}',
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: baseStyle,
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Row(
         children: [
-          Expanded(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11.5,
-                color: ink3,
-                fontFamily: call.isCommand ? 'monospace' : null,
-              ),
-            ),
-          ),
+          Expanded(child: foldText),
           if (stats != null) _chip(stats, DshColors.ink3(context)),
           if (exit != null) _chip(exit, Colors.redAccent),
           if (count != null) _chip(count, DshColors.ink3(context)),
@@ -7651,6 +7732,24 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         ],
       ),
     );
+  }
+
+  /// issue #67：可点的「路径 + 其余文案 + 相对路径」；不可点返回 null。
+  ///
+  /// 识别器只在 State 生命周期内创建/复用、在 [dispose] 统一释放——不在 build 中途
+  /// dispose（用户按住路径时若发生重建，中途释放会打断手势）。
+  ({String path, String suffix, String relative})? _previewTapParts(
+    ToolCallSummary call,
+  ) {
+    final parts = toolFoldPathParts(call);
+    final relative = call.relativePath;
+    if (parts == null || relative == null || widget.onOpenFilePath == null) {
+      _pathTap?.onTap = null;
+      return null;
+    }
+    final tap = _pathTap ??= TapGestureRecognizer();
+    tap.onTap = () => widget.onOpenFilePath?.call(relative);
+    return (path: parts.path, suffix: parts.suffix, relative: relative);
   }
 
   /// 通用参数/结果块（issue #60 R12：无内联 diff 时普通模式也要可达参数，不只是结果）。

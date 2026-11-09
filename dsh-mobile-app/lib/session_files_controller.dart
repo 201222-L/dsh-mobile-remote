@@ -44,12 +44,20 @@ class SessionFilesController extends ChangeNotifier {
     required this.store,
     required this.sessionId,
     Api? apiClient,
+    this.initialRelativePath,
   }) : _api = apiClient ?? api;
 
   final AppStore store;
 
   /// 本页绑定的会话；浏览根由它的工作目录决定。
   final String sessionId;
+
+  /// issue #67：从工具卡路径进入时的初始 cwd 相对路径（可空）。
+  ///
+  /// `open()` 在解析出会话工作目录后消费它：先过客户端词法校验与 `isWithinRoot`，
+  /// 再把 `currentPath` 设为该文件的**父目录**并复用 [openFile] 的预览链路。
+  /// 不构造任意绝对路径、不新增端点；非法值 fail-closed（零请求）。
+  final String? initialRelativePath;
 
   final Api _api;
 
@@ -129,7 +137,52 @@ class SessionFilesController extends ChangeNotifier {
     }
     root = cwd;
     currentPath = cwd;
+    // issue #67：从工具卡深链进入时直接定位到文件预览，不先列 root（少一次请求）；
+    // 非法 relative 由 _openResolvedRelative fail-closed（零请求）。
+    final initial = initialRelativePath;
+    if (initial != null && initial.isNotEmpty) {
+      await _openResolvedRelative(initial);
+      return;
+    }
     await loadDir(cwd);
+  }
+
+  /// issue #67：按 **cwd 相对路径**直接打开文件预览（工具卡点击入口）。
+  ///
+  /// 这是 App 侧的唯一拼接点：路径必须通过 [resolveSessionRelativePath]（词法校验 +
+  /// `isWithinRoot` 兜底）。root 尚未解析时先走 [open]；非法值不发任何请求。
+  Future<void> openRelativeFile(String relative) async {
+    if (root.isEmpty) {
+      await open();
+      return;
+    }
+    await _openResolvedRelative(relative);
+  }
+
+  /// 已解析 root 后的相对路径预览：父目录 → `/files`（preview 路径的父目录必须成为
+  /// `currentPath`，否则 [refresh] 用 `currentPath + basename` 重取会取错嵌套文件）。
+  Future<void> _openResolvedRelative(String relative) async {
+    final pathSep = _inferredSep();
+    final path = resolveSessionRelativePath(root, relative, sep: pathSep);
+    if (path == null) {
+      stage = BrowseStage.error;
+      errorReason = '无法打开文件：路径不在会话工作目录内';
+      notifyListeners();
+      return;
+    }
+    sep = pathSep;
+    final parent = parentBrowsePath(path, sep);
+    await loadDir(isWithinRoot(root, parent) ? parent : root);
+    // 目录加载失败时不发 /files（避免在错误页上再做一次无意义的文件请求）。
+    if (stage == BrowseStage.listing) {
+      await openFile(_basename(path));
+    }
+  }
+
+  /// 首列目录前 `sep` 还是默认 `/`；root 是 Windows 形状时按既有启发式推断（对齐 loadDir）。
+  String _inferredSep() {
+    if (sep == '/' && root.contains('\\') && !root.contains('/')) return '\\';
+    return sep;
   }
 
   /// 加载某个目录。
