@@ -646,6 +646,92 @@ void main() {
       expect(b.dirRequests, isEmpty);
       expect(b.fileRequests, isEmpty);
     });
+
+    test('未 open 就调 openRelativeFile：补齐 root 后用传入参数打开（不丢参数）',
+        () async {
+      final b = _PreviewBackend();
+      final c = SessionFilesController(
+        store: _store(),
+        sessionId: 'session-tools',
+        apiClient: b.api,
+      );
+      expect(c.root, isEmpty);
+
+      await c.openRelativeFile('src/a.ts');
+
+      expect(c.root, '/work');
+      expect(c.stage, BrowseStage.preview);
+      expect(c.previewPath, '/work/src/a.ts');
+      expect(b.fileRequests, ['/work/src/a.ts']);
+      final allRequests = [...b.dirRequests, ...b.fileRequests];
+      expect(allRequests, isNotEmpty);
+      for (final path in allRequests) {
+        expect(isWithinRoot('/work', path), isTrue, reason: '请求越界：$path');
+        expect(path.contains('..'), isFalse);
+      }
+      expect(
+        b.fileRequests.any((path) => path == '/work/src/a.ts'),
+        isTrue,
+        reason: '必须包含 /files?path=/work/src/a.ts',
+      );
+    });
+
+    test('未 open 时传非法 relative：零 /directories、零 /files 请求', () async {
+      final b = _PreviewBackend();
+      final c = SessionFilesController(
+        store: _store(),
+        sessionId: 'session-tools',
+        apiClient: b.api,
+      );
+
+      await c.openRelativeFile('../etc/passwd');
+      expect(c.stage, BrowseStage.error);
+      expect(b.dirRequests, isEmpty);
+      expect(b.fileRequests, isEmpty);
+
+      final other = SessionFilesController(
+        store: _store(),
+        sessionId: 'session-tools',
+        apiClient: b.api,
+      );
+      await other.openRelativeFile('/etc/passwd');
+      expect(other.stage, BrowseStage.error);
+      expect(b.dirRequests, isEmpty);
+      expect(b.fileRequests, isEmpty);
+    });
+
+    test('显式 openRelativeFile 参数优先于构造时的 initialRelativePath', () async {
+      final b = _PreviewBackend();
+      final c = SessionFilesController(
+        store: _store(),
+        sessionId: 'session-tools',
+        apiClient: b.api,
+        initialRelativePath: 'src/b.ts',
+      );
+
+      // 未 open：open() 会先消费构造参数（b.ts），随后显式参数（a.ts）必须覆盖。
+      await c.openRelativeFile('src/a.ts');
+
+      expect(c.previewPath, '/work/src/a.ts');
+      expect(b.fileRequests, ['/work/src/b.ts', '/work/src/a.ts']);
+    });
+
+    test('root 为空且 open 失败（无 cwd）：openRelativeFile 保持错误态、零请求',
+        () async {
+      final b = _PreviewBackend();
+      final c = SessionFilesController(
+        store: _store(cwd: null),
+        sessionId: 'session-tools',
+        apiClient: b.api,
+      );
+
+      await c.openRelativeFile('src/a.ts');
+
+      expect(c.stage, BrowseStage.error);
+      expect(c.root, isEmpty);
+      expect(b.dirRequests, isEmpty);
+      expect(b.fileRequests, isEmpty);
+    });
   });
 
   // ── Widget：四态、点击、返回保持、旧插件、能力位、失败态、semantics ──

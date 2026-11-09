@@ -150,11 +150,23 @@ class SessionFilesController extends ChangeNotifier {
   /// issue #67：按 **cwd 相对路径**直接打开文件预览（工具卡点击入口）。
   ///
   /// 这是 App 侧的唯一拼接点：路径必须通过 [resolveSessionRelativePath]（词法校验 +
-  /// `isWithinRoot` 兜底）。root 尚未解析时先走 [open]；非法值不发任何请求。
+  /// `isWithinRoot` 兜底）。非法值不发任何请求。
+  ///
+  /// reviewer P2：**显式传入的 [relative] 优先**。root 尚未解析时先走 [open] 补齐
+  /// root（[open] 可能消费构造时的 [initialRelativePath]），完成后再用本次参数打开；
+  /// 不能在 root 为空的分支里丢掉参数直接 `return`（那样会打开构造参数或什么都不开）。
   Future<void> openRelativeFile(String relative) async {
+    // 先做纯词法校验：非法值在发任何请求（包括 open() 的根目录列举）之前 fail-closed。
+    if (normalizeSessionRelativePath(relative) == null) {
+      stage = BrowseStage.error;
+      errorReason = '无法打开文件：路径不在会话工作目录内';
+      notifyListeners();
+      return;
+    }
     if (root.isEmpty) {
       await open();
-      return;
+      // open() 失败（无 cwd）已置错误态；root 仍为空时无法拼接，直接返回。
+      if (root.isEmpty) return;
     }
     await _openResolvedRelative(relative);
   }
