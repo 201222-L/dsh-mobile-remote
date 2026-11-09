@@ -7,6 +7,7 @@
 // 全部走 MockClient + 假 ImageGalleryIo：不触真实网络，也不写真实文件系统。
 
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/image_gallery.dart';
@@ -29,6 +30,14 @@ final Uint8List _pngBlue = base64Decode(
 );
 final Uint8List _pngGreen = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mNgOMEAAAGUAMl/5U5HAAAAAElFTkSuQmCC',
+);
+// 合法的 1x1 GIF89a（透明）与 1x1 WebP lossless：用于真实解码/渲染断言，
+// 而不是用 PNG 字节冒充 mediaType（两者均已用 instantiateImageCodec 实测可解码）。
+final Uint8List _gif1x1 = base64Decode(
+  'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+);
+final Uint8List _webp1x1 = base64Decode(
+  'UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA=',
 );
 
 Map<String, dynamic> _image(
@@ -104,9 +113,13 @@ class _FakeIo extends ImageGalleryIo {
   final List<_IoCall> calls = [];
   final List<String> tempWrites = [];
   final List<String> tempDeletes = [];
+  final List<Uint8List> tempBytes = [];
   String? saveFileResult = 'content://media/external/downloads/42';
   Object? saveFileError;
   Object? shareFileError;
+
+  /// 非空时 saveFileFromPath 先等待该时长，用于断言「进行中禁用按钮」。
+  Duration? saveFileDelay;
   int _sequence = 0;
 
   @override
@@ -117,6 +130,7 @@ class _FakeIo extends ImageGalleryIo {
   }) async {
     final path = '/fake-tmp/$prefix-${_sequence++}-$name';
     tempWrites.add(path);
+    tempBytes.add(bytes);
     return path;
   }
 
@@ -132,6 +146,8 @@ class _FakeIo extends ImageGalleryIo {
   ) async {
     calls.add(_IoCall(method, arguments));
     if (method == 'saveFileFromPath') {
+      final delay = saveFileDelay;
+      if (delay != null) await Future<void>.delayed(delay);
       final error = saveFileError;
       if (error != null) throw error;
       return saveFileResult as T?;
@@ -189,6 +205,7 @@ Future<void> _pumpViewer(
     MaterialApp(
       theme: theme,
       home: Scaffold(
+        key: const Key('issue69-host-scaffold'),
         body: Builder(
           builder: (context) => Center(
             child: TextButton(
@@ -216,6 +233,38 @@ Future<void> _pumpViewer(
   await tester.pumpAndSettle();
 }
 
+/// 查看器内部 Scaffold 里的 SnackBar（修复前提示会落回被 dialog 盖住的宿主）。
+Finder _viewerSnackBar() => find.descendant(
+  of: find.byKey(const Key('issue69-viewer-scaffold')),
+  matching: find.byType(SnackBar),
+);
+
+Finder _hostSnackBar() => find.descendant(
+  of: find.byKey(const Key('issue69-host-scaffold')),
+  matching: find.byType(SnackBar),
+);
+
+/// 断言提示文案渲染在查看器内部（用户真正可见），且没有落回宿主 Scaffold。
+void _expectViewerToast(WidgetTester tester, String text) {
+  expect(
+    _viewerSnackBar(),
+    findsOneWidget,
+    reason: 'SnackBar 必须在查看器 Scaffold 内',
+  );
+  expect(
+    _hostSnackBar(),
+    findsNothing,
+    reason: '提示不能落回被 dialog 盖住的宿主 Scaffold',
+  );
+  expect(
+    find.descendant(
+      of: find.byKey(const Key('issue69-viewer-scaffold')),
+      matching: find.textContaining(text),
+    ),
+    findsOneWidget,
+  );
+}
+
 Uint8List _viewerImageBytes(WidgetTester tester, int index) {
   final widget = tester.widget<Image>(
     find.byKey(ValueKey<String>('issue69-viewer-image-$index')),
@@ -238,6 +287,7 @@ ScrollableState _mainScrollable(WidgetTester tester) {
 class _ChannelIo extends ImageGalleryIo {
   final List<String> tempWrites = [];
   final List<String> tempDeletes = [];
+  final List<Uint8List> tempBytes = [];
   int _sequence = 0;
 
   @override
@@ -678,11 +728,11 @@ void main() {
       );
     });
 
-    testWidgets('GIF/WebP 标签与大 GIF 角标（既有行为保留）', (tester) async {
+    testWidgets('GIF/WebP 标签与大 GIF 角标（真实 GIF/WebP 字节可渲染）', (tester) async {
       final backend = _AttachmentBackend()
-        ..bytes['att-gif-big'] = _pngRed
-        ..bytes['att-gif-small'] = _pngBlue
-        ..bytes['att-webp'] = _pngGreen;
+        ..bytes['att-gif-big'] = _gif1x1
+        ..bytes['att-gif-small'] = _gif1x1
+        ..bytes['att-webp'] = _webp1x1;
       await _pumpGrid(
         tester,
         api: backend.api,
@@ -710,6 +760,30 @@ void main() {
           ),
         ],
       );
+      // fixture 自身可解码（真实 GIF89a / WebP lossless，而不是 PNG 冒充）。
+      await tester.runAsync(() async {
+        for (final bytes in [_gif1x1, _webp1x1]) {
+          final codec = await ui.instantiateImageCodec(bytes);
+          final frame = await codec.getNextFrame();
+          expect(frame.image.width, 1);
+          expect(frame.image.height, 1);
+          codec.dispose();
+        }
+      });
+      // 真实 GIF/WebP 经 Image.memory 正常渲染，无解码异常。
+      expect(
+        find.byKey(const ValueKey('issue69-thumb-image-att-gif-big')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('issue69-thumb-image-att-gif-small')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('issue69-thumb-image-att-webp')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
       // 只有长边 > 4096 的大 GIF 有角标。
       expect(find.text('GIF·原图较大'), findsOneWidget);
       expect(
@@ -901,7 +975,7 @@ void main() {
       );
       expect(backend.requests, 1);
       expect(find.text('图片加载失败'), findsOneWidget);
-      expect(find.text('图片加载失败，可点重试'), findsOneWidget);
+      _expectViewerToast(tester, '图片加载失败，可点重试');
       expect(find.byKey(const Key('issue69-viewer-retry')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('issue69-viewer-retry')));
@@ -923,12 +997,12 @@ void main() {
         images: [_image('att-fail2', name: 'f.png')],
       );
       expect(backend.requests, 1);
-      expect(find.text('图片加载失败，可点重试'), findsOneWidget);
+      _expectViewerToast(tester, '图片加载失败，可点重试');
 
       await tester.tap(find.byKey(const Key('issue69-viewer-retry')));
       await tester.pumpAndSettle();
       expect(backend.requests, 2);
-      expect(find.text('图片加载失败，可点重试'), findsOneWidget);
+      _expectViewerToast(tester, '图片加载失败，可点重试');
       expect(find.byKey(const Key('issue69-viewer-retry')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('issue69-viewer-retry')));
@@ -961,9 +1035,62 @@ void main() {
       expect(io.methods, ['saveFileFromPath']);
       expect(io.calls.single.arguments['name'], 'photo.png');
       expect(io.calls.single.arguments['path'], io.tempWrites.single);
-      expect(find.textContaining('已保存到手机'), findsOneWidget);
+      // 临时文件写入的就是附件原始字节（不转码/不截断）。
+      expect(io.tempBytes.single, _pngRed);
+      // 提示渲染在查看器内部（不会被全屏 dialog 盖住），且是 ImageGalleryViewer 后代。
+      _expectViewerToast(tester, '已保存到手机');
+      expect(
+        find.descendant(
+          of: find.byType(ImageGalleryViewer),
+          matching: find.byType(SnackBar),
+        ),
+        findsOneWidget,
+      );
       // 临时文件 finally 清理。
       expect(io.tempDeletes, io.tempWrites);
+    });
+
+    testWidgets('保存进行中：按钮禁用，重复点按只产生一次保存/一份临时文件', (tester) async {
+      final backend = _AttachmentBackend()..bytes['att-saving'] = _pngRed;
+      final io = _FakeIo()..saveFileDelay = const Duration(milliseconds: 300);
+      await _pumpViewer(
+        tester,
+        api: backend.api,
+        images: [_image('att-saving', name: 'photo.png')],
+        io: io,
+      );
+
+      await tester.tap(find.byKey(const Key('issue69-viewer-save')));
+      await tester.pump();
+      // 进行中：保存/分享按钮均禁用（用户可感知 + 防重复触发）。
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('issue69-viewer-save')))
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('issue69-viewer-share')))
+            .onPressed,
+        isNull,
+      );
+      // 重复点按被忽略：仍只有一次流程、一份临时文件。
+      await tester.tap(
+        find.byKey(const Key('issue69-viewer-save')),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      expect(io.tempWrites.length, 1);
+      expect(io.calls.where((c) => c.method == 'saveFileFromPath').length, 1);
+
+      // 放行后完成唯一一次保存，提示在查看器内部可见，临时文件清理。
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(io.tempWrites.length, 1);
+      expect(io.calls.where((c) => c.method == 'saveFileFromPath').length, 1);
+      expect(io.tempDeletes, io.tempWrites);
+      _expectViewerToast(tester, '已保存到手机');
     });
 
     testWidgets('保存失败：通道抛错 → toast 含「保存失败」，临时文件仍清理', (tester) async {
@@ -981,8 +1108,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.textContaining('保存失败'), findsOneWidget);
-      expect(io.shareFileError, isNull);
+      _expectViewerToast(tester, '保存失败');
+      // 保存失败只走 saveFileFromPath，不能误触发 shareFile。
+      expect(io.methods, ['saveFileFromPath']);
       expect(io.tempDeletes, io.tempWrites);
     });
 
@@ -1013,7 +1141,7 @@ void main() {
         'content://media/external/downloads/777',
       );
       expect(io.calls[1].arguments['mime'], 'image/png');
-      expect(find.text('已打开分享面板'), findsOneWidget);
+      _expectViewerToast(tester, '已打开分享面板');
       expect(io.tempDeletes, io.tempWrites);
     });
 
@@ -1034,7 +1162,7 @@ void main() {
       await tester.tap(find.byKey(const Key('issue69-viewer-share')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.textContaining('分享失败'), findsOneWidget);
+      _expectViewerToast(tester, '分享失败');
       expect(io.tempDeletes, io.tempWrites);
 
       // 失败后可重试：清掉故障再点一次，这一次真的走到 shareFile 并成功。
@@ -1043,7 +1171,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(io.methods.where((m) => m == 'shareFile').length, 2);
-      expect(find.text('已打开分享面板'), findsOneWidget);
+      _expectViewerToast(tester, '已打开分享面板');
     });
 
     testWidgets('分享在落盘阶段失败：提示含「分享失败」，可重试成功', (tester) async {
@@ -1070,7 +1198,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(io.methods, ['saveFileFromPath', 'saveFileFromPath', 'shareFile']);
-      expect(find.text('已打开分享面板'), findsOneWidget);
+      _expectViewerToast(tester, '已打开分享面板');
     });
 
     testWidgets(
@@ -1148,7 +1276,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.textContaining('该 Android 版本不支持'), findsOneWidget);
+      _expectViewerToast(tester, '该 Android 版本不支持');
       expect(io.methods, ['saveFileFromPath']);
       expect(io.tempDeletes, io.tempWrites);
     });
@@ -1322,6 +1450,35 @@ void main() {
   });
 
   group('深色 / 窄屏', () {
+    testWidgets('320 宽 ChatScreen：用户气泡附图（maxWidth 320）无 overflow', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _pumpChatWithImages(
+        tester,
+        images: [
+          _image('att-assistant-1', width: 40, height: 30, name: 'a1.png'),
+          _image('att-assistant-2', width: 30, height: 40, name: 'a2.png'),
+        ],
+      );
+      // 用户气泡 maxWidth 320 是溢出高危点：滚到顶部让用户附图进入布局。
+      _mainScrollable(tester).position.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('issue69-thumb-att-user')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('issue69-meta-att-user')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('320 宽深色主题：缩略图与查看器（含长文件名）无 overflow', (tester) async {
       tester.view.physicalSize = const Size(320, 640);
       tester.view.devicePixelRatio = 1.0;

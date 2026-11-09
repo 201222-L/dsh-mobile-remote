@@ -596,6 +596,18 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
   bool _saving = false;
   bool _sharing = false;
 
+  /// 查看器自带 ScaffoldMessenger：全屏不透明 dialog 会盖住 App 根 messenger 的
+  /// SnackBar，保存/分享/加载失败等反馈必须落在 dialog 内部用户可见的位置。
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
+  void _toast(String message) {
+    if (!mounted) return;
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) return;
+    showToastAt(messenger, message);
+  }
+
   List<Map<String, dynamic>> get _images => widget.images;
 
   @override
@@ -670,10 +682,7 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
         _errors[id] = L10n.t('图片加载失败', 'Image failed to load');
       });
       // 明确提示（连续失败仍会再次提示）；页内同时显示失败态 + 重试按钮。
-      showToast(
-        context,
-        L10n.t('图片加载失败，可点重试', 'Image failed to load. Tap retry.'),
-      );
+      _toast(L10n.t('图片加载失败，可点重试', 'Image failed to load. Tap retry.'));
     }
   }
 
@@ -795,8 +804,8 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
   }
 
   Future<void> _saveCurrent() async {
-    if (_saving || _currentBytes == null) return;
-    _saving = true;
+    if (_saving || _sharing || _currentBytes == null) return;
+    setState(() => _saving = true);
     String? temp;
     try {
       temp = await _writeTempFile('dsh-save');
@@ -808,10 +817,7 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
       });
       if (!mounted) return;
       if (saved == null || saved.isEmpty) {
-        showToast(
-          context,
-          L10n.t('保存失败：未获取到保存位置', 'Save failed: no destination'),
-        );
+        _toast(L10n.t('保存失败：未获取到保存位置', 'Save failed: no destination'));
         return;
       }
       // Android 10+ 返回 content://（已落系统 Downloads/DSH-Remote），不把 URI
@@ -819,19 +825,20 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
       final location = saved.startsWith('content://')
           ? L10n.t('系统下载目录 DSH-Remote', 'Downloads/DSH-Remote')
           : saved;
-      showToast(context, '${L10n.t('已保存到手机：', 'Saved to phone: ')}$location');
+      _toast('${L10n.t('已保存到手机：', 'Saved to phone: ')}$location');
     } catch (e) {
       if (!mounted) return;
-      showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
+      _toast('${L10n.t('保存失败：', 'Save failed: ')}$e');
     } finally {
       _saving = false;
+      if (mounted) setState(() {});
       if (temp != null) await widget.io.deleteTemporaryFile(temp);
     }
   }
 
   Future<void> _shareCurrent() async {
-    if (_sharing || _currentBytes == null) return;
-    _sharing = true;
+    if (_sharing || _saving || _currentBytes == null) return;
+    setState(() => _sharing = true);
     String? temp;
     try {
       temp = await _writeTempFile('dsh-share');
@@ -843,17 +850,13 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
       });
       if (!mounted) return;
       if (saved == null || saved.isEmpty) {
-        showToast(
-          context,
-          L10n.t('分享失败：未获取到可分享的文件', 'Share failed: no shareable file'),
-        );
+        _toast(L10n.t('分享失败：未获取到可分享的文件', 'Share failed: no shareable file'));
         return;
       }
       if (!saved.startsWith('content://')) {
         // Android 10 以下 saveFileFromPath 只能返回应用私有路径，原生 shareFile
         // 只接受 content:// —— 给出明确提示而不是泛化的异常。
-        showToast(
-          context,
+        _toast(
           L10n.t(
             '该 Android 版本不支持直接分享（已保存到应用下载目录）',
             'Sharing is not supported on this Android version '
@@ -869,12 +872,13 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
         'mime': mime,
       });
       if (!mounted) return;
-      showToast(context, L10n.t('已打开分享面板', 'Share sheet opened'));
+      _toast(L10n.t('已打开分享面板', 'Share sheet opened'));
     } catch (e) {
       if (!mounted) return;
-      showToast(context, '${L10n.t('分享失败：', 'Share failed: ')}$e');
+      _toast('${L10n.t('分享失败：', 'Share failed: ')}$e');
     } finally {
       _sharing = false;
+      if (mounted) setState(() {});
       if (temp != null) await widget.io.deleteTemporaryFile(temp);
     }
   }
@@ -887,33 +891,45 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
     final current = imageCount == 0 ? null : _images[_index];
     return Dialog.fullscreen(
       backgroundColor: Colors.black,
-      child: SafeArea(
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: Listener(
-                onPointerDown: _onPointerDown,
-                onPointerMove: _onPointerMove,
-                onPointerUp: _onPointerUp,
-                onPointerCancel: (_) => _resetDrag(),
-                child: Transform.translate(
-                  offset: Offset(_dragDx, 0),
-                  child: PageView.builder(
-                    key: const Key('issue69-viewer-pages'),
-                    controller: _pageController,
-                    // 手势由上面的 Listener 手动驱动；InteractiveViewer 独占缩放/拖动。
-                    physics: const NeverScrollableScrollPhysics(),
-                    onPageChanged: _onPageChanged,
-                    itemCount: imageCount,
-                    itemBuilder: (context, index) => _buildPage(index),
+      child: ScaffoldMessenger(
+        key: _messengerKey,
+        child: Scaffold(
+          key: const Key('issue69-viewer-scaffold'),
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: Listener(
+                    onPointerDown: _onPointerDown,
+                    onPointerMove: _onPointerMove,
+                    onPointerUp: _onPointerUp,
+                    onPointerCancel: (_) => _resetDrag(),
+                    child: Transform.translate(
+                      offset: Offset(_dragDx, 0),
+                      child: PageView.builder(
+                        key: const Key('issue69-viewer-pages'),
+                        controller: _pageController,
+                        // 手势由上面的 Listener 手动驱动；InteractiveViewer 独占缩放/拖动。
+                        physics: const NeverScrollableScrollPhysics(),
+                        onPageChanged: _onPageChanged,
+                        itemCount: imageCount,
+                        itemBuilder: (context, index) => _buildPage(index),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                Positioned(top: 0, left: 0, right: 0, child: _buildToolbar()),
+                if (current != null)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _buildMetaBar(),
+                  ),
+              ],
             ),
-            Positioned(top: 0, left: 0, right: 0, child: _buildToolbar()),
-            if (current != null)
-              Positioned(left: 0, right: 0, bottom: 0, child: _buildMetaBar()),
-          ],
+          ),
         ),
       ),
     );
@@ -951,13 +967,18 @@ class _ImageGalleryViewerState extends State<ImageGalleryViewer> {
             key: const Key('issue69-viewer-save'),
             tooltip: L10n.t('保存到手机', 'Save to phone'),
             icon: const Icon(Icons.download_outlined, color: Colors.white),
-            onPressed: _currentBytes == null ? null : _saveCurrent,
+            // 进行中禁用：防止重复点按产生多份临时文件/多次保存。
+            onPressed: (_currentBytes == null || _saving || _sharing)
+                ? null
+                : _saveCurrent,
           ),
           IconButton(
             key: const Key('issue69-viewer-share'),
             tooltip: L10n.t('分享', 'Share'),
             icon: const Icon(Icons.share_outlined, color: Colors.white),
-            onPressed: _currentBytes == null ? null : _shareCurrent,
+            onPressed: (_currentBytes == null || _saving || _sharing)
+                ? null
+                : _shareCurrent,
           ),
         ],
       ),
