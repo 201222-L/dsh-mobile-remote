@@ -122,7 +122,27 @@ class SessionFilesController extends ChangeNotifier {
   ///
   /// 拿不到工作目录就不浏览——不退回全局选中工作区，也不让用户在这里挑一个；
   /// 那会与「看当前会话的文件」这个语义分叉（见 ADR 0015）。
+  /// issue #67：只有 **open()** 会消费构造时的 [initialRelativePath]；
+  /// [openRelativeFile] 复用同一条 root 解析，但只打开显式传入的 relative。
   Future<void> open() async {
+    if (!await _ensureRoot()) return;
+    // issue #67：从工具卡深链进入时直接定位到文件预览，不先列 root（少一次请求）；
+    // 非法 relative 由 _openResolvedRelative fail-closed（零请求）。
+    final initial = initialRelativePath;
+    if (initial != null && initial.isNotEmpty) {
+      await _openResolvedRelative(initial);
+      return;
+    }
+    await loadDir(root);
+  }
+
+  /// 解析会话工作目录（幂等；**只解析 root**，不加载目录、不消费 [initialRelativePath]）。
+  ///
+  /// reviewer P2：把「root 解析」与「initial 消费」分开，[openRelativeFile] 显式入口
+  /// 才不会间接触发构造参数的目录/文件请求（只请求点击目标）。成功返回 true；
+  /// 拿不到 cwd 时保持既有错误态并返回 false（不退回全局工作区）。
+  Future<bool> _ensureRoot() async {
+    if (root.isNotEmpty) return true;
     var cwd = _sessionCwd();
     if (cwd == null || cwd.isEmpty) {
       // 会话列表可能尚未拉取（冷启动直达会话页）：补拉一次再判断。
@@ -133,18 +153,11 @@ class SessionFilesController extends ChangeNotifier {
       stage = BrowseStage.error;
       errorReason = '这个会话没有工作目录，无法浏览文件';
       notifyListeners();
-      return;
+      return false;
     }
     root = cwd;
     currentPath = cwd;
-    // issue #67：从工具卡深链进入时直接定位到文件预览，不先列 root（少一次请求）；
-    // 非法 relative 由 _openResolvedRelative fail-closed（零请求）。
-    final initial = initialRelativePath;
-    if (initial != null && initial.isNotEmpty) {
-      await _openResolvedRelative(initial);
-      return;
-    }
-    await loadDir(cwd);
+    return true;
   }
 
   /// issue #67：按 **cwd 相对路径**直接打开文件预览（工具卡点击入口）。
@@ -152,22 +165,19 @@ class SessionFilesController extends ChangeNotifier {
   /// 这是 App 侧的唯一拼接点：路径必须通过 [resolveSessionRelativePath]（词法校验 +
   /// `isWithinRoot` 兜底）。非法值不发任何请求。
   ///
-  /// reviewer P2：**显式传入的 [relative] 优先**。root 尚未解析时先走 [open] 补齐
-  /// root（[open] 可能消费构造时的 [initialRelativePath]），完成后再用本次参数打开；
-  /// 不能在 root 为空的分支里丢掉参数直接 `return`（那样会打开构造参数或什么都不开）。
+  /// reviewer P2：**显式传入的 [relative] 优先，且只请求它**。root 尚未解析时只走
+  /// [_ensureRoot] 解析 root（不消费构造时的 [initialRelativePath]），随后直接打开
+  /// 本次参数；绝不先读取构造参数指向的文件。
   Future<void> openRelativeFile(String relative) async {
-    // 先做纯词法校验：非法值在发任何请求（包括 open() 的根目录列举）之前 fail-closed。
+    // 先做纯词法校验：非法值在发任何请求（包括 root 解析的根目录列举）之前 fail-closed。
     if (normalizeSessionRelativePath(relative) == null) {
       stage = BrowseStage.error;
       errorReason = '无法打开文件：路径不在会话工作目录内';
       notifyListeners();
       return;
     }
-    if (root.isEmpty) {
-      await open();
-      // open() 失败（无 cwd）已置错误态；root 仍为空时无法拼接，直接返回。
-      if (root.isEmpty) return;
-    }
+    // 只解析 root；不消费 initialRelativePath，也不读取它的目标。
+    if (!await _ensureRoot()) return;
     await _openResolvedRelative(relative);
   }
 

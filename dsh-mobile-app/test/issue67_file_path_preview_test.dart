@@ -663,6 +663,8 @@ void main() {
       expect(c.stage, BrowseStage.preview);
       expect(c.previewPath, '/work/src/a.ts');
       expect(b.fileRequests, ['/work/src/a.ts']);
+      // 只请求定位 a 所需的父目录，不先列 root。
+      expect(b.dirRequests, ['/work/src']);
       final allRequests = [...b.dirRequests, ...b.fileRequests];
       expect(allRequests, isNotEmpty);
       for (final path in allRequests) {
@@ -709,11 +711,21 @@ void main() {
         initialRelativePath: 'src/b.ts',
       );
 
-      // 未 open：open() 会先消费构造参数（b.ts），随后显式参数（a.ts）必须覆盖。
+      // root 为空时调显式入口：只解析 root，不消费构造参数 b.ts、不读取 b；
+      // 随后只打开显式传入的 a。
       await c.openRelativeFile('src/a.ts');
 
       expect(c.previewPath, '/work/src/a.ts');
-      expect(b.fileRequests, ['/work/src/b.ts', '/work/src/a.ts']);
+      expect(
+        b.fileRequests,
+        ['/work/src/a.ts'],
+        reason: '显式入口只请求点击目标，不得先读取构造参数 b.ts',
+      );
+      expect(
+        b.dirRequests,
+        ['/work/src'],
+        reason: '只请求定位 a 所需父目录，不先列 root、不列 b 的目录',
+      );
     });
 
     test('root 为空且 open 失败（无 cwd）：openRelativeFile 保持错误态、零请求',
