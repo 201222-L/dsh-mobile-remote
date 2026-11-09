@@ -382,6 +382,17 @@ check(
     === JSON.stringify({ kind: "todo", tool: "todo_write", items: [{ content: "ok", status: "completed" }], counts: { pending: 0, inProgress: 0, completed: 1 } }),
   JSON.stringify(toolCallProjection("todo_write", { todos: [42, "x", { content: "ok", status: "completed" }, { content: 7 }] })),
 );
+const todoValidFirstProjection = toolCallProjection("todo_write", {
+  todos: [42, "x", { content: 7 }, ...Array.from({ length: 60 }, (_, i) => ({ content: `v${i}`, status: "pending" }))],
+});
+check(
+  "tool/call todo 投影：valid-first（无效项不占 ≤50 配额，保留连续合法项 v0..v49）",
+  todoValidFirstProjection?.items?.length === 50
+    && todoValidFirstProjection.items[0]?.content === "v0"
+    && todoValidFirstProjection.items[49]?.content === "v49"
+    && JSON.stringify(todoValidFirstProjection.counts) === JSON.stringify({ pending: 50, inProgress: 0, completed: 0 }),
+  JSON.stringify(todoValidFirstProjection),
+);
 const questionProjection = toolCallProjection("ask_user_question", {
   questions: [
     { id: "q1", header: "确认", question: "选哪个？", options: [{ label: "A", description: "快" }, { label: "B" }], multi_select: true },

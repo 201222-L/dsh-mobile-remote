@@ -7,6 +7,7 @@ import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/screens/chat_screen.dart';
 import 'package:dsh_mobile_app/store.dart';
+import 'package:dsh_mobile_app/theme.dart';
 import 'package:dsh_mobile_app/turn_process.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -505,6 +506,45 @@ void main() {
       ),
       findsOneWidget,
     );
+    // I-5：状态色锁定（completed=ink3、in_progress=品牌色、其它=ink3），
+    // 证明"进行中/已完成"是纯视觉状态而不是可交互控件。
+    final todoContext = tester.element(todoCard);
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: todoCard,
+              matching: find.byIcon(Icons.check_circle),
+            ),
+          )
+          .color,
+      DshColors.ink3(todoContext),
+      reason: 'completed 状态用中性色',
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: todoCard,
+              matching: find.byIcon(Icons.radio_button_checked),
+            ),
+          )
+          .color,
+      DshColors.brand(todoContext),
+      reason: 'in_progress 状态用品牌色',
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: todoCard,
+              matching: find.byIcon(Icons.radio_button_unchecked),
+            ),
+          )
+          .color,
+      DshColors.ink3(todoContext),
+      reason: '其它状态用中性色',
+    );
     expect(
       find.descendant(of: todoCard, matching: find.byType(Checkbox)),
       findsNothing,
@@ -521,6 +561,44 @@ void main() {
     expect(find.descendant(of: askCard, matching: find.text('立即发布')), findsOneWidget);
     expect(find.descendant(of: askCard, matching: find.text('答案：发布')), findsOneWidget);
     expect(find.descendant(of: askCard, matching: find.text('未回答')), findsOneWidget);
+    // W-1：命中答案的选项用品牌色 check 高亮（"发布"已答）；未命中选项仍是中性圆点
+    // （"稍后"未选）。I-4：中性圆点只表达"未选"的只读回放语义，不暗示可交互——
+    // 行内无 Checkbox/Radio/onTap，作答入口只在折叠行尾且仅待答时出现。
+    final askContext = tester.element(askCard);
+    expect(
+      find.descendant(of: askCard, matching: find.byIcon(Icons.check)),
+      findsOneWidget,
+      reason: '已答选项：唯一一个 check 高亮',
+    );
+    expect(
+      find.descendant(
+        of: askCard,
+        matching: find.byIcon(Icons.radio_button_unchecked),
+      ),
+      findsOneWidget,
+      reason: '未答选项：唯一一个中性圆点',
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(of: askCard, matching: find.byIcon(Icons.check)),
+          )
+          .color,
+      DshColors.brand(askContext),
+      reason: '命中答案的选项必须用品牌色高亮',
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: askCard,
+              matching: find.byIcon(Icons.radio_button_unchecked),
+            ),
+          )
+          .color,
+      DshColors.ink3(askContext),
+      reason: '未命中选项保持中性色（朴素只读）',
+    );
     final id = 'tool-question-answer:q1';
     expect(find.byKey(ValueKey<String>(id)), findsOneWidget);
     expect(
