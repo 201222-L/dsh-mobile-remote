@@ -1141,6 +1141,67 @@ class _ChatScreenState extends State<ChatScreen> {
     showToast(context, err);
   }
 
+  /// issue #66（M3 Batch 2-A）：工具行尾「打开问询」入口——用 modal bottom sheet 复用
+  /// 既有 [_QuestionCard] 作答，**不在工具行内**放任何作答控件，也不改 attention//respond
+  /// 流程（取消/提交仍走 [_cancelPending] / [_submitQuestion]）。
+  Future<void> _openPendingQuestion() async {
+    final q = _question ?? widget.store.questionForSession(_mySessionId);
+    if (q == null) {
+      if (!mounted) return;
+      showToast(context, L10n.t('问询已结束', 'Question is no longer pending'));
+      return;
+    }
+    // _submitQuestion 读取页面状态：store 已同步而页面尚未同步的极小窗口里先对齐，
+    // 避免弹层里提交后静默无回写。
+    if (_question == null) setState(() => _question = q);
+    late BuildContext sheetContext;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        sheetContext = ctx;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(ctx).bottom,
+              ),
+              child: _QuestionCard(
+                key: ValueKey<String>('question-sheet:${q.rpcId}'),
+                request: q,
+                onCancel: () {
+                  final rpc = q.rpcId;
+                  // 先收起弹层；取消语义与 composer 卡片一致（乐观收起 + 送内核）。
+                  if (sheetContext.mounted &&
+                      ModalRoute.of(sheetContext)?.isCurrent == true) {
+                    Navigator.of(sheetContext).maybePop();
+                  }
+                  if (mounted && _question?.rpcId == rpc) {
+                    setState(() => _question = null);
+                  }
+                  unawaited(_cancelPending(rpc));
+                },
+                onSubmitted: (answers) async {
+                  await _submitQuestion(answers);
+                  // R6（issue #66 评审）：await 期间用户可能已手动关掉弹层——pop 前确认
+                  // 上下文仍 mounted 且弹层仍是当前路由，否则会误 pop 聊天页。
+                  if (sheetContext.mounted &&
+                      ModalRoute.of(sheetContext)?.isCurrent == true) {
+                    Navigator.of(sheetContext).maybePop();
+                  }
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
   /// 历史浏览视图不跟随滚动。
   void _scrollToBottom({bool force = false}) {
@@ -6192,12 +6253,25 @@ class _ChatScreenState extends State<ChatScreen> {
       sessionId: _mySessionId ?? '',
       // issue #54：仅服务端声明支持的工具有专用卡；旧插件/未知工具一律通用卡。
       toolCardsEnabled: _api.toolCardsCapabilities.supports(item.toolName),
+      // issue #66：待答问询入口——构建时实时读取当前会话的 pending 问询（resolved 后自然为空）。
+      pendingQuestionIds: _pendingQuestionIdsForCards,
+      onOpenQuestion: _openPendingQuestion,
       onLoadDetail: _api.timelineCapabilities.detail &&
               item.detailAvailable &&
               item.detailSeq != null
           ? () => _loadEventDetail(item)
           : null,
     );
+  }
+
+  /// issue #66：当前会话仍待回答的问题 id 集合（来源与 composer 问询卡同一条 pending 通道）。
+  Set<String> get _pendingQuestionIdsForCards {
+    final question = widget.store.questionForSession(_mySessionId);
+    if (question == null) return const <String>{};
+    return {
+      for (final q in question.questions)
+        if (q.id.trim().isNotEmpty) q.id,
+    };
   }
 
   // ── issue #53（ADR 0027 §3 / docs/03-api.md §6.20–§6.23）：轮末产出物 ──────
@@ -7288,6 +7362,12 @@ class _ToolActivityCard extends StatefulWidget {
 
   /// issue #54：服务端能力位声明的工具集合包含当前工具（旧插件 false → 通用卡）。
   final bool toolCardsEnabled;
+
+  /// issue #66：当前会话仍待回答的问题 id 集合；question 卡命中时折叠行尾给「打开问询」。
+  final Set<String> pendingQuestionIds;
+
+  /// issue #66：点「打开问询」的回调（复用既有问询卡作答；行内不出现作答控件）。
+  final VoidCallback? onOpenQuestion;
   final bool? expandedOverride;
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
@@ -7298,6 +7378,8 @@ class _ToolActivityCard extends StatefulWidget {
     required this.debug,
     required this.sessionId,
     this.toolCardsEnabled = false,
+    this.pendingQuestionIds = const <String>{},
+    this.onOpenQuestion,
     this.expandedOverride,
     this.onExpandedOverride,
     this.onLoadDetail,
@@ -7458,6 +7540,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     ToolCardKind.search => Icons.search,
     ToolCardKind.web => Icons.language,
     ToolCardKind.image => Icons.image_outlined,
+    ToolCardKind.todo => Icons.checklist,
+    ToolCardKind.question => Icons.forum_outlined,
+    ToolCardKind.skill => Icons.auto_awesome_outlined,
   };
 
   Widget _chip(String text, Color color) => Container(
@@ -7523,6 +7608,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     // 结果摘要带了终止字段（旧服务端/伪造内容）也不显示。
     final exit = call.isCommand ? toolExitBadge(widget.item.resultSummary) : null;
     final count = toolResultCountBadge(call, widget.item.resultSummary);
+    // issue #66：仅当该问询卡仍有命中当前会话 pending 集合的问题时，行尾给「打开问询」入口。
+    final showOpenQuestion =
+        widget.onOpenQuestion != null &&
+        questionCallPending(call, widget.pendingQuestionIds);
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Row(
@@ -7542,6 +7631,23 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
           if (stats != null) _chip(stats, DshColors.ink3(context)),
           if (exit != null) _chip(exit, Colors.redAccent),
           if (count != null) _chip(count, DshColors.ink3(context)),
+          if (showOpenQuestion)
+            TextButton(
+              key: Key('open-question:${widget.item.toolCallId}'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                minimumSize: const Size(0, 32),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: widget.onOpenQuestion,
+              child: Text(
+                L10n.t('打开问询', 'Open question'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
         ],
       ),
     );
@@ -7648,8 +7754,208 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
       case ToolCardKind.image:
         // 图片本体仍由既有 images 元数据网格渲染（下方通用块）。
         return const [];
+      // issue #66（M3 Batch 2-A）：todo / question / skill 展开态均为只读回放。
+      case ToolCardKind.todo:
+        return _todoBody(call);
+      case ToolCardKind.question:
+        return _questionBody(call);
+      case ToolCardKind.skill:
+        return _skillBody(resultText);
     }
   }
+
+  // ── issue #66（M3 Batch 2-A）：todo / question / skill 专用行（只读，无作答控件） ──
+
+  IconData _todoStatusIcon(String status) => switch (status) {
+    'completed' => Icons.check_circle,
+    'in_progress' => Icons.radio_button_checked,
+    _ => Icons.radio_button_unchecked,
+  };
+
+  Color _todoStatusColor(String status) => status == 'in_progress'
+      ? DshColors.brand(context)
+      : DshColors.ink3(context);
+
+  /// todo：只读清单（状态图标 + 文本，不可点）；空清单显示「无任务」。
+  List<Widget> _todoBody(ToolCallSummary call) {
+    final items = call.todoItems ?? const <TodoCardItem>[];
+    if (items.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            L10n.t('无任务', 'No tasks'),
+            style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+          ),
+        ),
+      ];
+    }
+    return [
+      for (final item in items)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                _todoStatusIcon(item.status),
+                size: 16,
+                color: _todoStatusColor(item.status),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  item.content,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, height: 1.35),
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  /// 某题在结果摘要里的答案项（无该题答案项返回 null）。
+  QuestionAnswerItem? _answerItemOf(
+    ToolResultSummary? result,
+    String? questionId,
+  ) {
+    if (result == null || questionId == null) return null;
+    for (final answer in result.answers ?? const <QuestionAnswerItem>[]) {
+      if (answer.questionId == questionId) return answer;
+    }
+    return null;
+  }
+
+  /// question：每题只读块（header / 问题文本 / 选项 / 答案行）——绝不放作答控件。
+  List<Widget> _questionBody(ToolCallSummary call) {
+    final questions = call.questions ?? const <QuestionCardItem>[];
+    final result = widget.item.resultSummary;
+    final pending = questionCallPending(call, widget.pendingQuestionIds);
+    return [
+      for (var index = 0; index < questions.length; index++)
+        _questionBlock(
+          question: questions[index],
+          result: result,
+          pending: pending,
+          first: index == 0,
+        ),
+    ];
+  }
+
+  Widget _questionBlock({
+    required QuestionCardItem question,
+    required ToolResultSummary? result,
+    required bool pending,
+    required bool first,
+  }) {
+    final ink3 = DshColors.ink3(context);
+    final brand = DshColors.brand(context);
+    final answerItem = _answerItemOf(result, question.id);
+    final values = answerItem?.values ?? const <String>[];
+    final answer = answerTextOf(result, question.id);
+    // 同题缺少稳定 id 时不给 key（避免多题 null 键在兄弟节点重复）。
+    final answerKey = question.id == null
+        ? null
+        : ValueKey<String>('tool-question-answer:${question.id}');
+    return Padding(
+      padding: EdgeInsets.only(top: first ? 6 : 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (question.header != null)
+            Text(
+              question.header!,
+              style: TextStyle(fontSize: 11, color: ink3),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              question.question,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+          for (final option in question.options)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    values.contains(option.label)
+                        ? Icons.check
+                        : Icons.radio_button_unchecked,
+                    size: 15,
+                    color: values.contains(option.label) ? brand : ink3,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          option.label,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: values.contains(option.label)
+                                ? FontWeight.w600
+                                : null,
+                          ),
+                        ),
+                        if (option.description != null)
+                          Text(
+                            option.description!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: ink3,
+                              height: 1.3,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (answer != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                key: answerKey,
+                L10n.t('答案：$answer', 'Answer: $answer'),
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+            )
+          // values 为空数组 → 未回答；结果里完全没该题答案时，仅在该卡仍待答时隐藏
+          // 答案行（作答入口在行尾），已结束/取消则明确显示未回答。
+          else if (answerItem != null || !pending)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                key: answerKey,
+                L10n.t('未回答', 'Unanswered'),
+                style: TextStyle(fontSize: 12, color: ink3),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// skill：只读说明（结果文本为空 → 无说明）。
+  List<Widget> _skillBody(String resultText) => resultText.isEmpty
+      ? [
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              L10n.t('无说明', 'No details'),
+              style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+            ),
+          ),
+        ]
+      : [_code(L10n.t('说明', 'Details'), resultText)];
 
   @override
   Widget build(BuildContext context) {
