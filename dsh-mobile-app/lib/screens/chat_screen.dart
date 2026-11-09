@@ -32,6 +32,7 @@ import '../turn_tail.dart';
 import '../turn_file_actions.dart';
 import '../md.dart';
 import '../fmt.dart';
+import '../image_gallery.dart';
 import '../git_browser_controller.dart';
 import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
@@ -1909,7 +1910,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   }
                   if (hasDraft) {
-                    return _AssistantBubble(text: _draft, streaming: true);
+                    return _AssistantBubble(
+                      text: _draft,
+                      streaming: true,
+                      api: _api,
+                    );
                   }
                   return const SizedBox.shrink();
                 }, childCount: _items.length + currentExtra),
@@ -5475,6 +5480,10 @@ class _ChatScreenState extends State<ChatScreen> {
           if (attachment['name'] is String &&
               (attachment['name'] as String).isNotEmpty)
             'name': attachment['name'],
+          // issue #69：服务端当前契约不下发字节数；若字段确实存在则原样透传
+          // 数字型 size/bytes（展示层只在字段存在时显示，缺失不猜）。
+          if (attachment['size'] is num) 'size': attachment['size'],
+          if (attachment['bytes'] is num) 'bytes': attachment['bytes'],
         });
       }
       visit(value['images'], true);
@@ -6316,6 +6325,7 @@ class _ChatScreenState extends State<ChatScreen> {
       item: item,
       debug: widget.store.timelineDebug,
       sessionId: _mySessionId ?? '',
+      api: _api,
       // issue #54：仅服务端声明支持的工具有专用卡；旧插件/未知工具一律通用卡。
       toolCardsEnabled: _api.toolCardsCapabilities.supports(item.toolName),
       // issue #68：PTC 子调用树能力位（旧插件 false → 计数/子行完全不渲染）。
@@ -6655,9 +6665,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _ImagesGrid(
+                        ImageGalleryGrid(
                           images: item.images,
                           sessionId: _mySessionId ?? '',
+                          api: _api,
                         ),
                         if (item.files.isNotEmpty)
                           _FileResults(files: item.files),
@@ -6692,7 +6703,11 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             if (images.isNotEmpty)
               userBubble(
-                _ImagesGrid(images: images, sessionId: _mySessionId ?? ''),
+                ImageGalleryGrid(
+                  images: images,
+                  sessionId: _mySessionId ?? '',
+                  api: _api,
+                ),
               ),
             if (item.files.isNotEmpty)
               userBubble(_FileResults(files: item.files)),
@@ -6735,6 +6750,7 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             _AssistantBubble(
               text: item.text,
+              api: _api,
               usage: item.usage,
               images: item.images,
               sessionId: _mySessionId ?? '',
@@ -7447,6 +7463,9 @@ class _ToolActivityCard extends StatefulWidget {
   final bool debug;
   final String sessionId;
 
+  /// issue #69：附图拉取用 ChatScreen 注入的 Api（测试可计数/打桩，生产同全局单例）。
+  final Api api;
+
   /// issue #54：服务端能力位声明的工具集合包含当前工具（旧插件 false → 通用卡）。
   final bool toolCardsEnabled;
 
@@ -7471,6 +7490,7 @@ class _ToolActivityCard extends StatefulWidget {
     required this.item,
     required this.debug,
     required this.sessionId,
+    required this.api,
     this.toolCardsEnabled = false,
     this.ptcEnabled = false,
     this.pendingQuestionIds = const <String>{},
@@ -8344,9 +8364,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                   if (item.images.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: _ImagesGrid(
+                      child: ImageGalleryGrid(
                         images: item.images,
                         sessionId: widget.sessionId,
+                        api: widget.api,
                       ),
                     ),
                   // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
@@ -8792,6 +8813,9 @@ class _AssistantBubble extends StatefulWidget {
   // v3.0.0 图像链路：附图元数据（渲染按 attachmentId 经 /attachment 拉取）
   final List<Map<String, dynamic>> images;
   final String sessionId;
+
+  /// issue #69：附图拉取用 ChatScreen 注入的 Api（测试可计数/打桩，生产同全局单例）。
+  final Api api;
   // 思维链正文（null/空 = 不渲染折叠块）
   final String? reasoning;
   // 设置项：思维链默认折叠还是展开
@@ -8806,6 +8830,7 @@ class _AssistantBubble extends StatefulWidget {
   final String codeTapKey;
   const _AssistantBubble({
     required this.text,
+    required this.api,
     this.usage,
     this.images = const [],
     this.sessionId = '',
@@ -8883,7 +8908,11 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
             // v3.0.0 图像链路：附图（agent 回复里的图片，点击全屏）
             if (widget.images.isNotEmpty) ...[
               const SizedBox(height: 6),
-              _ImagesGrid(images: widget.images, sessionId: widget.sessionId),
+              ImageGalleryGrid(
+                images: widget.images,
+                sessionId: widget.sessionId,
+                api: widget.api,
+              ),
             ],
             if (widget.usage != null &&
                 ((widget.usage!['inputTokens'] as num? ?? 0) > 0 ||
@@ -8984,24 +9013,6 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   }
 }
 
-// ── v3.0.0 图像链路：消息附图渲染（按 attachmentId 经 /attachment 拉取字节，LRU 缓存） ──
-
-/// 下载/保存目标目录。Android 优先应用外部私有目录（可经文件管理器/USB 访问），
-/// 其它平台回退应用文档目录——`getExternalStorageDirectory()` 在 iOS 会抛
-/// `UnsupportedError`，异常不会走到 `??` 的右操作数，必须显式 platform 判定 + try。
-/// 两者都是**应用私有**目录，不会出现在系统相册/下载列表，提示文案需如实说明。
-Future<Directory> _appSaveDirectory() async {
-  if (Platform.isAndroid) {
-    try {
-      final external = await getExternalStorageDirectory();
-      if (external != null) return external;
-    } catch (_) {
-      // 外部存储不可用（无介质/被策略限制）→ 回退内部目录
-    }
-  }
-  return getApplicationDocumentsDirectory();
-}
-
 /// 消息附件展示（issue #1 需求变更）：只显示文件名/类型/大小，**不提供下载**。
 /// 工具与 assistant 产出的文件行已整体移除，这里只服务用户自己的附件。
 class _FileResults extends StatelessWidget {
@@ -9076,261 +9087,6 @@ class _FileResultTile extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ImagesGrid extends StatelessWidget {
-  final List<Map<String, dynamic>> images;
-  final String sessionId;
-  const _ImagesGrid({required this.images, required this.sessionId});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final img in images) ...[
-          if (img != images.first) const SizedBox(height: 6),
-          _MsgImage(
-            key: ValueKey<String>('$sessionId:${img['attachmentId']}'),
-            image: img,
-            sessionId: sessionId,
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _MsgImage extends StatefulWidget {
-  final Map<String, dynamic> image;
-  final String sessionId;
-  const _MsgImage({super.key, required this.image, required this.sessionId});
-
-  @override
-  State<_MsgImage> createState() => _MsgImageState();
-}
-
-class _MsgImageState extends State<_MsgImage> {
-  Uint8List? _bytes;
-  bool _loading = true;
-  int _loadToken = 0;
-
-  String get _attachmentId => widget.image['attachmentId'] as String? ?? '';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void didUpdateWidget(covariant _MsgImage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final oldId = oldWidget.image['attachmentId'] as String? ?? '';
-    if (oldId != _attachmentId || oldWidget.sessionId != widget.sessionId) {
-      _loadToken++;
-      _bytes = null;
-      _loading = true;
-      _load();
-    }
-  }
-
-  Future<void> _load() async {
-    final token = ++_loadToken;
-    if (!_loading && mounted) setState(() => _loading = true);
-    final id = _attachmentId;
-    final sessionId = widget.sessionId;
-    if (id.isEmpty || sessionId.isEmpty) {
-      if (mounted && token == _loadToken) setState(() => _loading = false);
-      return;
-    }
-    try {
-      final bytes = await api.attachmentBytes(sessionId, id);
-      if (!mounted ||
-          token != _loadToken ||
-          sessionId != widget.sessionId ||
-          id != _attachmentId) {
-        return;
-      }
-      setState(() {
-        _bytes = bytes;
-        _loading = false;
-      });
-    } catch (_) {
-      if (!mounted ||
-          token != _loadToken ||
-          sessionId != widget.sessionId ||
-          id != _attachmentId) {
-        return;
-      }
-      setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _saveImage() async {
-    final b = _bytes;
-    if (b == null) return;
-    try {
-      final dir = await _appSaveDirectory();
-      final media = widget.image['mediaType']?.toString() ?? 'image/jpeg';
-      final ext = media
-          .split('/')
-          .last
-          .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '');
-      final target = File(
-        '${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}',
-      );
-      await target.writeAsBytes(b, flush: true);
-      if (mounted) {
-        showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
-      }
-    } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
-    }
-  }
-
-  void _openFull() {
-    final b = _bytes;
-    if (b == null) return;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.black,
-        insetPadding: const EdgeInsets.all(12),
-        child: Stack(
-          children: [
-            InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4,
-              child: Image.memory(
-                b,
-                fit: BoxFit.contain,
-                width: double.infinity,
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    onPressed: _saveImage,
-                    tooltip: L10n.t('保存图片', 'Save image'),
-                    icon: const Icon(
-                      Icons.download_outlined,
-                      color: Colors.white,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final w = (widget.image['width'] as num?)?.toDouble() ?? 4;
-    final h = (widget.image['height'] as num?)?.toDouble() ?? 3;
-    // v3.0.0：竖图完整显示——比例不再硬收进方形（旧：clamp 0.4~2.5 且高上限 236 = 方形裁剪），
-    // 上限放宽到 480 并配合 BoxFit.contain（cover 会把竖图裁成中间一条，即"显示不全"的根因）
-    final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.3, 3.0) : 1.5;
-    final boxW = 236.0;
-    final boxH = (boxW / ratio).clamp(80.0, 480.0);
-    final line = DshColors.line(context);
-    // v3.0.0(版本二)：GIF 动图 Flutter 原生支持（MultiFrameImageStreamCompleter 逐帧播放），
-    // 无需第三方包；超大 GIF（长边>4096 或 >16MB）解码耗 CPU/首帧慢，加"GIF·原图较大"角标提醒
-    final isGif = widget.image['mediaType'] == 'image/gif';
-    final bigGif =
-        isGif &&
-        ((w > 0 && h > 0 && (w > 4096 || h > 4096)) ||
-            (_bytes?.length ?? 0) > 16 * 1024 * 1024);
-    return GestureDetector(
-      onTap: _bytes != null ? _openFull : null,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: boxW,
-          height: boxH,
-          color: line,
-          child: _loading
-              ? const Center(
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              : _bytes != null
-              ? Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // v3.1.6（app-audit ①4）：按卡片显示宽度（236 逻辑像素）2x 解码，
-                    // 避免每条附图都按原始分辨率（12MP≈48MB）解码。
-                    Image.memory(
-                      _bytes!,
-                      fit: BoxFit.contain,
-                      gaplessPlayback: true,
-                      cacheWidth: 480,
-                    ),
-                    if (bigGif)
-                      Positioned(
-                        right: 4,
-                        bottom: 4,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            L10n.t('GIF·原图较大', 'GIF · large file'),
-                            style: const TextStyle(
-                              fontSize: 9.5,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                )
-              : InkWell(
-                  onTap: _load,
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.broken_image_outlined,
-                          size: 24,
-                          color: DshColors.ink3(context),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          L10n.t('加载失败，点按重试', 'Failed to load — tap to retry'),
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            color: DshColors.ink3(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
         ),
       ),
     );
