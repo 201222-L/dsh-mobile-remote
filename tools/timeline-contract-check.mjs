@@ -260,12 +260,15 @@ check(
   JSON.stringify(tailSignals),
 );
 
-// issue #54（M3 Batch 1）：工具卡结构化投影。
+// issue #54（M3 Batch 1）+ issue #66（M3 Batch 2-A）：工具卡结构化投影。
 const toolCardsCaps = mod.toolCardsCapabilityOf();
 check(
-  "toolCards 能力位声明本插件实际投影的 10 个工具",
+  "toolCards 能力位声明本插件实际投影的 13 个工具",
   toolCardsCaps?.version === 1
-    && JSON.stringify(toolCardsCaps?.tools) === JSON.stringify(["bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image"]),
+    && JSON.stringify(toolCardsCaps?.tools) === JSON.stringify([
+      "bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image",
+      "todo_write", "ask_user_question", "skill",
+    ]),
   JSON.stringify(toolCardsCaps),
 );
 const toolCallProjection = (name, args) => mod.summarizeEvent({
@@ -344,6 +347,103 @@ check(
     toolResultProjection("Found 3 matches"),
     toolResultProjection("No matches found"),
     toolResultProjection("(Showing 20 of 87 paths"),
+  ]),
+);
+
+// issue #66（M3 Batch 2-A）：todo_write / ask_user_question / skill 的 tool/call 投影。
+const todoProjection = toolCallProjection("todo_write", {
+  todos: [
+    { content: "写测试\n并跑通", status: "completed" },
+    { content: "修复 bug", status: "in_progress" },
+    { content: "未知状态", status: "done" },
+  ],
+});
+check(
+  "tool/call todo 投影：items 单行化/status 归一/counts 三键（和 = items.length）",
+  todoProjection?.kind === "todo"
+    && JSON.stringify(todoProjection.items) === JSON.stringify([
+      { content: "写测试 并跑通", status: "completed" },
+      { content: "修复 bug", status: "in_progress" },
+      { content: "未知状态", status: "pending" },
+    ])
+    && JSON.stringify(todoProjection.counts) === JSON.stringify({ pending: 1, inProgress: 1, completed: 1 }),
+  JSON.stringify(todoProjection),
+);
+check(
+  "tool/call todo 投影：空数组合法、非数组 fail-open 到 kind/tool",
+  JSON.stringify(toolCallProjection("todo_write", { todos: [] }))
+      === JSON.stringify({ kind: "todo", tool: "todo_write", items: [], counts: { pending: 0, inProgress: 0, completed: 0 } })
+    && JSON.stringify(toolCallProjection("todo_write", { todos: "nope" })) === JSON.stringify({ kind: "todo", tool: "todo_write" }),
+  JSON.stringify([toolCallProjection("todo_write", { todos: [] }), toolCallProjection("todo_write", { todos: "nope" })]),
+);
+check(
+  "tool/call todo 投影：跳过非法元素（非对象/content 非 string），counts 只统计保留项",
+  JSON.stringify(toolCallProjection("todo_write", { todos: [42, "x", { content: "ok", status: "completed" }, { content: 7 }] }))
+    === JSON.stringify({ kind: "todo", tool: "todo_write", items: [{ content: "ok", status: "completed" }], counts: { pending: 0, inProgress: 0, completed: 1 } }),
+  JSON.stringify(toolCallProjection("todo_write", { todos: [42, "x", { content: "ok", status: "completed" }, { content: 7 }] })),
+);
+const questionProjection = toolCallProjection("ask_user_question", {
+  questions: [
+    { id: "q1", header: "确认", question: "选哪个？", options: [{ label: "A", description: "快" }, { label: "B" }], multi_select: true },
+    { header: "缺 question 整题丢弃" },
+    { id: "q2", question: "两种形状", multiSelect: true },
+  ],
+});
+check(
+  "tool/call question 投影：题目映射/无效题丢弃/multi_select→multiSelect",
+  questionProjection?.kind === "question"
+    && questionProjection.questions?.length === 2
+    && questionProjection.questions[0]?.id === "q1"
+    && questionProjection.questions[0]?.header === "确认"
+    && questionProjection.questions[0]?.multiSelect === true
+    && questionProjection.questions[0]?.options?.length === 2
+    && questionProjection.questions[0]?.options?.[0]?.description === "快"
+    && questionProjection.questions[1]?.id === "q2"
+    && questionProjection.questions[1]?.multiSelect === true,
+  JSON.stringify(questionProjection),
+);
+check(
+  "tool/call question 投影：≤10 题、questions 非数组只回 kind/tool",
+  toolCallProjection("ask_user_question", { questions: Array.from({ length: 12 }, (_, i) => ({ id: `q${i}`, question: `q ${i}` })) })?.questions?.length === 10
+    && JSON.stringify(toolCallProjection("ask_user_question", { questions: "nope" })) === JSON.stringify({ kind: "question", tool: "ask_user_question" }),
+  JSON.stringify(toolCallProjection("ask_user_question", { questions: "nope" })),
+);
+const skillProjection = toolCallProjection("skill", {
+  name: "guizang-ppt-skill",
+  provider: "builtin",
+  resourceBase: { kind: "directory", path: "/home/mark/proj/.skills" },
+});
+check(
+  "tool/call skill 投影：只下发 name，不带 provider/resourceBase/主机路径",
+  skillProjection?.kind === "skill"
+    && skillProjection.name === "guizang-ppt-skill"
+    && skillProjection.provider === undefined
+    && skillProjection.resourceBase === undefined
+    && !JSON.stringify(skillProjection).includes("/home/mark/proj"),
+  JSON.stringify(skillProjection),
+);
+
+// issue #66（M3 Batch 2-A）：ask_user_question 的 tool/result answers 只读回放。
+check(
+  "tool/result ask_user_question 回放 answers（selected+custom 合并；空 selected 保留）",
+  JSON.stringify(toolResultProjection(JSON.stringify({ answers: [
+    { id: "q1", selected: ["A", "B"], custom: "自定义" },
+    { id: "q2", selected: [] },
+  ] }), undefined, "ask_user_question")) === JSON.stringify({ answers: [
+    { questionId: "q1", values: ["A", "B", "自定义"] },
+    { questionId: "q2", values: [] },
+  ] }),
+  JSON.stringify(toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"], custom: "自定义" }] }), undefined, "ask_user_question")),
+);
+check(
+  "tool/result answers fail-open：pending/坏 JSON/无工具名缺省（不得从内容猜）",
+  toolResultProjection(JSON.stringify({ pending: true, callId: "c", message: "m" }), undefined, "ask_user_question") === undefined
+    && toolResultProjection("not json", undefined, "ask_user_question") === undefined
+    && toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined) === undefined
+    && toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined, "todo_write") === undefined,
+  JSON.stringify([
+    toolResultProjection(JSON.stringify({ pending: true, callId: "c", message: "m" }), undefined, "ask_user_question"),
+    toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined),
   ]),
 );
 
