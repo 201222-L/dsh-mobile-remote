@@ -12,6 +12,7 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -100,10 +101,14 @@ test("cwd 内绝对路径：换算成同一 relative（D1）", (t) => {
 	assert.deepEqual(fromAbsolute, fromRelative, "相对/绝对输入必须得到同一摘要");
 });
 
-test("cwd 外绝对路径：两字段皆缺，摘要只剩 display（零探测路径）", (t) => {
+test("cwd 外绝对路径：两字段皆缺，摘要只剩 display（preview 判定不探测该路径）", (t) => {
 	const root = workspace(t);
 	putFile(root, "src/a.ts");
-	// /etc/passwd 一定存在且可读；词法就判 cwd 外，必须在任何 fs 探测之前返回。
+	// /etc/passwd 一定存在且可读；previewTargetOf 的词法夹取在 realpath/stat 候选之前就返回，
+	// 所以判定本身不会读它。注意（reviewer P1）：同一条摘要的 `display` 派生仍沿用
+	// mobileDisplayPath → canonicalWorkspacePath（#54/#60 F2），后者会为合并 cwd 符号链接
+	// 别名而对已给出的绝对路径祖先做 realpath——这是既有行为，不属于 #67 新增探测面，
+	// 本用例只断言「不产生可预览字段、摘要只剩 display」。
 	const summary = read("/etc/passwd", root);
 	assertNotPreviewable(summary, "/etc/passwd 不得可预览");
 	assert.deepEqual(summary, { kind: "file", tool: "read", filePath: "passwd" });
@@ -123,14 +128,39 @@ test(".. 逃逸 / 中间 .. / 前置 ./ / 空段：词法拒绝；单次 ./ 归�
 	assertPreviewable(read("./a.ts", root), "a.ts", root);
 });
 
-test("盘符 / UNC / 反斜杠：绝对形态拒绝，相对反斜杠按归一后判定", (t) => {
+test("盘符 / UNC：绝对形态拒绝；POSIX cwd 下含字面反斜杠一律 fail-closed", (t) => {
 	const root = workspace(t);
 	putFile(root, "src/a.ts");
 	for (const path of ["C:\\x", "C:\\Windows\\system32", "\\\\server\\share\\x", "//server/share/x"]) {
 		assertNotPreviewable(read(path, root), `${JSON.stringify(path)} 必须拒绝`);
 	}
-	// POSIX 宿主上 `src\a.ts` 是合法文件名；归一后是存在的 src/a.ts → 可预览。
-	assertPreviewable(read("src\\a.ts", root), "src/a.ts", root);
+	// P2（reviewer）：POSIX 上 `\` 是合法文件名字符。cwd 是 POSIX 形态时不做 `\`→`/`
+	// 归一，含反斜杠的原始路径直接 fail-closed（否则可能指向另一个文件）。
+	assertNotPreviewable(read("src\\a.ts", root), "POSIX cwd 下反斜杠路径必须缺省");
+	// Windows 形态 cwd（`C:\\...` 或含 `\` 且不以 `/` 开头）才保留归一；本机是 POSIX，
+	// 无法构造存在的 Windows cwd/文件，故 Windows 分支未在本测试验证（见实现注释）。
+});
+
+test("P2 回归：字面文件 `dir\\a` 与 `dir/a` 同时存在时，摘要不得指向另一份文件", (t) => {
+	const root = workspace(t);
+	// 两个同名异义文件：字面反斜杠文件名（POSIX 合法）与普通子目录文件，内容不同。
+	putFile(root, "dir\\a", "literal-backslash\n");
+	putFile(root, "dir/a", "regular-slash\n");
+	assert.notEqual(
+		readFileSync(join(root, "dir\\a"), "utf8"),
+		readFileSync(join(root, "dir/a"), "utf8"),
+		"夹具必须是两份不同内容的文件",
+	);
+	const summary = read("dir\\a", root);
+	assertNotPreviewable(summary, "字面反斜杠文件不得被归一成 dir/a 后可预览");
+	// 关键：摘要里不能出现会被 App 拼成另一份文件的 relative。
+	// 既有 display 仍显示 `dir/a`（mobileDisplayPath 的已有口径，本 issue 不改），
+	// 但 `relative` 必须整个缺省，App 因此不会把点击指向另一份文件。
+	assert.equal(summary.filePath, "dir/a");
+	assert.ok(!("relative" in summary));
+	assert.ok(!("previewable" in summary));
+	// 对照：普通 `dir/a` 仍可预览（证明夹具路径本身有效）。
+	assertPreviewable(read("dir/a", root), "dir/a", root);
 });
 
 test("目录 / 缺失 / FIFO：存在但不是普通文件 → 缺省", (t) => {
