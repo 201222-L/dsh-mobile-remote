@@ -198,23 +198,31 @@ void main() {
       expect(run(reverse: true), ['b', 'a', 'a1', 'a2']);
     });
 
-    test('深度 16：链式 16 层全渲染，第 17 层被截断并置 truncated', () {
-      final reducer = TimelineReducer();
-      // 倒序喂：最深节点先到，全部 orphan，根到达后逐层挂回。
-      for (var depth = 17; depth >= 1; depth--) {
-        reducer.apply(_ev(
-          'tool/ptc-dispatch-start',
-          100 + depth,
-          _start(100 + depth, 'd$depth', parent: depth == 1 ? _rootCallId : 'd${depth - 1}', name: 'read'),
-        ));
+    test('深度边界：恰好 16 层（叶子）不误报 truncated，第 17 层才截断', () {
+      TimelineReducer chain(int depthCount) {
+        final reducer = TimelineReducer();
+        // 倒序喂：最深节点先到，全部 orphan，根到达后逐层挂回。
+        for (var depth = depthCount; depth >= 1; depth--) {
+          reducer.apply(_ev(
+            'tool/ptc-dispatch-start',
+            100 + depth,
+            _start(100 + depth, 'd$depth', parent: depth == 1 ? _rootCallId : 'd${depth - 1}', name: 'read'),
+          ));
+        }
+        reducer.apply(_ev('tool/call', 1, _rootCall(1)));
+        return reducer;
       }
-      reducer.apply(_ev('tool/call', 1, _rootCall(1)));
-      final root = reducer.tools[_rootCallId]!;
-      expect(root.subCalls, hasLength(16));
-      expect(root.subCalls.first.callId, 'd1');
-      expect(root.subCalls.last.callId, 'd16');
-      expect(root.subCalls.last.depth, 16);
-      expect(root.subCallsTruncated, isTrue);
+
+      final exactly16 = chain(16).tools[_rootCallId]!;
+      expect(exactly16.subCalls, hasLength(16));
+      expect(exactly16.subCalls.last.depth, 16);
+      expect(exactly16.subCallsTruncated, isFalse, reason: '第 16 层是叶子，不应误报截断');
+
+      final seventeen = chain(17).tools[_rootCallId]!;
+      expect(seventeen.subCalls, hasLength(16));
+      expect(seventeen.subCalls.last.callId, 'd16');
+      expect(seventeen.subCalls.last.depth, 16);
+      expect(seventeen.subCallsTruncated, isTrue);
     });
 
     test('环防护：自环 / 祖先环 / 重复父 → 静默忽略、不崩溃、不置 truncated', () {
@@ -266,20 +274,32 @@ void main() {
       expect(reducer2.tools[_rootCallId]!.subCallsTruncated, isTrue);
     });
 
-    test('App 侧 50 上限：60 个子调用渲染 50 条并置 truncated', () {
-      final reducer = _reducerWithRoot();
-      for (var index = 1; index <= 60; index++) {
-        reducer.apply(_ev(
-          'tool/ptc-dispatch-start',
-          100 + index,
-          _start(100 + index, 'many-$index', summary: _readSummary),
-        ));
+    test('App 侧 50 上限边界：恰好 50 不误报，51/60 截断', () {
+      TimelineReducer many(int count) {
+        final reducer = _reducerWithRoot();
+        for (var index = 1; index <= count; index++) {
+          reducer.apply(_ev(
+            'tool/ptc-dispatch-start',
+            100 + index,
+            _start(100 + index, 'many-$index', summary: _readSummary),
+          ));
+        }
+        return reducer;
       }
-      final root = reducer.tools[_rootCallId]!;
-      expect(root.subCalls, hasLength(50));
-      expect(root.subCallsTruncated, isTrue);
-      expect(root.subCalls.first.callId, 'many-1');
-      expect(root.subCalls.last.callId, 'many-50');
+
+      final exactly50 = many(50).tools[_rootCallId]!;
+      expect(exactly50.subCalls, hasLength(50));
+      expect(exactly50.subCallsTruncated, isFalse, reason: '恰好 50 条不应误报截断');
+
+      final over51 = many(51).tools[_rootCallId]!;
+      expect(over51.subCalls, hasLength(50));
+      expect(over51.subCallsTruncated, isTrue);
+
+      final over60 = many(60).tools[_rootCallId]!;
+      expect(over60.subCalls, hasLength(50));
+      expect(over60.subCallsTruncated, isTrue);
+      expect(over60.subCalls.first.callId, 'many-1');
+      expect(over60.subCalls.last.callId, 'many-50');
     });
 
     test('M1：PTC 事件只更新根卡、不新增时间线条目（根卡锚点/位置不变）', () {
@@ -372,6 +392,35 @@ void main() {
       expect(find.textContaining('tool/ptc-dispatch'), findsNothing);
       expect(find.byKey(const ValueKey<String>('tool:$_rootCallId:1')), findsOneWidget);
       expect(find.text('2 个子调用'), findsOneWidget);
+    });
+
+    testWidgets('A2 历史上翻页：同页含根 call + PTC 事件、无根 result 也显示子调用', (tester) async {
+      // `/history?before=` 返回的一页（旧→新）恰好是「根 tool/call + PTC start/result」，
+      // 不含根 tool/result；局部 pageItems 必须被原地刷新，否则根卡丢子调用。
+      final backend = _PagingPtcBackend();
+      await _pumpPagingChat(tester, _store(), backend);
+
+      for (var i = 0; i < 30 && backend.beforePages == 0; i++) {
+        await tester.drag(
+          find.byType(CustomScrollView),
+          const Offset(0, 600),
+        );
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      expect(backend.beforePages, greaterThan(0), reason: '上翻应触发 before 分页');
+
+      // 继续上翻，让旧页根卡进入构建范围。
+      final card = find.byKey(const ValueKey<String>('tool:$_rootCallId:1'));
+      for (var i = 0; i < 30 && card.evaluate().isEmpty; i++) {
+        await tester.drag(find.byType(CustomScrollView), const Offset(0, 600));
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      expect(card, findsOneWidget);
+      expect(find.text('1 个子调用'), findsWidgets);
+      await _expandCard(tester, card);
+      expect(find.byKey(const ValueKey<String>('tool-ptc-subcall:s1')), findsOneWidget);
+      expect(find.textContaining('read · 成功 · README.md'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }
@@ -485,6 +534,81 @@ class _PtcBackend {
   );
 }
 
+/// A2：分页夹具——初始页给可滚动的 filler；`before` 页给「根 call + PTC」且无根 result。
+class _PagingPtcBackend {
+  int beforePages = 0;
+
+  late final Api api = Api(client: MockClient(_handle))
+    ..baseUrl = 'http://ptc-paging.test'
+    ..path = '/m'
+    ..token = ''
+    ..timelineCapabilities = const TimelineCapabilities(
+      version: 1,
+      live: true,
+      history: true,
+      detail: true,
+      unknownEvents: true,
+      callCorrelation: true,
+    )
+    ..toolCardsCapabilities = const ToolCardsCapabilities(
+      version: 1,
+      tools: {'bash', 'read'},
+      ptcVersion: 1,
+    );
+
+  List<Map<String, dynamic>> _filler() => [
+    for (var index = 0; index < 20; index++)
+      {
+        'seq': 100 + index,
+        'type': 'assistant/message',
+        'data': {'turn': 1, 'messageId': 'f$index', 'text': 'filler $index'},
+      },
+  ];
+
+  List<Map<String, dynamic>> _olderPage() => [
+    {'seq': 1, 'type': 'tool/call', 'data': _rootCall(1)},
+    {'seq': 2, 'type': 'tool/ptc-dispatch-start', 'data': _start(2, 's1', summary: _readSummary)},
+    {'seq': 3, 'type': 'tool/ptc-dispatch', 'data': _result(3, 's1', summary: _readSummary)},
+  ];
+
+  Future<http.Response> _handle(http.Request request) async {
+    if (request.url.path == '/m/api/history') {
+      final before = request.url.queryParameters['before'];
+      if (before != null) {
+        beforePages += 1;
+        return _json({
+          'ok': true,
+          'hasMore': false,
+          'turnTails': const <String, dynamic>{},
+          'events': _olderPage(),
+        });
+      }
+      return _json({
+        'ok': true,
+        'hasMore': true,
+        'turnTails': const <String, dynamic>{},
+        'events': _filler(),
+      });
+    }
+    if (request.url.path == '/m/api/notifications') {
+      return _json({'ok': true, 'items': <Object>[]});
+    }
+    if (request.url.path == '/m/api/queue') {
+      return _json({'ok': true, 'rows': <Object>[]});
+    }
+    if (request.url.path == '/m/api/todos') {
+      return _json({'ok': true, 'todos': <Object>[]});
+    }
+    return _json({'ok': true});
+  }
+
+  static http.Response _json(Map<String, dynamic> body) => http.Response(
+    jsonEncode(body),
+    200,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+}
+
 AppStore _store() => AppStore()
   ..sessionId = 'session-ptc'
   // 完全展开：M1 标准档会折叠已完成轮次，工具卡不构建。
@@ -499,6 +623,29 @@ Future<void> _pumpPtcChat(WidgetTester tester, AppStore store, _PtcBackend backe
     MaterialApp(
       home: ChatScreen(
         key: const ValueKey('ptc-chat'),
+        store: store,
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
+    ),
+  );
+  await tester.pump(const Duration(milliseconds: 400));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _pumpPagingChat(
+  WidgetTester tester,
+  AppStore store,
+  _PagingPtcBackend backend,
+) async {
+  tester.view.physicalSize = const Size(900, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChatScreen(
+        key: const ValueKey('ptc-paging-chat'),
         store: store,
         apiClient: backend.api,
         onTitleChanged: () {},

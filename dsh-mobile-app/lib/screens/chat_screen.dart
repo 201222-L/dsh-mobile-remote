@@ -3038,13 +3038,19 @@ class _ChatScreenState extends State<ChatScreen> {
   /// issue #68（M3 Batch 2-C）：PTC 事件到达后，按 reducer 标出的受影响根**原地**
   /// 刷新已存在的根工具卡（不新增条目、不改锚点/位置）；根条目尚未到达时 no-op
   /// （随后 `tool/call` 的 `_upsertToolItem` 会从 lifecycle 带出完整子树）。
-  void _refreshToolItemsForPtc() {
+  void _refreshToolItemsForPtc([List<_MsgItem>? current]) {
+    // A2：历史分段/上翻页构建中的局部列表（`out`/`pageItems`）不在三个持久列表里，
+    // 必须一并原地刷新，否则「同页含根 call + PTC 事件但无根 result」时根卡缺子调用。
+    final lists = <List<_MsgItem>>[_items, _olderItems, _histItems];
+    if (current != null && !lists.any((list) => identical(list, current))) {
+      lists.add(current);
+    }
     for (final rootId in List<String>.from(
       _timelineReducer.lastTouchedToolRoots,
     )) {
       final lifecycle = _timelineReducer.tools[rootId];
       if (lifecycle == null) continue;
-      for (final list in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+      for (final list in lists) {
         final index = list.indexWhere(
           (item) => item.kind == _MsgKind.tool && item.toolCallId == rootId,
         );
@@ -3290,7 +3296,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!ptcEventConsumable(d)) {
           _appendVisibleEvent(out, ev, history: history);
         } else {
-          _refreshToolItemsForPtc();
+          _refreshToolItemsForPtc(out);
         }
       case 'todo/write':
         _appendVisibleEvent(out, ev, history: history);

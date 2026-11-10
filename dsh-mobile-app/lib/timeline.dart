@@ -702,16 +702,17 @@ class TimelineReducer {
     var truncated = _ptcTruncatedRoots.contains(rootId);
     final visited = <String>{rootId};
     void dfs(String parentId, int depth) {
-      if (out.length >= 50 || depth > 16) {
+      final kids = _childrenOf(parentId);
+      // 叶子提前返回：恰好 16 层的叶子/恰好 50 条时不得误报 truncated。
+      if (kids.isEmpty) return;
+      if (depth > 16) {
+        // 还有孩子但层级已到 17：确实被深度上限截断。
         truncated = true;
         return;
       }
-      for (final kidId in _childrenOf(parentId)) {
+      for (final kidId in kids) {
         if (out.length >= 50) {
-          truncated = true;
-          return;
-        }
-        if (depth > 16) {
+          // 还有孩子但已满 50：确实被数量上限截断。
           truncated = true;
           return;
         }
