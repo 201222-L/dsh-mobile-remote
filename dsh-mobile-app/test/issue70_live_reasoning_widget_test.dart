@@ -524,6 +524,170 @@ void main() {
   });
 
 
+  testWidgets('工具类事件推进 step：旧 step provisional 关闭，迟到旧 chunk 不复活（审查 P1-2）', (
+    tester,
+  ) async {
+    final store = await _pumpChat(
+      tester,
+      _Backend(events: [
+        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+        {
+          'seq': 2,
+          'type': 'user/message',
+          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+          'time': 1100,
+        },
+      ]),
+    );
+    await _inject(tester, store, {
+      'seq': 10,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'reasoning': true,
+        'text': 'step one thinking',
+      },
+      'time': 1200,
+    });
+    expect(find.byKey(_activityBarKey), findsOneWidget);
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+
+    // step2 先到的是 tool/call（没有 step1 的 assistant/message）→ 必须关闭旧 provisional。
+    await _inject(tester, store, {
+      'seq': 11,
+      'type': 'tool/call',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'callId': 'call-2',
+        'name': 'shell',
+        'arguments': '{}',
+      },
+      'time': 1300,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+    expect(find.text('思考中…'), findsNothing);
+    expect(find.byKey(_activityBarThinkingKey), findsNothing);
+    expect(find.text('正在调用 shell…'), findsOneWidget);
+
+    // 迟到的 step1 chunk：tombstone 生效，不复活。
+    await _inject(tester, store, {
+      'seq': 12,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'reasoning': true,
+        'text': 'late step one',
+      },
+      'time': 1400,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+    expect(find.text('思考中…'), findsNothing);
+    expect(find.text('late step one'), findsNothing);
+    await _flushAppTimers(tester);
+  });
+
+  testWidgets('同 step 工具事件不误关 provisional；随后 assistant/message 正常落定', (
+    tester,
+  ) async {
+    final store = await _pumpChat(
+      tester,
+      _Backend(events: [
+        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+        {
+          'seq': 2,
+          'type': 'user/message',
+          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+          'time': 1100,
+        },
+      ]),
+    );
+    await _inject(tester, store, {
+      'seq': 10,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'reasoning': true,
+        'text': 'keep thinking',
+      },
+      'time': 1200,
+    });
+    await _inject(tester, store, {
+      'seq': 11,
+      'type': 'tool/call',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'callId': 'call-1',
+        'name': 'shell',
+        'arguments': '{}',
+      },
+      'time': 1300,
+    });
+    expect(
+      find.byKey(_provisionalRowKey(1, 1)),
+      findsOneWidget,
+      reason: '同 step 的工具事件不得关闭 provisional',
+    );
+    expect(find.text('思考中…'), findsOneWidget);
+
+    await _inject(tester, store, {
+      'seq': 12,
+      'type': 'assistant/message',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'messageId': 'a1',
+        'text': '',
+        'reasoning': 'keep thinking',
+        'reasoningChars': 13,
+      },
+      'time': 1400,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+    expect(find.byKey(_reasoningRowKey(1, 10)), findsOneWidget);
+    await _flushAppTimers(tester);
+  });
+
+  testWidgets('带 toolCall 的 chunk 也触发 step 前进检测（同 step 不误关）', (tester) async {
+    final store = await _pumpChat(tester, _Backend(events: _f70History()));
+    await _inject(tester, store, _f70Live()[0]); // seq6 reasoning step2
+    await _inject(tester, store, _f70Live()[1]); // seq7 reasoning step2
+    // 同 step 的工具增量 chunk：不得关闭 provisional。
+    await _inject(tester, store, {
+      'seq': 8,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'toolCall': 'shell',
+        'argumentsDelta': '{"command":"ls"}',
+      },
+      'time': 1700,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget);
+    expect(find.text('思考中…'), findsOneWidget);
+
+    // step3 的工具增量 chunk：旧 step2 provisional 关闭。
+    await _inject(tester, store, {
+      'seq': 9,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 3,
+        'toolCall': 'read_file',
+        'argumentsDelta': '{}',
+      },
+      'time': 1800,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsNothing);
+    expect(find.text('思考中…'), findsNothing);
+    await _flushAppTimers(tester);
+  });
+
   testWidgets('活动条三态：无锚点显示思考 / 有块有工具只显示工具 / 有块无工具整条隐藏', (
     tester,
   ) async {
@@ -919,6 +1083,52 @@ void main() {
   });
 
 
+  testWidgets('历史无 step 的多条思考行全部保留（审查 P1-1 用户可见回归）', (tester) async {
+    final history = <Map<String, dynamic>>[
+      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+      {
+        'seq': 2,
+        'type': 'user/message',
+        'data': {'messageId': 'u1', 'text': 'legacy question', 'sourceKind': 'user'},
+        'time': 1100,
+      },
+      {
+        'seq': 3,
+        'type': 'assistant/message',
+        'data': {
+          'turn': 1,
+          'messageId': 'a1',
+          'text': 'legacy reply one',
+          'reasoning': 'legacy one',
+          'reasoningChars': 10,
+        },
+        'time': 1200,
+      },
+      {
+        'seq': 5,
+        'type': 'assistant/message',
+        'data': {
+          'turn': 1,
+          'messageId': 'a2',
+          'text': 'legacy reply two',
+          'reasoning': 'legacy two',
+          'reasoningChars': 10,
+        },
+        'time': 1300,
+      },
+    ];
+    await _pumpChat(tester, _Backend(events: history), keySuffix: 'legacy-nostep');
+    expect(find.byKey(_reasoningRowKey(1, 3)), findsOneWidget);
+    expect(find.byKey(_reasoningRowKey(1, 5)), findsOneWidget);
+    final y1 = tester.getTopLeft(find.byKey(_reasoningRowKey(1, 3))).dy;
+    final y2 = tester.getTopLeft(find.byKey(_reasoningRowKey(1, 5))).dy;
+    expect(y1, lessThan(y2), reason: '缺 step 的思考行按 seq 排序、逐条保留');
+    expect(find.text('legacy one'), findsOneWidget);
+    expect(find.text('legacy two'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await _flushAppTimers(tester);
+  });
+
   testWidgets('历史回放不变：无 chunk 夹具不出现 provisional / 活动条', (tester) async {
     // 运行中的历史轮（无 turn/end）：过程块强制展开、无 provisional。
     await _pumpChat(tester, _Backend(events: _f70History()), keySuffix: 'hist-run');
@@ -970,7 +1180,7 @@ void main() {
       },
       'time': 1700,
     });
-    expect(find.text('${'A' * 120}…'), findsOneWidget);
+    expect(find.text('${'A' * 119}…'), findsOneWidget);
     expect(
       tester.getSize(find.byKey(_provisionalRowKey(1, 2))).height,
       collapsedHeight,
@@ -1061,7 +1271,7 @@ void main() {
   });
 
 
-  testWidgets('性能：200 个 reasoning delta 只重建一次计划、一次页面、行级通知有限', (
+  testWidgets('性能：200 个 delta 分批注入，页面/计划重建有限且正文完整（审查 P2-2）', (
     tester,
   ) async {
     // 已有持久工具行（过程块锚点已存在），provisional 尚未出现。
@@ -1090,34 +1300,70 @@ void main() {
       ]),
     );
     LiveProcessCounters.reset();
-    final deltas = <String>[];
-    for (var i = 0; i < 200; i++) {
-      final delta = 'd$i ';
-      deltas.add(delta);
-      _injectRaw(store, {
-        'seq': 10 + i,
-        'type': 'assistant/chunk',
-        'data': {'turn': 1, 'step': 1, 'reasoning': true, 'text': delta},
-        'time': 1300 + i,
-      });
-    }
-    await tester.pump();
 
+    // 分批注入 + 逐帧 pump（每批 5 条，40 帧）：避免「一次性注入后只 pump 一次」
+    // 把逐 delta 重建掩盖成单帧合并，真正验证每帧只更新该行。
+    final deltas = <String>[];
+    const batchSize = 5;
+    const frame = Duration(milliseconds: 16);
+    var frames = 0;
+    for (var i = 0; i < 200; i += batchSize) {
+      for (var j = 0; j < batchSize && i + j < 200; j++) {
+        final delta = 'd${i + j} ';
+        deltas.add(delta);
+        _injectRaw(store, {
+          'seq': 10 + i + j,
+          'type': 'assistant/chunk',
+          'data': {'turn': 1, 'step': 1, 'reasoning': true, 'text': delta},
+          'time': 1300 + i + j,
+        });
+      }
+      await tester.pump(frame);
+      frames++;
+    }
+    expect(frames, 40);
+    final fullText = deltas.join();
+    expect(fullText.length, deltas.fold<int>(0, (sum, d) => sum + d.length));
+
+    // 钩子必须真实非 0（防假绿），且不随 delta 线性增长。
     expect(LiveProcessCounters.appends, 200);
     expect(LiveProcessCounters.structuralChanges, 1,
         reason: '只有首个 delta 引起结构变化（键首次出现），其余只是文本增长');
-    expect(LiveProcessCounters.processPlanBuilds, 1,
-        reason: '纯 delta 不得逐次重建过程计划');
-    expect(LiveProcessCounters.pageBuilds, 1,
-        reason: '纯 delta 不得逐次 setState 重建整页');
-    expect(LiveProcessCounters.provisionalRowBuilds, lessThanOrEqualTo(2),
-        reason: '行级 ValueNotifier 每帧最多重建一次');
-    final fullText = deltas.join();
-    expect(fullText.length, deltas.fold<int>(0, (sum, d) => sum + d.length));
+    expect(LiveProcessCounters.pageBuilds, greaterThan(0), reason: '计数钩子不得恒 0');
+    expect(LiveProcessCounters.processPlanBuilds, greaterThan(0));
+    expect(LiveProcessCounters.provisionalRowBuilds, greaterThan(0));
+    expect(LiveProcessCounters.pageBuilds, lessThanOrEqualTo(2),
+        reason: '页面重建不得随 delta 增长');
+    expect(LiveProcessCounters.processPlanBuilds, lessThanOrEqualTo(2),
+        reason: '过程计划重建不得随 delta 增长');
+    expect(
+      LiveProcessCounters.provisionalRowBuilds,
+      lessThanOrEqualTo(frames + 2),
+      reason: '行级 ValueNotifier 每帧最多重建一次（与帧数同阶，而非 200 次）',
+    );
+
+    // 收起态：预览 = 最近一行（无换行 → 全文）且截断后总长 ≤120。
     final preview = latestReasoningLinePreview(fullText);
+    expect(preview.length, lessThanOrEqualTo(120));
+    expect(preview, '${fullText.substring(0, 119)}…');
     expect(find.text(preview), findsOneWidget);
-    expect(preview.length, 121, reason: '超长预览 = 120 字符 + 省略号');
     expect(find.text('思考中…'), findsOneWidget);
+
+    // 展开态：正文完整包含最终全文（首尾片段），证明 200 个 delta 都进入了 UI。
+    await tester.tap(find.byKey(_provisionalRowKey(1, 1)));
+    await tester.pump();
+    final bodyFinder = find.byKey(_provisionalBodyKey(1, 1));
+    expect(bodyFinder, findsOneWidget);
+    final selectable = tester.widget<SelectableText>(
+      find.descendant(of: bodyFinder, matching: find.byType(SelectableText)),
+    );
+    expect(selectable.data, isNotNull);
+    expect(selectable.data!.length, fullText.length);
+    expect(selectable.data, contains(fullText.substring(0, 24)));
+    expect(
+      selectable.data,
+      contains(fullText.substring(fullText.length - 24)),
+    );
     expect(tester.takeException(), isNull);
     await _flushAppTimers(tester);
   });

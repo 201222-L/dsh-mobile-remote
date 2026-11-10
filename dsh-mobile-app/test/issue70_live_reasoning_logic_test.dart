@@ -26,18 +26,21 @@ void main() {
       expect(latestReasoningLinePreview('   \n\t\n'), '');
     });
 
-    test('超过 120 字符截断并补一个省略号（总长 121）', () {
+    test('超过 120 字符截断后总长恰为 120（119 + 省略号）', () {
       final long = 'A' * 130;
       final preview = latestReasoningLinePreview(long);
-      expect(preview, '${'A' * 120}…');
-      expect(preview.length, 121);
+      expect(preview, '${'A' * 119}…');
+      expect(preview.length, 120);
       // 恰好 120 不截断
       expect(latestReasoningLinePreview('B' * 120), 'B' * 120);
+      // 121 也需要截断（总长仍 ≤120）
+      expect(latestReasoningLinePreview('D' * 121), '${'D' * 119}…');
+      expect(latestReasoningLinePreview('D' * 121).length, 120);
     });
 
     test('最近行才是长行时仍按最近行截断', () {
       final text = 'short first\n${'C' * 130}';
-      expect(latestReasoningLinePreview(text), '${'C' * 120}…');
+      expect(latestReasoningLinePreview(text), '${'C' * 119}…');
     });
   });
 
@@ -212,6 +215,50 @@ void main() {
       expect(rows, hasLength(1));
       expect(rows.single.seq, 8);
       expect(rows.single.reasoning, 'second');
+    });
+
+    test('缺 step 的 reasoning 行是整轮一组：同轮多条全部保留（审查 P1-1）', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'reasoning': 'legacy one', 'reasoningChars': 10},
+        ))
+        ..observe(_event(
+          8,
+          'assistant/message',
+          {'turn': 1, 'reasoning': 'legacy two', 'reasoningChars': 10},
+        ));
+      final rows = tracker.build().single.rows;
+      expect(rows, hasLength(2), reason: '缺 step 不得被当作同一步骤去重');
+      expect(rows.map((r) => r.seq).toList(), [5, 8]);
+      expect(rows.map((r) => r.reasoning).toList(), ['legacy one', 'legacy two']);
+      expect(rows.every((r) => r.step == null), isTrue);
+    });
+
+    test('缺 step 与有 step 混排：只对非空 step 去重（审查 P1-1）', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'reasoning': 'legacy', 'reasoningChars': 6},
+        ))
+        ..observe(_event(
+          6,
+          'assistant/message',
+          {'turn': 1, 'step': 2, 'reasoning': 'step two a', 'reasoningChars': 11},
+        ))
+        ..observe(_event(
+          9,
+          'assistant/message',
+          {'turn': 1, 'step': 2, 'reasoning': 'step two b', 'reasoningChars': 11},
+        ));
+      final rows = tracker.build().single.rows;
+      expect(rows, hasLength(2));
+      expect(rows.map((r) => r.seq).toList(), [5, 9]);
+      expect(rows.last.reasoning, 'step two b', reason: '同一非空 step 仍只留 seq 最大一条');
     });
 
     test('不同 step 各自保留一条', () {
