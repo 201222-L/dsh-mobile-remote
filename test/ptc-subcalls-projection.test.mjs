@@ -248,6 +248,65 @@ test("L2-1 summary 自由文本脱敏：command/description 的主机路径不�
 	assert.equal(JSON.stringify(withDescription).includes("/home/"), false);
 });
 
+test("L2-7 带空格/引号/转义空格的绝对路径整体脱敏（保留引号，URL 不变，description 同样处理）", () => {
+  const scrub = (args) => dataOf(ptcEvent({
+    rootCallId: "root-1",
+    parentCallId: "root-1",
+    subCallId: "c-quote",
+    name: "bash",
+    arguments: args,
+  })).summary;
+  // 引用段内的绝对路径含空格：整体 → …/<basename>，不得残留 user/private 层级。
+  const quoted = scrub({ command: 'cat "/home/other user/private/secret.txt"' });
+  assert.equal(quoted.command, 'cat "…/secret.txt"');
+  assert.equal(quoted.command.includes("other user"), false);
+  // 反斜杠转义空格。
+  assert.equal(scrub({ command: "cat /home/a\\ b/c" }).command, "cat …/c");
+  // 引用段内 URL 不改写；同一命令里的其它绝对路径仍脱敏。
+  const urlQuoted = scrub({ command: 'curl "https://example.com/a/b" && cat "/home/other user/x.txt"' });
+  assert.equal(urlQuoted.command, 'curl "https://example.com/a/b" && cat "…/x.txt"');
+  // bash 的 arguments.description 是自由文本，同样脱敏。
+  const withDescription = scrub({
+    command: "echo hi",
+    description: 'read "/home/other user/private/secret.txt"',
+  });
+  assert.equal(withDescription.description, 'read "…/secret.txt"');
+  assert.equal(JSON.stringify(withDescription).includes("/home/"), false);
+});
+
+test("L2-9 盘符只在 token 边界识别：path:/ 不被吞，POSIX/--flag=/file: 正常脱敏", () => {
+  const scrub = (command) => dataOf(ptcEvent({
+    rootCallId: "root-1",
+    parentCallId: "root-1",
+    subCallId: "c-boundary",
+    name: "bash",
+    arguments: { command },
+  })).summary.command;
+  const pathLike = scrub("echo path:/home/other/private/secret.txt");
+  assert.equal(pathLike, "echo path:…/secret.txt");
+  assert.equal(pathLike.includes("pat…"), false);
+  assert.equal(pathLike.includes("/home/other"), false);
+  assert.equal(scrub("cat C:\\Users\\a\\b.txt"), "cat …/b.txt");
+  assert.equal(scrub("ls --out=/home/a/b.log"), "ls --out=…/b.log");
+  assert.equal(scrub("cat file:/home/a/b.txt"), "cat file:…/b.txt");
+  assert.equal(scrub("curl https://example.com/a/b"), "curl https://example.com/a/b");
+});
+
+test("L2-8 安全码按原串严格验证：含换行/空格/制表符即非法 → 省略 text/error", () => {
+  for (const bad of ["\nFS_NOT_FOUND\n", "FS_NOT_FOUND ", "\tFS_NOT_FOUND", " FS_NOT_FOUND", "FS_NOT_FOUND\r"]) {
+    const data = dataOf(resultOf("c-strict", { isError: true, error: { code: bad } }));
+    assert.equal(data.text, undefined, JSON.stringify(bad));
+    assert.equal(data.error, undefined, JSON.stringify(bad));
+  }
+  // 合法 name 仍是 text 的合法 fallback（error 需要 name+code 都合法）。
+  const fallback = dataOf(resultOf("c-strict-name", { isError: true, error: { name: "FsError", code: "FS_NOT_FOUND " } }));
+  assert.equal(fallback.text, "FsError");
+  assert.equal(fallback.error, undefined);
+  const good = dataOf(resultOf("c-strict-good", { isError: true, error: { name: "FsError", code: "FS_NOT_FOUND" } }));
+  assert.equal(good.text, "FS_NOT_FOUND");
+  assert.deepEqual(good.error, { name: "FsError", code: "FS_NOT_FOUND" });
+});
+
 test("L2-3/L2-4 notice 不带 turn/step；drop 无 data 但保留通用顶层 time", () => {
 	const budget = createPtcBudget();
 	const root = "root-l2";

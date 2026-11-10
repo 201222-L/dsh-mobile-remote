@@ -377,14 +377,21 @@ const ptcScrubStart = (argumentsJson) => mod.summarizeEvent({
   data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "call-l2", name: "bash", arguments: argumentsJson },
 }, { cwd: PTC_TEST_CWD }).data?.summary;
 check(
-  "L2-1 summary command/description 主机路径脱敏（cwd→. / homedir→~ / 绝对路径→…/basename，URL 保留）",
+  "L2-1/L2-7/L2-9 summary 路径脱敏（cwd/homedir/引号空格/转义空格/path:/--flag=/file:/URL 边界）",
   ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })?.command === "cat …/secret.txt"
     && ptcScrubStart({ command: `cat ${PTC_TEST_CWD}/src/a.ts` })?.command === "cat ./src/a.ts"
+    && ptcScrubStart({ command: 'cat "/home/other user/private/secret.txt"' })?.command === 'cat "…/secret.txt"'
+    && ptcScrubStart({ command: "cat /home/a\\ b/c" })?.command === "cat …/c"
+    && ptcScrubStart({ command: "echo path:/home/other/private/secret.txt" })?.command === "echo path:…/secret.txt"
+    && ptcScrubStart({ command: "ls --out=/home/a/b.log" })?.command === "ls --out=…/b.log"
+    && ptcScrubStart({ command: "cat file:/home/a/b.txt" })?.command === "cat file:…/b.txt"
+    && ptcScrubStart({ command: "cat C:\\Users\\a\\b.txt" })?.command === "cat …/b.txt"
     && ptcScrubStart({ command: "curl https://example.com/a/b?x=1 && cat /etc/passwd" })?.command === "curl https://example.com/a/b?x=1 && cat …/passwd"
     && !JSON.stringify(ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })).includes("/home/"),
   JSON.stringify([
-    ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" }),
-    ptcScrubStart({ command: `cat ${PTC_TEST_CWD}/src/a.ts` }),
+    ptcScrubStart({ command: 'cat "/home/other user/private/secret.txt"' }),
+    ptcScrubStart({ command: "echo path:/home/other/private/secret.txt" }),
+    ptcScrubStart({ command: "ls --out=/home/a/b.log" }),
   ]),
 );
 const ptcSafeCodeResult = (error) => mod.summarizeEvent({
@@ -400,8 +407,10 @@ check(
     && ptcEvil?.error === undefined
     && !JSON.stringify(ptcEvil).includes("/home/")
     && ptcGood?.text === "FS_NOT_FOUND"
-    && JSON.stringify(ptcGood?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" }),
-  JSON.stringify([ptcEvil, ptcGood]),
+    && JSON.stringify(ptcGood?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" })
+    && ptcSafeCodeResult({ code: "\nFS_NOT_FOUND\n" })?.text === undefined
+    && ptcSafeCodeResult({ code: "FS_NOT_FOUND " })?.text === undefined,
+  JSON.stringify([ptcEvil, ptcGood, ptcSafeCodeResult({ code: "\nFS_NOT_FOUND\n" })]),
 );
 const l2NoticeBudget = mod.createPtcBudget();
 for (let index = 1; index <= 50; index++) mod.ptcGateOf(l2NoticeBudget, { rootCallId: "root-l2", subCallId: `l2-${index}` });
