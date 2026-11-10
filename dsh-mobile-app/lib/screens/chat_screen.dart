@@ -3015,6 +3015,9 @@ class _ChatScreenState extends State<ChatScreen> {
       resultSummary: ev.type == 'tool/result'
           ? (ev.resultSummary ?? old?.resultSummary)
           : old?.resultSummary,
+      // issue #68：PTC 子调用树随生命周期携带（PTC 事件只刷新根卡，不新建条目）。
+      subCalls: lifecycle.subCalls,
+      subCallsTruncated: lifecycle.subCallsTruncated,
     );
     if (index >= 0) {
       final settled =
@@ -3029,6 +3032,28 @@ class _ChatScreenState extends State<ChatScreen> {
       out.add(item);
     } else {
       out.insert(0, item);
+    }
+  }
+
+  /// issue #68（M3 Batch 2-C）：PTC 事件到达后，按 reducer 标出的受影响根**原地**
+  /// 刷新已存在的根工具卡（不新增条目、不改锚点/位置）；根条目尚未到达时 no-op
+  /// （随后 `tool/call` 的 `_upsertToolItem` 会从 lifecycle 带出完整子树）。
+  void _refreshToolItemsForPtc() {
+    for (final rootId in List<String>.from(
+      _timelineReducer.lastTouchedToolRoots,
+    )) {
+      final lifecycle = _timelineReducer.tools[rootId];
+      if (lifecycle == null) continue;
+      for (final list in <List<_MsgItem>>[_items, _olderItems, _histItems]) {
+        final index = list.indexWhere(
+          (item) => item.kind == _MsgKind.tool && item.toolCallId == rootId,
+        );
+        if (index < 0) continue;
+        list[index] = list[index].copyTool(
+          subCalls: lifecycle.subCalls,
+          subCallsTruncated: lifecycle.subCallsTruncated,
+        );
+      }
     }
   }
 
@@ -3258,6 +3283,15 @@ class _ChatScreenState extends State<ChatScreen> {
           _scheduleActivityFlush();
         }
         _upsertToolItem(out, ev, history: history);
+      case 'tool/ptc-dispatch-start':
+      case 'tool/ptc-dispatch':
+        // issue #68：合法 PTC data → 只刷新根工具卡内的子调用树（普通/调试都不新建
+        // 裸事件卡）；data 缺失/非法 → 保持既有 debug-only 事件卡行为（可调试）。
+        if (!ptcEventConsumable(d)) {
+          _appendVisibleEvent(out, ev, history: history);
+        } else {
+          _refreshToolItemsForPtc();
+        }
       case 'todo/write':
         _appendVisibleEvent(out, ev, history: history);
       case 'turn/start':
@@ -6278,6 +6312,8 @@ class _ChatScreenState extends State<ChatScreen> {
       sessionId: _mySessionId ?? '',
       // issue #54：仅服务端声明支持的工具有专用卡；旧插件/未知工具一律通用卡。
       toolCardsEnabled: _api.toolCardsCapabilities.supports(item.toolName),
+      // issue #68：PTC 子调用树能力位（旧插件 false → 计数/子行完全不渲染）。
+      ptcEnabled: _api.toolCardsCapabilities.ptcAvailable,
       // issue #66：待答问询入口——构建时实时读取当前会话的 pending 问询（resolved 后自然为空）。
       pendingQuestionIds: _pendingQuestionIdsForCards,
       onOpenQuestion: _openPendingQuestion,
@@ -6966,6 +7002,10 @@ class _MsgItem {
   /// issue #54（M3 Batch 1）：工具卡结构化摘要（tool/call 与 tool/result 分别投影）。
   final ToolCallSummary? callSummary;
   final ToolResultSummary? resultSummary;
+
+  /// issue #68（M3 Batch 2-C）：PTC 子调用树（仅根工具卡携带；默认收起）。
+  final List<ToolSubCall> subCalls;
+  final bool subCallsTruncated;
   _MsgItem.user(
     this.text, {
     this.seq,
@@ -6994,7 +7034,9 @@ class _MsgItem {
        detailMode = null,
        detailErrorCode = null,
        callSummary = null,
-       resultSummary = null;
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
   _MsgItem.assistant(
     this.text, {
     this.usage,
@@ -7023,7 +7065,9 @@ class _MsgItem {
        toolError = false,
        eventType = null,
        callSummary = null,
-       resultSummary = null;
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
   _MsgItem.divider(this.text, {this.seq})
     : kind = _MsgKind.divider,
       latestSeq = seq,
@@ -7050,7 +7094,9 @@ class _MsgItem {
       detailMode = null,
       detailErrorCode = null,
       callSummary = null,
-      resultSummary = null;
+      resultSummary = null,
+      subCalls = const <ToolSubCall>[],
+      subCallsTruncated = false;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -7072,6 +7118,8 @@ class _MsgItem {
     this.detailTextChars,
     this.callSummary,
     this.resultSummary,
+    this.subCalls = const <ToolSubCall>[],
+    this.subCallsTruncated = false,
   }) : kind = _MsgKind.tool,
        text = toolResult.isNotEmpty ? toolResult : toolArguments,
        usage = null,
@@ -7111,7 +7159,9 @@ class _MsgItem {
        toolResult = '',
        toolStatus = 'complete',
        callSummary = null,
-       resultSummary = null;
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
@@ -7150,6 +7200,8 @@ class _MsgItem {
     bool clearDetailError = false,
     ToolCallSummary? callSummary,
     ToolResultSummary? resultSummary,
+    List<ToolSubCall>? subCalls,
+    bool? subCallsTruncated,
   }) => _MsgItem.tool(
     toolCallId: toolCallId,
     toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
@@ -7173,6 +7225,8 @@ class _MsgItem {
     detailTextChars: detailTextChars,
     callSummary: callSummary ?? this.callSummary,
     resultSummary: resultSummary ?? this.resultSummary,
+    subCalls: subCalls ?? this.subCalls,
+    subCallsTruncated: subCallsTruncated ?? this.subCallsTruncated,
   );
 
   _MsgItem copyAssistant({
@@ -7390,6 +7444,10 @@ class _ToolActivityCard extends StatefulWidget {
   /// issue #54：服务端能力位声明的工具集合包含当前工具（旧插件 false → 通用卡）。
   final bool toolCardsEnabled;
 
+  /// issue #68：PTC 子调用树能力位（`capabilities.toolCards.ptc.version >= 1`）。
+  /// 旧插件/无能力位时即便 wire 带 subCalls 也完全不渲染（widget 层 gating）。
+  final bool ptcEnabled;
+
   /// issue #66：当前会话仍待回答的问题 id 集合；question 卡命中时折叠行尾给「打开问询」。
   final Set<String> pendingQuestionIds;
 
@@ -7408,6 +7466,7 @@ class _ToolActivityCard extends StatefulWidget {
     required this.debug,
     required this.sessionId,
     this.toolCardsEnabled = false,
+    this.ptcEnabled = false,
     this.pendingQuestionIds = const <String>{},
     this.onOpenQuestion,
     this.onOpenFilePath,
@@ -8056,6 +8115,102 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         ]
       : [_code(L10n.t('说明', 'Details'), resultText)];
 
+  // ── issue #68（M3 Batch 2-C）：PTC 子调用树（根卡内计数行 + 缩进只读子行） ──
+  //
+  // 只显示名称 + 状态 + 安全摘要；不做 args/结果二级展开、不显示图片；子调用不进入
+  // M1 过程行（它们只存在于根工具卡内部）。默认收起、失败不自动展开（#61 语义不变）。
+
+  bool get _ptcVisible =>
+      widget.ptcEnabled &&
+      (widget.item.subCalls.isNotEmpty || widget.item.subCallsTruncated);
+
+  Color _subCallStatusColor(String status) => switch (status) {
+    'failed' => Colors.redAccent,
+    'success' => DshColors.ink3(context),
+    _ => DshColors.brand(context),
+  };
+
+  /// 折叠行计数：「N 个子调用」+ truncated 后缀（根卡未展开时也可见）。
+  Widget _ptcCountRow() {
+    final count = widget.item.subCalls.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Row(
+        children: [
+          Icon(
+            Icons.account_tree_outlined,
+            size: 13,
+            color: DshColors.ink3(context),
+          ),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              toolSubCallCountLabel(
+                count,
+                truncated: widget.item.subCallsTruncated,
+              ),
+              key: Key(
+                'tool-ptc-count:${widget.item.toolCallId ?? widget.item.seq}',
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: DshColors.ink3(context),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 展开后的缩进子行（仅名称 + 状态 + 安全摘要；无二级详情）。
+  List<Widget> _ptcChildRows() {
+    final ink3 = DshColors.ink3(context);
+    final rows = <Widget>[];
+    for (final sub in widget.item.subCalls) {
+      final name = sub.name.isEmpty ? L10n.t('工具', 'Tool') : sub.name;
+      final status = toolSubCallStatusLabel(sub.status);
+      final fold = toolSubCallFoldText(
+        sub.summary,
+        text: sub.text,
+        isError: sub.isError,
+      );
+      final label = fold == null ? '$name · $status' : '$name · $status · $fold';
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 4, left: 22),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 5),
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: _subCallStatusColor(sub.status),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  key: Key('tool-ptc-subcall:${sub.callId}'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, color: ink3),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
@@ -8147,6 +8302,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
             _genericFoldRow(
               _genericToolSummary(item.toolArguments, item.toolResult),
             ),
+          // issue #68：子调用计数行在收起态也可见（能力位缺失时完全不渲染）。
+          if (_ptcVisible) _ptcCountRow(),
           if (expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
@@ -8161,6 +8318,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                         color: DshColors.ink3(context),
                       ),
                     ),
+                  // issue #68：展开后缩进子行（名称/状态/安全摘要，只读，无二级详情）。
+                  if (_ptcVisible) ..._ptcChildRows(),
                   if (specialized) ...[
                     ..._specializedBody(call),
                     if (widget.debug && item.toolArguments.isNotEmpty)

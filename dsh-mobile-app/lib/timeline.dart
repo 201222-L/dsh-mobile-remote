@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'l10n.dart';
 import 'models.dart';
+import 'tool_cards.dart';
 
 enum TimelineMode { ordinary, debug }
 
@@ -275,6 +276,11 @@ class ToolLifecycle {
   final List<Map<String, dynamic>> images;
   final List<Map<String, dynamic>> files;
 
+  /// issue #68（M3 Batch 2-C）：PTC 子调用树（DFS 先序扁平列表；根下第 1 层 depth=1）。
+  final List<ToolSubCall> subCalls;
+  /// 子调用树是否因服务端 50 上限 / 深度 16 / App 50 上限而截断。
+  final bool subCallsTruncated;
+
   const ToolLifecycle({
     required this.id,
     required this.name,
@@ -288,7 +294,87 @@ class ToolLifecycle {
     this.detailAvailable = false,
     this.images = const [],
     this.files = const [],
+    this.subCalls = const [],
+    this.subCallsTruncated = false,
   });
+
+  ToolLifecycle copyWith({
+    String? id,
+    String? name,
+    String? arguments,
+    String? result,
+    bool? isError,
+    String? status,
+    int? seq,
+    int? latestSeq,
+    int? detailSeq,
+    bool? detailAvailable,
+    List<Map<String, dynamic>>? images,
+    List<Map<String, dynamic>>? files,
+    List<ToolSubCall>? subCalls,
+    bool? subCallsTruncated,
+  }) => ToolLifecycle(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    arguments: arguments ?? this.arguments,
+    result: result ?? this.result,
+    isError: isError ?? this.isError,
+    status: status ?? this.status,
+    seq: seq ?? this.seq,
+    latestSeq: latestSeq ?? this.latestSeq,
+    detailSeq: detailSeq ?? this.detailSeq,
+    detailAvailable: detailAvailable ?? this.detailAvailable,
+    images: images ?? this.images,
+    files: files ?? this.files,
+    subCalls: subCalls ?? this.subCalls,
+    subCallsTruncated: subCallsTruncated ?? this.subCallsTruncated,
+  );
+}
+
+/// issue #68（M3 Batch 2-C）：根工具卡内的一个 PTC 子调用（App 内部模型）。
+///
+/// wire 字段与服务端 `tool/ptc-dispatch*` 投影一致（docs/03-api.md §6.24.1）：
+/// `callId` 即内核 `subCallId`；`parentCallId` 指根工具或另一子调用；`status` 为
+/// `running` / `success` / `failed`；`summary` 是折叠行安全摘要；`text` 仅失败安全错误码。
+class ToolSubCall {
+  final String callId;
+  final String parentCallId;
+  final String rootCallId;
+  final String name;
+  final String status;
+  final ToolCallSummary? summary;
+  final String? text;
+  final bool isError;
+
+  /// 首个事件的 seq（排序锚点；同父按首次出现顺序）。
+  final int seq;
+
+  /// 物化时计算：根下第 1 层 = 1（1..16 才渲染）。
+  final int depth;
+
+  const ToolSubCall({
+    required this.callId,
+    required this.parentCallId,
+    this.rootCallId = '',
+    this.name = '',
+    this.status = 'running',
+    this.summary,
+    this.text,
+    this.isError = false,
+    this.seq = 0,
+    this.depth = 1,
+  });
+}
+
+/// issue #68：PTC 事件是否可被 reducer 消费（服务端契约的必填 id）。
+/// data 缺失/非法 → 不消费，保持既有 debug-only 裸事件卡行为（旧插件/坏数据可调试）。
+bool ptcEventConsumable(Map<String, dynamic>? data) {
+  final callId = data?['callId'];
+  final parentCallId = data?['parentCallId'];
+  return callId is String &&
+      callId.isNotEmpty &&
+      parentCallId is String &&
+      parentCallId.isNotEmpty;
 }
 
 /// Pure, fixture-friendly projection shared by historical and live event delivery.
@@ -305,17 +391,47 @@ class TimelineReducer {
   int _fallbackId = 0;
   int _identity = 0;
 
+  // issue #68（M3 Batch 2-C）：PTC 子调用树状态。
+  // - `_ptcNodes`：全部已知子调用（含尚未挂到根的 orphan）；`_ptcParent` 只记录**已接受**的边；
+  // - `_ptcTruncatedRoots`：已确定的根截断标志；`_ptcPendingTruncated`：父未到时的截断通知暂存；
+  // - `_ptcRootsTouched`：本次 apply 影响到的根（渲染层据此原地刷新根卡，不新增条目）。
+  final Map<String, _PtcNode> _ptcNodes = {};
+  final Map<String, String> _ptcParent = {};
+  final Set<String> _ptcTruncatedRoots = {};
+  final Set<String> _ptcPendingTruncated = {};
+  final Set<String> _ptcRootsTouched = {};
+
+  /// 本次 apply 影响到的根工具 callId（只读快照，供 ChatScreen 原地刷新）。
+  Set<String> get lastTouchedToolRoots => Set.unmodifiable(_ptcRootsTouched);
+
   void reset() {
     items.clear();
     tools.clear();
     _seenSeq.clear();
+    _ptcNodes.clear();
+    _ptcParent.clear();
+    _ptcTruncatedRoots.clear();
+    _ptcPendingTruncated.clear();
+    _ptcRootsTouched.clear();
   }
 
   bool apply(ChatEvent event) {
     final seq = event.seq;
     if (seq != null && !_seenSeq.add(seq)) return false;
+    _ptcRootsTouched.clear();
     if (hiddenTimelineTypes.contains(event.type)) return true;
     final data = event.data ?? const <String, dynamic>{};
+    // issue #68：合法 PTC 事件只更新子调用树、不生成时间线条目（普通/调试都没有裸事件卡）；
+    // data 缺失/非法 → 落回 default（旧插件/坏数据仍按 debug-only 事件卡呈现，可调试）。
+    if (event.type == 'tool/ptc-dispatch-start' ||
+        event.type == 'tool/ptc-dispatch') {
+      if (ptcEventConsumable(data)) {
+        _applyPtc(event, data);
+        return true;
+      }
+      _appendNonTool(event, data);
+      return true;
+    }
     switch (event.type) {
       case 'tool/call':
         // tool/call 携带完整 arguments，必须替换而不是追加。
@@ -370,9 +486,273 @@ class TimelineReducer {
       detailAvailable: event.detailAvailable || (current?.detailAvailable ?? false),
       images: isResult ? _maps(data['images']) : (current?.images ?? const []),
       files: isResult ? _maps(data['files']) : (current?.files ?? const []),
+      // issue #68：根工具卡的子调用树随生命周期保留（PTC 事件不重建根卡）。
+      subCalls: current?.subCalls ?? const <ToolSubCall>[],
+      subCallsTruncated: current?.subCallsTruncated ?? false,
     );
     tools[callId] = next;
-    _upsertTool(next, event);
+    // issue #68：新根/新结果到达后，把等待该父的 PTC orphan 挂回并物化子树；
+    // 物化后的 lifecycle 才是渲染层要的版本（不能再用未带子树的 next）。
+    _retryPtcOrphans();
+    _upsertTool(tools[callId] ?? next, event);
+  }
+
+  // ── issue #68（M3 Batch 2-C）：PTC 子调用树 reducer ─────────────────────
+  //
+  // 语义与桌面 `updateDispatch`/`acceptsEdge` 等价（仅深度阈值 16）：
+  // - 节点按 callId 去重，`firstSeq` 只在首次创建时写入（排序锚点）；
+  // - start/result 任意顺序到达都不降级：result 先行时 status 保持 settled，
+  //   start 只补缺失的 name/summary；重复 result 原地 last-write-wins；
+  // - 父未知 → 节点保持 orphan（不渲染、不伪造根），父到达后逐层挂回；
+  // - 自环/祖先环/重复父静默忽略；深度超 16 → 对应根 subCallsTruncated=true。
+
+  void _applyPtc(ChatEvent event, Map<String, dynamic> data) {
+    final callId = data['callId'] as String;
+    // 根/子身份冲突：callId 已是根工具调用 → 拒绝该节点（契约 §3.3）。
+    if (tools.containsKey(callId)) return;
+    final parentCallId = data['parentCallId'] as String;
+    final rootCallId = data['rootCallId'] is String
+        ? data['rootCallId'] as String
+        : '';
+    final seq = event.seq ?? 0;
+    final isStart = event.type == 'tool/ptc-dispatch-start';
+    final wireName = data['name'] is String ? data['name'] as String : '';
+    final isError = data['isError'] == true;
+    final status = isStart ? 'running' : (isError ? 'failed' : 'success');
+    final summary = ToolCallSummary.fromJson(data['summary']);
+    final text = data['text'] is String ? data['text'] as String : null;
+
+    // 服务端 50 截断通知：不建节点；父已知 → 标记根截断，父未知 → 暂存待挂回。
+    if (data['truncated'] == true) {
+      final root = _rootOf(parentCallId);
+      if (root != null) {
+        _ptcTruncatedRoots.add(root);
+        _materializePtcRoot(root);
+      } else {
+        _ptcPendingTruncated.add(parentCallId);
+      }
+      return;
+    }
+
+    final existing = _ptcNodes[callId];
+    if (existing == null) {
+      final node = _PtcNode(
+        callId: callId,
+        parentCallId: parentCallId,
+        rootCallId: rootCallId,
+        firstSeq: seq,
+      )
+        ..name = wireName
+        ..status = status
+        ..summary = summary
+        ..text = text
+        ..isError = isError;
+      _ptcNodes[callId] = node;
+      final decision = _edgeDecision(parentCallId, callId);
+      if (decision == 'ok') {
+        _ptcParent[callId] = parentCallId;
+      } else if (decision == 'depth') {
+        _markDepthTruncated(parentCallId);
+      }
+    } else if (isStart) {
+      // start 重复/晚到：不降级、不覆盖 settled 状态；只补缺失字段。
+      if (existing.name.isEmpty && wireName.isNotEmpty) existing.name = wireName;
+      if (existing.summary == null && summary != null) {
+        existing.summary = summary;
+      }
+    } else {
+      // result（含重复 result）：last-write-wins；name 非空才覆盖，空 name 保留 start 名。
+      existing.status = status;
+      existing.isError = isError;
+      existing.text = text;
+      if (wireName.isNotEmpty) existing.name = wireName;
+      if (summary != null) existing.summary = summary;
+    }
+    // 新节点/新父链：尝试把等待该父的 orphan 逐层挂回，并物化受影响根。
+    _retryPtcOrphans();
+    _touchRootOf(callId);
+    // 本条节点的父可能正是另一 orphan；重试后它自身也可能刚被挂上，再刷一次根。
+    _touchRootOf(parentCallId);
+  }
+
+  /// 接边判定：`ok` / `defer`（父未到）/ `reject`（自环/重复父/祖先环）/ `depth`。
+  String _edgeDecision(String parent, String child) {
+    if (parent == child) return 'reject'; // 自环
+    final acceptedParent = _ptcParent[child];
+    if (acceptedParent != null && acceptedParent != parent) {
+      return 'reject'; // 重复父：首次父胜出
+    }
+    // 祖先环：从 parent 沿已接受边/根工具上溯。
+    final visited = <String>{};
+    String? cursor = parent;
+    while (cursor != null) {
+      if (cursor == child) return 'reject';
+      if (!visited.add(cursor)) return 'reject'; // 已有数据损坏环
+      if (tools.containsKey(cursor)) break; // 到达根工具
+      cursor = _ptcParent[cursor];
+    }
+    final chain = _ancestorChain(parent);
+    if (chain == null) return 'defer'; // 父未到：暂存 orphan
+    final depth = chain.length; // 父是根 → 0
+    if (depth + _subtreeHeight(child) > 16) return 'depth';
+    return 'ok';
+  }
+
+  /// parent 到根的已接受子调用链（不含根）；父未到/链断 → null。
+  List<String>? _ancestorChain(String parent) {
+    final chain = <String>[];
+    final visited = <String>{};
+    String? cursor = parent;
+    while (cursor != null) {
+      if (tools.containsKey(cursor)) return chain; // cursor 是根工具
+      if (!_ptcNodes.containsKey(cursor)) return null; // 父未到
+      if (!visited.add(cursor)) return null; // 损坏环
+      chain.add(cursor);
+      cursor = _ptcParent[cursor];
+    }
+    return null;
+  }
+
+  /// 子树高度（自身算 1 + 已接受后代最大高度）。
+  int _subtreeHeight(String callId) {
+    var maxChild = 0;
+    for (final node in _ptcNodes.values) {
+      if (_ptcParent[node.callId] != callId) continue;
+      final height = _subtreeHeight(node.callId);
+      if (height > maxChild) maxChild = height;
+    }
+    return 1 + maxChild;
+  }
+
+  /// 节点沿已接受边走到根工具 callId；orphan/断链 → null。
+  String? _rootOf(String callId) {
+    final visited = <String>{};
+    String? cursor = callId;
+    while (cursor != null) {
+      if (tools.containsKey(cursor)) return cursor;
+      if (!visited.add(cursor)) return null;
+      cursor = _ptcParent[cursor];
+    }
+    return null;
+  }
+
+  /// 深度越界：父链已知根 → 置根 truncated；否则暂存，等父链到根后补记。
+  void _markDepthTruncated(String parent) {
+    final root = _rootOf(parent);
+    if (root != null) {
+      _ptcTruncatedRoots.add(root);
+      _materializePtcRoot(root);
+      return;
+    }
+    _ptcPendingTruncated.add(parent);
+  }
+
+  /// 把全部 orphan 逐层重试接边（父到达/历史乱序时挂回）；遍历有界（200）。
+  void _retryPtcOrphans() {
+    var progress = true;
+    var guard = 0;
+    while (progress && guard++ < 200) {
+      progress = false;
+      for (final node in _ptcNodes.values.toList(growable: false)) {
+        if (_ptcParent.containsKey(node.callId)) continue;
+        final decision = _edgeDecision(node.parentCallId, node.callId);
+        if (decision == 'ok') {
+          _ptcParent[node.callId] = node.parentCallId;
+          progress = true;
+          final root = _rootOf(node.callId);
+          if (root != null) _materializePtcRoot(root);
+        } else if (decision == 'depth') {
+          _markDepthTruncated(node.parentCallId);
+        }
+      }
+    }
+    // 暂存的截断通知：父链到根后补记。
+    for (final parent in _ptcPendingTruncated.toList(growable: false)) {
+      final root = _rootOf(parent);
+      if (root == null) continue;
+      _ptcTruncatedRoots.add(root);
+      _ptcPendingTruncated.remove(parent);
+      _materializePtcRoot(root);
+    }
+    // 防御：坏数据导致无界增长时丢弃最旧未挂节点（契约 §3.5 SHOULD）。
+    while (_ptcNodes.length > 200) {
+      String? orphanId;
+      for (final node in _ptcNodes.values) {
+        if (!_ptcParent.containsKey(node.callId)) {
+          orphanId = node.callId;
+          break;
+        }
+      }
+      if (orphanId == null) break;
+      _ptcNodes.remove(orphanId);
+    }
+  }
+
+  void _touchRootOf(String callId) {
+    final root = _rootOf(callId);
+    if (root != null) _materializePtcRoot(root);
+  }
+
+  /// 物化某根的子调用树（DFS 先序扁平列表；depth 1..16；App 侧 50 二次上限）。
+  void _materializePtcRoot(String rootId) {
+    final lifecycle = tools[rootId];
+    // 根工具卡尚未到达：等 tool/call 到达时由 _mergeTool 统一物化。
+    if (lifecycle == null) return;
+    final out = <ToolSubCall>[];
+    var truncated = _ptcTruncatedRoots.contains(rootId);
+    final visited = <String>{rootId};
+    void dfs(String parentId, int depth) {
+      if (out.length >= 50 || depth > 16) {
+        truncated = true;
+        return;
+      }
+      for (final kidId in _childrenOf(parentId)) {
+        if (out.length >= 50) {
+          truncated = true;
+          return;
+        }
+        if (depth > 16) {
+          truncated = true;
+          return;
+        }
+        if (!visited.add(kidId)) continue; // 深度/环双保险
+        final node = _ptcNodes[kidId];
+        if (node == null) continue;
+        out.add(ToolSubCall(
+          callId: node.callId,
+          parentCallId: node.parentCallId,
+          rootCallId: node.rootCallId,
+          name: node.name,
+          status: node.status,
+          summary: node.summary,
+          text: node.text,
+          isError: node.isError,
+          seq: node.firstSeq,
+          depth: depth,
+        ));
+        dfs(kidId, depth + 1);
+      }
+    }
+
+    dfs(rootId, 1);
+    tools[rootId] = lifecycle.copyWith(
+      subCalls: List<ToolSubCall>.unmodifiable(out),
+      subCallsTruncated: truncated,
+    );
+    _ptcRootsTouched.add(rootId);
+  }
+
+  /// 某父下已接受子节点（按首次出现 seq 升序，同 seq 按 callId 稳定）。
+  List<String> _childrenOf(String parentId) {
+    final kids = <_PtcNode>[];
+    for (final node in _ptcNodes.values) {
+      if (_ptcParent[node.callId] == parentId) kids.add(node);
+    }
+    kids.sort((a, b) {
+      final bySeq = a.firstSeq.compareTo(b.firstSeq);
+      return bySeq != 0 ? bySeq : a.callId.compareTo(b.callId);
+    });
+    return [for (final kid in kids) kid.callId];
   }
 
   void _appendNonTool(ChatEvent event, Map<String, dynamic> data) {
@@ -448,6 +828,28 @@ class TimelineReducer {
   static List<Map<String, dynamic>> _maps(Object? value) => value is List
       ? value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
       : const [];
+}
+
+/// issue #68：reducer 内部的 PTC 子调用节点（可变合并态；wire 见 ToolSubCall）。
+class _PtcNode {
+  _PtcNode({
+    required this.callId,
+    required this.parentCallId,
+    required this.rootCallId,
+    required this.firstSeq,
+  });
+
+  final String callId;
+
+  /// 首次事件声明的父；同一 callId 不重挂（重复父静默忽略）。
+  final String parentCallId;
+  final String rootCallId;
+  final int firstSeq;
+  String name = '';
+  String status = 'running';
+  ToolCallSummary? summary;
+  String? text;
+  bool isError = false;
 }
 
 int? _maxSeq(int? a, int? b) => a == null ? b : (b == null || a >= b ? a : b);

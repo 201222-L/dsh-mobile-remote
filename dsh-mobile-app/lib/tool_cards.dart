@@ -480,3 +480,41 @@ String? answerTextOf(ToolResultSummary? result, String? questionId) {
   }
   return null;
 }
+
+// ── issue #68（M3 Batch 2-C）：PTC 子调用行的展示纯函数 ─────────────────────
+
+/// 子调用状态文案（与根工具卡 `_status()` 用词一致）。
+String toolSubCallStatusLabel(String status) => switch (status) {
+  'success' => L10n.t('成功', 'Succeeded'),
+  'failed' => L10n.t('失败', 'Failed'),
+  _ => L10n.t('运行中', 'Running'),
+};
+
+/// 根工具卡折叠行的子调用计数文案；[truncated] 时追加截断提示。
+String toolSubCallCountLabel(int count, {bool truncated = false}) {
+  final base = L10n.t('$count 个子调用', '$count sub-call${count == 1 ? '' : 's'}');
+  return truncated ? '$base${L10n.t('（已截断）', ' (truncated)')}' : base;
+}
+
+/// 子调用行安全摘要：优先复用 `summary` 的折叠行文案；失败时追加安全错误码
+/// （服务端 `text`，只含 `error.code`/`error.name`）。两者相同则去重；
+/// 都不可用 → null（行只显示名称 + 状态）。
+String? toolSubCallFoldText(
+  ToolCallSummary? summary, {
+  String? text,
+  bool isError = false,
+}) {
+  final fold = summary == null ? null : toolFoldText(summary);
+  final reason = isError ? _firstLineOf(text) : null;
+  if (reason == null || reason == fold) return fold;
+  return fold == null ? reason : '$fold · $reason';
+}
+
+String? _firstLineOf(String? text) {
+  if (text == null) return null;
+  final collapsed = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (collapsed.isEmpty) return null;
+  return collapsed.length <= 120
+      ? collapsed
+      : '${collapsed.substring(0, 119)}…';
+}

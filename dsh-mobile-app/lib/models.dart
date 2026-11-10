@@ -721,21 +721,31 @@ class ToolCardsCapabilities {
   final int version;
   final Set<String> tools;
 
+  /// issue #68（M3 Batch 2-C）：PTC 子调用树能力版本（`toolCards.ptc.version`）。
+  /// 旧插件不下发 → 0；App 只在 `ptcAvailable` 时把 PTC 子调用合入根工具卡。
+  final int ptcVersion;
+
   const ToolCardsCapabilities({
     this.version = 0,
     this.tools = const <String>{},
+    this.ptcVersion = 0,
   });
 
   bool get available => version > 0 && tools.isNotEmpty;
+
+  /// issue #68：PTC 子调用树是否可用（与服务端 `ptc: { version: 1 }` 对齐；只增不改）。
+  bool get ptcAvailable => ptcVersion >= 1;
 
   bool supports(String? tool) => tool != null && tools.contains(tool);
 
   factory ToolCardsCapabilities.fromJson(Map<String, dynamic>? j) {
     final m = j ?? const <String, dynamic>{};
     final raw = m['tools'];
+    final ptc = m['ptc'];
     return ToolCardsCapabilities(
       version: (m['version'] as num?)?.toInt() ?? 0,
       tools: raw is List ? raw.whereType<String>().toSet() : const <String>{},
+      ptcVersion: ptc is Map ? ((ptc['version'] as num?)?.toInt() ?? 0) : 0,
     );
   }
 }
