@@ -2158,11 +2158,15 @@ class _ChatScreenState extends State<ChatScreen> {
         final step = (ev.data?['step'] as num?)?.toInt();
         if (turn != null) {
           // issue #70（复审 P1 配套）：durable 回放不再为历史轮次写 tombstone（见
-          // `_buildInto` 的 history 隔离）。已结束轮次的迟到 chunk 改用**只读**的持久
-          // 投影判定并丢弃，保持「reset 后旧轮迟到 chunk 不复活 / 中断轮不残留」语义，
-          // 且不在回放期间修改任何 live 状态。
+          // `_buildInto` 的 history 隔离）。迟到 chunk 改用**只读**持久投影判定并丢弃：
+          // - 该轮已结束（turn/end 已到）→ 丢弃（中断轮不残留）；
+          // - 该 (turn, step) 已有落定 assistant/message 水位（含无 reasoning 的 message，
+          //   由 tracker 在 observe 时登记）→ 丢弃：reset/reload 后回放不会写 step tombstone，
+          //   若不判定会让已落定 step 的迟到 chunk 复活 provisional，与持久行重复。
+          // 判定不触碰 live 缓冲/tombstone，也不跨 step 泛化（null-step 只匹配 null 键）。
           final ended = _ensureProcessTurnMap()[turn]?.ended ?? false;
-          if (!ended) {
+          final settled = _turnProcess.hasSettledReasoning(turn, step);
+          if (!ended && !settled) {
             if (_liveReasoning.firstSeqOf(turn, step) == null) {
               AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
             }

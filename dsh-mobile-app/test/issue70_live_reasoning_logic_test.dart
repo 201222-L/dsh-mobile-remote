@@ -159,6 +159,96 @@ void main() {
     });
   });
 
+  group('TurnProcessTracker：assistant/message 落定水位（审查 P1）', () {
+    test('带 reasoning 的 message 登记精确 (turn, step)，不泛化', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'step': 1, 'reasoning': 'r', 'reasoningChars': 1},
+        ));
+      expect(tracker.hasSettledReasoning(1, 1), isTrue);
+      expect(tracker.hasSettledReasoning(1, 2), isFalse);
+      expect(tracker.hasSettledReasoning(1, null), isFalse);
+      expect(tracker.hasSettledReasoning(2, 1), isFalse);
+    });
+
+    test('无 reasoning 的 message 同样登记水位（lead 补充口径）', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'step': 2, 'text': ''},
+        ));
+      expect(tracker.hasSettledReasoning(1, 2), isTrue,
+          reason: '无 reasoning 的 message 也代表该 step 已落定');
+      expect(tracker.build().single.rows, isEmpty, reason: '无 reasoning 不产生思考行');
+    });
+
+    test('null-step 水位只匹配 null 键，不挡后续非 null step', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'reasoning': 'legacy', 'reasoningChars': 6},
+        ));
+      expect(tracker.hasSettledReasoning(1, null), isTrue);
+      expect(tracker.hasSettledReasoning(1, 1), isFalse,
+          reason: '历史旧的无 step message 不得挡住新 step');
+      expect(tracker.hasSettledReasoning(1, 2), isFalse);
+    });
+
+    test('reset 清空水位；回放重建后重新生效', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'step': 1, 'reasoning': 'r', 'reasoningChars': 1},
+        ));
+      expect(tracker.hasSettledReasoning(1, 1), isTrue);
+      tracker.reset();
+      expect(tracker.hasSettledReasoning(1, 1), isFalse);
+      tracker
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'step': 1, 'reasoning': 'r', 'reasoningChars': 1},
+        ));
+      expect(tracker.hasSettledReasoning(1, 1), isTrue);
+    });
+
+    test('pruneBefore 回收被裁轮次的水位，保留仍存在的轮次', () {
+      final tracker = TurnProcessTracker()
+        ..observe(_event(1, 'turn/start', {'turn': 1}))
+        ..observe(_event(
+          5,
+          'assistant/message',
+          {'turn': 1, 'step': 1, 'reasoning': 'r', 'reasoningChars': 1},
+        ))
+        ..observe(_event(6, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }))
+        ..observe(_event(10, 'turn/start', {'turn': 2}))
+        ..observe(_event(
+          15,
+          'assistant/message',
+          {'turn': 2, 'step': 1, 'reasoning': 'r2', 'reasoningChars': 2},
+        ));
+      // 只发出 key 合法性校验；真实清理在 beforeSeq 越过 turn1 的 endSeq 时发生。
+      expect(tracker.hasSettledReasoning(1, 1), isTrue);
+      expect(tracker.hasSettledReasoning(2, 1), isTrue);
+      tracker.pruneBefore(7);
+      expect(tracker.hasSettledReasoning(1, 1), isFalse);
+      expect(tracker.hasSettledReasoning(2, 1), isTrue);
+    });
+  });
+
   group('TurnProcessTracker：落定排序键继承与同 step 去重', () {
     test('历史回放（无 noteReasoningStart）行为不变：行 seq = message seq', () {
       final tracker = TurnProcessTracker()
