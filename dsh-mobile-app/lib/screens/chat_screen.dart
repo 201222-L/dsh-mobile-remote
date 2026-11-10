@@ -8184,9 +8184,12 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         isError: sub.isError,
       );
       final label = fold == null ? '$name · $status' : '$name · $status · $fold';
+      // A3：按 depth 分级缩进（depth1=10、2=24、3=38…；≥9 层封顶 122，避免
+      // 16 层嵌套在小屏横向溢出），仍单行 ellipsis、无二级交互。
+      final indent = 10 + ((sub.depth - 1).clamp(0, 8)) * 14;
       rows.add(
         Padding(
-          padding: const EdgeInsets.only(top: 4, left: 22),
+          padding: EdgeInsets.only(top: 4, left: indent.toDouble()),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

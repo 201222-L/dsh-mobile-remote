@@ -394,6 +394,38 @@ void main() {
       expect(find.text('2 个子调用'), findsOneWidget);
     });
 
+    testWidgets('A3 子行按 depth 分级缩进；16 层长文案小屏不溢出', (tester) async {
+      // 三层嵌套：depth1→2→3 行首 dx 必须严格递增。
+      await _pumpPtcChat(tester, _store(), _PtcBackend(nested: true));
+      final card = find.byKey(const ValueKey<String>('tool:$_rootCallId:1'));
+      expect(find.text('3 个子调用'), findsOneWidget);
+      await _expandCard(tester, card);
+      final dx1 = tester
+          .getTopLeft(find.byKey(const ValueKey<String>('tool-ptc-subcall:s1')))
+          .dx;
+      final dx2 = tester
+          .getTopLeft(find.byKey(const ValueKey<String>('tool-ptc-subcall:s1-child')))
+          .dx;
+      final dx3 = tester
+          .getTopLeft(find.byKey(const ValueKey<String>('tool-ptc-subcall:s1-child-child')))
+          .dx;
+      expect(dx2, greaterThan(dx1), reason: 'depth2 必须比 depth1 更缩进');
+      expect(dx3, greaterThan(dx2), reason: 'depth3 必须比 depth2 更缩进');
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      // 16 层深链 + 长摘要，小屏（360×800）下不应溢出/抛异常（缩进封顶 122）。
+      await _pumpPtcChat(
+        tester,
+        _store(),
+        _PtcBackend(deep: true),
+        size: const Size(360, 800),
+      );
+      final deepCard = find.byKey(const ValueKey<String>('tool:$_rootCallId:1'));
+      await _expandCard(tester, deepCard);
+      expect(find.textContaining('read · 运行中'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('A2 历史上翻页：同页含根 call + PTC 事件、无根 result 也显示子调用', (tester) async {
       // `/history?before=` 返回的一页（旧→新）恰好是「根 tool/call + PTC start/result」，
       // 不含根 tool/result；局部 pageItems 必须被原地刷新，否则根卡丢子调用。
@@ -433,14 +465,67 @@ class _PtcBackend {
     this.truncated = false,
     this.toolCards = true,
     this.invalidPtc = false,
+    this.nested = false,
+    this.deep = false,
   });
 
   final int ptcVersion;
   final bool truncated;
   final bool toolCards; // false = 旧插件完全不下发 toolCards 能力位
   final bool invalidPtc; // true = 坏 data（缺 parentCallId），应退回 debug-only 事件卡
+  final bool nested; // true = depth 1→2→3 嵌套树（A3 缩进断言）
+  final bool deep; // true = 16 层深链 + 长摘要（小屏溢出回归）
 
-  List<Map<String, dynamic>> get events => [
+  List<Map<String, dynamic>> get events {
+    if (nested) {
+      return [
+        {'seq': 1, 'type': 'tool/call', 'data': _rootCall(1)},
+        {'seq': 2, 'type': 'tool/ptc-dispatch-start', 'data': _start(2, 's1', summary: _readSummary)},
+        {
+          'seq': 3,
+          'type': 'tool/ptc-dispatch-start',
+          'data': _start(3, 's1-child', parent: 's1', name: 'grep', summary: {
+            'kind': 'search',
+            'tool': 'grep',
+            'pattern': 'foo',
+          }),
+        },
+        {
+          'seq': 4,
+          'type': 'tool/ptc-dispatch-start',
+          'data': _start(4, 's1-child-child', parent: 's1-child', name: 'glob', summary: {
+            'kind': 'search',
+            'tool': 'glob',
+            'pattern': 'bar',
+          }),
+        },
+        {'seq': 5, 'type': 'turn/end', 'data': {'turn': 1, 'reason': {'kind': 'completed'}}},
+      ];
+    }
+    if (deep) {
+      final longPath = List.filled(12, 'very-long-directory-name').join('/');
+      return [
+        {'seq': 1, 'type': 'tool/call', 'data': _rootCall(1)},
+        for (var depth = 1; depth <= 16; depth++)
+          {
+            'seq': 1 + depth,
+            'type': 'tool/ptc-dispatch-start',
+            'data': _start(
+              1 + depth,
+              'deep-$depth',
+              parent: depth == 1 ? _rootCallId : 'deep-${depth - 1}',
+              summary: {
+                'kind': 'file',
+                'tool': 'read',
+                'filePath': '$longPath/file-$depth.txt',
+                'limit': 3,
+              },
+            ),
+          },
+        {'seq': 20, 'type': 'turn/end', 'data': {'turn': 1, 'reason': {'kind': 'completed'}}},
+      ];
+    }
+    return [
     {'seq': 1, 'type': 'tool/call', 'data': _rootCall(1)},
     {'seq': 2, 'type': 'tool/ptc-dispatch-start', 'data': _start(2, 's1', summary: _readSummary)},
     {'seq': 3, 'type': 'tool/ptc-dispatch', 'data': _result(3, 's1', summary: _readSummary)},
@@ -484,7 +569,8 @@ class _PtcBackend {
       },
     {'seq': 7, 'type': 'tool/result', 'data': {'turn': 1, 'step': 1, 'message': {'content': [{'type': 'text', 'text': 'done'}]}, 'toolCallId': _rootCallId}},
     {'seq': 8, 'type': 'turn/end', 'data': {'turn': 1, 'reason': {'kind': 'completed'}}},
-  ];
+    ];
+  }
 
   late final Api api = Api(client: MockClient(_handle))
     ..baseUrl = 'http://ptc-chat.test'
@@ -614,8 +700,13 @@ AppStore _store() => AppStore()
   // 完全展开：M1 标准档会折叠已完成轮次，工具卡不构建。
   ..stepDisplayMode = WorkStepDisplayMode.expanded;
 
-Future<void> _pumpPtcChat(WidgetTester tester, AppStore store, _PtcBackend backend) async {
-  tester.view.physicalSize = const Size(900, 4000);
+Future<void> _pumpPtcChat(
+  WidgetTester tester,
+  AppStore store,
+  _PtcBackend backend, {
+  Size size = const Size(900, 4000),
+}) async {
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
