@@ -6067,10 +6067,15 @@ class _ChatScreenState extends State<ChatScreen> {
         plan.segment.rows,
         historyView: plan.historyView,
       );
+      final summaryFailures = _failedToolCountForRows(
+        plan.segment.rows,
+        historyView: plan.historyView,
+      );
       children.add(
         _ProcessSummaryRow(
           text: plan.segment.summary,
           expanded: false,
+          failureCount: summaryFailures,
           imageCount: summaryImages.length,
           onOpenImages: summaryImages.isEmpty
               ? null
@@ -6093,6 +6098,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ? -1
             : groupList.indexWhere((group) => group.step == slot.step);
         var slotPlaced = false;
+        var renderedGroups = 0;
         for (var gi = 0; gi < groupList.length; gi++) {
           final group = groupList[gi];
           // issue #75：没有任何可见行（分批把整组行挡在窗口外等）的组不渲染抬头，
@@ -6114,6 +6120,14 @@ class _ChatScreenState extends State<ChatScreen> {
           // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
           // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
           final groupRunning = group.running && !process.ended;
+          // issue #76：组间 8–12dp（设计取 8）；首个组前不加。
+          if (renderedGroups > 0) children.add(const SizedBox(height: 8));
+          renderedGroups++;
+          final reasoningOnly = !group.rows.any((row) => row.isTool);
+          final groupFailures = _failedToolCountForRows(
+            group.rows,
+            historyView: plan.historyView,
+          );
           // issue #74：组折叠态聚合该组全部工具结果图片（含被分批隐藏的行），
           // 展开后由各工具卡/内容区呈现，不重复挂 chip。
           final groupImages = groupExpanded
@@ -6130,6 +6144,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             expanded: groupExpanded,
             running: groupRunning,
+            failureCount: groupFailures,
+            reasoningOnly: reasoningOnly,
             imageCount: groupImages.length,
             onOpenImages: groupImages.isEmpty
                 ? null
@@ -6140,15 +6156,16 @@ class _ChatScreenState extends State<ChatScreen> {
             }),
           ));
           if (!groupExpanded) continue;
+          final groupRowWidgets = <Widget>[];
           if (slot != null && gi == slotGroupIndex) {
             var inserted = false;
             for (final row in group.rows) {
               if (!inserted && row.seq > slot.orderSeq) {
-                children.add(_buildProvisionalReasoningRow(slot));
+                groupRowWidgets.add(_buildProvisionalReasoningRow(slot));
                 inserted = true;
               }
               if (!plan.visibleRowSeqs.contains(row.seq)) continue;
-              children.add(
+              groupRowWidgets.add(
                 _buildProcessRow(
                   process,
                   row,
@@ -6158,13 +6175,13 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             }
             if (!inserted) {
-              children.add(_buildProvisionalReasoningRow(slot));
+              groupRowWidgets.add(_buildProvisionalReasoningRow(slot));
             }
             slotPlaced = true;
           } else {
             for (final row in group.rows) {
               if (!plan.visibleRowSeqs.contains(row.seq)) continue;
-              children.add(
+              groupRowWidgets.add(
                 _buildProcessRow(
                   process,
                   row,
@@ -6174,6 +6191,9 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             }
           }
+          // issue #76：A 导轨——仅展开组出现：左 6dp 处 2dp line，内容左移 14dp，
+          // 行间 1dp hairline（首末无）；组收起不留线/空白；不加组外框。
+          children.add(_buildGroupRail(groupRowWidgets));
         }
         if (slot != null && !slotPlaced) {
           children.add(_buildProvisionalReasoningRow(slot));
@@ -6209,34 +6229,47 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           historyView: plan.historyView,
         );
+        // issue #76：批次入口平铺（透明、无卡、无额外箭头），最小 48dp 命中；
+        // 图片 chip 保留 #74 独立命中区（32 高），窄屏可自然换行到第二行。
+        final ink2 = DshColors.ink2(context);
         children.add(
           Padding(
-            padding: const EdgeInsets.only(left: 24, bottom: 6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextButton(
-                  onPressed: () => setState(() {
-                    _processRowLimits[process.turn] = limit + processBatchSize;
-                    _invalidateProcessPlan();
-                  }),
-                  child: Text(
-                    L10n.t(
-                      '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
-                      'Show more (${plan.hiddenTotalInTurn} rows left)',
-                    ),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: DshColors.ink3(context),
-                    ),
+            padding: const EdgeInsets.only(left: 14, bottom: 6),
+            child: InkWell(
+              onTap: () => setState(() {
+                _processRowLimits[process.turn] = limit + processBatchSize;
+                _invalidateProcessPlan();
+              }),
+              borderRadius: BorderRadius.circular(8),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        L10n.t(
+                          '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
+                          'Show more (${plan.hiddenTotalInTurn} rows left)',
+                        ),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: ink2,
+                        ),
+                      ),
+                      if (hiddenImages.isNotEmpty)
+                        _ImageCountChip(
+                          count: hiddenImages.length,
+                          onOpen: () => _openImagesGallery(hiddenImages),
+                        ),
+                    ],
                   ),
                 ),
-                if (hiddenImages.isNotEmpty)
-                  _ImageCountChip(
-                    count: hiddenImages.length,
-                    onOpen: () => _openImagesGallery(hiddenImages),
-                  ),
-              ],
+              ),
             ),
           ),
         );
@@ -6304,10 +6337,8 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     // 单张工具卡在所有档位默认收起（note 1700 / 桌面 useDisclosure 默认关闭）。
-    return Padding(
-      padding: const EdgeInsets.only(left: 8),
-      child: _buildToolCard(item),
-    );
+    // issue #76：过程区内用平铺变体（无逐卡边框）。
+    return _buildToolCard(item, flat: true);
   }
 
   /// issue #70：过程块里的运行中思考行（provisional）。
@@ -6388,7 +6419,49 @@ class _ChatScreenState extends State<ChatScreen> {
     return collectToolImages(sources);
   }
 
-  Widget _buildToolCard(_MsgItem item) {
+  /// issue #76：失败计数口径——只统计 `toolError` / `toolStatus == 'failed'` 的工具行，
+  /// 不把工具失败等同于轮次异常，也不触发自动展开。
+  int _failedToolCountForRows(
+    Iterable<ProcessRow> rows, {
+    required bool historyView,
+  }) {
+    var count = 0;
+    for (final row in rows) {
+      if (!row.isTool) continue;
+      final item = _currentToolItem(row.callId, historyView: historyView);
+      if (item == null) continue;
+      if (item.toolError || item.toolStatus == 'failed') count++;
+    }
+    return count;
+  }
+
+  /// issue #76：A 导轨 —— 展开组内容左 6dp 处 2dp 低对比 line、内容左移 14dp、
+  /// 相邻行 1dp hairline（首末无）；组收起时调用方不渲染，因此不留线/空白。
+  Widget _buildGroupRail(List<Widget> rows) {
+    if (rows.isEmpty) return const SizedBox.shrink();
+    final line = DshColors.line(context);
+    final separated = <Widget>[];
+    for (var i = 0; i < rows.length; i++) {
+      if (i > 0) separated.add(Container(height: 1, color: line));
+      separated.add(rows[i]);
+    }
+    return Padding(
+      padding: const EdgeInsets.only(left: 6, bottom: 10),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: line, width: 2)),
+        ),
+        padding: const EdgeInsets.only(left: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: separated,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildToolCard(_MsgItem item, {bool flat = false}) {
     final toolKey = 'tool:${item.toolCallId ?? item.seq}';
     return _ToolActivityCard(
       key: ValueKey<String>(
@@ -6399,6 +6472,7 @@ class _ChatScreenState extends State<ChatScreen> {
         () => _failureExpansionOverrides[toolKey] = value,
       ),
       onAutoLoadDetail: () => _autoLoadFailureDetail(item),
+      flat: flat,
       // issue #74：折叠行图片入口——点 chip 直接开图库，不展开工具卡。
       onOpenImages: item.images.isEmpty
           ? null
@@ -6687,7 +6761,15 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.only(top: 2, bottom: 14),
       child: Row(
         children: [
-          Text(turnFooterText(process), style: TextStyle(fontSize: 11, color: ink3)),
+          // issue #76：320dp + 大字号下页脚文案不得把操作栏挤到溢出。
+          Flexible(
+            child: Text(
+              turnFooterText(process),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: ink3),
+            ),
+          ),
           const Spacer(),
           // 无 hover → 页脚操作常显；助手气泡内不再重复（issue #52 §5）。
           if (assistant != null)
@@ -7569,6 +7651,9 @@ class _ToolActivityCard extends StatefulWidget {
 
   /// issue #74：折叠行图片入口——点 chip 直接开图库，不展开工具卡。
   final VoidCallback? onOpenImages;
+
+  /// issue #76：过程区平铺变体（透明、无逐卡边框/圆角/阴影；详情才用轻底）。
+  final bool flat;
   const _ToolActivityCard({
     super.key,
     required this.item,
@@ -7585,6 +7670,7 @@ class _ToolActivityCard extends StatefulWidget {
     this.onLoadDetail,
     this.onAutoLoadDetail,
     this.onOpenImages,
+    this.flat = false,
   });
 
   @override
@@ -7774,13 +7860,15 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool get _nameUnknown => _isPlaceholderToolName(widget.item.toolName);
 
   /// issue #61：缺名通用卡的折叠行。摘要可读；调试模式额外保留原始 callId/事件类型。
-  Widget _genericFoldRow(String summary) {
-    final ink3 = DshColors.ink3(context);
+  Widget _genericFoldRow(String summary, {bool flat = false}) {
+    final ink3 = flat ? DshColors.ink2(context) : DshColors.ink3(context);
     final debugLine = 'callId: ${widget.item.toolCallId} · '
         '${widget.item.eventType ?? 'tool/activity'}';
     if (summary.isEmpty && !widget.debug) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      padding: flat
+          ? const EdgeInsets.only(left: 24, right: 0, bottom: 6)
+          : const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -7789,7 +7877,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               summary,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11.5, color: ink3),
+              style: TextStyle(
+                fontSize: flat ? 12 : 11.5,
+                color: ink3,
+              ),
             ),
           if (widget.debug)
             Padding(
@@ -7816,8 +7907,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   /// 行内链接（Text.rich 两段 span，`toPlainText()` 仍是整行原字符串，既有 find.text 不破）；
   /// 不可点时保持原纯 Text 代码路径与视觉（零布局位移）。点击只把 `relative` 交给页面，
   /// 不在卡片里拼路径；卡片标题的手势与本行无关，点击路径不改变展开态。
-  Widget _foldRow(ToolCallSummary call) {
-    final ink3 = DshColors.ink3(context);
+  Widget _foldRow(ToolCallSummary call, {bool flat = false}) {
+    final ink3 = flat ? DshColors.ink2(context) : DshColors.ink3(context);
     final text = toolFoldText(call) ?? '';
     final stats = toolFileStats(call);
     // issue #60 R14：退出码/信号只对**已关联 command 工具**的卡片展示；非命令工具即便
@@ -7830,7 +7921,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         questionCallPending(call, widget.pendingQuestionIds);
     final tapParts = _previewTapParts(call);
     final baseStyle = TextStyle(
-      fontSize: 11.5,
+      fontSize: flat ? 12 : 11.5,
       color: ink3,
       fontFamily: call.isCommand ? 'monospace' : null,
     );
@@ -7875,13 +7966,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
       );
     }
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      padding: flat
+          ? const EdgeInsets.only(left: 24, right: 0, bottom: 6)
+          : const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Row(
         children: [
           Expanded(child: foldText),
-          if (stats != null) _chip(stats, DshColors.ink3(context)),
-          if (exit != null) _chip(exit, Colors.redAccent),
-          if (count != null) _chip(count, DshColors.ink3(context)),
+          if (stats != null) _chip(stats, ink3),
+          if (exit != null)
+            _chip(exit, flat ? DshColors.danger(context) : Colors.redAccent),
+          if (count != null) _chip(count, ink3),
           if (showOpenQuestion)
             TextButton(
               key: Key('open-question:${widget.item.toolCallId}'),
@@ -8340,29 +8434,25 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         rawData['toolSchema'] ??
         rawData['schema'] ??
         rawData['inputSchema'];
-    final accent = item.toolError ? Colors.redAccent : DshColors.brand(context);
+    final danger = DshColors.danger(context);
+    final ink = DshColors.ink(context);
+    final ink2 = DshColors.ink2(context);
+    final accent = item.toolError
+        ? (widget.flat ? danger : Colors.redAccent)
+        : (widget.flat ? ink2 : DshColors.brand(context));
     // issue #54：能力位声明支持 + 摘要可渲染才启用专用卡；否则完整回退通用卡。
     final call = item.callSummary;
     final specialized = widget.toolCardsEnabled && call != null && call.renderable;
     final fold = specialized ? toolFoldText(call) : null;
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: DshColors.surface(context),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: item.toolError
-              ? Colors.redAccent.withValues(alpha: .5)
-              : DshColors.line(context),
-        ),
-      ),
-      child: Column(
+    final column = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
             onTap: () => _setExpanded(!expanded),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              padding: widget.flat
+                  ? const EdgeInsets.symmetric(vertical: 6)
+                  : const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
                   Icon(
@@ -8374,16 +8464,18 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                     size: 16,
                     color: accent,
                   ),
-                  const SizedBox(width: 7),
+                  SizedBox(width: widget.flat ? 8 : 7),
                   Expanded(
                     child: Text(
                       // issue #61：缺名时明确是「工具调用」，不再用信息量为零的「工具」。
                       _nameUnknown
                           ? L10n.t('工具调用', 'Tool call')
                           : item.toolName!,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                        fontWeight:
+                            widget.flat ? FontWeight.w500 : FontWeight.w600,
+                        color: widget.flat ? ink : null,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -8401,10 +8493,12 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                   Text(
                     _status(),
                     style: TextStyle(
-                      fontSize: 11,
-                      color: item.toolError
-                          ? Colors.redAccent
-                          : DshColors.ink3(context),
+                      fontSize: widget.flat ? 11.5 : 11,
+                      color: widget.flat
+                          ? (item.toolError ? ink : ink2)
+                          : (item.toolError
+                                ? Colors.redAccent
+                                : DshColors.ink3(context)),
                     ),
                   ),
                   const SizedBox(width: 4),
@@ -8413,27 +8507,42 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                         ? Icons.keyboard_arrow_up
                         : Icons.keyboard_arrow_down,
                     size: 18,
-                    color: DshColors.ink3(context),
+                    color: widget.flat
+                        ? ink2
+                        : DshColors.ink3(context),
                   ),
                 ],
               ),
             ),
           ),
           if (specialized && fold != null)
-            _foldRow(call)
+            _foldRow(call, flat: widget.flat)
           else if (_nameUnknown)
             // issue #61：通用卡缺名时给一行可读摘要（description → 参数首行 → 结果首行）。
             _genericFoldRow(
               _genericToolSummary(item.toolArguments, item.toolResult),
+              flat: widget.flat,
             ),
           // issue #68：子调用计数行在收起态也可见（能力位缺失时完全不渲染）。
           if (_ptcVisible) _ptcCountRow(),
           if (expanded)
             Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+              padding: widget.flat
+                  ? const EdgeInsets.only(left: 24, top: 8, bottom: 4)
+                  : const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: Container(
+                padding: widget.flat ? const EdgeInsets.all(10) : null,
+                decoration: widget.flat
+                    ? BoxDecoration(
+                        color: item.toolError
+                            ? DshColors.danger(context).withValues(alpha: .05)
+                            : DshColors.surface(context),
+                        borderRadius: BorderRadius.circular(DshTheme.radiusSm),
+                      )
+                    : null,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                   if (item.toolCallId != null)
                     Text(
                       'callId: ${item.toolCallId}',
@@ -8523,11 +8632,30 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                     _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
                   if (widget.debug && item.rawData != null)
                     _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
-                ],
+                  ],
+                ),
               ),
             ),
         ],
+      );
+    if (widget.flat) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: column,
+      );
+    }
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: item.toolError
+              ? Colors.redAccent.withValues(alpha: .5)
+              : DshColors.line(context),
+        ),
       ),
+      child: column,
     );
   }
 }
@@ -9303,62 +9431,91 @@ class _ProcessSummaryRow extends StatelessWidget {
 
   /// issue #74：点图片 chip 直接打开图库（与整行展开解耦）。
   final VoidCallback? onOpenImages;
+
+  /// issue #76：该段工具失败数（仅 toolError/toolStatus=failed，不改轮次异常策略）。
+  final int failureCount;
   const _ProcessSummaryRow({
     required this.text,
     required this.expanded,
     required this.onTap,
     this.imageCount = 0,
     this.onOpenImages,
+    this.failureCount = 0,
   });
 
   @override
   Widget build(BuildContext context) {
+    final ink = DshColors.ink(context);
     final ink2 = DshColors.ink2(context);
-    final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
-    final row = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      child: Row(
+    final hasMeta = imageCount > 0 || failureCount > 0;
+    final body = Padding(
+      padding: EdgeInsets.fromLTRB(12, hasMeta ? 10 : 12, 12, hasMeta ? 8 : 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.account_tree_outlined, size: 14, color: ink2),
-          const SizedBox(width: 7),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: ink2,
+          Row(
+            children: [
+              Icon(Icons.account_tree_outlined, size: 16, color: ink2),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  text,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    height: 1.45,
+                    color: ink,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              const SizedBox(width: 8),
+              Icon(
+                expanded
+                    ? Icons.keyboard_arrow_up
+                    : Icons.keyboard_arrow_down,
+                size: 18,
+                color: onTap == null ? line : ink2,
+              ),
+            ],
+          ),
+          if (hasMeta)
+            Padding(
+              padding: const EdgeInsets.only(left: 24, top: 4),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (imageCount > 0 && onOpenImages != null)
+                    _ImageCountChip(
+                      count: imageCount,
+                      onOpen: onOpenImages!,
+                    ),
+                  if (failureCount > 0) _FailureCountChip(count: failureCount),
+                ],
+              ),
             ),
-          ),
-          if (imageCount > 0 && onOpenImages != null) ...[
-            _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
-            const SizedBox(width: 4),
-          ],
-          Icon(
-            expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-            size: 16,
-            color: onTap == null ? line : ink3,
-          ),
         ],
       ),
     );
     return Container(
-      margin: const EdgeInsets.only(bottom: 6),
+      margin: const EdgeInsets.only(bottom: 10),
+      constraints: const BoxConstraints(minHeight: 52),
       decoration: BoxDecoration(
         color: DshColors.surface(context),
         border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(DshTheme.radiusMd),
       ),
       child: onTap == null
-          ? row
+          ? body
           : InkWell(
               onTap: onTap,
-              borderRadius: BorderRadius.circular(10),
-              child: row,
+              borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+              child: body,
             ),
     );
   }
@@ -9377,7 +9534,7 @@ class _ImageCountChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final brand = DshColors.brand(context);
-    final ink2 = DshColors.ink2(context);
+    final ink = DshColors.ink(context);
     final label = L10n.t('查看 $count 张图片', 'View $count images');
     return Semantics(
       button: true,
@@ -9407,7 +9564,7 @@ class _ImageCountChip extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w600,
-                        color: ink2,
+                        color: ink,
                       ),
                     ),
                   ],
@@ -9415,6 +9572,47 @@ class _ImageCountChip extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// issue #76：失败计数 chip（整轮/组聚合，状态而非按钮；不改轮次异常策略）。
+///
+/// 24 高、H6、radius6、danger@8% 底；图标 danger，文字用 ink（小字不直接着 danger，
+/// 保证对比度）。
+class _FailureCountChip extends StatelessWidget {
+  final int count;
+  const _FailureCountChip({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final danger = DshColors.danger(context);
+    final ink = DshColors.ink(context);
+    return Semantics(
+      label: L10n.t('$count 个工具失败', '$count tools failed'),
+      child: Container(
+        height: 24,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: BoxDecoration(
+          color: danger.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 12, color: danger),
+            const SizedBox(width: 4),
+            Text(
+              L10n.t('失败 $count', 'Failed $count'),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: ink,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -9433,6 +9631,12 @@ class _ProcessGroupHeader extends StatelessWidget {
 
   /// issue #74：点图片 chip 直接打开图库（不展开该组）。
   final VoidCallback? onOpenImages;
+
+  /// issue #76：该组工具失败数（仅 toolError/failed，不自动展开、不改轮次异常策略）。
+  final int failureCount;
+
+  /// issue #76：仅思考组（#75）用 psychology 品牌图标，其余工具组用 ink2 工具图标。
+  final bool reasoningOnly;
   const _ProcessGroupHeader({
     required this.text,
     required this.expanded,
@@ -9440,46 +9644,103 @@ class _ProcessGroupHeader extends StatelessWidget {
     required this.onTap,
     this.imageCount = 0,
     this.onOpenImages,
+    this.failureCount = 0,
+    this.reasoningOnly = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final ink3 = DshColors.ink3(context);
+    final ink = DshColors.ink(context);
+    final ink2 = DshColors.ink2(context);
     final brand = DshColors.brand(context);
+    final hasMeta = imageCount > 0 || failureCount > 0;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final scale = textScaler.scale(13) / 13;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
-        child: Row(
-          children: [
-            if (running)
-              const SizedBox(
-                width: 11,
-                height: 11,
-                child: CircularProgressIndicator(strokeWidth: 1.5),
-              )
-            else
-              Icon(Icons.build_outlined, size: 12, color: ink3),
-            const SizedBox(width: 7),
-            Expanded(
-              child: Text(
-                text,
-                style: TextStyle(fontSize: 11.5, color: ink3),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // issue #76：宽屏且未放大文字时徽标在右栏；窄屏/大字/实测装不下时
+            // 徽标下移到文案左缘下一行，主行仍保留 chevron 与完整点击区。
+            final narrow = constraints.maxWidth < 328 || scale > 1.2;
+            final icon = running
+                ? SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.6,
+                      color: brand,
+                    ),
+                  )
+                : Icon(
+                    reasoningOnly
+                        ? Icons.psychology_outlined
+                        : Icons.build_outlined,
+                    size: 16,
+                    color: reasoningOnly ? brand : ink2,
+                  );
+            final title = Text(
+              text,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                height: 1.45,
+                color: ink,
               ),
-            ),
-            if (imageCount > 0 && onOpenImages != null) ...[
-              _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
-              const SizedBox(width: 4),
-            ],
-            Icon(
-              expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-              size: 15,
-              color: running ? brand : ink3,
-            ),
-          ],
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            );
+            final meta = Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (imageCount > 0 && onOpenImages != null)
+                  _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
+                if (failureCount > 0) _FailureCountChip(count: failureCount),
+              ],
+            );
+            final chevron = Icon(
+              expanded
+                  ? Icons.keyboard_arrow_up
+                  : Icons.keyboard_arrow_down,
+              size: 18,
+              color: ink2,
+            );
+            final mainRow = Row(
+              children: [
+                icon,
+                const SizedBox(width: 8),
+                Expanded(child: title),
+                if (hasMeta && !narrow) ...[
+                  const SizedBox(width: 8),
+                  meta,
+                ],
+                const SizedBox(width: 4),
+                chevron,
+              ],
+            );
+            if (!hasMeta || !narrow) {
+              return Align(alignment: Alignment.centerLeft, child: mainRow);
+            }
+            return Align(
+              alignment: Alignment.centerLeft,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  mainRow,
+                  Padding(
+                    padding: const EdgeInsets.only(left: 24, top: 4),
+                    child: meta,
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -9496,27 +9757,39 @@ class _CollapseProcessRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ink3 = DshColors.ink3(context);
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.keyboard_arrow_up, size: 15, color: ink3),
-              const SizedBox(width: 4),
-              Text(
-                L10n.t('收起过程', 'Collapse process'),
-                style: TextStyle(fontSize: 11.5, color: ink3),
+    final ink2 = DshColors.ink2(context);
+    final line = DshColors.line(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 8),
+        Container(height: 1, color: line),
+        Align(
+          alignment: Alignment.centerRight,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.unfold_less, size: 16, color: ink2),
+                    const SizedBox(width: 4),
+                    Text(
+                      L10n.t('收起过程', 'Collapse process'),
+                      style: TextStyle(fontSize: 12, color: ink2),
+                    ),
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         ),
-      ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 }
@@ -9565,71 +9838,42 @@ class _ReasoningProcessRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ink2 = DshColors.ink2(context);
-    final ink3 = DshColors.ink3(context);
-    final line = DshColors.line(context);
     final brand = DshColors.brand(context);
+    final provisional = collapsedLabel != null;
     final settledLabel =
         L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars');
     final label = expanded
         ? (expandedLabel ?? settledLabel)
         : (collapsedLabel ?? (preview.isEmpty ? settledLabel : preview));
-    final showPreview = !expanded && collapsedLabel != null && preview.isNotEmpty;
-    final bodyStyle = TextStyle(
-      fontSize: 12,
-      height: 1.6,
-      color: ink3,
-      fontStyle: FontStyle.italic,
-    );
+    final showPreview = !expanded && provisional && preview.isNotEmpty;
+    // issue #76：中文小字不用斜体；落定行正文与过程区统一 ink2。
+    final bodyStyle = TextStyle(fontSize: 12, height: 1.6, color: ink2);
     final body = SelectableText(text, style: bodyStyle);
-    return Container(
-      key: rowKey,
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(
-        color: DshColors.brandSoft(context),
-        border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            onTap: onToggle,
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-              child: Row(
-                children: [
-                  Icon(Icons.psychology_outlined, size: 14, color: brand),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: showPreview
-                        ? Row(
-                            children: [
-                              Text(
-                                collapsedLabel!,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: ink2,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(width: 6),
-                              Flexible(
-                                child: Text(
-                                  preview,
-                                  style: TextStyle(fontSize: 12, color: ink3),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          )
-                        : Text(
-                            label,
+    final header = Semantics(
+      button: true,
+      expanded: expanded,
+      child: InkWell(
+        onTap: onToggle,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: provisional ? 10 : 0,
+            vertical: 6,
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.psychology_outlined,
+                size: 16,
+                color: brand,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: showPreview
+                    ? Row(
+                        children: [
+                          Text(
+                            collapsedLabel!,
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
@@ -9638,30 +9882,81 @@ class _ReasoningProcessRow extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                  ),
-                  Icon(
-                    expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    size: 16,
-                    color: ink3,
-                  ),
-                ],
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              preview,
+                              style: TextStyle(fontSize: 12, color: ink2),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              provisional ? FontWeight.w600 : FontWeight.w400,
+                          color: ink2,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
               ),
-            ),
+              Icon(
+                expanded
+                    ? Icons.keyboard_arrow_up
+                    : Icons.keyboard_arrow_down,
+                size: 18,
+                color: ink2,
+              ),
+            ],
           ),
-          if (expanded && text.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: cappedBody
-                  // issue #70 裁决 D1：展开正文不撑高消息流（与活动条内容面板同口径）。
-                  ? ConstrainedBox(
-                      key: bodyKey,
-                      constraints: const BoxConstraints(maxHeight: 200),
-                      child: SingleChildScrollView(child: body),
-                    )
-                  : body,
-            ),
+        ),
+      ),
+    );
+    final bodyWidget = expanded && text.isNotEmpty
+        ? Padding(
+            padding: EdgeInsets.fromLTRB(provisional ? 10 : 24, 0, 0, 6),
+            child: cappedBody
+                // issue #70 裁决 D1：展开正文不撑高消息流（与活动条内容面板同口径）。
+                ? ConstrainedBox(
+                    key: bodyKey,
+                    constraints: const BoxConstraints(maxHeight: 200),
+                    child: SingleChildScrollView(child: body),
+                  )
+                : body,
+          )
+        : null;
+    if (!provisional) {
+      // issue #76：落定思考行平铺（无卡片/底色/边框），只有展开正文。
+      return Column(
+        key: rowKey,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          header,
+          ?bodyWidget,
+        ],
+      );
+    }
+    return Container(
+      key: rowKey,
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: DshColors.brandSoft(context),
+        borderRadius: BorderRadius.circular(DshTheme.radiusSm),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          header,
+          ?bodyWidget,
+          const SizedBox(height: 4),
         ],
       ),
     );

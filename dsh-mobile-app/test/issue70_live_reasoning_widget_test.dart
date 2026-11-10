@@ -320,6 +320,9 @@ Future<void> _inject(
 ) async {
   _injectRaw(store, event);
   await tester.pump();
+  // issue #76：过程区视觉增高后，「钉住底部」的跟随是帧后调度、下一帧生效；
+  // 再 pump 一帧让跟随后的布局落定，断言看到的是稳定态（不改变用例语义）。
+  await tester.pump();
 }
 
 /// 依次注入 F70 实时帧直到（含）[lastSeq]：每帧后 pump 一帧（不推进节流计时器）。
@@ -431,17 +434,25 @@ void main() {
         .getTopLeft(find.byKey(const ValueKey('tool:call-2:8')))
         .dy;
     expect(provisionalY, lessThan(toolBefore));
+    final provisionalBottom =
+        tester.getBottomLeft(find.byKey(_provisionalRowKey(1, 2))).dy;
 
     await _inject(tester, store, _f70Live()[4]);
     final settledY = tester.getTopLeft(find.byKey(_reasoningRowKey(1, 6))).dy;
     final toolAfter = tester
         .getTopLeft(find.byKey(const ValueKey('tool:call-2:8')))
         .dy;
-    expect(settledY, closeTo(provisionalY, 0.5),
-        reason: '落定后持久行继承首 delta seq，位置不跳动');
-    expect(toolAfter, closeTo(toolBefore, 0.5));
-    // 同一 step 的思考行仍在工具行之前。
-    expect(settledY, lessThan(toolAfter));
+    // issue #76：provisional 行是 brandSoft 轻底卡，落定行是平铺行（视觉规格有意不同），
+    // 短内容底部对齐下「落定后行变矮」会让行与后续工具整体等量下移——槽位关系不变。
+    final settledBottom =
+        tester.getBottomLeft(find.byKey(_reasoningRowKey(1, 6))).dy;
+    // issue #76：provisional 是 brandSoft 轻底卡、落定行是平铺行（视觉规格有意不同），
+    // 但同一槽位的**下边界**不变（高度差向上生长），后续工具卡位置也不变。
+    expect(settledBottom, closeTo(provisionalBottom, 0.5),
+        reason: '落定后行下边界（槽位底）不跳动');
+    expect(toolAfter, closeTo(toolBefore, 0.5),
+        reason: '落定后其后的工具卡 y 不变');
+    expect(settledY, lessThan(toolAfter), reason: '同一 step 的思考行仍在工具行之前');
     await _flushAppTimers(tester);
   });
 

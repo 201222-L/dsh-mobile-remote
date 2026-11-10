@@ -767,7 +767,7 @@ void main() {
       expect(pathSpan.style?.color, DshColors.brand(ctx));
       expect(pathSpan.style?.decoration, TextDecoration.underline);
       expect(suffixSpan.text, ' · 行 2–5');
-      expect(suffixSpan.style, isNull, reason: 'suffix 继承 ink3 基础样式');
+      expect(suffixSpan.style, isNull, reason: 'suffix 继承 ink2 基础样式（#76）');
     });
 
     testWidgets('B 态：旧插件/非法 relative 保持纯文本，点击无请求不展开', (tester) async {
@@ -777,10 +777,10 @@ void main() {
       expect(find.byKey(const Key('tool-path-fold:call-plain')), findsNothing);
       expect(find.byKey(const Key('tool-path-fold:call-bad')), findsNothing);
 
-      // 旧插件：ink3 纯文本、无下划线。
+      // 旧插件：纯文本、无下划线；issue #76 起过程区摘要统一 ink2（12/sp）。
       final plainCtx = tester.element(find.text('src/c.ts'));
       final plain = tester.widget<Text>(find.text('src/c.ts'));
-      expect(plain.style?.color, DshColors.ink3(plainCtx));
+      expect(plain.style?.color, DshColors.ink2(plainCtx));
       expect(plain.style?.decoration, isNull);
 
       await _tapFoldPath(tester, find.text('src/c.ts'));
