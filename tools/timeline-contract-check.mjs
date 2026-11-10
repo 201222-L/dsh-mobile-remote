@@ -1,7 +1,7 @@
 // Issue #1：可见事件协议的无损指针/未知事件/工具关联回归。
 // 需要 DSH_MOBILE_PLUGIN 指向可加载的插件模块；与现有 hotfix07-unit-check 同一导入策略。
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -271,6 +271,105 @@ check(
     ]),
   JSON.stringify(toolCardsCaps),
 );
+// issue #68（M3 Batch 2-C）：PTC 子调用投影（真实夹具）+ 50 上限 + 安全白名单。
+const ptcFixture = JSON.parse(readFileSync(new URL("../test/fixtures/ptc/dispatch-events.json", import.meta.url), "utf8"));
+const PTC_TEST_CWD = "/home/mark/proj";
+const ptcOuterCallId = ptcFixture.capture.outerCallId;
+const ptcSummarize = (event, options = {}) => mod.summarizeEvent(event, { cwd: PTC_TEST_CWD, ...options });
+const ptcStartEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch-start");
+const ptcSuccessEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch" && event.data.isError === false);
+const ptcFailedEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch" && event.data.isError === true);
+check(
+  "toolCards 能力位含 ptc:{version:1}，存量 version/tools 不变且 ptc 在 tools 之后（键序兼容既有断言）",
+  JSON.stringify(toolCardsCaps.ptc) === JSON.stringify({ version: 1 })
+    && JSON.stringify(toolCardsCaps).indexOf('"ptc"') > JSON.stringify(toolCardsCaps).indexOf('"tools"')
+    && toolCardsCaps.version === 1,
+  JSON.stringify(toolCardsCaps),
+);
+const ptcStartSummary = ptcSummarize(ptcStartEvent);
+check(
+  "PTC start 投影：subCallId→callId、status=running、summary 安全摘要，无 text/isError/error/arguments/meta",
+  ptcStartSummary.data?.callId === `${ptcOuterCallId}:ptc:1`
+    && ptcStartSummary.data?.status === "running"
+    && ptcStartSummary.data?.summary?.kind === "file"
+    && ptcStartSummary.data?.summary?.filePath === "README.md"
+    && ptcStartSummary.data?.text === undefined
+    && ptcStartSummary.data?.isError === undefined
+    && ptcStartSummary.data?.error === undefined
+    && ptcStartSummary.data?.arguments === undefined
+    && ptcStartSummary.data?.meta === undefined
+    && ptcStartSummary.data?.content === undefined,
+  JSON.stringify(ptcStartSummary),
+);
+const ptcSuccessSummary = ptcSummarize(ptcSuccessEvent);
+check(
+  "PTC result 成功：status=success、isError=false，无 text/error/meta/content",
+  ptcSuccessSummary.data?.status === "success"
+    && ptcSuccessSummary.data?.isError === false
+    && ptcSuccessSummary.data?.text === undefined
+    && ptcSuccessSummary.data?.error === undefined
+    && ptcSuccessSummary.data?.meta === undefined
+    && ptcSuccessSummary.data?.content === undefined,
+  JSON.stringify(ptcSuccessSummary),
+);
+const ptcFailedSummary = ptcSummarize(ptcFailedEvent);
+const ptcFailedJson = JSON.stringify(ptcFailedSummary);
+check(
+  "PTC result 失败（L1）：text 仅安全错误码 FS_NOT_FOUND、error 仅 name/code、无 content 原文/路径/reason",
+  ptcFailedSummary.data?.status === "failed"
+    && ptcFailedSummary.data?.text === "FS_NOT_FOUND"
+    && JSON.stringify(ptcFailedSummary.data?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" })
+    && !ptcFailedJson.includes("cannot read")
+    && !ptcFailedJson.includes(PTC_TEST_CWD)
+    && !ptcFailedJson.includes("content")
+    && !ptcFailedJson.includes("reason"),
+  ptcFailedJson,
+);
+check(
+  "PTC payload 无 cwd 绝对路径、无 arguments/meta/content/images 原文",
+  !JSON.stringify(ptcFixture.events.map((event) => ptcSummarize(event))).includes(PTC_TEST_CWD)
+    && ptcFixture.events.every((event) => {
+      const data = ptcSummarize(event).data;
+      return data !== undefined
+        && data.arguments === undefined
+        && data.meta === undefined
+        && data.content === undefined
+        && data.images === undefined;
+    }),
+  JSON.stringify(ptcFixture.events.map((event) => ptcSummarize(event).data)),
+);
+check(
+  "PTC 事件仍 debug-only 可回放、无详情指针（不加入详情 allow-list）",
+  mod.isTimelineRecord({ seq: 1, type: "tool/ptc-dispatch" }) === true
+    && mod.isTimelineRecord({ seq: 1, type: "tool/ptc-dispatch-start" }) === true
+    && mod.isLiveTimelineRecord({ seq: 1, type: "tool/ptc-dispatch" }) === true
+    && mod.isDetailVisibleType("tool/ptc-dispatch") === false
+    && mod.summarizeEvent({ seq: 1, type: "tool/ptc-dispatch", data: { subCallId: "c", parentCallId: "p" } }).detail === undefined,
+);
+const ptcBudget = mod.createPtcBudget();
+const ptcGate = (callId) => mod.ptcGateOf(ptcBudget, { rootCallId: "root-budget", subCallId: callId });
+for (let index = 1; index <= 50; index++) ptcGate(`call-${index}`);
+check(
+  "PTC 50 上限：前 50 full、第 51 条 notice、其后 drop、重复 callId 不占名额",
+  ptcGate("call-1") === "full" && ptcGate("call-51") === "notice" && ptcGate("call-52") === "drop" && ptcGate("call-51") === "drop",
+  JSON.stringify([ptcGate("call-1"), ptcGate("call-51"), ptcGate("call-52")]),
+);
+const noticeBudget = mod.createPtcBudget();
+for (let index = 1; index <= 50; index++) mod.ptcGateOf(noticeBudget, { rootCallId: "root-notice", subCallId: `notice-${index}` });
+const ptcNotice = ptcSummarize({ seq: 99, type: "tool/ptc-dispatch-start", data: { rootCallId: "root-notice", parentCallId: "root-notice", subCallId: "call-notice", name: "read", arguments: { file_path: "x" } } }, { ptcBudget: noticeBudget });
+check(
+  "PTC 超限 notice 是最小 truncated data（无 summary/text/isError/error/turn/step）",
+  ptcNotice.data?.truncated === true
+    && ptcNotice.data?.callId === "call-notice"
+    && ptcNotice.data?.status === "running"
+    && ptcNotice.data?.summary === undefined
+    && ptcNotice.data?.text === undefined
+    && ptcNotice.data?.isError === undefined
+    && ptcNotice.data?.error === undefined
+    && ptcNotice.data?.turn === undefined
+    && ptcNotice.data?.step === undefined,
+  JSON.stringify(ptcNotice),
+);
 const toolCallProjection = (name, args) => mod.summarizeEvent({
   seq: 50,
   type: "tool/call",
@@ -497,7 +596,17 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     { seq: 4, type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } },
   ];
   const tailSession = { id: "session-tail", header: { createdAt: 1, cwd: turnTailCwd }, events: turnTailEvents, snapshotEvents() { return this.events; } };
-  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge], [tailSession.id, tailSession]]);
+  // issue #68：PTC 子调用历史投影夹具（真实捕获事件 + 外层 run_code tool/call/result）；
+  // turn/step 必须从原始 turn/start + step/start 派生（PTC data 本身不带位置）。
+  const ptcHistoryEvents = [
+    { seq: 1, type: "turn/start", data: { turn: 3 } },
+    { seq: 2, type: "step/start", data: { step: 2 } },
+    { seq: 3, type: "tool/call", data: { turn: 3, step: 2, callId: ptcOuterCallId, name: "run_code", arguments: JSON.stringify({ code: "await tools.read({ file_path: \"README.md\" })" }) } },
+    ...ptcFixture.events,
+    { seq: 27, type: "tool/result", data: { turn: 3, step: 2, message: { content: [{ type: "text", text: "done" }], toolCallId: ptcOuterCallId } } },
+  ];
+  const ptcSession = { id: "session-ptc", header: { createdAt: 1, cwd: PTC_TEST_CWD }, events: ptcHistoryEvents, snapshotEvents() { return this.events; } };
+  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge], [tailSession.id, tailSession], [ptcSession.id, ptcSession]]);
   const dormant = [{ seq: 8, type: "tool/result", data: { dormant: true, callId: "call-dormant", text: "dormant raw result" } }];
   const dormantUnlisted = [{ seq: 8, type: "future/dormant-unlisted", data: { secret: "DORMANT-SECRET" } }];
   const seededSurface = [{ seq: 8, type: "tool/result", data: { recovered: true, callId: "call-surface", text: "surface raw result" } }];
@@ -697,9 +806,10 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       JSON.stringify(bootstrap.json?.capabilities?.turnTail),
     );
     check(
-      "bootstrap 声明 toolCards 能力位（version/tools 与纯函数同形）",
+      "bootstrap 声明 toolCards 能力位（version/tools/ptc 与纯函数同形）",
       bootstrap.json?.capabilities?.toolCards?.version === 1
-        && JSON.stringify(bootstrap.json?.capabilities?.toolCards?.tools) === JSON.stringify(toolCardsCaps.tools),
+        && JSON.stringify(bootstrap.json?.capabilities?.toolCards?.tools) === JSON.stringify(toolCardsCaps.tools)
+        && bootstrap.json?.capabilities?.toolCards?.ptc?.version === 1,
       JSON.stringify(bootstrap.json?.capabilities?.toolCards),
     );
     const tailHistory = await call("/m/api/history?sessionId=session-tail&limit=100");
@@ -713,6 +823,29 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       "history 的 presented 摘要不含主机绝对路径",
       !tailHistory.text.includes(turnTailCwd) && !JSON.stringify(tailHistory.json?.events).includes(turnTailCwd),
       tailHistory.text.slice(0, 500),
+    );
+    // issue #68：/history 与 SSE 共用同一 summarizeEvent 分支；PTC start/result 可还原，
+    // turn/step 从原始事件派生，payload 不含 arguments/meta/content 原文与 cwd 绝对路径。
+    const ptcHistory = await call("/m/api/history?sessionId=session-ptc&limit=100");
+    const ptcHistoryEvents = (ptcHistory.json?.events ?? []).filter((event) => event.type === "tool/ptc-dispatch-start" || event.type === "tool/ptc-dispatch");
+    check(
+      "history 投影 PTC 子调用：start/result 字段与 turn/step 派生（同一 summarizeEvent 分支）",
+      ptcHistoryEvents.length === 6
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch-start" && event.data?.callId === `${ptcOuterCallId}:ptc:1` && event.data?.status === "running" && event.data?.turn === 3 && event.data?.step === 2)
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch" && event.data?.callId === `${ptcOuterCallId}:ptc:2` && event.data?.status === "success" && event.data?.isError === false)
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch" && event.data?.status === "failed" && event.data?.text === "FS_NOT_FOUND"),
+      JSON.stringify(ptcHistoryEvents.slice(0, 2)),
+    );
+    check(
+      "history PTC payload 无 arguments/meta/content 原文、无 cwd 绝对路径、无 detail 指针",
+      !ptcHistory.text.includes(PTC_TEST_CWD)
+        && ptcHistoryEvents.every((event) => event.data !== undefined
+          && event.data.arguments === undefined
+          && event.data.meta === undefined
+          && event.data.content === undefined
+          && event.data.images === undefined
+          && event.detail === undefined),
+      JSON.stringify(ptcHistoryEvents.map((event) => event.data)),
     );
     const tailSummary = await call("/m/api/changes/summary?sessionId=session-tail&turn=2");
     check(
@@ -1329,12 +1462,25 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     const sse = response();
     route?.handler(request("/m/api/events"), sse);
     await new Promise((resolve) => setTimeout(resolve, 15));
-    check("SSE hello 宣布 eventTimeline / turnTail / toolCards capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}') && sse.text.includes('"toolCards":{"version":1,"tools":'), sse.text.slice(0, 500));
+    check("SSE hello 宣布 eventTimeline / turnTail / toolCards capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}') && sse.text.includes('"toolCards":{"version":1,"tools":') && sse.text.includes('"ptc":{"version":1}'), sse.text.slice(0, 500));
     const sessionEvent = hooks.get("session/event");
     sessionEvent?.(active, { seq: 30, type: "future/live", data: { visible: true } });
     sessionEvent?.(active, { seq: 31, type: "request/header", data: { systemPrompt: "SECRET" } });
     await new Promise((resolve) => setTimeout(resolve, 5));
     check("live/history 同步过滤内部但保留未知", sse.text.includes('"future/live"') && !sse.text.includes('"systemPrompt":"SECRET"'), sse.text.slice(-800));
+    // issue #68：SSE 实时 PTC 也必须走同一投影（与 /history 同字段），且不下发原文/路径。
+    sessionEvent?.(active, ptcStartEvent);
+    sessionEvent?.(active, ptcSuccessEvent);
+    sessionEvent?.(active, ptcFailedEvent);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    check(
+      "SSE 实时 PTC 与 /history 同构：start/result 投影、失败安全错误码、无原文/路径",
+      sse.text.includes(`"callId":"${ptcOuterCallId}:ptc:1"`)
+        && sse.text.includes('"status":"running"')
+        && sse.text.includes('"text":"FS_NOT_FOUND"')
+        && !sse.text.includes(PTC_TEST_CWD),
+      sse.text.slice(-1200),
+    );
   } catch (error) {
     check("wire harness 可启动真实路由", false, error?.stack ?? String(error));
   }
