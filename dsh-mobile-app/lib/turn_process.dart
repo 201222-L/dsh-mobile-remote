@@ -735,6 +735,9 @@ class TurnProcessTracker {
   final Set<int> _reasoningSeqs = {};
   // issue #70：各 (turn, step) 首个 reasoning delta 的 seq（落定后持久行继承排序键）。
   final Map<String, int> _reasoningStarts = {};
+  // issue #70（审查 P1）：任何 assistant/message 的落定水位，键同 `_reasoningKey`。
+  // 只读查询 [hasSettledReasoning]；用于挡住 reset/reload 后已落定 step 的迟到 chunk。
+  final Set<String> _settledAssistantKeys = {};
   final List<int> _humanUserSeqs = [];
   final Set<int> _humanUserSeqSet = {};
   int _order = 0;
@@ -747,6 +750,7 @@ class TurnProcessTracker {
     _itemTurn.clear();
     _reasoningSeqs.clear();
     _reasoningStarts.clear();
+    _settledAssistantKeys.clear();
     _humanUserSeqs.clear();
     _humanUserSeqSet.clear();
     _order = 0;
@@ -772,6 +776,19 @@ class TurnProcessTracker {
   /// 取出并消费该 (turn, step) 的首 delta seq（一条 message 只继承一次）。
   int? _takeReasoningStart(int turn, int? step) =>
       _reasoningStarts.remove(_reasoningKey(turn, step));
+
+  /// issue #70（审查 P1）：该 (turn, step) 是否已有**落定**的 assistant/message 水位。
+  ///
+  /// 任何 assistant/message（无论是否带 reasoning）都会在 [observe] 登记（O(1) 键集合）；
+  /// 实时 chunk 据此做**只读**守卫：reset/reload 回放后，同一 step 的迟到 chunk 不得让
+  /// provisional 复活（与持久思考行重复）。键精确匹配——null-step 只代表该轮的无 step
+  /// 水位，**不**跨 step 泛化（否则旧历史的无 step message 会误挡后续新 step）。
+  bool hasSettledReasoning(int turn, int? step) =>
+      _settledAssistantKeys.contains(_reasoningKey(turn, step));
+
+  void _dropSettledAssistant(int turn) {
+    _settledAssistantKeys.removeWhere((key) => key.startsWith('$turn:'));
+  }
 
   /// 记录一条事件。可重复调用（历史/实时重叠、分页重叠都是常态）。
   void observe(ChatEvent event) {
@@ -826,10 +843,17 @@ class TurnProcessTracker {
         final reasoning = data['reasoning'] is String
             ? data['reasoning'] as String
             : '';
+        // issue #70（审查 P1）：任何 assistant/message 都是该 (turn, step) 的落定水位，
+        // **无论是否带 reasoning**（无 reasoning 的 message 同样代表该 step 已推进）。
+        // 归属轮次与 reasoning 行同口径；null-step 只登记 null 键，不跨 step 泛化。
+        final settledOwner = turn ?? (seq == null ? null : _turnOfSeqNear(seq));
+        if (settledOwner != null) {
+          _settledAssistantKeys.add(_reasoningKey(settledOwner, step));
+        }
         if (reasoning.isNotEmpty && seq != null && _reasoningSeqs.add(seq)) {
           // 历史截断/倒序时可能先看到步骤事件、后看到 turn/start：
           // 归属轮次未知就先跳过（渲染必须有整轮锚点），不落「轮号 0」的假轮次。
-          final owner = turn ?? _turnOfSeqNear(seq);
+          final owner = settledOwner;
           if (owner == null) return;
           final chars = _intOf(data['reasoningChars']) ?? reasoning.length;
           // issue #70：实时路径把首个 delta seq 交给 tracker，持久行继承同一排序键；
@@ -961,6 +985,7 @@ class TurnProcessTracker {
         _reasoningSeqs.remove(row.eventSeq);
       }
       dropReasoningStart(turn);
+      _dropSettledAssistant(turn);
     }
     _reasoningStarts.removeWhere((_, seq) => seq < beforeSeq);
     _tools.removeWhere((_, tool) {

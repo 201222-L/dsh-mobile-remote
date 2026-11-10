@@ -999,6 +999,106 @@ void main() {
   });
 
 
+  testWidgets('reset 后仍在运行轮：已落定 step 迟到 chunk 不复活 provisional，新 step 正常', (
+    tester,
+  ) async {
+    final history = <Map<String, dynamic>>[
+      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+      {
+        'seq': 2,
+        'type': 'user/message',
+        'data': {'messageId': 'u1', 'text': 'Question live', 'sourceKind': 'user'},
+        'time': 1100,
+      },
+      {
+        'seq': 3,
+        'type': 'assistant/message',
+        'data': {
+          'turn': 1,
+          'step': 1,
+          'messageId': 'a1',
+          'text': '',
+          'reasoning': 'settled step one',
+          'reasoningChars': 16,
+        },
+        'time': 1200,
+      },
+      {
+        'seq': 4,
+        'type': 'tool/call',
+        'data': {
+          'turn': 1,
+          'step': 2,
+          'callId': 'call-2',
+          'name': 'shell',
+          'arguments': '{}',
+        },
+        'time': 1300,
+      },
+      {
+        'seq': 5,
+        'type': 'tool/result',
+        'data': {
+          'turn': 1,
+          'step': 2,
+          'callId': 'call-2',
+          'name': 'shell',
+          'text': 'ok',
+        },
+        'time': 1400,
+      },
+    ];
+    final store = await _pumpChat(tester, _Backend(events: history));
+
+    // reset/reload：durable 回放只读登记 (turn1,step1) 落定水位，不写 live tombstone。
+    await _inject(tester, store, {
+      'seq': 6,
+      'type': 'compaction/end',
+      'data': {'turn': 1},
+      'time': 1500,
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(_reasoningRowKey(1, 3)), findsOneWidget);
+    expect(find.text('settled step one'), findsOneWidget);
+
+    // 迟到 step1 chunk：该 step 已落定 → 丢弃，不复活 provisional、不新增第二行。
+    await _inject(tester, store, {
+      'seq': 10,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'reasoning': true,
+        'text': 'late settled chunk',
+      },
+      'time': 1600,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+    expect(find.text('思考中…'), findsNothing);
+    expect(find.text('late settled chunk'), findsNothing);
+    expect(find.byKey(_reasoningRowKey(1, 3)), findsOneWidget);
+    expect(find.text('settled step one'), findsOneWidget);
+
+    // 后续新 step：step2 chunk 必须正常进入 provisional（水位只挡已落定 step）。
+    await _inject(tester, store, {
+      'seq': 11,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'reasoning': true,
+        'text': 'step two thinking',
+      },
+      'time': 1700,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget);
+    expect(find.text('思考中…'), findsOneWidget);
+    expect(find.text('step two thinking'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await _flushAppTimers(tester);
+  });
+
   testWidgets('迟到 chunk：落定后同 (turn, step) 的 reasoning 被丢弃', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
     await _inject(tester, store, _f70Live()[0]);
