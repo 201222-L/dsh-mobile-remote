@@ -2774,6 +2774,37 @@ class _ChatScreenState extends State<ChatScreen> {
     _invalidateProcessPlan();
   }
 
+  /// issue #70（审查 P1-2）：工具类事件把 step **推进**时，旧 step 的 provisional 必须关闭。
+  ///
+  /// 真实序列可能「reasoning(step1) 还没有 assistant/message 落定，下一个 step 先到的是
+  /// tool/call / tool/result / 带 toolCall·argumentsDelta 的 chunk」——这些事件同样携带
+  /// `(turn, step)`，是 step 前进的可靠信号。这里只在统一漏斗 `_buildInto` 判定（覆盖
+  /// SSE 与 catch-up；历史回放 buffer 为空 → 幂等）：
+  /// - 同 turn 且事件 step > 当前 provisional step → `closeStep(turn, step-1)`，并在关闭集合
+  ///   记上限，阻止迟到的旧 step chunk 复活；
+  /// - 同 step / 更小 step / 事件缺 step → 一律不关闭（避免把正常流误关）。
+  void _advanceLiveReasoningStep(ChatEvent ev) {
+    final data = ev.data;
+    if (data == null) return;
+    final isToolEvent = ev.type == 'tool/call' ||
+        ev.type == 'tool/result' ||
+        ((ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') &&
+            (data['toolCall'] != null || data['argumentsDelta'] != null));
+    if (!isToolEvent) return;
+    final turn = (data['turn'] as num?)?.toInt();
+    final step = (data['step'] as num?)?.toInt();
+    if (turn == null || step == null) return;
+    final live = _liveReasoning.current;
+    if (live == null || live.turn != turn || live.step == null) return;
+    if (step <= live.step!) return;
+    final changed = _liveReasoning.closeStep(turn, step - 1);
+    if (!changed) return;
+    _provisionalExpansions.removeWhere((key, _) => key.startsWith('$turn:'));
+    // 结构变化：行级通知 + 计划失效（外层调用方负责 setState / 80ms 节流刷新）。
+    _liveReasoningRevision.value++;
+    _invalidateProcessPlan();
+  }
+
   /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
   /// 上下文快照 / 后台任务通知。判据与模型侧共用同一实现。
   bool _isNoiseText(String text) => timelineIsInjectedNoise(text);
@@ -2971,6 +3002,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // 三条路径（SSE / catch-up / 历史回放）都汇入本函数，历史路径无 chunk 时是幂等空操作。
     if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
       _closeLiveReasoningFor(ev);
+    } else {
+      // issue #70（审查 P1-2）：工具类事件推进 step 时关闭旧 step 的 provisional。
+      _advanceLiveReasoningStep(ev);
     }
     // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
     _recordToolName(ev);

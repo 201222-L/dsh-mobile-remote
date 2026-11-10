@@ -242,17 +242,23 @@ class LiveReasoningBuffer {
   }
 }
 
-/// 运行中思考行的折叠预览：取**最近一个非空行**（不是首行），超出 [max] 补省略号。
+/// 运行中思考行的折叠预览：取**最近一个非空行**（不是首行），**截断后总长 ≤ [max]**。
 ///
 /// 与落定行的 [ProcessRow.reasoningPreview]（首行）刻意分开：运行中用户关心
 /// 「现在想到哪」，落定后回到既有规则（issue #70 预审补充）。
+///
+/// 截断口径以 issue 预审的「截断（≤120 字符）」为准：超长时取 `max - 1` 个字符 +
+/// 一个省略号（U+2026），即总长恰为 [max]；`/tmp/issue70-ui-spec.md` 的「120+…」
+/// 写法会得到 121 字符，与 issue 冲突，按 issue 执行（审查 P2-1）。
 String latestReasoningLinePreview(String text, {int max = 120}) {
   if (text.isEmpty) return '';
   final lines = text.split('\n');
   for (var i = lines.length - 1; i >= 0; i--) {
     final line = lines[i].trim();
     if (line.isEmpty) continue;
-    return line.length <= max ? line : '${line.substring(0, max)}…';
+    if (line.length <= max) return line;
+    if (max <= 0) return '';
+    return '${line.substring(0, max - 1)}…';
   }
   return '';
 }
@@ -974,19 +980,27 @@ class TurnProcessTracker {
     final turns = _turns.values.where((t) => t.startSeq != null).toList()
       ..sort((a, b) => a.startSeq!.compareTo(b.startSeq!));
     for (final t in turns) {
-      // issue #70：同一 (turn, step) 的带 reasoning 消息只保留 **seq 最大** 的一条
+      // issue #70：同一 (turn, 非空 step) 的带 reasoning 消息只保留 **seq 最大** 的一条
       // （真实内核每 step 一条；此规则只在异常重放/多条 message 时生效，顺序无关）。
-      final reasoningByStep = <String, _MutableRow>{};
+      // 缺 step 的行是「整轮一组」的退化形态（ADR 0027 §2），**不得去重**：旧宿主/老历史
+      // 常有多条 assistant/message(reasoning) 且无 step，去重会吞掉历史思考（审查 P1-1）。
+      final reasoningByStep = <int, _MutableRow>{};
+      final reasoningRows = <_MutableRow>[];
       for (final row in t.rows) {
         if (row.kind != ProcessRowKind.reasoning) continue;
-        final key = _reasoningKey(t.turn, row.step);
-        final existing = reasoningByStep[key];
+        final step = row.step;
+        if (step == null) {
+          reasoningRows.add(row);
+          continue;
+        }
+        final existing = reasoningByStep[step];
         if (existing == null || row.seq >= existing.seq) {
-          reasoningByStep[key] = row;
+          reasoningByStep[step] = row;
         }
       }
+      reasoningRows.addAll(reasoningByStep.values);
       final rows = <ProcessRow>[
-        for (final row in reasoningByStep.values)
+        for (final row in reasoningRows)
           ProcessRow.reasoning(
             seq: row.seq,
             step: row.step,
