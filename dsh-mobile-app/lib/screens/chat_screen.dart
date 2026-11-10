@@ -372,7 +372,14 @@ class _ChatScreenState extends State<ChatScreen> {
   final Map<int, String> _changedSummaryErrors = {};
   final Map<int, ({int version, TurnFileLinkResolver resolver})> _linkResolvers = {};
   int _turnTailVersion = 0;
-  String _reasoning = '';
+  // ── issue #70（ADR 0027 §2 实时态）：运行中思考（provisional）──────────
+  // 流式 reasoning 按 (turn, step) 缓冲在纯模型 [LiveReasoningBuffer]，活动条与
+  // 过程块 provisional 行读同一份快照；文本增长只通知 ValueNotifier（行级重建），
+  // 只有结构变化（首现/切换/落定/清理）才重建过程计划。
+  final LiveReasoningBuffer _liveReasoning = LiveReasoningBuffer();
+  final ValueNotifier<int> _liveReasoningRevision = ValueNotifier<int>(0);
+  // provisional 行的展开状态（turn:step，跨 delta 保留；落定/轮末清理）。
+  final Map<String, bool> _provisionalExpansions = {};
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
   String _draft = '';
@@ -575,6 +582,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     // The modal future owns and disposes its Git controller in _openGit.
     _gitController = null;
+    _liveReasoningRevision.dispose(); // issue #70：行级通知器随页面释放
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -1273,7 +1281,10 @@ class _ChatScreenState extends State<ChatScreen> {
         _transientFrameKeys.clear();
         _debugPreviewCache.clear(); // 重建后 rawData 全变，旧预览缓存无意义
         _activeTools.clear();
-        _reasoning = '';
+        // issue #70：按新表面重建 = 重新进入会话，流式思考缓冲与 provisional 展开态一并失效。
+        _liveReasoning.clear();
+        _liveReasoningRevision.value++;
+        _provisionalExpansions.clear();
         _reasoningExpanded = false;
         _draft = '';
         _streaming = false;
@@ -2111,6 +2122,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == 'turn/start') {
       _todoProjectionVersion++;
       _todos = []; // 新一轮开始清空清单（继续走下方渲染，保留"轮次 N 开始"分隔条）
+      final startedTurn = (ev.data?['turn'] as num?)?.toInt();
+      // issue #70：关闭集合有界——只保留最近两轮（迟到 chunk 的 tombstone 不无界增长）。
+      if (startedTurn != null) _liveReasoning.trimClosedTurns(startedTurn);
     }
     // v3.0.0：队列快照帧（认领/删除/编辑即时反映）→ 本页 dock 即时同步
     if (ev.type == 'mobile/queue') {
@@ -2137,12 +2151,24 @@ class _ChatScreenState extends State<ChatScreen> {
         _draft += text;
         _scheduleDraftFlush();
       } else if (text.isNotEmpty && reasoning) {
-        // 思考内容实时累积（活动条面板，可展开）
-        if (_reasoning.isEmpty) {
-          AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+        // issue #70：流式思考按 (turn, step) 进缓冲（活动条与 provisional 行同源）。
+        // 每个 delta 只做 O(1) 追加 + 行级通知；只有结构变化（首现/切 step）才重建计划，
+        // 避免「每 delta 全量 setState」（issue 性能条款）。
+        final turn = (ev.data?['turn'] as num?)?.toInt();
+        final step = (ev.data?['step'] as num?)?.toInt();
+        if (turn != null) {
+          if (_liveReasoning.firstSeqOf(turn, step) == null) {
+            AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+          }
+          final structural =
+              _liveReasoning.append(turn, step, text, seq: ev.seq);
+          _liveReasoningRevision.value++;
+          if (structural) {
+            _invalidateProcessPlan();
+            setState(() {});
+          }
         }
-        _reasoning += text;
-        _scheduleActivityFlush();
+        // 迟到的 reasoning chunk（关闭集合命中）append 返回 false 且不增长文本。
       }
       if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
         final data = ev.data ?? const <String, dynamic>{};
@@ -2160,17 +2186,18 @@ class _ChatScreenState extends State<ChatScreen> {
       _draftTimer = null;
       _activityTimer?.cancel();
       _activityTimer = null;
+      // issue #70：缓冲的关闭/通知统一在 _buildInto 漏斗里做（覆盖 SSE/catch-up/历史回放）。
+      final reasoningChars = _liveReasoning.current?.text.length ?? 0;
       if (ev.type == 'assistant/message') {
-        // 正文到达：工具阶段结束（思考保留到轮次结束，面板显示"已思考 N 字"）
+        // 正文到达：工具阶段结束（思考文本由过程行或活动条按同源快照呈现）
         _activeTools.clear();
-        AppLog.instance.log('Chat: 活动条-正文到达（思考 ${_reasoning.length} 字）');
+        AppLog.instance.log('Chat: 活动条-正文到达（思考 $reasoningChars 字）');
       } else {
-        // 轮次结束：清空活动条与思考草稿
+        // 轮次结束：清空活动条与思考草稿（provisional 由 _buildInto 的 closeTurn 清理）
         _activeTools.clear();
-        if (_reasoning.isNotEmpty) {
-          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
+        if (reasoningChars > 0) {
+          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 $reasoningChars 字）');
         }
-        _reasoning = '';
         _reasoningExpanded = false;
       }
     }
@@ -2711,10 +2738,40 @@ class _ChatScreenState extends State<ChatScreen> {
           _earliestSeq = oldest;
           // issue #52：live 窗口裁剪后同步丢弃更早轮次的过程结构，避免无界增长。
           _turnProcess.pruneBefore(oldest);
+          // issue #70：被裁轮次的 provisional 不得残留。
+          _liveReasoning.pruneBefore(oldest);
           _processVersion++;
         }
       }
     }
+  }
+
+  /// issue #70：`assistant/message` / `turn/end` 到达时关闭流式思考缓冲。
+  ///
+  /// - `assistant/message`：把该 (turn, step) 首个 delta seq 交给 tracker（持久行继承
+  ///   同一排序键 → 落定零位移），随后关闭对应 provisional（迟到 chunk 进 tombstone）；
+  /// - `turn/end`（completed/aborted/interrupted/error）：整轮关闭并丢弃首 delta 记录，
+  ///   中断轮不残留；
+  /// - 无 `turn` 字段的事件不做缓冲处理（无键可归，走 tracker 既有归属规则）。
+  void _closeLiveReasoningFor(ChatEvent ev) {
+    final turn = (ev.data?['turn'] as num?)?.toInt();
+    if (turn == null) return;
+    final step = (ev.data?['step'] as num?)?.toInt();
+    var changed = false;
+    if (ev.type == 'turn/end') {
+      changed = _liveReasoning.closeTurn(turn);
+      _turnProcess.dropReasoningStart(turn);
+      _provisionalExpansions.removeWhere((key, _) => key.startsWith('$turn:'));
+    } else {
+      final first = _liveReasoning.firstSeqOf(turn, step);
+      if (first != null) _turnProcess.noteReasoningStart(turn, step, first);
+      changed = _liveReasoning.closeStep(turn, step);
+      _provisionalExpansions.remove('$turn:${step ?? 'null'}');
+    }
+    if (!changed) return;
+    // 结构变化（可见行消失）：通知行级监听者并重建过程计划。
+    _liveReasoningRevision.value++;
+    _invalidateProcessPlan();
   }
 
   /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
@@ -2909,6 +2966,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }) {
     final d = ev.data;
     if (hiddenTimelineTypes.contains(ev.type)) return;
+    // issue #70：落定/轮末先关闭对应 provisional（并把握手的排序键交给 tracker），
+    // 再 observe——保证持久 reasoning 行继承首个 delta seq，落定不跳位。
+    // 三条路径（SSE / catch-up / 历史回放）都汇入本函数，历史路径无 chunk 时是幂等空操作。
+    if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
+      _closeLiveReasoningFor(ev);
+    }
     // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
     _recordToolName(ev);
     // issue #52：轮次过程投影与时间线条目同步观察（历史/实时/分页重叠都收敛到同一结构）。
@@ -4058,9 +4121,37 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // ── issue #70：活动条与过程行分工（三处不重复）─────────────────────────
+  //
+  // 判定（issue 预审补充 + 裁决 D3）：
+  // - 过程块可见且块内已有 reasoning 行（provisional 或落定）：
+  //   有工具 → 只显示工具/状态；无工具 → 整条不渲染（思考已在过程行里）；
+  // - 无过程块锚点 → 保留现状思考（`思考中…（N 字）`，正文流式后 `已思考 N 字`）；
+  // - 历史视图不渲染活动条；`showReasoning` 仍只控制内容能否展开。
+  // 思考文本走 `_liveReasoningRevision` 行级通知（与 provisional 行同源、同一快照）。
+  Widget _buildActivityBar() {
+    final live = _liveReasoning.current;
+    final plan = _livePlanCache;
+    final inBlock =
+        plan != null && (plan.provisionalRendered || plan.reasoningRowVisible);
+    final reasoning = inBlock ? '' : (live?.text ?? '');
+    final tools = _activeTools.values.toList();
+    if (reasoning.isEmpty && tools.isEmpty) return const SizedBox.shrink();
+    return _ActivityBar(
+      reasoning: reasoning,
+      expanded: _reasoningExpanded,
+      textStreaming: _streaming,
+      showContent: widget.store.showReasoning,
+      tools: tools,
+      onToggleReasoning: () =>
+          setState(() => _reasoningExpanded = !_reasoningExpanded),
+    );
+  }
+
   // ── UI ──
   @override
   Widget build(BuildContext context) {
+    LiveProcessCounters.pageBuilds++; // issue #70：性能用例的页面重建计数钩子
     final store = widget.store;
     final ink3 = DshColors.ink3(context);
     final brand = DshColors.brand(context);
@@ -4235,16 +4326,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
-          // 活动条：思考中 / 工具执行中（过程反馈，不依赖任何开关）
-          if (!_inHistory && (_reasoning.isNotEmpty || _activeTools.isNotEmpty))
-            _ActivityBar(
-              reasoning: _reasoning,
-              expanded: _reasoningExpanded,
-              textStreaming: _streaming,
-              showContent: widget.store.showReasoning,
-              tools: _activeTools.values.toList(),
-              onToggleReasoning: () =>
-                  setState(() => _reasoningExpanded = !_reasoningExpanded),
+          // 活动条：工具状态 / 无过程块时的思考（issue #70：与 provisional 同源、三处不重复）
+          if (!_inHistory)
+            ValueListenableBuilder<int>(
+              valueListenable: _liveReasoningRevision,
+              builder: (context, _, _) => _buildActivityBar(),
             ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
@@ -5566,6 +5652,7 @@ class _ChatScreenState extends State<ChatScreen> {
     List<_MsgItem> items, {
     required bool historyView,
   }) {
+    LiveProcessCounters.processPlanBuilds++;
     final policy = _foldPolicy;
     final turns = _ensureProcessTurnMap();
     final humanUserSeqs = _turnProcess.humanUserSeqs;
@@ -5594,6 +5681,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // 避免反馈/详情原地替换后仍拿着旧对象）。
     final assistantSeqByTurn = <int, int>{};
     final hiddenByTurn = <int, int>{};
+    // issue #70：provisional 只注入「当前流式轮次的最后一段」，且该段必须已有宿主
+    // （无持久过程行 → 无锚点 → 不凭空造过程块，活动条保留现状思考）。
+    // 计划里只存排序键，不存文本（文本由行级 ValueNotifier 读取，避免陈旧缓存）。
+    final live = historyView ? null : _liveReasoning.current;
+    var provisionalRendered = false;
+    var reasoningRowVisible = false;
 
     // 仅轮次开始边界（重试边界只取首个）参与锚定，避免同一轮重复渲染。
     final primaryStarts = <int, int>{};
@@ -5660,6 +5753,63 @@ class _ChatScreenState extends State<ChatScreen> {
             if (visibleSeqSet.contains(row.seq)) visibleRows.add(row.seq);
           }
         }
+        // issue #70：组展开态与渲染同口径（运行中强制展开；用户手动收起优先）。
+        List<bool>? groupExpandedFlags;
+        if (grouping) {
+          groupExpandedFlags = [
+            for (final group in segment.groups)
+              _groupExpansions['$key:${group.step ?? 'x'}'] ??
+                  !groupAutoCollapsed(
+                    group,
+                    policy: policy,
+                    turnRunning: running,
+                  ),
+          ];
+        }
+        // provisional 可见条件：该轮最后一段、块可见；若该 step 已有组则组也必须展开。
+        _ProvisionalSlot? slot;
+        if (live != null &&
+            turn == live.turn &&
+            si == segments.length - 1 &&
+            occupied) {
+          var visible = true;
+          if (grouping) {
+            final gi = segment.groups.indexWhere((g) => g.step == live.step);
+            if (gi >= 0 && !groupExpandedFlags![gi]) visible = false;
+          }
+          if (visible) {
+            slot = _ProvisionalSlot(
+              turn: live.turn,
+              step: live.step,
+              orderSeq: live.firstSeq,
+            );
+            provisionalRendered = true;
+          }
+        }
+        // 该轮可见过程块内是否已有 reasoning 行（provisional 或落定）——活动条据此去重。
+        if (live != null && turn == live.turn && occupied) {
+          var hasReasoning = slot != null;
+          if (!hasReasoning && grouping) {
+            for (var gi = 0; gi < segment.groups.length; gi++) {
+              if (!groupExpandedFlags![gi]) continue;
+              for (final row in segment.groups[gi].rows) {
+                if (row.isReasoning && visibleRows.contains(row.seq)) {
+                  hasReasoning = true;
+                  break;
+                }
+              }
+              if (hasReasoning) break;
+            }
+          } else if (!hasReasoning) {
+            for (final row in segment.rows) {
+              if (row.isReasoning && visibleRows.contains(row.seq)) {
+                hasReasoning = true;
+                break;
+              }
+            }
+          }
+          if (hasReasoning) reasoningRowVisible = true;
+        }
         final plan = _ProcessBlockPlan(
           process: process,
           segmentIndex: si,
@@ -5672,6 +5822,7 @@ class _ChatScreenState extends State<ChatScreen> {
           visibleRowSeqs: visibleRows,
           liveProcessDetail: policy.liveProcessDetail,
           historyView: historyView,
+          provisional: slot,
         );
         (hosts[host.seq!] ??= <_ProcessBlockPlan>[]).add(plan);
         // 无论该段当前是否展开、行是否被分批隐藏，只要段有宿主，
@@ -5703,6 +5854,8 @@ class _ChatScreenState extends State<ChatScreen> {
       renderedCallIds: renderedCallIds,
       anchoredTurns: anchoredTurns,
       assistantSeqByTurn: assistantSeqByTurn,
+      provisionalRendered: provisionalRendered,
+      reasoningRowVisible: reasoningRowVisible,
     );
   }
 
@@ -5732,7 +5885,14 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     } else {
       final groupList = plan.segment.groups;
+      final slot = plan.provisional;
       if (plan.grouping) {
+        // provisional 若属于某个已有组，按 firstSeq 插在该组有序行之间（不重排已成行）；
+        // 若该 step 还没有任何持久行（新组）→ 不合成组抬头，直接追加到块末尾（ADR #70 裁决 D2）。
+        final slotGroupIndex = slot == null
+            ? -1
+            : groupList.indexWhere((group) => group.step == slot.step);
+        var slotPlaced = false;
         for (var gi = 0; gi < groupList.length; gi++) {
           final group = groupList[gi];
           final groupKey = '${plan.intervalKey}:${group.step ?? 'x'}';
@@ -5762,20 +5922,51 @@ class _ChatScreenState extends State<ChatScreen> {
             }),
           ));
           if (!groupExpanded) continue;
-          for (final row in group.rows) {
-            if (!plan.visibleRowSeqs.contains(row.seq)) continue;
-            children.add(
-              _buildProcessRow(
-                process,
-                row,
-                historyView: plan.historyView,
-                policy: policy,
-              ),
-            );
+          if (slot != null && gi == slotGroupIndex) {
+            var inserted = false;
+            for (final row in group.rows) {
+              if (!inserted && row.seq > slot.orderSeq) {
+                children.add(_buildProvisionalReasoningRow(slot));
+                inserted = true;
+              }
+              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
+              children.add(
+                _buildProcessRow(
+                  process,
+                  row,
+                  historyView: plan.historyView,
+                  policy: policy,
+                ),
+              );
+            }
+            if (!inserted) {
+              children.add(_buildProvisionalReasoningRow(slot));
+            }
+            slotPlaced = true;
+          } else {
+            for (final row in group.rows) {
+              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
+              children.add(
+                _buildProcessRow(
+                  process,
+                  row,
+                  historyView: plan.historyView,
+                  policy: policy,
+                ),
+              );
+            }
           }
         }
+        if (slot != null && !slotPlaced) {
+          children.add(_buildProvisionalReasoningRow(slot));
+        }
       } else {
+        var inserted = false;
         for (final row in plan.segment.rows) {
+          if (slot != null && !inserted && row.seq > slot.orderSeq) {
+            children.add(_buildProvisionalReasoningRow(slot));
+            inserted = true;
+          }
           if (!plan.visibleRowSeqs.contains(row.seq)) continue;
           children.add(
             _buildProcessRow(
@@ -5785,6 +5976,9 @@ class _ChatScreenState extends State<ChatScreen> {
               policy: policy,
             ),
           );
+        }
+        if (slot != null && !inserted) {
+          children.add(_buildProvisionalReasoningRow(slot));
         }
       }
       if (plan.hiddenTotalInTurn > 0) {
@@ -5845,6 +6039,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final expanded = _reasoningRowExpansions[key] ??
           widget.store.reasoningDefaultExpanded;
       return _ReasoningProcessRow(
+        rowKey: ValueKey<String>('reasoning-row:${process.turn}:${row.seq}'),
         text: row.reasoning,
         chars: row.reasoningChars,
         // settledReasoningPreview 只作用于已结束思考行的折叠预览。
@@ -5876,6 +6071,49 @@ class _ChatScreenState extends State<ChatScreen> {
     return Padding(
       padding: const EdgeInsets.only(left: 8),
       child: _buildToolCard(item),
+    );
+  }
+
+  /// issue #70：过程块里的运行中思考行（provisional）。
+  ///
+  /// 行内容由 `_liveReasoningRevision` 行级通知驱动（读同一份 [LiveReasoning] 快照），
+  /// 计划里只有排序键、没有文本 → delta 增长不会重建整轮计划；展开态由用户动作控制，
+  /// 收起态恒定一行（最近非空行预览），delta 不改变行高（issue「不得明显跳动」）。
+  Widget _buildProvisionalReasoningRow(_ProvisionalSlot slot) {
+    final stepKey = slot.step ?? 'null';
+    final stateKey = '${slot.turn}:$stepKey';
+    return ValueListenableBuilder<int>(
+      valueListenable: _liveReasoningRevision,
+      builder: (context, _, _) {
+        LiveProcessCounters.provisionalRowBuilds++;
+        final live = _liveReasoning.current;
+        if (live == null || live.turn != slot.turn || live.step != slot.step) {
+          // 落定/清理后计划会在同帧重建；退化为空占位，不渲染陈旧行。
+          return const SizedBox.shrink();
+        }
+        final expanded = _provisionalExpansions[stateKey] ?? false;
+        return _ReasoningProcessRow(
+          rowKey: ValueKey<String>(
+            'provisional-reasoning-row:${slot.turn}:$stepKey',
+          ),
+          bodyKey: ValueKey<String>(
+            'provisional-reasoning-body:${slot.turn}:$stepKey',
+          ),
+          text: live.text,
+          chars: live.chars,
+          preview: latestReasoningLinePreview(live.text),
+          collapsedLabel: L10n.t('思考中…', 'Thinking…'),
+          expandedLabel: L10n.t(
+            '思考中…（${live.chars} 字）',
+            'Thinking… (${live.chars} chars)',
+          ),
+          expanded: expanded,
+          cappedBody: true,
+          onToggle: () => setState(() {
+            _provisionalExpansions[stateKey] = !expanded;
+          }),
+        );
+      },
     );
   }
 
@@ -8687,19 +8925,45 @@ class _CollapseProcessRow extends StatelessWidget {
   }
 }
 
-/// 思维链过程行：折叠态保留首行预览，展开后显示全文（SelectableText，可复制）。
+/// 思维链过程行：折叠态保留一行预览，展开后显示全文（SelectableText，可复制）。
+///
+/// issue #70 起同一外观承载两种语义：
+/// - 落定行（默认分叉）：收起态显示首行预览 / `思维链 N 字`，正文不设高度上限；
+/// - provisional 行（[collapsedLabel] 非空）：收起态显示「思考中…」+ 最近一行预览，
+///   展开态显示「思考中…（N 字）」+ 全文；正文 `maxHeight: 200` 内部滚动，不撑高消息流。
 class _ReasoningProcessRow extends StatelessWidget {
   final String text;
   final int chars;
   final String preview;
   final bool expanded;
   final VoidCallback onToggle;
+
+  /// 非空 = provisional 行：收起态标签（L10n「思考中…」/「Thinking…」）。
+  final String? collapsedLabel;
+
+  /// provisional 展开态标签（含字数）。
+  final String? expandedLabel;
+
+  /// 展开正文是否限制高度并内部滚动（provisional：true；落定行：false，保持现状）。
+  final bool cappedBody;
+
+  /// 行根节点 key（`provisional-reasoning-row:*` / `reasoning-row:*`，供测试断言唯一性）。
+  final Key? rowKey;
+
+  /// 展开正文滚动容器 key（`provisional-reasoning-body:*`）。
+  final Key? bodyKey;
+
   const _ReasoningProcessRow({
     required this.text,
     required this.chars,
     required this.preview,
     required this.expanded,
     required this.onToggle,
+    this.collapsedLabel,
+    this.expandedLabel,
+    this.cappedBody = false,
+    this.rowKey,
+    this.bodyKey,
   });
 
   @override
@@ -8708,7 +8972,21 @@ class _ReasoningProcessRow extends StatelessWidget {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     final brand = DshColors.brand(context);
+    final settledLabel =
+        L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars');
+    final label = expanded
+        ? (expandedLabel ?? settledLabel)
+        : (collapsedLabel ?? (preview.isEmpty ? settledLabel : preview));
+    final showPreview = !expanded && collapsedLabel != null && preview.isNotEmpty;
+    final bodyStyle = TextStyle(
+      fontSize: 12,
+      height: 1.6,
+      color: ink3,
+      fontStyle: FontStyle.italic,
+    );
+    final body = SelectableText(text, style: bodyStyle);
     return Container(
+      key: rowKey,
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
@@ -8730,20 +9008,40 @@ class _ReasoningProcessRow extends StatelessWidget {
                   Icon(Icons.psychology_outlined, size: 14, color: brand),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(
-                      expanded
-                          ? L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars')
-                          : (preview.isEmpty
-                                ? L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars')
-                                : preview),
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: ink2,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    child: showPreview
+                        ? Row(
+                            children: [
+                              Text(
+                                collapsedLabel!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: ink2,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  preview,
+                                  style: TextStyle(fontSize: 12, color: ink3),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: ink2,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                   ),
                   Icon(
                     expanded
@@ -8759,15 +9057,14 @@ class _ReasoningProcessRow extends StatelessWidget {
           if (expanded && text.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: SelectableText(
-                text,
-                style: TextStyle(
-                  fontSize: 12,
-                  height: 1.6,
-                  color: ink3,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
+              child: cappedBody
+                  // issue #70 裁决 D1：展开正文不撑高消息流（与活动条内容面板同口径）。
+                  ? ConstrainedBox(
+                      key: bodyKey,
+                      constraints: const BoxConstraints(maxHeight: 200),
+                      child: SingleChildScrollView(child: body),
+                    )
+                  : body,
             ),
         ],
       ),
@@ -8823,6 +9120,7 @@ class _ActivityBar extends StatelessWidget {
                   'Thought: ${reasoning.length} chars',
                 ));
     return Container(
+      key: const ValueKey<String>('activity-bar'),
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -8837,6 +9135,7 @@ class _ActivityBar extends StatelessWidget {
         children: [
           if (reasoning.isNotEmpty)
             InkWell(
+              key: const ValueKey<String>('activity-bar-thinking'),
               onTap: showContent ? onToggleReasoning : null,
               borderRadius: BorderRadius.circular(8),
               child: Padding(
@@ -8885,6 +9184,7 @@ class _ActivityBar extends StatelessWidget {
             Padding(
               padding: EdgeInsets.only(top: reasoning.isNotEmpty ? 4 : 0),
               child: Row(
+                key: const ValueKey<String>('activity-bar-tools'),
                 children: [
                   Icon(Icons.handyman_outlined, size: 15, color: ink2),
                   const SizedBox(width: 6),
@@ -9689,6 +9989,23 @@ class _ApprovalCardState extends State<_ApprovalCard> {
 
 // ── issue #52：过程块渲染计划（结构变化时重建一次，每帧只查表） ─────────────
 
+/// issue #70：仅在渲染层使用的 provisional 定位信息（不可变，不污染纯模型）。
+///
+/// [orderSeq] = 该 (turn, step) 首个 reasoning delta 的 seq：与落定后持久行的排序键
+/// 完全相同，因此「工具先到 → 追加其后」与「思考先到 → 不被工具挤到后面」同时成立，
+/// 且落定瞬间不跳位。
+class _ProvisionalSlot {
+  final int turn;
+  final int? step;
+  final int orderSeq;
+
+  const _ProvisionalSlot({
+    required this.turn,
+    required this.step,
+    required this.orderSeq,
+  });
+}
+
 /// 单个过程段在某条目处渲染的计划。
 class _ProcessBlockPlan {
   final TurnProcess process;
@@ -9703,6 +10020,9 @@ class _ProcessBlockPlan {
   final bool liveProcessDetail;
   final bool historyView;
 
+  /// issue #70：该段要注入的 provisional（仅运行中最后一段可见时非空）。
+  final _ProvisionalSlot? provisional;
+
   const _ProcessBlockPlan({
     required this.process,
     required this.segmentIndex,
@@ -9715,6 +10035,7 @@ class _ProcessBlockPlan {
     required this.visibleRowSeqs,
     required this.liveProcessDetail,
     required this.historyView,
+    this.provisional,
   });
 
   _ProcessBlockPlan copyWith({int? hiddenTotalInTurn}) => _ProcessBlockPlan(
@@ -9729,6 +10050,7 @@ class _ProcessBlockPlan {
         visibleRowSeqs: visibleRowSeqs,
         liveProcessDetail: liveProcessDetail,
         historyView: historyView,
+        provisional: provisional,
       );
 }
 
@@ -9746,6 +10068,13 @@ class _ProcessPlan {
   /// 该轮最后一条助手消息的 seq（渲染时再从当前列表取对象，见 `_currentAssistantItem`）。
   final Map<int, int> assistantSeqByTurn;
 
+  /// issue #70：该计划是否真的在过程块里注入了 provisional（活动条据此去重）。
+  final bool provisionalRendered;
+
+  /// issue #70：当前流式轮次的可见过程块里是否已有 reasoning 行（provisional 或落定）。
+  /// 活动条只显示工具/状态，不再重复思考文本。
+  final bool reasoningRowVisible;
+
   const _ProcessPlan({
     required this.processVersion,
     required this.epoch,
@@ -9753,5 +10082,7 @@ class _ProcessPlan {
     required this.renderedCallIds,
     required this.anchoredTurns,
     required this.assistantSeqByTurn,
+    this.provisionalRendered = false,
+    this.reasoningRowVisible = false,
   });
 }

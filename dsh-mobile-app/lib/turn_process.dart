@@ -17,6 +17,291 @@ enum WorkStepDisplayMode { concise, standard, detailed, expanded }
 /// 收起时机两档：回答结束后立即收起，或等下一次有新消息（含远端）时再收起。
 enum TurnFoldTiming { afterAnswer, onNewMessage }
 
+// ── issue #70（ADR 0027 §2 实时态）：运行中思考（provisional）的流式缓冲 ──────
+//
+// 分层同 ADR 0027：`TurnProcessTracker` 只承载**持久**事件投影；流式 reasoning
+// 是纯渲染态，单独放在本文件的 [LiveReasoningBuffer]（不依赖 Flutter，可单测）。
+// 活动条与过程块的 provisional 行读同一份 [LiveReasoning] 快照，不存在第二份文本。
+
+/// 运行中思考缓冲的快照（不可变，供渲染层与活动条同源读取）。
+class LiveReasoning {
+  const LiveReasoning({
+    required this.turn,
+    required this.step,
+    required this.text,
+    required this.chars,
+    required this.firstSeq,
+  });
+
+  final int turn;
+  final int? step;
+  final String text;
+
+  /// `text.length`（UTF-16 code unit）；活动条与展开态标签共用同一口径。
+  final int chars;
+
+  /// 该 (turn, step) 首个 reasoning delta 的 seq。
+  ///
+  /// 落定后持久 reasoning 行的排序键继承它（[TurnProcessTracker.noteReasoningStart]），
+  /// 保证「provisional 行 → 持久行」不发生上下跳位。
+  final int firstSeq;
+}
+
+/// 运行中（provisional）思考缓冲：**唯一**流式来源。
+///
+/// 键 = `turn:step`（step 缺失时用 `turn:null`，与 tracker 的退化组同口径）：
+/// - 同一轮只保留当前最大 step 的条目；更小 step 的迟到 chunk 一律丢弃；
+/// - [closeStep]/[closeTurn] 写入关闭集合（tombstone），迟到 chunk 不会复活 provisional；
+/// - [append] 返回 true 表示键集合发生**可见结构变化**（首现/切换），
+///   调用方据此重建过程计划；纯文本增长返回 false（只通知行级 ValueNotifier）。
+class LiveReasoningBuffer {
+  final Map<String, _LiveEntry> _entries = {};
+  final Set<String> _closedKeys = {};
+  final Map<int, int> _closedMaxStep = {};
+  final Set<int> _closedTurns = {};
+
+  /// 无 seq 的 chunk（旧宿主/异常投影）用足够大的排序键：宁可排在尾部，也不打乱已有序。
+  static const int _unknownSeq = 1 << 30;
+
+  static String keyOf(int turn, int? step) => '$turn:${step ?? 'null'}';
+
+  /// 该 (turn, step) 的首个 delta seq；没有活动条目返回 null。
+  int? firstSeqOf(int turn, int? step) => _entries[keyOf(turn, step)]?.firstSeq;
+
+  /// 当前应渲染的唯一 provisional：取最大轮次的最大 step（不同轮不可能同时流式）。
+  LiveReasoning? get current {
+    _LiveEntry? best;
+    for (final entry in _entries.values) {
+      if (best == null ||
+          entry.turn > best.turn ||
+          (entry.turn == best.turn && _stepRank(entry.step) > _stepRank(best.step))) {
+        best = entry;
+      }
+    }
+    return best?.snapshot();
+  }
+
+  /// 追加一段 delta；返回是否发生**可见结构变化**（需要重建过程计划）。
+  bool append(int turn, int? step, String delta, {int? seq}) {
+    LiveProcessCounters.appends++;
+    final key = keyOf(turn, step);
+    if (_closedTurns.contains(turn) || _closedKeys.contains(key)) return false;
+    final closedMax = _closedMaxStep[turn];
+    if (step != null && closedMax != null && step <= closedMax) return false;
+
+    final sameTurn = <_LiveEntry>[
+      for (final entry in _entries.values)
+        if (entry.turn == turn) entry,
+    ];
+    if (sameTurn.isNotEmpty) {
+      final entry = sameTurn.length == 1
+          ? sameTurn.first
+          : sameTurn.reduce(
+              (a, b) => _stepRank(b.step) > _stepRank(a.step) ? b : a,
+            );
+      if (step == null) {
+        // 未知 step 的迟到 chunk 不得覆盖已知 step（否则旧文本会混进新 step）。
+        if (entry.step != null) return false;
+        entry.write(delta);
+        return false;
+      }
+      if (entry.step == null) {
+        // 退化键 → 明确 step：关闭退化键并切换。
+        _closeEntry(entry);
+        _entries[key] = _LiveEntry(
+          turn: turn,
+          step: step,
+          firstSeq: seq ?? _unknownSeq,
+        )..write(delta);
+        LiveProcessCounters.structuralChanges++;
+        return true;
+      }
+      if (step < entry.step!) return false;
+      if (step > entry.step!) {
+        _closeEntry(entry);
+        _entries[key] = _LiveEntry(
+          turn: turn,
+          step: step,
+          firstSeq: seq ?? _unknownSeq,
+        )..write(delta);
+        LiveProcessCounters.structuralChanges++;
+        return true;
+      }
+      entry.write(delta);
+      return false;
+    }
+
+    // 该轮没有活动条目：不同轮不可能同时流式——更早轮一律关闭（迟到 chunk 丢弃）。
+    if (_entries.isNotEmpty) {
+      var maxTurn = -1;
+      for (final entry in _entries.values) {
+        if (entry.turn > maxTurn) maxTurn = entry.turn;
+      }
+      if (turn < maxTurn) return false;
+      if (turn > maxTurn) {
+        for (final entry in _entries.values.toList()) {
+          if (entry.turn >= turn) continue;
+          _closedTurns.add(entry.turn);
+          _closeEntry(entry);
+        }
+      }
+    }
+    _entries[key] = _LiveEntry(
+      turn: turn,
+      step: step,
+      firstSeq: seq ?? _unknownSeq,
+    )..write(delta);
+    LiveProcessCounters.structuralChanges++;
+    return true;
+  }
+
+  /// 落定（`assistant/message`）：关闭该轮 step<=[settledStep] 与 step==null 的键。
+  ///
+  /// [settledStep] 缺失（旧内核/无 step 的 message）时关闭该轮全部活动键，并用被关闭的
+  /// numeric step 作为上限挡住迟到 chunk（不波及后续更大 step 的正常流）。
+  bool closeStep(int turn, int? settledStep) {
+    var changed = false;
+    var maxClosed = _closedMaxStep[turn];
+    for (final entry in _entries.values.toList()) {
+      if (entry.turn != turn) continue;
+      final close = settledStep == null ||
+          entry.step == null ||
+          entry.step! <= settledStep;
+      if (!close) continue;
+      if (entry.step != null &&
+          (maxClosed == null || entry.step! > maxClosed)) {
+        maxClosed = entry.step;
+      }
+      _closeEntry(entry);
+      changed = true;
+    }
+    // 退化组（step==null）始终写 tombstone：迟到 chunk 不得复活。
+    _closedKeys.add(keyOf(turn, null));
+    if (settledStep != null) {
+      if (maxClosed == null || settledStep > maxClosed) maxClosed = settledStep;
+    }
+    if (maxClosed != null) {
+      final prev = _closedMaxStep[turn];
+      _closedMaxStep[turn] = prev == null || maxClosed > prev ? maxClosed : prev;
+    }
+    return changed;
+  }
+
+  /// 轮末/中断（`turn/end`，任意 reason）：关闭该轮全部键并整轮拒收迟到 chunk。
+  bool closeTurn(int turn) {
+    var changed = false;
+    for (final entry in _entries.values.toList()) {
+      if (entry.turn != turn) continue;
+      _closeEntry(entry);
+      changed = true;
+    }
+    _closedTurns.add(turn);
+    return changed;
+  }
+
+  /// 切会话 / reset：清空一切（含关闭集合，避免跨会话串扰）。
+  void clear() {
+    _entries.clear();
+    _closedKeys.clear();
+    _closedMaxStep.clear();
+    _closedTurns.clear();
+  }
+
+  /// live 窗口裁剪：丢掉 firstSeq 早于 [beforeSeq] 的条目，并回收更早轮的关闭集合。
+  void pruneBefore(int beforeSeq) {
+    _entries.removeWhere((_, entry) => entry.firstSeq < beforeSeq);
+    if (_entries.isEmpty) return;
+    var oldest = _unknownSeq;
+    for (final entry in _entries.values) {
+      if (entry.turn < oldest) oldest = entry.turn;
+    }
+    final floor = oldest - 1;
+    _closedTurns.removeWhere((turn) => turn < floor);
+    _closedMaxStep.removeWhere((turn, _) => turn < floor);
+    _closedKeys.removeWhere((key) => _turnOfKey(key) < floor);
+  }
+
+  /// 关闭集合有界：只保留最近两轮的键（`turn/start` 推进 live 轮次时调用）。
+  void trimClosedTurns(int liveTurn) {
+    final floor = liveTurn - 1;
+    _closedTurns.removeWhere((turn) => turn < floor);
+    _closedMaxStep.removeWhere((turn, _) => turn < floor);
+    _closedKeys.removeWhere((key) => _turnOfKey(key) < floor);
+  }
+
+  void _closeEntry(_LiveEntry entry) {
+    _entries.remove(entry.key);
+    _closedKeys.add(entry.key);
+  }
+
+  static int _stepRank(int? step) => step ?? -1;
+
+  static int _turnOfKey(String key) {
+    final index = key.indexOf(':');
+    return int.tryParse(index < 0 ? key : key.substring(0, index)) ?? 0;
+  }
+}
+
+/// 运行中思考行的折叠预览：取**最近一个非空行**（不是首行），超出 [max] 补省略号。
+///
+/// 与落定行的 [ProcessRow.reasoningPreview]（首行）刻意分开：运行中用户关心
+/// 「现在想到哪」，落定后回到既有规则（issue #70 预审补充）。
+String latestReasoningLinePreview(String text, {int max = 120}) {
+  if (text.isEmpty) return '';
+  final lines = text.split('\n');
+  for (var i = lines.length - 1; i >= 0; i--) {
+    final line = lines[i].trim();
+    if (line.isEmpty) continue;
+    return line.length <= max ? line : '${line.substring(0, max)}…';
+  }
+  return '';
+}
+
+/// issue #70：仅测试/诊断用的计数钩子（**不参与业务判断**，生产路径只自增）。
+///
+/// 用途：证明「流式 delta 只更新该行，不重建整轮/整页计划」——200 个 delta 的
+/// widget 用例据此断言重建次数上限（issue 预审补充「性能与滚动 / 测试补充」）。
+class LiveProcessCounters {
+  static int appends = 0;
+  static int structuralChanges = 0;
+  static int pageBuilds = 0;
+  static int processPlanBuilds = 0;
+  static int provisionalRowBuilds = 0;
+
+  static void reset() {
+    appends = 0;
+    structuralChanges = 0;
+    pageBuilds = 0;
+    processPlanBuilds = 0;
+    provisionalRowBuilds = 0;
+  }
+}
+
+class _LiveEntry {
+  _LiveEntry({
+    required this.turn,
+    required this.step,
+    required this.firstSeq,
+  });
+
+  final int turn;
+  final int? step;
+  final int firstSeq;
+  final StringBuffer _buffer = StringBuffer();
+
+  String get key => LiveReasoningBuffer.keyOf(turn, step);
+  int get chars => _buffer.length;
+  void write(String delta) => _buffer.write(delta);
+
+  LiveReasoning snapshot() => LiveReasoning(
+        turn: turn,
+        step: step,
+        text: _buffer.toString(),
+        chars: chars,
+        firstSeq: firstSeq,
+      );
+}
+
 /// 过程行种类：思维链与工具调用。
 enum ProcessRowKind { reasoning, tool }
 
@@ -442,6 +727,8 @@ class TurnProcessTracker {
   final Map<int, int> _turnOfEndSeq = {};
   final Map<String, _MutableToolRow> _tools = {};
   final Set<int> _reasoningSeqs = {};
+  // issue #70：各 (turn, step) 首个 reasoning delta 的 seq（落定后持久行继承排序键）。
+  final Map<String, int> _reasoningStarts = {};
   final List<int> _humanUserSeqs = [];
   final Set<int> _humanUserSeqSet = {};
   int _order = 0;
@@ -453,10 +740,32 @@ class TurnProcessTracker {
     _tools.clear();
     _itemTurn.clear();
     _reasoningSeqs.clear();
+    _reasoningStarts.clear();
     _humanUserSeqs.clear();
     _humanUserSeqSet.clear();
     _order = 0;
   }
+
+  /// issue #70：记录该 (turn, step) 的首个流式 reasoning seq（取最小者）。
+  ///
+  /// `assistant/message` 落定时持久 reasoning 行的 seq 取
+  /// `min(首个 delta seq, message seq)`——与 provisional 行同一排序键，落定不跳位。
+  void noteReasoningStart(int turn, int? step, int seq) {
+    final key = _reasoningKey(turn, step);
+    final prev = _reasoningStarts[key];
+    if (prev == null || seq < prev) _reasoningStarts[key] = seq;
+  }
+
+  /// 丢弃该轮的全部「首 delta」记录（turn/end / reset / 裁剪时调用，避免悬挂）。
+  void dropReasoningStart(int turn) {
+    _reasoningStarts.removeWhere((key, _) => key.startsWith('$turn:'));
+  }
+
+  static String _reasoningKey(int turn, int? step) => '$turn:${step ?? 'null'}';
+
+  /// 取出并消费该 (turn, step) 的首 delta seq（一条 message 只继承一次）。
+  int? _takeReasoningStart(int turn, int? step) =>
+      _reasoningStarts.remove(_reasoningKey(turn, step));
 
   /// 记录一条事件。可重复调用（历史/实时重叠、分页重叠都是常态）。
   void observe(ChatEvent event) {
@@ -517,8 +826,13 @@ class TurnProcessTracker {
           final owner = turn ?? _turnOfSeqNear(seq);
           if (owner == null) return;
           final chars = _intOf(data['reasoningChars']) ?? reasoning.length;
+          // issue #70：实时路径把首个 delta seq 交给 tracker，持久行继承同一排序键；
+          // 历史回放没有 chunk → 无记录 → 行 seq = message seq（外观逐字节不变）。
+          final startSeq = _takeReasoningStart(owner, step);
+          final rowSeq = startSeq == null ? seq : _min(startSeq, seq);
           _turn(owner).rows.add(_MutableRow(
-            seq: seq,
+            seq: rowSeq,
+            eventSeq: seq,
             order: _order++,
             step: step,
             kind: ProcessRowKind.reasoning,
@@ -638,9 +952,11 @@ class TurnProcessTracker {
       if (t?.startSeq != null) _turnOfStartSeq.remove(t!.startSeq);
       if (t?.endSeq != null) _turnOfEndSeq.remove(t!.endSeq);
       for (final row in t?.rows ?? const <_MutableRow>[]) {
-        _reasoningSeqs.remove(row.seq);
+        _reasoningSeqs.remove(row.eventSeq);
       }
+      dropReasoningStart(turn);
     }
+    _reasoningStarts.removeWhere((_, seq) => seq < beforeSeq);
     _tools.removeWhere((_, tool) {
       final seq = tool.reportedSeq;
       if (seq == null) return false; // 还没拿到任何 durable 位置：保留（后续事件会补）
@@ -658,15 +974,25 @@ class TurnProcessTracker {
     final turns = _turns.values.where((t) => t.startSeq != null).toList()
       ..sort((a, b) => a.startSeq!.compareTo(b.startSeq!));
     for (final t in turns) {
+      // issue #70：同一 (turn, step) 的带 reasoning 消息只保留 **seq 最大** 的一条
+      // （真实内核每 step 一条；此规则只在异常重放/多条 message 时生效，顺序无关）。
+      final reasoningByStep = <String, _MutableRow>{};
+      for (final row in t.rows) {
+        if (row.kind != ProcessRowKind.reasoning) continue;
+        final key = _reasoningKey(t.turn, row.step);
+        final existing = reasoningByStep[key];
+        if (existing == null || row.seq >= existing.seq) {
+          reasoningByStep[key] = row;
+        }
+      }
       final rows = <ProcessRow>[
-        for (final row in t.rows)
-          if (row.kind == ProcessRowKind.reasoning)
-            ProcessRow.reasoning(
-              seq: row.seq,
-              step: row.step,
-              reasoning: row.reasoning,
-              reasoningChars: row.reasoningChars,
-            ),
+        for (final row in reasoningByStep.values)
+          ProcessRow.reasoning(
+            seq: row.seq,
+            step: row.step,
+            reasoning: row.reasoning,
+            reasoningChars: row.reasoningChars,
+          ),
       ];
       for (final tool in _tools.values) {
         if (tool.turn != t.turn) continue;
@@ -780,14 +1106,19 @@ class _MutableTurn {
 class _MutableRow {
   _MutableRow({
     required this.seq,
+    int? eventSeq,
     required this.order,
     required this.step,
     required this.kind,
     this.reasoning = '',
     this.reasoningChars = 0,
-  });
+  }) : eventSeq = eventSeq ?? seq;
 
+  /// 渲染排序键（issue #70：落定 reasoning 行可能继承首个 delta seq）。
   final int seq;
+
+  /// 原始事件 seq（`_reasoningSeqs` 去重/裁剪回收用，与 [seq] 可能不同）。
+  final int eventSeq;
   final int order;
   final int? step;
   final ProcessRowKind kind;
