@@ -370,6 +370,65 @@ check(
     && ptcNotice.data?.step === undefined,
   JSON.stringify(ptcNotice),
 );
+// L2（lead 裁定，服务端独立复审 BLOCKING）：summary 脱敏 / 安全码语法 / notice / drop。
+const ptcScrubStart = (argumentsJson) => mod.summarizeEvent({
+  seq: 98,
+  type: "tool/ptc-dispatch-start",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "call-l2", name: "bash", arguments: argumentsJson },
+}, { cwd: PTC_TEST_CWD }).data?.summary;
+check(
+  "L2-1 summary command/description 主机路径脱敏（cwd→. / homedir→~ / 绝对路径→…/basename，URL 保留）",
+  ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })?.command === "cat …/secret.txt"
+    && ptcScrubStart({ command: `cat ${PTC_TEST_CWD}/src/a.ts` })?.command === "cat ./src/a.ts"
+    && ptcScrubStart({ command: "curl https://example.com/a/b?x=1 && cat /etc/passwd" })?.command === "curl https://example.com/a/b?x=1 && cat …/passwd"
+    && !JSON.stringify(ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })).includes("/home/"),
+  JSON.stringify([
+    ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" }),
+    ptcScrubStart({ command: `cat ${PTC_TEST_CWD}/src/a.ts` }),
+  ]),
+);
+const ptcSafeCodeResult = (error) => mod.summarizeEvent({
+  seq: 99,
+  type: "tool/ptc-dispatch",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "call-l2", name: "read", isError: true, error },
+}, { cwd: PTC_TEST_CWD }).data;
+const ptcEvil = ptcSafeCodeResult({ name: "Evil<script>", code: "/home/x/secret" });
+const ptcGood = ptcSafeCodeResult({ name: "FsError", code: "FS_NOT_FOUND" });
+check(
+  "L2-2 text/error 只接受安全码语法：非法 name/code → 无 text/error；合法码正常",
+  ptcEvil?.text === undefined
+    && ptcEvil?.error === undefined
+    && !JSON.stringify(ptcEvil).includes("/home/")
+    && ptcGood?.text === "FS_NOT_FOUND"
+    && JSON.stringify(ptcGood?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" }),
+  JSON.stringify([ptcEvil, ptcGood]),
+);
+const l2NoticeBudget = mod.createPtcBudget();
+for (let index = 1; index <= 50; index++) mod.ptcGateOf(l2NoticeBudget, { rootCallId: "root-l2", subCallId: `l2-${index}` });
+const l2Notice = mod.summarizeEvent({
+  seq: 400,
+  type: "tool/ptc-dispatch-start",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "l2-51", name: "read" },
+}, { cwd: PTC_TEST_CWD, turn: 3, step: 2, ptcBudget: l2NoticeBudget });
+const l2Drop = mod.summarizeEvent({
+  seq: 401,
+  time: 1794286650123,
+  type: "tool/ptc-dispatch",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "l2-51", name: "read", isError: false },
+}, { cwd: PTC_TEST_CWD, turn: 3, step: 2, ptcBudget: l2NoticeBudget });
+check(
+  "L2-3/L2-4 notice 不带 turn/step；drop 无 data 但保留顶层 time",
+  l2Notice.data?.truncated === true
+    && l2Notice.data?.turn === undefined
+    && l2Notice.data?.step === undefined
+    && l2Notice.data?.summary === undefined
+    && l2Notice.data?.text === undefined
+    && l2Drop.data === undefined
+    && l2Drop.seq === 401
+    && l2Drop.type === "tool/ptc-dispatch"
+    && l2Drop.time === 1794286650123,
+  JSON.stringify([l2Notice, l2Drop]),
+);
 const toolCallProjection = (name, args) => mod.summarizeEvent({
   seq: 50,
   type: "tool/call",

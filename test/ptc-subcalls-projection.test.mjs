@@ -14,6 +14,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import {
 	TOOL_CARDS_PTC_VERSION,
 	TOOL_CARD_TOOLS,
@@ -180,12 +181,103 @@ test("失败 text 白名单：code 优先、fallback name、两者皆缺省略�
 	const neither = dataOf(resultOf("c-neither", { isError: true, error: {} }));
 	assert.equal(neither.text, undefined);
 	assert.equal(neither.error, undefined);
-	// 超长错误码 clamp（clampText 计入截断提示，总长 ≤500）。
+	// L2-2：超长/含非法字符的错误码不是安全 token → 不回退原文；text 退到合法 name，error 省略。
 	const longCode = "X".repeat(600);
-	const clamped = dataOf(resultOf("c-long", { isError: true, error: { name: "E", code: longCode } }));
-	assert.ok(clamped.text.length <= 500, String(clamped.text.length));
-	assert.ok(clamped.text.startsWith("X"));
-	assert.equal(clamped.text.includes(CWD), false);
+	const invalidLong = dataOf(resultOf("c-long", { isError: true, error: { name: "E", code: longCode } }));
+	assert.equal(invalidLong.text, "E");
+	assert.equal(invalidLong.error, undefined);
+	assert.equal(invalidLong.text.includes("X"), false);
+	// 安全码语法上界（64 字符）内的长码仍可下发，且 clamp ≤120/≤500。
+	const safeLong = `E${"X".repeat(60)}`;
+	const longButSafe = dataOf(resultOf("c-safe-long", { isError: true, error: { name: "E", code: safeLong } }));
+	assert.equal(longButSafe.text, safeLong);
+	assert.deepEqual(longButSafe.error, { name: "E", code: safeLong });
+});
+
+test("L2-2 安全码语法：自由文本/路径/注入字符的错误码一律省略，合法码正常下发", () => {
+	const evil = dataOf(resultOf("c-evil", { isError: true, error: { name: "Evil<script>", code: "/home/x/secret" } }));
+	assert.equal(evil.status, "failed");
+	assert.equal(evil.isError, true);
+	assert.equal(evil.text, undefined);
+	assert.equal(evil.error, undefined);
+	assert.equal(JSON.stringify(evil).includes("/home/"), false);
+	const spaces = dataOf(resultOf("c-space", { isError: true, error: { name: "bad name", code: "bad code" } }));
+	assert.equal(spaces.text, undefined);
+	assert.equal(spaces.error, undefined);
+	// name 合法、code 非法：text 可用 name（安全 token），error 需要两者都合法 → 省略。
+	const mixed = dataOf(resultOf("c-mixed", { isError: true, error: { name: "FsError", code: "/home/x/secret" } }));
+	assert.equal(mixed.text, "FsError");
+	assert.equal(mixed.error, undefined);
+});
+
+test("L2-1 summary 自由文本脱敏：command/description 的主机路径不出 payload，URL 保持原样", () => {
+	const scrubSummary = (args) => dataOf(ptcEvent({
+		rootCallId: "root-1",
+		parentCallId: "root-1",
+		subCallId: "c-scrub",
+		name: "bash",
+		arguments: args,
+	})).summary;
+	const otherHome = scrubSummary({ command: "cat /home/other-user/private/secret.txt" });
+	assert.equal(otherHome.command, "cat …/secret.txt");
+	assert.equal(otherHome.command.includes("/home/"), false);
+	assert.equal(otherHome.command.includes("other-user"), false);
+	// cwd 内绝对路径 → 相对（cwd 前缀替换为 .）。
+	const insideCwd = scrubSummary({ command: `cat ${CWD}/src/a.ts` });
+	assert.equal(insideCwd.command, "cat ./src/a.ts");
+	// homedir 前缀 → ~（不是绝对路径形态）。
+	const home = scrubSummary({ command: `cat ${homedir()}/private/x.txt` });
+	assert.equal(home.command, "cat ~/private/x.txt");
+	assert.equal(home.command.includes(homedir()), false);
+	// URL 不得被错误改写；同串里的其它绝对路径仍脱敏。
+	const withUrl = scrubSummary({ command: "curl https://example.com/a/b?x=1 && cat /etc/passwd" });
+	assert.equal(withUrl.command, "curl https://example.com/a/b?x=1 && cat …/passwd");
+	// Windows / file:/// 绝对路径同样只保留 basename。
+	assert.equal(scrubSummary({ command: "cat C:\\Users\\secret\\a.txt" }).command, "cat …/a.txt");
+	assert.equal(scrubSummary({ command: "cat file:///home/x/a.txt" }).command, "cat …/a.txt");
+	// description 也脱敏；结构字段（filePath）保持 mobileDisplayPath 相对形态。
+	const withDescription = dataOf(ptcEvent({
+		rootCallId: "root-1",
+		parentCallId: "root-1",
+		subCallId: "c-desc",
+		name: "read",
+		arguments: { file_path: `${CWD}/README.md`, limit: 3 },
+		description: "read /home/other-user/private/secret.txt",
+	}));
+	assert.equal(withDescription.summary.filePath, "README.md");
+	assert.equal(JSON.stringify(withDescription).includes("/home/"), false);
+});
+
+test("L2-3/L2-4 notice 不带 turn/step；drop 无 data 但保留通用顶层 time", () => {
+	const budget = createPtcBudget();
+	const root = "root-l2";
+	for (let index = 1; index <= 50; index++) {
+		ptcGateOf(budget, { rootCallId: root, subCallId: `l2-${index}` });
+	}
+	const notice = summarize(
+		{ seq: 300, time: 1794286650000, type: "tool/ptc-dispatch-start", data: { rootCallId: root, parentCallId: root, subCallId: "l2-51", name: "read" } },
+		{ turn: 3, step: 2, ptcBudget: budget },
+	);
+	assert.equal(notice.data.truncated, true);
+	for (const forbidden of ["turn", "step", "summary", "text", "isError", "error"]) {
+		assert.equal(notice.data[forbidden], undefined, forbidden);
+	}
+	// 第 51 个的 result → drop：无 data，time 保留。
+	const droppedResult = summarize(
+		{ seq: 301, time: 1794286650001, type: "tool/ptc-dispatch", data: { rootCallId: root, parentCallId: root, subCallId: "l2-51", name: "read", isError: false, content: [{ type: "text", text: "ok" }] } },
+		{ turn: 3, step: 2, ptcBudget: budget },
+	);
+	assert.equal(droppedResult.data, undefined);
+	assert.equal(droppedResult.seq, 301);
+	assert.equal(droppedResult.type, "tool/ptc-dispatch");
+	assert.equal(droppedResult.time, 1794286650001);
+	// 第 52 个 start 同样 drop 无 data。
+	const droppedStart = summarize(
+		{ seq: 302, time: 1794286650002, type: "tool/ptc-dispatch-start", data: { rootCallId: root, parentCallId: root, subCallId: "l2-52", name: "read" } },
+		{ turn: 3, step: 2, ptcBudget: budget },
+	);
+	assert.equal(droppedStart.data, undefined);
+	assert.equal(droppedStart.time, 1794286650002);
 });
 
 test("summary 安全：路径一律 display（cwd 内绝对路径→相对）、write 正文/etc 不进摘要、image 不带 relative/previewable", () => {
