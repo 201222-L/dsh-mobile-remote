@@ -37,6 +37,7 @@ import '../git_browser_controller.dart';
 import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
 import '../tool_cards.dart';
+import '../tool_images.dart';
 import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
@@ -6008,6 +6009,7 @@ class _ChatScreenState extends State<ChatScreen> {
           isLastSegmentOfTurn: si == segments.length - 1,
           hiddenTotalInTurn: 0, // 稍后回填
           visibleRowSeqs: visibleRows,
+          turnVisibleRowSeqs: visibleSeqSet,
           liveProcessDetail: policy.liveProcessDetail,
           historyView: historyView,
           provisional: slot,
@@ -6059,10 +6061,20 @@ class _ChatScreenState extends State<ChatScreen> {
     // issue #61：摘要行只作折叠态的「展开入口」；展开后组抬头/过程行已经表达了同一信息，
     // 再挂整轮摘要会造成层级重复（alpha.7 真机截图问题 1）。
     if (!plan.expanded) {
+      // issue #74：整轮/整段折叠态聚合该段所有过程行（含分批隐藏行）的图片，
+      // 点 chip 直接开图库——图片是结果，不应要求先展开或点「显示更多」才可达。
+      final summaryImages = _imagesForProcessRows(
+        plan.segment.rows,
+        historyView: plan.historyView,
+      );
       children.add(
         _ProcessSummaryRow(
           text: plan.segment.summary,
           expanded: false,
+          imageCount: summaryImages.length,
+          onOpenImages: summaryImages.isEmpty
+              ? null
+              : () => _openImagesGallery(summaryImages),
           onTap: forced
               ? null
               : () => setState(() {
@@ -6102,6 +6114,14 @@ class _ChatScreenState extends State<ChatScreen> {
           // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
           // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
           final groupRunning = group.running && !process.ended;
+          // issue #74：组折叠态聚合该组全部工具结果图片（含被分批隐藏的行），
+          // 展开后由各工具卡/内容区呈现，不重复挂 chip。
+          final groupImages = groupExpanded
+              ? const <Map<String, dynamic>>[]
+              : _imagesForProcessRows(
+                  group.rows,
+                  historyView: plan.historyView,
+                );
           children.add(_ProcessGroupHeader(
             text: processGroupHeader(
               group,
@@ -6110,6 +6130,10 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             expanded: groupExpanded,
             running: groupRunning,
+            imageCount: groupImages.length,
+            onOpenImages: groupImages.isEmpty
+                ? null
+                : () => _openImagesGallery(groupImages),
             onTap: () => setState(() {
               _groupExpansions[groupKey] = !groupExpanded;
               _invalidateProcessPlan();
@@ -6177,24 +6201,42 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (plan.hiddenTotalInTurn > 0) {
         final limit = _processRowLimits[process.turn] ?? processBatchSize;
+        // issue #74：被分批隐藏的行里若有工具结果图片，直接在「显示更多」行给入口，
+        // 不需要先点开 50 行。只聚合分批隐藏行，组折叠隐藏不算（那层由组抬头负责）。
+        final hiddenImages = _imagesForProcessRows(
+          plan.process.rows.where(
+            (row) => !plan.turnVisibleRowSeqs.contains(row.seq),
+          ),
+          historyView: plan.historyView,
+        );
         children.add(
           Padding(
             padding: const EdgeInsets.only(left: 24, bottom: 6),
-            child: TextButton(
-              onPressed: () => setState(() {
-                _processRowLimits[process.turn] = limit + processBatchSize;
-                _invalidateProcessPlan();
-              }),
-              child: Text(
-                L10n.t(
-                  '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
-                  'Show more (${plan.hiddenTotalInTurn} rows left)',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  onPressed: () => setState(() {
+                    _processRowLimits[process.turn] = limit + processBatchSize;
+                    _invalidateProcessPlan();
+                  }),
+                  child: Text(
+                    L10n.t(
+                      '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
+                      'Show more (${plan.hiddenTotalInTurn} rows left)',
+                    ),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: DshColors.ink3(context),
+                    ),
+                  ),
                 ),
-                style: TextStyle(
-                  fontSize: 12,
-                  color: DshColors.ink3(context),
-                ),
-              ),
+                if (hiddenImages.isNotEmpty)
+                  _ImageCountChip(
+                    count: hiddenImages.length,
+                    onOpen: () => _openImagesGallery(hiddenImages),
+                  ),
+              ],
             ),
           ),
         );
@@ -6311,6 +6353,41 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// issue #74：折叠层图片入口打开图库（不展开任何折叠层、不预加载原图）。
+  void _openImagesGallery(List<Map<String, dynamic>> images) {
+    if (images.isEmpty) return;
+    final sessionId = _mySessionId ?? widget.store.sessionId ?? '';
+    final cache = ImageGalleryCache(api: _api, sessionId: sessionId);
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (_) => ImageGalleryViewer(
+        api: _api,
+        sessionId: sessionId,
+        images: images,
+        cache: cache,
+      ),
+    );
+  }
+
+  /// issue #74：聚合若干过程行（含被 50 行分批隐藏的行）里工具结果的图片。
+  ///
+  /// 图片元数据在 `_MsgItem.images` 上已经存在；这里只按当前列表里的条目取，
+  /// 不读 `visibleRowSeqs`——分批只影响渲染行，不应影响图片入口的计数与可达性。
+  List<Map<String, dynamic>> _imagesForProcessRows(
+    Iterable<ProcessRow> rows, {
+    required bool historyView,
+  }) {
+    final sources = <List<Map<String, dynamic>>>[];
+    for (final row in rows) {
+      if (!row.isTool) continue;
+      final item = _currentToolItem(row.callId, historyView: historyView);
+      final images = item?.images ?? const <Map<String, dynamic>>[];
+      if (images.isNotEmpty) sources.add(images);
+    }
+    return collectToolImages(sources);
+  }
+
   Widget _buildToolCard(_MsgItem item) {
     final toolKey = 'tool:${item.toolCallId ?? item.seq}';
     return _ToolActivityCard(
@@ -6322,6 +6399,10 @@ class _ChatScreenState extends State<ChatScreen> {
         () => _failureExpansionOverrides[toolKey] = value,
       ),
       onAutoLoadDetail: () => _autoLoadFailureDetail(item),
+      // issue #74：折叠行图片入口——点 chip 直接开图库，不展开工具卡。
+      onOpenImages: item.images.isEmpty
+          ? null
+          : () => _openImagesGallery(collectToolImages([item.images])),
       item: item,
       debug: widget.store.timelineDebug,
       sessionId: _mySessionId ?? '',
@@ -7485,6 +7566,9 @@ class _ToolActivityCard extends StatefulWidget {
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
   final VoidCallback? onAutoLoadDetail;
+
+  /// issue #74：折叠行图片入口——点 chip 直接开图库，不展开工具卡。
+  final VoidCallback? onOpenImages;
   const _ToolActivityCard({
     super.key,
     required this.item,
@@ -7500,6 +7584,7 @@ class _ToolActivityCard extends StatefulWidget {
     this.onExpandedOverride,
     this.onLoadDetail,
     this.onAutoLoadDetail,
+    this.onOpenImages,
   });
 
   @override
@@ -8303,6 +8388,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  // issue #74：折叠态给图片入口（展开后由 ImageGalleryGrid 呈现）。
+                  if (!expanded &&
+                      item.images.isNotEmpty &&
+                      widget.onOpenImages != null) ...[
+                    _ImageCountChip(
+                      count: countToolImages([item.images]),
+                      onOpen: widget.onOpenImages!,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   Text(
                     _status(),
                     style: TextStyle(
@@ -9202,10 +9297,18 @@ class _ProcessSummaryRow extends StatelessWidget {
 
   /// 强制展开时为空：摘要不可点（避免「点了没反应」）。
   final VoidCallback? onTap;
+
+  /// issue #74：该段（含分批隐藏行）工具结果图片数；0 时不渲染入口。
+  final int imageCount;
+
+  /// issue #74：点图片 chip 直接打开图库（与整行展开解耦）。
+  final VoidCallback? onOpenImages;
   const _ProcessSummaryRow({
     required this.text,
     required this.expanded,
     required this.onTap,
+    this.imageCount = 0,
+    this.onOpenImages,
   });
 
   @override
@@ -9231,6 +9334,10 @@ class _ProcessSummaryRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (imageCount > 0 && onOpenImages != null) ...[
+            _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
+            const SizedBox(width: 4),
+          ],
           Icon(
             expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
             size: 16,
@@ -9257,17 +9364,82 @@ class _ProcessSummaryRow extends StatelessWidget {
   }
 }
 
+/// issue #74：折叠层图片入口 chip（摘要行 / 组抬头 / 工具折叠行 / 分批行共用）。
+///
+/// 按 #76 设计规格 §4.5：`image_outlined` 12 + N 10.5/w600，底 brandSoft、高 24、
+/// 圆角 6；独立命中区（32 高），点 chip 开图库、不触发所在行的折叠开关。
+class _ImageCountChip extends StatelessWidget {
+  final int count;
+  final VoidCallback onOpen;
+
+  const _ImageCountChip({required this.count, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = DshColors.brand(context);
+    final ink2 = DshColors.ink2(context);
+    final label = L10n.t('查看 $count 张图片', 'View $count images');
+    return Semantics(
+      button: true,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          onTap: onOpen,
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox(
+            height: 32,
+            child: Center(
+              child: Container(
+                height: 24,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                decoration: BoxDecoration(
+                  color: DshColors.brandSoft(context),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.image_outlined, size: 12, color: brand),
+                    const SizedBox(width: 3),
+                    Text(
+                      '$count',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: ink2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 过程组抬头：运行中「正在调用工具…」，完成态「N 次工具调用」，不显示用时。
 class _ProcessGroupHeader extends StatelessWidget {
   final String text;
   final bool expanded;
   final bool running;
   final VoidCallback onTap;
+
+  /// issue #74：该组（含分批隐藏行）工具结果图片数；仅在组折叠时由调用方传入。
+  final int imageCount;
+
+  /// issue #74：点图片 chip 直接打开图库（不展开该组）。
+  final VoidCallback? onOpenImages;
   const _ProcessGroupHeader({
     required this.text,
     required this.expanded,
     required this.running,
     required this.onTap,
+    this.imageCount = 0,
+    this.onOpenImages,
   });
 
   @override
@@ -9298,6 +9470,10 @@ class _ProcessGroupHeader extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            if (imageCount > 0 && onOpenImages != null) ...[
+              _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
+              const SizedBox(width: 4),
+            ],
             Icon(
               expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
               size: 15,
@@ -10437,6 +10613,10 @@ class _ProcessBlockPlan {
   final bool isLastSegmentOfTurn;
   final int hiddenTotalInTurn;
   final Set<int> visibleRowSeqs;
+
+  /// issue #74：该轮分批后真正可见的过程行 seq（与 `visibleRowSeqs` 的段内视图区分），
+  /// 用于把「被分批隐藏的行」里的图片聚合到「显示更多」入口上。
+  final Set<int> turnVisibleRowSeqs;
   final bool liveProcessDetail;
   final bool historyView;
 
@@ -10453,6 +10633,7 @@ class _ProcessBlockPlan {
     required this.isLastSegmentOfTurn,
     required this.hiddenTotalInTurn,
     required this.visibleRowSeqs,
+    required this.turnVisibleRowSeqs,
     required this.liveProcessDetail,
     required this.historyView,
     this.provisional,
@@ -10468,6 +10649,7 @@ class _ProcessBlockPlan {
         isLastSegmentOfTurn: isLastSegmentOfTurn,
         hiddenTotalInTurn: hiddenTotalInTurn ?? this.hiddenTotalInTurn,
         visibleRowSeqs: visibleRowSeqs,
+        turnVisibleRowSeqs: turnVisibleRowSeqs,
         liveProcessDetail: liveProcessDetail,
         historyView: historyView,
         provisional: provisional,
