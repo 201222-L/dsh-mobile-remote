@@ -2157,18 +2157,25 @@ class _ChatScreenState extends State<ChatScreen> {
         final turn = (ev.data?['turn'] as num?)?.toInt();
         final step = (ev.data?['step'] as num?)?.toInt();
         if (turn != null) {
-          if (_liveReasoning.firstSeqOf(turn, step) == null) {
-            AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
-          }
-          final structural =
-              _liveReasoning.append(turn, step, text, seq: ev.seq);
-          _liveReasoningRevision.value++;
-          if (structural) {
-            _invalidateProcessPlan();
-            setState(() {});
+          // issue #70（复审 P1 配套）：durable 回放不再为历史轮次写 tombstone（见
+          // `_buildInto` 的 history 隔离）。已结束轮次的迟到 chunk 改用**只读**的持久
+          // 投影判定并丢弃，保持「reset 后旧轮迟到 chunk 不复活 / 中断轮不残留」语义，
+          // 且不在回放期间修改任何 live 状态。
+          final ended = _ensureProcessTurnMap()[turn]?.ended ?? false;
+          if (!ended) {
+            if (_liveReasoning.firstSeqOf(turn, step) == null) {
+              AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+            }
+            final structural =
+                _liveReasoning.append(turn, step, text, seq: ev.seq);
+            _liveReasoningRevision.value++;
+            if (structural) {
+              _invalidateProcessPlan();
+              setState(() {});
+            }
           }
         }
-        // 迟到的 reasoning chunk（关闭集合命中）append 返回 false 且不增长文本。
+        // 迟到/已结束轮次的 reasoning chunk 一律丢弃、不增长文本。
       }
       if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
         final data = ev.data ?? const <String, dynamic>{};
@@ -2997,14 +3004,22 @@ class _ChatScreenState extends State<ChatScreen> {
   }) {
     final d = ev.data;
     if (hiddenTimelineTypes.contains(ev.type)) return;
-    // issue #70：落定/轮末先关闭对应 provisional（并把握手的排序键交给 tracker），
-    // 再 observe——保证持久 reasoning 行继承首个 delta seq，落定不跳位。
-    // 三条路径（SSE / catch-up / 历史回放）都汇入本函数，历史路径无 chunk 时是幂等空操作。
-    if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
-      _closeLiveReasoningFor(ev);
-    } else {
-      // issue #70（审查 P1-2）：工具类事件推进 step 时关闭旧 step 的 provisional。
-      _advanceLiveReasoningStep(ev);
+    // issue #70（复审 P1）：live 思考缓冲的关闭/推进**只能**由实时/补拉路径触发。
+    //
+    // `history:true` 是本页的 durable 回放（初始 tail、`_prependOlderPage` 上翻更早页、
+    // `_segmentFrom` 历史跳转段）：流式期间用户上翻时，旧历史里可能有**同 turn 的无 step
+    // assistant/message**（会 closeStep(turn, null) 误关当前任意 step 并写 tombstone，
+    // 之后 chunk 永久丢弃）或**同 turn 更大 step 的 tool 事件**（durable step 与实时游标
+    // 不保证单调，会误推进）。因此历史路径一律不触碰 `_liveReasoning` / tombstone /
+    // `_provisionalExpansions` / `_liveReasoningRevision`；`_catchup` 走 history:false，
+    // 只处理 seq > _lastSeq 的真实增量，保留关闭语义。
+    if (!history) {
+      if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
+        _closeLiveReasoningFor(ev);
+      } else {
+        // issue #70（审查 P1-2）：工具类事件推进 step 时关闭旧 step 的 provisional。
+        _advanceLiveReasoningStep(ev);
+      }
     }
     // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
     _recordToolName(ev);
