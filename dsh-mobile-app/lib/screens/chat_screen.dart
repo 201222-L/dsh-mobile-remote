@@ -5948,6 +5948,12 @@ class _ChatScreenState extends State<ChatScreen> {
         var slotPlaced = false;
         for (var gi = 0; gi < groupList.length; gi++) {
           final group = groupList[gi];
+          // issue #75：没有任何可见行（分批把整组行挡在窗口外等）的组不渲染抬头，
+          // 避免「0 次工具调用」幽灵行；用户可通过块末尾的「显示更多」把行放出来。
+          final hasVisibleRow = group.rows.any(
+            (row) => plan.visibleRowSeqs.contains(row.seq),
+          );
+          if (!hasVisibleRow) continue;
           final groupKey = '${plan.intervalKey}:${group.step ?? 'x'}';
           final manual = _groupExpansions[groupKey];
           // 默认折叠规则走纯函数（唯一实现）：运行中的组强制展开，完成态默认折叠。
