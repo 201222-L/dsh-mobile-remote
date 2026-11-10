@@ -245,6 +245,18 @@ void main() {
       expect(reducer.items.length, 1);
     });
 
+    test('真实祖先环：A(parent=B)、B(parent=A) 互指 → 无根可达、不渲染、不崩溃、不置 truncated', () {
+      final reducer = _reducerWithRoot();
+      // 两者先互为 orphan：A 父 B 未到；B 父 A 已在节点中 → 潜在祖先环。
+      reducer.apply(_ev('tool/ptc-dispatch-start', 2, _start(2, 'a', parent: 'b')));
+      reducer.apply(_ev('tool/ptc-dispatch-start', 3, _start(3, 'b', parent: 'a')));
+      // 环上节点没有到根的路径：不得伪造根、不得渲染、不得误报截断。
+      expect(_subCallIds(reducer), isEmpty);
+      expect(reducer.items.length, 1);
+      expect(reducer.tools[_rootCallId]!.subCalls, isEmpty);
+      expect(reducer.tools[_rootCallId]!.subCallsTruncated, isFalse);
+    });
+
     test('服务端 notice：不建节点、命中根置 truncated；父未到时暂存、父到达后生效', () {
       final reducer = _reducerWithRoot();
       reducer.apply(_ev('tool/ptc-dispatch-start', 2, {
