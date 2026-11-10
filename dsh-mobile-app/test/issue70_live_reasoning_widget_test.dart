@@ -38,13 +38,23 @@ ValueKey<String> _reasoningRowKey(int turn, int seq) =>
     ValueKey<String>('reasoning-row:$turn:$seq');
 
 class _Backend {
-  _Backend({required this.events, this.returnAllOnInitial = false});
+  _Backend({
+    required this.events,
+    this.returnAllOnInitial = false,
+    this.olderEvents = const <Map<String, dynamic>>[],
+  });
 
   /// 仅 durable 事件；**不得**含 `assistant/chunk`（历史端点不返回 chunk）。
   final List<Map<String, dynamic>> events;
 
   /// 初始窗口是否忽略 limit 返回全部事件（只用于 50 行分批用例）。
   final bool returnAllOnInitial;
+
+  /// `/history?before=` 返回的更早一页（只给「流式中上翻」用例；默认空）。
+  final List<Map<String, dynamic>> olderEvents;
+
+  /// 上翻次数（断言历史分页真的发生）。
+  int beforeRequests = 0;
 
   late final Api api = Api(client: MockClient(_handle))
     ..baseUrl = 'http://issue70.test'
@@ -73,7 +83,14 @@ class _Backend {
       final params = request.url.queryParameters;
       final limit = int.tryParse(params['limit'] ?? '') ?? 50;
       if (params.containsKey('before')) {
-        body = {'ok': true, 'events': <Object>[], 'hasMore': false};
+        beforeRequests++;
+        body = {
+          'ok': true,
+          'events': beforeRequests == 1
+              ? olderEvents
+              : const <Map<String, dynamic>>[],
+          'hasMore': false,
+        };
       } else if (params.containsKey('after')) {
         body = {'ok': true, 'events': <Object>[], 'hasMore': false};
       } else if (returnAllOnInitial) {
@@ -1083,6 +1100,158 @@ void main() {
   });
 
 
+  testWidgets('流式中上翻更早历史：durable 回放不得误清/推进 provisional（复审 P1）', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final backend = _Backend(
+      events: [
+        {'seq': 20, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 2000},
+        {
+          'seq': 21,
+          'type': 'user/message',
+          'data': {'messageId': 'u1', 'text': 'Question live', 'sourceKind': 'user'},
+          'time': 2100,
+        },
+        {
+          'seq': 22,
+          'type': 'assistant/message',
+          'data': {
+            'turn': 1,
+            'step': 1,
+            'messageId': 'a1',
+            'text': 'step one reply',
+            'reasoning': 'check layout',
+            'reasoningChars': 12,
+          },
+          'time': 2200,
+        },
+        {
+          'seq': 23,
+          'type': 'tool/call',
+          'data': {
+            'turn': 1,
+            'step': 1,
+            'callId': 'call-1',
+            'name': 'shell',
+            'arguments': 'ls',
+          },
+          'time': 2300,
+        },
+        {
+          'seq': 24,
+          'type': 'tool/result',
+          'data': {
+            'turn': 1,
+            'step': 1,
+            'callId': 'call-1',
+            'name': 'shell',
+            'text': 'ok',
+          },
+          'time': 2400,
+        },
+      ],
+      // 更早的历史页：同 turn 的无 step 思考（旧实现会 closeStep(1,null) 误关当前
+      // step2，并写 tombstone 让后续 chunk 永久丢弃）+ 同 turn 更大 step 的工具事件
+      // （旧实现会误推进 step）。两者都不得触碰 live 缓冲。
+      olderEvents: const [
+        {
+          'seq': 10,
+          'type': 'assistant/message',
+          'data': {
+            'turn': 1,
+            'messageId': 'old-a',
+            'text': 'legacy older reply',
+            'reasoning': 'legacy older thought',
+            'reasoningChars': 20,
+          },
+          'time': 1000,
+        },
+        {
+          'seq': 11,
+          'type': 'tool/call',
+          'data': {
+            'turn': 1,
+            'step': 9,
+            'callId': 'old-call',
+            'name': 'read_file',
+            'arguments': '{}',
+          },
+          'time': 1100,
+        },
+      ],
+    );
+    final store = await _pumpChat(tester, backend);
+
+    // 流式 provisional（turn1/step2）：已有 step1 持久行作为过程块锚点。
+    await _inject(tester, store, {
+      'seq': 30,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'reasoning': true,
+        'text': 'live thought\n',
+      },
+      'time': 3000,
+    });
+    await _inject(tester, store, {
+      'seq': 31,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'reasoning': true,
+        'text': 'run tests first',
+      },
+      'time': 3100,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget);
+    expect(find.text('思考中…'), findsOneWidget);
+    expect(find.text('run tests first'), findsOneWidget);
+
+    // 用户上翻 → 加载更早历史页（durable 回放，不得对 live 缓冲有副作用）。
+    for (var i = 0; i < 30 && backend.beforeRequests == 0; i++) {
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, 600));
+      await tester.pump(const Duration(milliseconds: 150));
+    }
+    expect(backend.beforeRequests, greaterThan(0), reason: '上翻应触发 before 分页');
+
+    // 回到实时区（懒构建可能回收了过程块），provisional 必须仍在、文案未变。
+    for (var i = 0;
+        i < 40 && find.byKey(_provisionalRowKey(1, 2)).evaluate().isEmpty;
+        i++) {
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -600));
+      await tester.pump(const Duration(milliseconds: 120));
+    }
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget,
+        reason: '历史回放不得关闭流式 provisional');
+    expect(find.text('思考中…'), findsOneWidget);
+    expect(find.text('run tests first'), findsOneWidget);
+
+    // 后续同 (turn, step) chunk 必须继续增长（未被 tombstone 丢弃）。
+    await _inject(tester, store, {
+      'seq': 32,
+      'type': 'assistant/chunk',
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'reasoning': true,
+        'text': ' + done',
+      },
+      'time': 3200,
+    });
+    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget);
+    expect(find.text('run tests first + done'), findsOneWidget,
+        reason: '回放后同 step chunk 仍应继续增长');
+    expect(find.text('思考中…'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await _flushAppTimers(tester);
+  });
+
   testWidgets('历史无 step 的多条思考行全部保留（审查 P1-1 用户可见回归）', (tester) async {
     final history = <Map<String, dynamic>>[
       {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
@@ -1358,12 +1527,8 @@ void main() {
       find.descendant(of: bodyFinder, matching: find.byType(SelectableText)),
     );
     expect(selectable.data, isNotNull);
-    expect(selectable.data!.length, fullText.length);
-    expect(selectable.data, contains(fullText.substring(0, 24)));
-    expect(
-      selectable.data,
-      contains(fullText.substring(fullText.length - 24)),
-    );
+    // 直接全等：200 个 delta 必须原样全部进入 UI（不是长度+抽样）。
+    expect(selectable.data, fullText);
     expect(tester.takeException(), isNull);
     await _flushAppTimers(tester);
   });
