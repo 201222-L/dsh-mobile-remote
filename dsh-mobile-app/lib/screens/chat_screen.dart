@@ -28,6 +28,7 @@ import '../timeline.dart';
 import '../theme.dart';
 import '../turn_navigation.dart';
 import '../turn_process.dart';
+import '../inline_path.dart';
 import '../turn_outline.dart';
 import '../turn_tail.dart';
 import '../turn_file_actions.dart';
@@ -7469,6 +7470,88 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// issue #83：行内绝对路径的用户确认入口。
+  ///
+  /// 只有用户点“打开预览”才发起 `/m/api/files` 读取；取消/复制路径都不请求。
+  Future<void> _confirmOpenPath(String rawPath) async {
+    final path = rawPath.trim();
+    if (!looksLikeInlineFilePath(path)) return;
+    final name = inlinePathBasename(path);
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final ink2 = DshColors.ink2(sheetContext);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  L10n.t('打开文件预览', 'Open file preview'),
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  path,
+                  style: TextStyle(fontSize: 13, color: ink2, fontFamily: 'monospace'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  L10n.t(
+                    '将读取电脑上的文件，仅在你确认后读取。',
+                    'This will read a file from the host only after you confirm.',
+                  ),
+                  style: TextStyle(fontSize: 12, color: ink2),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(sheetContext, 'copy'),
+                      child: Text(L10n.t('复制路径', 'Copy path')),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      child: Text(L10n.t('取消', 'Cancel')),
+                    ),
+                    const SizedBox(width: 4),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext, 'open'),
+                      child: Text(L10n.t('打开预览', 'Open preview')),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted) return;
+    if (action == 'copy') {
+      await Clipboard.setData(ClipboardData(text: path));
+      if (!mounted) return;
+      showToast(context, L10n.t('路径已复制', 'Path copied'));
+      return;
+    }
+    if (action != 'open') return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TurnFilePreviewScreen.path(
+          api: _api,
+          path: path,
+          display: path,
+          name: name,
+        ),
+      ),
+    );
+  }
+
   void _openTurnFileActions(TurnFileCoordinate coordinate, String name) {
     unawaited(
       showTurnFileActions(
@@ -7687,18 +7770,21 @@ class _ChatScreenState extends State<ChatScreen> {
                       );
                       setState(() {});
                     },
-              codeTap: linkResolver == null
-                  ? null
-                  : (code) {
-                      final coordinate = linkResolver.resolve(code);
-                      if (coordinate == null) return null;
-                      final name = code.split('/').last;
-                      return () => _openTurnFile(
-                        coordinate,
-                        display: code,
-                        name: name,
-                      );
-                    },
+              codeTap: (code) {
+                final coordinate = linkResolver?.resolve(code);
+                if (coordinate != null) {
+                  final name = code.split('/').last;
+                  return () => _openTurnFile(
+                    coordinate,
+                    display: code,
+                    name: name,
+                  );
+                }
+                // issue #83：未记录在本轮产出物里的绝对路径（如 /tmp/...）也允许
+                // 用户确认后预览；不在渲染阶段发起任何读取。
+                if (!looksLikeInlineFilePath(code)) return null;
+                return () => _confirmOpenPath(code);
+              },
               codeTapKey: linkResolver == null
                   ? ''
                   : '$_turnTailVersion:$turn',
