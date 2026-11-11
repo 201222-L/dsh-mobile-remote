@@ -290,6 +290,24 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
   }
 }
 
+// 轮次导航 action gutter：轨道 28 + 右留白 8；回到底部圆钮 38 也占用同一 gutter。
+const double turnRailWidth = 28;
+const double turnRailRightGutter = 8;
+const double turnRailRightPadding = turnRailWidth + turnRailRightGutter; // 36
+const double jumpButtonRightPadding = 38;
+const double chatMessageDefaultRightPadding = 16;
+const double turnRailBottomReserve = 62;
+
+/// 消息列表右侧留白：圆钮可见优先 38，其次轨道 36，都隐藏恢复 16。
+double listRightPaddingFor({
+  required bool jumpVisible,
+  required bool railVisible,
+}) {
+  if (jumpVisible) return jumpButtonRightPadding;
+  if (railVisible) return turnRailRightPadding;
+  return chatMessageDefaultRightPadding;
+}
+
 class ChatScreen extends StatefulWidget {
   final AppStore store;
   final String? initialSend; // 首页直达发送
@@ -364,6 +382,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
+  bool _turnRailVisible = false; // 本帧轨道可见性（列表 padding 与轨道共用 gate）
   bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
@@ -1647,6 +1666,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 统一单一方向（不再按条数切换 reverse）：根治 50/51 条边界翻转导致滚动位置跳变
   /// （review P1-1）；无限模式上翻加载更早时新数据出现在视觉顶部，阅读位置不跳动。
   Widget _buildLiveView() {
+    final rightPadding = listRightPaddingFor(
+      jumpVisible: _showJumpToLatest,
+      railVisible: _turnRailVisible,
+    );
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
     final loadingTail = _infiniteMode && _loadingMore && _earliestSeq > 0;
@@ -1670,7 +1693,7 @@ class _ChatScreenState extends State<ChatScreen> {
           center: _liveCenterKey,
           slivers: [
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              padding: EdgeInsets.fromLTRB(16, 10, rightPadding, 0),
               sliver: SliverList(
                 key: _olderSliverKey,
                 delegate: SliverChildBuilderDelegate(
@@ -1684,7 +1707,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: SizedBox.shrink(),
             ),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              padding: EdgeInsets.fromLTRB(16, 0, rightPadding, 6),
               sliver: SliverList(
                 key: _liveSliverKey,
                 delegate: SliverChildBuilderDelegate((context, index) {
@@ -3887,6 +3910,7 @@ class _ChatScreenState extends State<ChatScreen> {
       nearBottom: _pinnedToBottom,
       turnCount: turnTicks.length,
     );
+    _turnRailVisible = !_inHistory && showTurnRail;
     // 阶梯被截断 / 读取失败 / 能力缺失 / 该会话无大纲：在用户**能看到刻度轨**时
     // 各说明一次（四态文案互不相同，见 `turnOutlineNotice`），绝不静默。
     // 评审 P2 指出：三态"给出不同说明"是正文与 ADR 的验收项，不能因为"退回一期本身
@@ -4004,16 +4028,22 @@ class _ChatScreenState extends State<ChatScreen> {
                 // issue #24：轮次导航刻度轨。放在消息流之上、右下角圆钮之下；
                 // 只占右侧约 28px，空白区域不吸收命中，消息流照常滚动。
                 if (!_inHistory && showTurnRail)
-                  Positioned.fill(
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: turnRailBottomReserve,
                     child: Align(
                       alignment: Alignment.centerRight,
                       child: Padding(
-                        padding: const EdgeInsets.only(right: 12),
+                        padding: const EdgeInsets.only(right: turnRailRightGutter),
                         child: TurnNavigatorRail(
                           anchors: turnAnchors,
                           unloadedTurns: unloadedTurns,
                           activeTurn: _activeTurn,
                           busyTurn: _busyTurn,
+                          width: turnRailWidth,
+                          maxHeight: 420,
                           onNavigate: (anchor) =>
                               unawaited(_navigateToTurn(anchor)),
                         ),
@@ -4023,7 +4053,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (!_inHistory)
                   Positioned(
                     bottom: 12,
-                    right: 14,
+                    right: 0,
                     child: _JumpToLatestButton(
                       visible: _showJumpToLatest,
                       onTap: _jumpToLatest,
