@@ -602,8 +602,8 @@ void main() {
       },
     ];
     await _pumpChat(tester, _Backend(events: events));
-    // 轮内有插话 → 强制展开（不吃策略）：issue #61 起展开态不再显示整轮摘要行，
-    // 改为两段各自的组抬头（标准档已完成轮的组默认折叠）。
+    // 轮内有插话 → 默认展开（issue #79 起不再强制；可手动折叠）：issue #61 起展开态
+    // 不再显示整轮摘要行，改为两段各自的组抬头（标准档已完成轮的组默认折叠）。
     expect(find.textContaining('组 · 1 次工具调用'), findsNothing);
     expect(find.text('1 次工具调用'), findsNWidgets(2));
     // 过程段出现在插话之后。
