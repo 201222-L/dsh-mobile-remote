@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
@@ -26,17 +26,26 @@ import '../store.dart';
 import '../timeline.dart';
 import '../theme.dart';
 import '../turn_navigation.dart';
+import '../turn_process.dart';
 import '../turn_outline.dart';
+import '../turn_tail.dart';
+import '../turn_file_actions.dart';
 import '../md.dart';
 import '../fmt.dart';
+import '../image_gallery.dart';
 import '../git_browser_controller.dart';
 import '../local_notifications.dart';
 import 'git_browser_sheet.dart';
+import '../tool_cards.dart';
+import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
+import '../widgets/turn_tail_cards.dart';
 import 'sheets.dart';
 import 'session_files_screen.dart';
 import 'session_tools_sheet.dart';
+import 'turn_changes_diff_screen.dart';
+import 'turn_file_preview_screen.dart';
 
 /// v3.0.0(热修 07)：服务端"明确拒绝"的错误码白名单——这些代表消息**未被投递且服务端无回执**，
 /// 可直接判失败；其余（`bridge-unavailable`、`receipt-pending`、传输层 reset/超时等）一律走回执
@@ -297,6 +306,9 @@ class ChatScreen extends StatefulWidget {
   final Api? apiClient;
   final GitReadApi? gitReadApi;
   final GitBrowserControllerFactory? gitControllerFactory;
+
+  /// issue #60 R06：仅测试注入（TTL 行为需要可控时钟/短 TTL）；生产用默认缓存。
+  final TurnTailSummaryCache? changedSummaryCache;
   const ChatScreen({
     super.key,
     required this.store,
@@ -305,6 +317,7 @@ class ChatScreen extends StatefulWidget {
     this.apiClient,
     this.gitReadApi,
     this.gitControllerFactory,
+    this.changedSummaryCache,
   });
 
   @override
@@ -322,12 +335,52 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<_MsgItem> _olderItems = [];
   // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
   final Map<String, String> _activeTools = {};
+  // ── issue #61：工具名兜底映射（session 级 callId → toolName） ───────────
+  // 历史分页截断/流式增量缺 `name` 时，用本会话此前事件里学到的工具名补名。
+  // 与 [_activeTools]（活动条瞬时态，结果到达即删）不同：这里保留整会话，
+  // 因为历史重建（_load 重放）可能只剩 result、没有 call。会话切换时清空。
+  final Map<String, String> _toolNamesByCallId = {};
+  String? _toolNamesSessionId;
   // Shared pure projection owns seq de-duplication/call correlation for both live and history paths;
   // _MsgItem remains the richer Flutter rendering adapter.
   final TimelineReducer _timelineReducer = TimelineReducer();
   final Map<String, bool> _failureExpansionOverrides = {};
   final Set<String> _failureDetailRequests = {};
-  String _reasoning = '';
+  // ── issue #52（ADR 0027 §2）：轮次过程折叠 ─────────────────────────────
+  // 过程结构由纯投影 [TurnProcessTracker] 折叠（turn → 过程组(step) → 过程行），
+  // 本页只持有渲染必需的三层手动状态（只存内存，离开会话即失）与分批上限。
+  final TurnProcessTracker _turnProcess = TurnProcessTracker();
+  List<TurnProcess> _processTurns = const [];
+  Map<int, TurnProcess> _processTurnMap = const {};
+  int _processVersion = 0; // 观察到的进化版本
+  int _processBuiltVersion = -1; // 已折叠的版本
+  final Map<String, bool> _turnExpansions = {}; // 过程段手动展开/收起（turn:segment）
+  final Map<String, bool> _groupExpansions = {}; // 过程组手动展开（turn:segment:step）
+  final Map<String, bool> _reasoningRowExpansions = {}; // 思考行手动展开（turn:seq）
+  final Map<int, int> _processRowLimits = {}; // 分批展示：turn → 已展示行数
+  // ── issue #53（ADR 0027 §3）：轮末产出物（两卡 + 按坐标预览） ─────────
+  final Map<int, TurnTail> _turnTails = {}; // 轮号 → turnTails/tail 信号
+  final Map<int, List<DeliverableFile>> _deliverablesByTurn = {};
+  late final TurnTailSummaryCache _changedSummaryCache =
+      widget.changedSummaryCache ?? TurnTailSummaryCache();
+  /// 只表示 **in-flight**：完成/失败后移除，TTL 到期可重新拉取（issue #60 R06）。
+  final Set<int> _changedSummaryRequested = {};
+  /// issue #60 recheck-11：reset/重同步会清空门闩与缓存；旧请求完成必须按代际丢弃，
+  /// 不得回填缓存或移除新请求的门闩。
+  int _tailLoadGeneration = 0;
+  /// 失败退避：避免完成后立刻被重建无限重试；仅抑制一段时间，不阻止 TTL 恢复。
+  final Map<int, DateTime> _changedSummaryRetryAfter = {};
+  final Map<int, String> _changedSummaryErrors = {};
+  final Map<int, ({int version, TurnFileLinkResolver resolver})> _linkResolvers = {};
+  int _turnTailVersion = 0;
+  // ── issue #70（ADR 0027 §2 实时态）：运行中思考（provisional）──────────
+  // 流式 reasoning 按 (turn, step) 缓冲在纯模型 [LiveReasoningBuffer]，活动条与
+  // 过程块 provisional 行读同一份快照；文本增长只通知 ValueNotifier（行级重建），
+  // 只有结构变化（首现/切换/落定/清理）才重建过程计划。
+  final LiveReasoningBuffer _liveReasoning = LiveReasoningBuffer();
+  final ValueNotifier<int> _liveReasoningRevision = ValueNotifier<int>(0);
+  // provisional 行的展开状态（turn:step，跨 delta 保留；落定/轮末清理）。
+  final Map<String, bool> _provisionalExpansions = {};
   bool _reasoningExpanded = false;
   Timer? _activityTimer;
   String _draft = '';
@@ -467,6 +520,10 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.store.addChatListener(
       _handleEvent,
     ); // v2.7.2 review(M1)：监听器列表，叠层页面互不覆盖
+    // issue #52：展示模式/收起时机改动要即时重算（设置页返回后无需重进会话）。
+    _lastStepDisplayMode = widget.store.stepDisplayMode;
+    _lastTurnFoldTiming = widget.store.turnFoldTiming;
+    widget.store.addListener(_onStoreChanged);
     _scrollCtrl.addListener(_onScrollTick);
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
@@ -481,6 +538,24 @@ class _ChatScreenState extends State<ChatScreen> {
         (_) => _send(widget.initialSend!),
       );
     }
+  }
+
+  // issue #52：只在「轮次过程」相关的两项偏好真的变化时才重建——store 的通知很频繁
+  // （SSE 状态、队列、用量…），无差别 setState 会让整条时间线跟着抖。
+  WorkStepDisplayMode? _lastStepDisplayMode;
+  TurnFoldTiming? _lastTurnFoldTiming;
+
+  /// issue #52：设置变化（展示模式/收起时机）即时重算时间线。
+  void _onStoreChanged() {
+    final store = widget.store;
+    if (_lastStepDisplayMode == store.stepDisplayMode &&
+        _lastTurnFoldTiming == store.turnFoldTiming) {
+      return;
+    }
+    _lastStepDisplayMode = store.stepDisplayMode;
+    _lastTurnFoldTiming = store.turnFoldTiming;
+    _invalidateProcessPlan();
+    if (mounted) setState(() {});
   }
 
   /// v2.7：输入变化 → 按会话保存草稿（返回/重进后恢复；清空即移除）。
@@ -501,12 +576,14 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputCtrl.removeListener(_onDraftChanged);
     _scrollCtrl.removeListener(_onScrollTick);
     widget.store.removeChatListener(_handleEvent); // v2.7.2 review(M1)
+    widget.store.removeListener(_onStoreChanged);
     // v3.3.1：离开该会话（或页面被回收）后恢复系统通知；只在栈顶仍是自己时清空。
     if (LocalNotifier.instance.visibleSession == _mySessionId) {
       LocalNotifier.instance.visibleSession = null;
     }
     // The modal future owns and disposes its Git controller in _openGit.
     _gitController = null;
+    _liveReasoningRevision.dispose(); // issue #70：行级通知器随页面释放
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -609,14 +686,37 @@ class _ChatScreenState extends State<ChatScreen> {
   ///
   /// 键身份是**边界持久 seq**，不是轮次号：同一轮号可以有多个相邻的 `turn/start`
   /// （重试边界），按轮号分配会让它们共用同一个 GlobalKey。
-  Widget _buildItemWithTurnKey(_MsgItem item) {
+  Widget _buildItemWithTurnKey(_MsgItem item, {bool historyView = false}) {
+    final seq = item.seq;
+    final child = _buildItemWithTurnKeyBody(item, historyView: historyView);
+    // 过程块锚在该轮过程行实际出现的位置（提示词之后），而不是 turn/start 分隔条。
+    final blocks = seq == null
+        ? null
+        : _planFor(history: historyView).hostsBySeq[seq];
+    if (blocks == null || blocks.isEmpty) return child;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final plan in blocks) _buildProcessBlockPlan(plan),
+        child,
+      ],
+    );
+  }
+
+  Widget _buildItemWithTurnKeyBody(
+    _MsgItem item, {
+    required bool historyView,
+  }) {
     final seq = item.seq;
     final turn = seq == null ? null : _turnOfStartSeq[seq];
     if (turn == null || seq == null || item.kind != _MsgKind.divider) {
-      return _buildItem(item);
+      return _buildItem(item, historyView: historyView);
     }
     final key = _turnKeysBySeq.putIfAbsent(seq, () => GlobalKey());
-    return KeyedSubtree(key: key, child: _buildItem(item));
+    return KeyedSubtree(
+      key: key,
+      child: _buildItem(item, historyView: historyView),
+    );
   }
 
   /// 当前阅读的轮次。
@@ -1042,6 +1142,67 @@ class _ChatScreenState extends State<ChatScreen> {
     showToast(context, err);
   }
 
+  /// issue #66（M3 Batch 2-A）：工具行尾「打开问询」入口——用 modal bottom sheet 复用
+  /// 既有 [_QuestionCard] 作答，**不在工具行内**放任何作答控件，也不改 attention//respond
+  /// 流程（取消/提交仍走 [_cancelPending] / [_submitQuestion]）。
+  Future<void> _openPendingQuestion() async {
+    final q = _question ?? widget.store.questionForSession(_mySessionId);
+    if (q == null) {
+      if (!mounted) return;
+      showToast(context, L10n.t('问询已结束', 'Question is no longer pending'));
+      return;
+    }
+    // _submitQuestion 读取页面状态：store 已同步而页面尚未同步的极小窗口里先对齐，
+    // 避免弹层里提交后静默无回写。
+    if (_question == null) setState(() => _question = q);
+    late BuildContext sheetContext;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        sheetContext = ctx;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(ctx).bottom,
+              ),
+              child: _QuestionCard(
+                key: ValueKey<String>('question-sheet:${q.rpcId}'),
+                request: q,
+                onCancel: () {
+                  final rpc = q.rpcId;
+                  // 先收起弹层；取消语义与 composer 卡片一致（乐观收起 + 送内核）。
+                  if (sheetContext.mounted &&
+                      ModalRoute.of(sheetContext)?.isCurrent == true) {
+                    Navigator.of(sheetContext).maybePop();
+                  }
+                  if (mounted && _question?.rpcId == rpc) {
+                    setState(() => _question = null);
+                  }
+                  unawaited(_cancelPending(rpc));
+                },
+                onSubmitted: (answers) async {
+                  await _submitQuestion(answers);
+                  // R6（issue #66 评审）：await 期间用户可能已手动关掉弹层——pop 前确认
+                  // 上下文仍 mounted 且弹层仍是当前路由，否则会误 pop 聊天页。
+                  if (sheetContext.mounted &&
+                      ModalRoute.of(sheetContext)?.isCurrent == true) {
+                    Navigator.of(sheetContext).maybePop();
+                  }
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
   /// 历史浏览视图不跟随滚动。
   void _scrollToBottom({bool force = false}) {
@@ -1094,6 +1255,7 @@ class _ChatScreenState extends State<ChatScreen> {
     AppLog.instance.log(reset ? 'Chat: 重同步会话（按新表面重载）$id' : 'Chat: 打开会话 $id');
     try {
       final page = await _api.historyPage(id, limit: _liveMax);
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       AppLog.instance.log(
         'Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}',
@@ -1155,10 +1317,36 @@ class _ChatScreenState extends State<ChatScreen> {
         // 在新一轮渲染里可能不同（流式结束、折叠状态变化），留着会给出错的估算。
         _itemHeights.clear();
         _timelineReducer.reset();
+        // issue #52：条目按新表面重建时，轮次过程结构与会话内手动折叠状态一并失效
+        // （「离开会话即失」——重建等价于重新进入）。
+        _turnProcess.reset();
+        _turnTails.clear();
+        _deliverablesByTurn.clear();
+        _changedSummaryCache.clear();
+        _changedSummaryRequested.clear();
+        _changedSummaryRetryAfter.clear();
+        _changedSummaryErrors.clear();
+        _linkResolvers.clear();
+        _tailLoadGeneration++;
+        _turnTailVersion++;
+        _processTurns = const [];
+        _processTurnMap = const {};
+        _processVersion++;
+        _processBuiltVersion = -1;
+        _turnExpansions.clear();
+        _groupExpansions.clear();
+        _reasoningRowExpansions.clear();
+        _processRowLimits.clear();
+        _livePlanCache = null;
+        _histPlanCache = null;
+        _invalidateProcessPlan();
         _transientFrameKeys.clear();
         _debugPreviewCache.clear(); // 重建后 rawData 全变，旧预览缓存无意义
         _activeTools.clear();
-        _reasoning = '';
+        // issue #70：按新表面重建 = 重新进入会话，流式思考缓冲与 provisional 展开态一并失效。
+        _liveReasoning.clear();
+        _liveReasoningRevision.value++;
+        _provisionalExpansions.clear();
         _reasoningExpanded = false;
         _draft = '';
         _streaming = false;
@@ -1275,6 +1463,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _earliestSeq,
         limit: limit,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return _PrependOutcome.skipped;
@@ -1506,6 +1695,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _earliestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -1554,6 +1744,7 @@ class _ChatScreenState extends State<ChatScreen> {
         before: _histOldestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -1592,6 +1783,7 @@ class _ChatScreenState extends State<ChatScreen> {
         after: _histNewestSeq,
         limit: _histPageSize,
       );
+      _absorbTurnTails(page.turnTails);
       final events = page.events;
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -1674,7 +1866,10 @@ class _ChatScreenState extends State<ChatScreen> {
               sliver: SliverList(
                 key: _olderSliverKey,
                 delegate: SliverChildBuilderDelegate(
-                  (context, index) => _buildItemWithTurnKey(_olderItems[index]),
+                  (context, index) => _buildItemWithTurnKey(
+                    _olderItems[index],
+                    historyView: false,
+                  ),
                   childCount: _olderItems.length,
                 ),
               ),
@@ -1711,10 +1906,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (dataIndex < _items.length) {
                     return _buildItemWithTurnKey(
                       _items[_items.length - 1 - dataIndex],
+                      historyView: false,
                     );
                   }
                   if (hasDraft) {
-                    return _AssistantBubble(text: _draft, streaming: true);
+                    return _AssistantBubble(
+                      text: _draft,
+                      streaming: true,
+                      api: _api,
+                    );
                   }
                   return const SizedBox.shrink();
                 }, childCount: _items.length + currentExtra),
@@ -1789,8 +1989,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     controller: _scrollCtrl,
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                     itemCount: _histItems.length,
-                    itemBuilder: (context, index) =>
-                        _buildItem(_histItems[index]),
+                    itemBuilder: (context, index) => _buildItemWithTurnKey(
+                      _histItems[index],
+                      historyView: true,
+                    ),
                   ),
                 ),
         ),
@@ -1986,6 +2188,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == 'turn/start') {
       _todoProjectionVersion++;
       _todos = []; // 新一轮开始清空清单（继续走下方渲染，保留"轮次 N 开始"分隔条）
+      final startedTurn = (ev.data?['turn'] as num?)?.toInt();
+      // issue #70：关闭集合有界——只保留最近两轮（迟到 chunk 的 tombstone 不无界增长）。
+      if (startedTurn != null) _liveReasoning.trimClosedTurns(startedTurn);
     }
     // v3.0.0：队列快照帧（认领/删除/编辑即时反映）→ 本页 dock 即时同步
     if (ev.type == 'mobile/queue') {
@@ -2012,12 +2217,35 @@ class _ChatScreenState extends State<ChatScreen> {
         _draft += text;
         _scheduleDraftFlush();
       } else if (text.isNotEmpty && reasoning) {
-        // 思考内容实时累积（活动条面板，可展开）
-        if (_reasoning.isEmpty) {
-          AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+        // issue #70：流式思考按 (turn, step) 进缓冲（活动条与 provisional 行同源）。
+        // 每个 delta 只做 O(1) 追加 + 行级通知；只有结构变化（首现/切 step）才重建计划，
+        // 避免「每 delta 全量 setState」（issue 性能条款）。
+        final turn = (ev.data?['turn'] as num?)?.toInt();
+        final step = (ev.data?['step'] as num?)?.toInt();
+        if (turn != null) {
+          // issue #70（复审 P1 配套）：durable 回放不再为历史轮次写 tombstone（见
+          // `_buildInto` 的 history 隔离）。迟到 chunk 改用**只读**持久投影判定并丢弃：
+          // - 该轮已结束（turn/end 已到）→ 丢弃（中断轮不残留）；
+          // - 该 (turn, step) 已有落定 assistant/message 水位（含无 reasoning 的 message，
+          //   由 tracker 在 observe 时登记）→ 丢弃：reset/reload 后回放不会写 step tombstone，
+          //   若不判定会让已落定 step 的迟到 chunk 复活 provisional，与持久行重复。
+          // 判定不触碰 live 缓冲/tombstone，也不跨 step 泛化（null-step 只匹配 null 键）。
+          final ended = _ensureProcessTurnMap()[turn]?.ended ?? false;
+          final settled = _turnProcess.hasSettledReasoning(turn, step);
+          if (!ended && !settled) {
+            if (_liveReasoning.firstSeqOf(turn, step) == null) {
+              AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
+            }
+            final structural =
+                _liveReasoning.append(turn, step, text, seq: ev.seq);
+            _liveReasoningRevision.value++;
+            if (structural) {
+              _invalidateProcessPlan();
+              setState(() {});
+            }
+          }
         }
-        _reasoning += text;
-        _scheduleActivityFlush();
+        // 迟到/已结束轮次的 reasoning chunk 一律丢弃、不增长文本。
       }
       if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
         final data = ev.data ?? const <String, dynamic>{};
@@ -2035,17 +2263,18 @@ class _ChatScreenState extends State<ChatScreen> {
       _draftTimer = null;
       _activityTimer?.cancel();
       _activityTimer = null;
+      // issue #70：缓冲的关闭/通知统一在 _buildInto 漏斗里做（覆盖 SSE/catch-up/历史回放）。
+      final reasoningChars = _liveReasoning.current?.text.length ?? 0;
       if (ev.type == 'assistant/message') {
-        // 正文到达：工具阶段结束（思考保留到轮次结束，面板显示"已思考 N 字"）
+        // 正文到达：工具阶段结束（思考文本由过程行或活动条按同源快照呈现）
         _activeTools.clear();
-        AppLog.instance.log('Chat: 活动条-正文到达（思考 ${_reasoning.length} 字）');
+        AppLog.instance.log('Chat: 活动条-正文到达（思考 $reasoningChars 字）');
       } else {
-        // 轮次结束：清空活动条与思考草稿
+        // 轮次结束：清空活动条与思考草稿（provisional 由 _buildInto 的 closeTurn 清理）
         _activeTools.clear();
-        if (_reasoning.isNotEmpty) {
-          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 ${_reasoning.length} 字）');
+        if (reasoningChars > 0) {
+          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 $reasoningChars 字）');
         }
-        _reasoning = '';
         _reasoningExpanded = false;
       }
     }
@@ -2150,6 +2379,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted || generation != _loadGeneration || id != _mySessionId) {
           return;
         }
+        _absorbTurnTails(page.turnTails);
         // v3.1.6（app-audit ②）：守卫之后才写降级标记（过期响应不得改写横幅）
         if (page.degraded) _historyDegraded = true;
         final fresh = <ChatEvent>[];
@@ -2581,9 +2811,75 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (_items.isNotEmpty) {
         final oldest = _items.last.seq;
-        if (oldest != null) _earliestSeq = oldest;
+        if (oldest != null) {
+          _earliestSeq = oldest;
+          // issue #52：live 窗口裁剪后同步丢弃更早轮次的过程结构，避免无界增长。
+          _turnProcess.pruneBefore(oldest);
+          // issue #70：被裁轮次的 provisional 不得残留。
+          _liveReasoning.pruneBefore(oldest);
+          _processVersion++;
+        }
       }
     }
+  }
+
+  /// issue #70：`assistant/message` / `turn/end` 到达时关闭流式思考缓冲。
+  ///
+  /// - `assistant/message`：把该 (turn, step) 首个 delta seq 交给 tracker（持久行继承
+  ///   同一排序键 → 落定零位移），随后关闭对应 provisional（迟到 chunk 进 tombstone）；
+  /// - `turn/end`（completed/aborted/interrupted/error）：整轮关闭并丢弃首 delta 记录，
+  ///   中断轮不残留；
+  /// - 无 `turn` 字段的事件不做缓冲处理（无键可归，走 tracker 既有归属规则）。
+  void _closeLiveReasoningFor(ChatEvent ev) {
+    final turn = (ev.data?['turn'] as num?)?.toInt();
+    if (turn == null) return;
+    final step = (ev.data?['step'] as num?)?.toInt();
+    var changed = false;
+    if (ev.type == 'turn/end') {
+      changed = _liveReasoning.closeTurn(turn);
+      _turnProcess.dropReasoningStart(turn);
+      _provisionalExpansions.removeWhere((key, _) => key.startsWith('$turn:'));
+    } else {
+      final first = _liveReasoning.firstSeqOf(turn, step);
+      if (first != null) _turnProcess.noteReasoningStart(turn, step, first);
+      changed = _liveReasoning.closeStep(turn, step);
+      _provisionalExpansions.remove('$turn:${step ?? 'null'}');
+    }
+    if (!changed) return;
+    // 结构变化（可见行消失）：通知行级监听者并重建过程计划。
+    _liveReasoningRevision.value++;
+    _invalidateProcessPlan();
+  }
+
+  /// issue #70（审查 P1-2）：工具类事件把 step **推进**时，旧 step 的 provisional 必须关闭。
+  ///
+  /// 真实序列可能「reasoning(step1) 还没有 assistant/message 落定，下一个 step 先到的是
+  /// tool/call / tool/result / 带 toolCall·argumentsDelta 的 chunk」——这些事件同样携带
+  /// `(turn, step)`，是 step 前进的可靠信号。这里只在统一漏斗 `_buildInto` 判定（覆盖
+  /// SSE 与 catch-up；历史回放 buffer 为空 → 幂等）：
+  /// - 同 turn 且事件 step > 当前 provisional step → `closeStep(turn, step-1)`，并在关闭集合
+  ///   记上限，阻止迟到的旧 step chunk 复活；
+  /// - 同 step / 更小 step / 事件缺 step → 一律不关闭（避免把正常流误关）。
+  void _advanceLiveReasoningStep(ChatEvent ev) {
+    final data = ev.data;
+    if (data == null) return;
+    final isToolEvent = ev.type == 'tool/call' ||
+        ev.type == 'tool/result' ||
+        ((ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') &&
+            (data['toolCall'] != null || data['argumentsDelta'] != null));
+    if (!isToolEvent) return;
+    final turn = (data['turn'] as num?)?.toInt();
+    final step = (data['step'] as num?)?.toInt();
+    if (turn == null || step == null) return;
+    final live = _liveReasoning.current;
+    if (live == null || live.turn != turn || live.step == null) return;
+    if (step <= live.step!) return;
+    final changed = _liveReasoning.closeStep(turn, step - 1);
+    if (!changed) return;
+    _provisionalExpansions.removeWhere((key, _) => key.startsWith('$turn:'));
+    // 结构变化：行级通知 + 计划失效（外层调用方负责 setState / 80ms 节流刷新）。
+    _liveReasoningRevision.value++;
+    _invalidateProcessPlan();
   }
 
   /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
@@ -2593,6 +2889,33 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 工具关联 id 与模型侧共用同一实现（避免两处规则分叉）。
   String _toolActivityKey(Map<String, dynamic> data, int? seq, int fallback) =>
       timelineCallIdOf(data, seq, fallback);
+
+  /// issue #61：记录本会话已知的工具名（`tool/call` 与带 toolCall 的流式增量）。
+  ///
+  /// 与 [TimelineReducer] 的合并状态不同，这份映射**只增不减**、且跨 `_load` 重建保留
+  /// （同一会话内历史重放可能只剩 `tool/result`，那时 reducer 已重置、拿不到 call 的 name）。
+  /// 会话变化（页面重绑/切会话）时整体清空，不跨会话串名。
+  void _recordToolName(ChatEvent ev) {
+    final type = ev.type;
+    if (type != 'tool/call' &&
+        type != 'assistant/chunk' &&
+        type != 'assistant/live-chunk') {
+      return;
+    }
+    final data = ev.data ?? const <String, dynamic>{};
+    if (type != 'tool/call' &&
+        data['toolCall'] == null &&
+        data['argumentsDelta'] == null) {
+      return;
+    }
+    if (_toolNamesSessionId != _mySessionId) {
+      _toolNamesSessionId = _mySessionId;
+      _toolNamesByCallId.clear();
+    }
+    final callId = timelineCallIdOf(data, ev.seq, _toolNamesByCallId.length);
+    final name = timelineToolNameOf(data, callId: callId, fallback: '');
+    if (name.isNotEmpty) _toolNamesByCallId[callId] = name;
+  }
 
   void _rebuildActiveToolsFromHistory(List<ChatEvent> events) {
     _activeTools.clear();
@@ -2661,9 +2984,23 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           seq: ev.seq,
         );
+    // issue #61：工具名解析顺序——事件 name → 现有条目 name → session 映射 → 合并态 name
+    // → 「工具调用」占位。缺 call 事件的历史/流式事件因此仍有可读标题。
+    final eventName = timelineToolNameOf(d, callId: callId, fallback: '');
+    final previousName = old?.toolName;
+    final mappedName = _toolNamesByCallId[callId];
+    final resolvedName = eventName.isNotEmpty
+        ? eventName
+        : !_isPlaceholderToolName(previousName)
+        ? previousName!
+        : !_isPlaceholderToolName(mappedName)
+        ? mappedName!
+        : !_isPlaceholderToolName(lifecycle.name)
+        ? lifecycle.name
+        : L10n.t('工具调用', 'Tool call');
     final item = _MsgItem.tool(
       toolCallId: lifecycle.id,
-      toolName: lifecycle.name,
+      toolName: resolvedName,
       toolArguments: lifecycle.arguments,
       toolResult: lifecycle.result,
       toolStatus: lifecycle.status,
@@ -2676,6 +3013,16 @@ class _ChatScreenState extends State<ChatScreen> {
       detailAvailable: lifecycle.detailAvailable,
       rawData: old?.rawData,
       detailLoading: isResult ? false : (old?.detailLoading ?? false),
+      // issue #54：结构化摘要随 call/result 事件合并；缺失保持上一次（旧插件恒 null）。
+      callSummary: ev.type == 'tool/call'
+          ? (ev.callSummary ?? old?.callSummary)
+          : old?.callSummary,
+      resultSummary: ev.type == 'tool/result'
+          ? (ev.resultSummary ?? old?.resultSummary)
+          : old?.resultSummary,
+      // issue #68：PTC 子调用树随生命周期携带（PTC 事件只刷新根卡，不新建条目）。
+      subCalls: lifecycle.subCalls,
+      subCallsTruncated: lifecycle.subCallsTruncated,
     );
     if (index >= 0) {
       final settled =
@@ -2690,6 +3037,34 @@ class _ChatScreenState extends State<ChatScreen> {
       out.add(item);
     } else {
       out.insert(0, item);
+    }
+  }
+
+  /// issue #68（M3 Batch 2-C）：PTC 事件到达后，按 reducer 标出的受影响根**原地**
+  /// 刷新已存在的根工具卡（不新增条目、不改锚点/位置）；根条目尚未到达时 no-op
+  /// （随后 `tool/call` 的 `_upsertToolItem` 会从 lifecycle 带出完整子树）。
+  void _refreshToolItemsForPtc([List<_MsgItem>? current]) {
+    // A2：历史分段/上翻页构建中的局部列表（`out`/`pageItems`）不在三个持久列表里，
+    // 必须一并原地刷新，否则「同页含根 call + PTC 事件但无根 result」时根卡缺子调用。
+    final lists = <List<_MsgItem>>[_items, _olderItems, _histItems];
+    if (current != null && !lists.any((list) => identical(list, current))) {
+      lists.add(current);
+    }
+    for (final rootId in List<String>.from(
+      _timelineReducer.lastTouchedToolRoots,
+    )) {
+      final lifecycle = _timelineReducer.tools[rootId];
+      if (lifecycle == null) continue;
+      for (final list in lists) {
+        final index = list.indexWhere(
+          (item) => item.kind == _MsgKind.tool && item.toolCallId == rootId,
+        );
+        if (index < 0) continue;
+        list[index] = list[index].copyTool(
+          subCalls: lifecycle.subCalls,
+          subCallsTruncated: lifecycle.subCallsTruncated,
+        );
+      }
     }
   }
 
@@ -2730,11 +3105,43 @@ class _ChatScreenState extends State<ChatScreen> {
   }) {
     final d = ev.data;
     if (hiddenTimelineTypes.contains(ev.type)) return;
+    // issue #70（复审 P1）：live 思考缓冲的关闭/推进**只能**由实时/补拉路径触发。
+    //
+    // `history:true` 是本页的 durable 回放（初始 tail、`_prependOlderPage` 上翻更早页、
+    // `_segmentFrom` 历史跳转段）：流式期间用户上翻时，旧历史里可能有**同 turn 的无 step
+    // assistant/message**（会 closeStep(turn, null) 误关当前任意 step 并写 tombstone，
+    // 之后 chunk 永久丢弃）或**同 turn 更大 step 的 tool 事件**（durable step 与实时游标
+    // 不保证单调，会误推进）。因此历史路径一律不触碰 `_liveReasoning` / tombstone /
+    // `_provisionalExpansions` / `_liveReasoningRevision`；`_catchup` 走 history:false，
+    // 只处理 seq > _lastSeq 的真实增量，保留关闭语义。
+    if (!history) {
+      if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
+        _closeLiveReasoningFor(ev);
+      } else {
+        // issue #70（审查 P1-2）：工具类事件推进 step 时关闭旧 step 的 provisional。
+        _advanceLiveReasoningStep(ev);
+      }
+    }
+    // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
+    _recordToolName(ev);
+    // issue #52：轮次过程投影与时间线条目同步观察（历史/实时/分页重叠都收敛到同一结构）。
+    _turnProcess.observe(ev);
+    _processVersion++;
     // Historical reconstruction must still render a record even when the same seq
     // arrived via SSE while the REST request was in flight. Live ingestion can
     // discard the duplicate because _handleEvent already owns the visible stream.
     if (!_timelineReducer.apply(ev) && !history) return;
     switch (ev.type) {
+      case 'deliverables/presented':
+        // issue #53（§6.20）：交付文件声明收进轮末交付卡，不生成通用事件卡；
+        // 旧插件没有投影 data 时退回 default（调试可见），普通模式不出现空白卡。
+        final deliveredTurn = (d?['turn'] as num?)?.toInt();
+        final deliveredFiles = deliverableFilesOf(ev.seq, d);
+        if (deliveredTurn != null && deliveredFiles.isNotEmpty) {
+          _absorbDeliverables(deliveredTurn, deliveredFiles);
+          return;
+        }
+        _appendVisibleEvent(out, ev, history: history);
       case 'user/message':
         final text = d?['text'] as String? ?? '';
         // 已知 runtime context 噪声保留 seq/model 对账，但系统提示词与上下文快照在所有模式均隐藏。
@@ -2887,6 +3294,15 @@ class _ChatScreenState extends State<ChatScreen> {
           _scheduleActivityFlush();
         }
         _upsertToolItem(out, ev, history: history);
+      case 'tool/ptc-dispatch-start':
+      case 'tool/ptc-dispatch':
+        // issue #68：合法 PTC data → 只刷新根工具卡内的子调用树（普通/调试都不新建
+        // 裸事件卡）；data 缺失/非法 → 保持既有 debug-only 事件卡行为（可调试）。
+        if (!ptcEventConsumable(d)) {
+          _appendVisibleEvent(out, ev, history: history);
+        } else {
+          _refreshToolItemsForPtc(out);
+        }
       case 'todo/write':
         _appendVisibleEvent(out, ev, history: history);
       case 'turn/start':
@@ -2928,6 +3344,12 @@ class _ChatScreenState extends State<ChatScreen> {
           out.add(item);
         } else {
           out.insert(0, item);
+        }
+        // issue #53（§6.20）：实时轮末信号 `tail` 由服务端随 turn/end 摘要下发。
+        final endedTurn = (d?['turn'] as num?)?.toInt();
+        final endedTail = ev.tail ?? TurnTail.fromJson(d?['tail']);
+        if (endedTurn != null && endedTail != null) {
+          _absorbTurnTail(endedTurn, endedTail);
         }
       default:
         // 未知 Visible event 不再静默丢弃；普通模式显示类型摘要，调试模式可展开原始详情。
@@ -3710,7 +4132,32 @@ class _ChatScreenState extends State<ChatScreen> {
   void _openSessionFilesFromActionRail() {
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    openSessionFiles(context, widget.store, sid, gitReadApi: widget.gitReadApi);
+    openSessionFiles(
+      context,
+      widget.store,
+      sid,
+      gitReadApi: widget.gitReadApi,
+      apiClient: _api,
+    );
+  }
+
+  /// issue #67：工具卡折叠行路径点击 → 直接定位到该文件的预览。
+  ///
+  /// 只把服务端下发的 `relative` 原样交给页面，**不在卡片/页面里拼绝对路径**；
+  /// 拼接与夹取由 [SessionFilesController] 唯一负责。返回时 ChatScreen 未重建，
+  /// 滚动位置与展开态天然保持。
+  void _openFilePathPreview(String relativePath) {
+    if (!mounted) return;
+    final sid = _mySessionId ?? widget.store.sessionId;
+    if (sid == null) return;
+    openSessionFiles(
+      context,
+      widget.store,
+      sid,
+      gitReadApi: widget.gitReadApi,
+      initialRelativePath: relativePath,
+      apiClient: _api,
+    );
   }
 
   Future<void> _openGit() async {
@@ -3858,13 +4305,44 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // ── issue #70：活动条与过程行分工（三处不重复）─────────────────────────
+  //
+  // 判定（issue 预审补充 + 裁决 D3）：
+  // - 过程块可见且块内已有 reasoning 行（provisional 或落定）：
+  //   有工具 → 只显示工具/状态；无工具 → 整条不渲染（思考已在过程行里）；
+  // - 无过程块锚点 → 保留现状思考（`思考中…（N 字）`，正文流式后 `已思考 N 字`）；
+  // - 历史视图不渲染活动条；`showReasoning` 仍只控制内容能否展开。
+  // 思考文本走 `_liveReasoningRevision` 行级通知（与 provisional 行同源、同一快照）。
+  Widget _buildActivityBar() {
+    final live = _liveReasoning.current;
+    final plan = _livePlanCache;
+    final inBlock =
+        plan != null && (plan.provisionalRendered || plan.reasoningRowVisible);
+    final reasoning = inBlock ? '' : (live?.text ?? '');
+    final tools = _activeTools.values.toList();
+    if (reasoning.isEmpty && tools.isEmpty) return const SizedBox.shrink();
+    return _ActivityBar(
+      reasoning: reasoning,
+      expanded: _reasoningExpanded,
+      textStreaming: _streaming,
+      showContent: widget.store.showReasoning,
+      tools: tools,
+      onToggleReasoning: () =>
+          setState(() => _reasoningExpanded = !_reasoningExpanded),
+    );
+  }
+
   // ── UI ──
   @override
   Widget build(BuildContext context) {
+    LiveProcessCounters.pageBuilds++; // issue #70：性能用例的页面重建计数钩子
     final store = widget.store;
     final ink3 = DshColors.ink3(context);
     final brand = DshColors.brand(context);
     final surface = DshColors.surface(context);
+    // issue #52：先建立过程块计划（宿主/索引/分批），再决定哪些工具卡已由过程块呈现。
+    _planFor(history: false);
+    if (_inHistory) _planFor(history: true);
 
     // issue #24：刻度轨只在"离开底部且有 ≥2 轮"时出现（复用 160px 判据，
     // 与"回到底部"圆钮同进同出；见 ADR 0018）。
@@ -4032,16 +4510,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
-          // 活动条：思考中 / 工具执行中（过程反馈，不依赖任何开关）
-          if (!_inHistory && (_reasoning.isNotEmpty || _activeTools.isNotEmpty))
-            _ActivityBar(
-              reasoning: _reasoning,
-              expanded: _reasoningExpanded,
-              textStreaming: _streaming,
-              showContent: widget.store.showReasoning,
-              tools: _activeTools.values.toList(),
-              onToggleReasoning: () =>
-                  setState(() => _reasoningExpanded = !_reasoningExpanded),
+          // 活动条：工具状态 / 无过程块时的思考（issue #70：与 provisional 同源、三处不重复）
+          if (!_inHistory)
+            ValueListenableBuilder<int>(
+              valueListenable: _liveReasoningRevision,
+              builder: (context, _, _) => _buildActivityBar(),
             ),
           // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
           if (_question != null)
@@ -5007,6 +5480,10 @@ class _ChatScreenState extends State<ChatScreen> {
           if (attachment['name'] is String &&
               (attachment['name'] as String).isNotEmpty)
             'name': attachment['name'],
+          // issue #69：服务端当前契约不下发字节数；若字段确实存在则原样透传
+          // 数字型 size/bytes（展示层只在字段存在时显示，缺失不猜）。
+          if (attachment['size'] is num) 'size': attachment['size'],
+          if (attachment['bytes'] is num) 'bytes': attachment['bytes'],
         });
       }
       visit(value['images'], true);
@@ -5270,7 +5747,880 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Widget _buildItem(_MsgItem item) {
+  // ── issue #52（ADR 0027 §2）：轮次过程折叠渲染 ──────────────────────
+  //
+  // 事件序：`turn/start → 提示词 user/message → 过程（思考/工具）→ 回答 → turn/end`。
+  // 过程块因此锚在**过程行实际出现的位置**（提示词之后），而不是 turn/start 分隔条：
+  // 否则折叠摘要会跑到用户提问上方。轮内有插话时，过程行按插话切成多段、逐段折叠。
+  //
+  // 渲染计划（hosts/索引/分批可见集）只在新事件、折叠状态或设置变化时重建，
+  // 每帧只做查表，避免逐帧线性扫描与逐 delta 全量重建。
+
+  TurnFoldPolicy get _foldPolicy => TurnFoldPolicy(
+        mode: widget.store.stepDisplayMode,
+        timing: widget.store.turnFoldTiming,
+      );
+
+  _ProcessPlan? _livePlanCache;
+  _ProcessPlan? _histPlanCache;
+  int _processEpoch = 0; // 折叠状态/分批/设置变化（无需重新折叠事件）
+
+  void _invalidateProcessPlan() {
+    _processEpoch++;
+  }
+
+  List<TurnProcess> _ensureProcessTurns() {
+    if (_processBuiltVersion == _processVersion) return _processTurns;
+    _processBuiltVersion = _processVersion;
+    _processTurns = _turnProcess.build();
+    _processTurnMap = {for (final turn in _processTurns) turn.turn: turn};
+    return _processTurns;
+  }
+
+  Map<int, TurnProcess> _ensureProcessTurnMap() {
+    _ensureProcessTurns();
+    return _processTurnMap;
+  }
+
+  _ProcessPlan _planFor({required bool history}) {
+    final cached = history ? _histPlanCache : _livePlanCache;
+    // 每份计划各自记录折叠版本：live 与历史分段会各自前进，共享一个版本会让
+    // 先构建的那份误判为新鲜（分段历史第二页起的 latent 过期）。
+    if (cached != null &&
+        cached.processVersion == _processVersion &&
+        cached.epoch == _processEpoch) {
+      return cached;
+    }
+    final items = history ? _histItems : <_MsgItem>[..._items, ..._olderItems];
+    final plan = _buildProcessPlan(items, historyView: history);
+    if (history) {
+      _histPlanCache = plan;
+    } else {
+      _livePlanCache = plan;
+    }
+    return plan;
+  }
+
+  /// 按 callId 从**当前列表**取工具条目（计划只存 key，不持有对象）。
+  ///
+  /// 详情加载/失败回退/反馈 toggle 都是**原地替换**条目对象，不新增事件版本；
+  /// 计划若缓存旧对象，过程块里的工具卡就不会刷新。渲染时按 key 取当前对象，
+  /// 从根上避免这类过期缓存。
+  _MsgItem? _currentToolItem(String? callId, {required bool historyView}) {
+    if (callId == null) return null;
+    final lists = historyView
+        ? <List<_MsgItem>>[_histItems]
+        : <List<_MsgItem>>[_items, _olderItems];
+    for (final list in lists) {
+      for (final item in list) {
+        if (item.kind == _MsgKind.tool && item.toolCallId == callId) {
+          return item;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 按 seq 从当前列表取该轮最后一条助手消息（页脚操作附着点，反馈高亮需实时）。
+  _MsgItem? _currentAssistantItem(int? seq, {required bool historyView}) {
+    if (seq == null) return null;
+    final lists = historyView
+        ? <List<_MsgItem>>[_histItems]
+        : <List<_MsgItem>>[_items, _olderItems];
+    for (final list in lists) {
+      for (final item in list) {
+        if (item.kind == _MsgKind.assistant && item.seq == seq) return item;
+      }
+    }
+    return null;
+  }
+
+  /// 建立「宿主条目 → 过程块」计划与索引（每次结构变化重建一次）。
+  _ProcessPlan _buildProcessPlan(
+    List<_MsgItem> items, {
+    required bool historyView,
+  }) {
+    LiveProcessCounters.processPlanBuilds++;
+    final policy = _foldPolicy;
+    final turns = _ensureProcessTurnMap();
+    final humanUserSeqs = _turnProcess.humanUserSeqs;
+    final itemsByTurn = <int, List<_MsgItem>>{};
+    for (final item in items) {
+      int? turn;
+      if (item.kind == _MsgKind.divider) {
+        final seq = item.seq;
+        if (seq != null) {
+          turn = _turnProcess.turnOfStartSeq(seq) ?? _turnProcess.turnOfEndSeq(seq);
+        }
+      } else if (item.kind == _MsgKind.tool) {
+        final callId = item.toolCallId;
+        if (callId != null) turn = _turnProcess.turnOfCall(callId);
+      } else {
+        turn = _turnProcess.turnOfSeq(item.seq);
+      }
+      if (turn == null || !turns.containsKey(turn)) continue;
+      (itemsByTurn[turn] ??= <_MsgItem>[]).add(item);
+    }
+
+    final hosts = <int, List<_ProcessBlockPlan>>{};
+    final renderedCallIds = <String>{};
+    final anchoredTurns = <int>{};
+    // 页脚需要「该轮最后一条助手消息」：只存 seq（渲染时再从当前列表取对象，
+    // 避免反馈/详情原地替换后仍拿着旧对象）。
+    final assistantSeqByTurn = <int, int>{};
+    final hiddenByTurn = <int, int>{};
+    // issue #70：provisional 只注入「当前流式轮次的最后一段」，且该段必须已有宿主
+    // （无持久过程行 → 无锚点 → 不凭空造过程块，活动条保留现状思考）。
+    // 计划里只存排序键，不存文本（文本由行级 ValueNotifier 读取，避免陈旧缓存）。
+    final live = historyView ? null : _liveReasoning.current;
+    var provisionalRendered = false;
+    var reasoningRowVisible = false;
+
+    // 仅轮次开始边界（重试边界只取首个）参与锚定，避免同一轮重复渲染。
+    final primaryStarts = <int, int>{};
+    for (final entry in itemsByTurn.entries) {
+      final turn = entry.key;
+      final process = turns[turn]!;
+      final start = _turnProcess.startSeqOfTurn(turn);
+      if (start != null) primaryStarts[turn] = start;
+      // 该轮最后一条助手消息（页脚操作附着点）。
+      for (final item in entry.value) {
+        if (item.kind != _MsgKind.assistant) continue;
+        final seq = item.seq;
+        if (seq == null || seq < process.startSeq) continue;
+        final end = process.endSeq;
+        if (end != null && seq > end) continue;
+        final best = assistantSeqByTurn[turn];
+        if (best == null || best < seq) assistantSeqByTurn[turn] = seq;
+      }
+    }
+
+    for (final entry in itemsByTurn.entries) {
+      final turn = entry.key;
+      final process = turns[turn]!;
+      final turnItems = entry.value;
+      final start = primaryStarts[turn];
+      if (start == null) continue; // 历史截断：没有 turn/start，不构造过程块
+      anchoredTurns.add(turn);
+      final segments = segmentsOf(process);
+      if (segments.isEmpty) continue;
+      final expandedByDefault = !turnAutoCollapsed(
+        process,
+        policy: policy,
+        humanUserSeqs: humanUserSeqs,
+      );
+      final limit = _processRowLimits[turn] ?? processBatchSize;
+      final running = !process.ended;
+      // 单轮过程行 >50 行分批：分批规则走纯函数 batchProcessRows（唯一实现）。
+      final batchWindow = batchProcessRows(process.rows, limit);
+      final visibleSeqSet = <int>{
+        for (final row in batchWindow.visible) row.seq,
+      };
+      final hiddenTotal = batchWindow.hidden;
+      for (var si = 0; si < segments.length; si++) {
+        final segment = segments[si];
+        // 宿主：该段第一条过程行所在的（或其后最近的）条目——过程块渲染在它之前。
+        _MsgItem? host;
+        for (final item in turnItems) {
+          final seq = item.seq;
+          if (seq == null || seq < segment.startSeq) continue;
+          if (host == null || seq < (host.seq ?? 1 << 62)) host = item;
+        }
+        if (host == null || host.seq == null) continue;
+        final key = '$turn:$si';
+        final manual = _turnExpansions[key];
+        final occupied = process.forceExpanded
+            ? true
+            : (manual ?? expandedByDefault);
+        final grouping = running
+            ? policy.stepGrouping == StepGrouping.collapsed
+            : policy.stepGrouping != StepGrouping.none;
+        final visibleRows = <int>{};
+        if (occupied) {
+          for (final row in segment.rows) {
+            if (visibleSeqSet.contains(row.seq)) visibleRows.add(row.seq);
+          }
+        }
+        // issue #70：组展开态与渲染同口径（运行中强制展开；用户手动收起优先）。
+        List<bool>? groupExpandedFlags;
+        if (grouping) {
+          groupExpandedFlags = [
+            for (final group in segment.groups)
+              _groupExpansions['$key:${group.step ?? 'x'}'] ??
+                  !groupAutoCollapsed(
+                    group,
+                    policy: policy,
+                    turnRunning: running,
+                  ),
+          ];
+        }
+        // provisional 可见条件：该轮最后一段、块可见；若该 step 已有组则组也必须展开。
+        _ProvisionalSlot? slot;
+        if (live != null &&
+            turn == live.turn &&
+            si == segments.length - 1 &&
+            occupied) {
+          var visible = true;
+          if (grouping) {
+            final gi = segment.groups.indexWhere((g) => g.step == live.step);
+            if (gi >= 0 && !groupExpandedFlags![gi]) visible = false;
+          }
+          if (visible) {
+            slot = _ProvisionalSlot(
+              turn: live.turn,
+              step: live.step,
+              orderSeq: live.firstSeq,
+            );
+            provisionalRendered = true;
+          }
+        }
+        // 该轮可见过程块内是否已有 reasoning 行（provisional 或落定）——活动条据此去重。
+        if (live != null && turn == live.turn && occupied) {
+          var hasReasoning = slot != null;
+          if (!hasReasoning && grouping) {
+            for (var gi = 0; gi < segment.groups.length; gi++) {
+              if (!groupExpandedFlags![gi]) continue;
+              for (final row in segment.groups[gi].rows) {
+                if (row.isReasoning && visibleRows.contains(row.seq)) {
+                  hasReasoning = true;
+                  break;
+                }
+              }
+              if (hasReasoning) break;
+            }
+          } else if (!hasReasoning) {
+            for (final row in segment.rows) {
+              if (row.isReasoning && visibleRows.contains(row.seq)) {
+                hasReasoning = true;
+                break;
+              }
+            }
+          }
+          if (hasReasoning) reasoningRowVisible = true;
+        }
+        final plan = _ProcessBlockPlan(
+          process: process,
+          segmentIndex: si,
+          segment: segment,
+          expanded: occupied,
+          grouping: grouping,
+          intervalKey: key,
+          isLastSegmentOfTurn: si == segments.length - 1,
+          hiddenTotalInTurn: 0, // 稍后回填
+          visibleRowSeqs: visibleRows,
+          liveProcessDetail: policy.liveProcessDetail,
+          historyView: historyView,
+          provisional: slot,
+        );
+        (hosts[host.seq!] ??= <_ProcessBlockPlan>[]).add(plan);
+        // 无论该段当前是否展开、行是否被分批隐藏，只要段有宿主，
+        // 它的工具行就由过程块承载——否则平铺工具卡会与折叠摘要同时出现。
+        for (final row in segment.rows) {
+          final callId = row.callId;
+          if (row.isTool && callId != null) renderedCallIds.add(callId);
+        }
+      }
+      if (hiddenTotal > 0) hiddenByTurn[turn] = hiddenTotal;
+    }
+
+    // 回填「该轮还有多少行未展示」，让最后一段承载「显示更多」。
+    if (hiddenByTurn.isNotEmpty) {
+      hosts.forEach((seq, plans) {
+        for (var i = 0; i < plans.length; i++) {
+          final plan = plans[i];
+          final hidden = hiddenByTurn[plan.process.turn];
+          if (hidden == null || !plan.isLastSegmentOfTurn) continue;
+          plans[i] = plan.copyWith(hiddenTotalInTurn: hidden);
+        }
+      });
+    }
+
+    return _ProcessPlan(
+      processVersion: _processVersion,
+      epoch: _processEpoch,
+      hostsBySeq: hosts,
+      renderedCallIds: renderedCallIds,
+      anchoredTurns: anchoredTurns,
+      assistantSeqByTurn: assistantSeqByTurn,
+      provisionalRendered: provisionalRendered,
+      reasoningRowVisible: reasoningRowVisible,
+    );
+  }
+
+  Widget _buildProcessBlockPlan(_ProcessBlockPlan plan) {
+    final context = this.context;
+    final policy = _foldPolicy;
+    final process = plan.process;
+    if (plan.segment.isEmpty) return const SizedBox.shrink();
+    // 强制展开（未结束 / 有插话 / 异常结束）时摘要不可点——点了也收不起来，
+    // 与其给一个无效点按，不如禁用并保留箭头缺失的静态态。
+    final forced = process.forceExpanded;
+    final children = <Widget>[];
+    // issue #61：摘要行只作折叠态的「展开入口」；展开后组抬头/过程行已经表达了同一信息，
+    // 再挂整轮摘要会造成层级重复（alpha.7 真机截图问题 1）。
+    if (!plan.expanded) {
+      children.add(
+        _ProcessSummaryRow(
+          text: plan.segment.summary,
+          expanded: false,
+          onTap: forced
+              ? null
+              : () => setState(() {
+                    _turnExpansions[plan.intervalKey] = true;
+                    _invalidateProcessPlan();
+                  }),
+        ),
+      );
+    } else {
+      final groupList = plan.segment.groups;
+      final slot = plan.provisional;
+      if (plan.grouping) {
+        // provisional 若属于某个已有组，按 firstSeq 插在该组有序行之间（不重排已成行）；
+        // 若该 step 还没有任何持久行（新组）→ 不合成组抬头，直接追加到块末尾（ADR #70 裁决 D2）。
+        final slotGroupIndex = slot == null
+            ? -1
+            : groupList.indexWhere((group) => group.step == slot.step);
+        var slotPlaced = false;
+        for (var gi = 0; gi < groupList.length; gi++) {
+          final group = groupList[gi];
+          // issue #75：没有任何可见行（分批把整组行挡在窗口外等）的组不渲染抬头，
+          // 避免「0 次工具调用」幽灵行；用户可通过块末尾的「显示更多」把行放出来。
+          final hasVisibleRow = group.rows.any(
+            (row) => plan.visibleRowSeqs.contains(row.seq),
+          );
+          if (!hasVisibleRow) continue;
+          final groupKey = '${plan.intervalKey}:${group.step ?? 'x'}';
+          final manual = _groupExpansions[groupKey];
+          // 默认折叠规则走纯函数（唯一实现）：运行中的组强制展开，完成态默认折叠。
+          final groupExpanded = manual ??
+              !groupAutoCollapsed(
+                group,
+                policy: policy,
+                turnRunning: !process.ended,
+              );
+          // issue #61（note 1791）：抬头只信真实运行态——组内还有未 settled 的工具行，
+          // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
+          // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
+          final groupRunning = group.running && !process.ended;
+          children.add(_ProcessGroupHeader(
+            text: processGroupHeader(
+              group,
+              running: groupRunning,
+              showDetail: plan.liveProcessDetail,
+            ),
+            expanded: groupExpanded,
+            running: groupRunning,
+            onTap: () => setState(() {
+              _groupExpansions[groupKey] = !groupExpanded;
+              _invalidateProcessPlan();
+            }),
+          ));
+          if (!groupExpanded) continue;
+          if (slot != null && gi == slotGroupIndex) {
+            var inserted = false;
+            for (final row in group.rows) {
+              if (!inserted && row.seq > slot.orderSeq) {
+                children.add(_buildProvisionalReasoningRow(slot));
+                inserted = true;
+              }
+              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
+              children.add(
+                _buildProcessRow(
+                  process,
+                  row,
+                  historyView: plan.historyView,
+                  policy: policy,
+                ),
+              );
+            }
+            if (!inserted) {
+              children.add(_buildProvisionalReasoningRow(slot));
+            }
+            slotPlaced = true;
+          } else {
+            for (final row in group.rows) {
+              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
+              children.add(
+                _buildProcessRow(
+                  process,
+                  row,
+                  historyView: plan.historyView,
+                  policy: policy,
+                ),
+              );
+            }
+          }
+        }
+        if (slot != null && !slotPlaced) {
+          children.add(_buildProvisionalReasoningRow(slot));
+        }
+      } else {
+        var inserted = false;
+        for (final row in plan.segment.rows) {
+          if (slot != null && !inserted && row.seq > slot.orderSeq) {
+            children.add(_buildProvisionalReasoningRow(slot));
+            inserted = true;
+          }
+          if (!plan.visibleRowSeqs.contains(row.seq)) continue;
+          children.add(
+            _buildProcessRow(
+              process,
+              row,
+              historyView: plan.historyView,
+              policy: policy,
+            ),
+          );
+        }
+        if (slot != null && !inserted) {
+          children.add(_buildProvisionalReasoningRow(slot));
+        }
+      }
+      if (plan.hiddenTotalInTurn > 0) {
+        final limit = _processRowLimits[process.turn] ?? processBatchSize;
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(left: 24, bottom: 6),
+            child: TextButton(
+              onPressed: () => setState(() {
+                _processRowLimits[process.turn] = limit + processBatchSize;
+                _invalidateProcessPlan();
+              }),
+              child: Text(
+                L10n.t(
+                  '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
+                  'Show more (${plan.hiddenTotalInTurn} rows left)',
+                ),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: DshColors.ink3(context),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+      // issue #61：展开后摘要行不在，收起的入口改为过程块末尾的行内控件
+      // （非卡片底色、chevron 向上）。强制展开时保持不可收起语义。
+      if (!forced) {
+        children.add(
+          _CollapseProcessRow(
+            key: ValueKey<String>('collapse-process:${plan.intervalKey}'),
+            onTap: () => setState(() {
+              _turnExpansions[plan.intervalKey] = false;
+              _invalidateProcessPlan();
+            }),
+          ),
+        );
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
+    );
+  }
+
+  Widget _buildProcessRow(
+    TurnProcess process,
+    ProcessRow row, {
+    required bool historyView,
+    required TurnFoldPolicy policy,
+  }) {
+    if (row.isReasoning) {
+      final key = '${process.turn}:${row.seq}';
+      final expanded = _reasoningRowExpansions[key] ??
+          widget.store.reasoningDefaultExpanded;
+      return _ReasoningProcessRow(
+        rowKey: ValueKey<String>('reasoning-row:${process.turn}:${row.seq}'),
+        text: row.reasoning,
+        chars: row.reasoningChars,
+        // settledReasoningPreview 只作用于已结束思考行的折叠预览。
+        preview: policy.settledReasoningPreview ? row.reasoningPreview() : '',
+        expanded: expanded,
+        onToggle: () => setState(() {
+          _reasoningRowExpansions[key] = !expanded;
+          _invalidateProcessPlan();
+        }),
+      );
+    }
+    final item = _currentToolItem(row.callId, historyView: historyView);
+    if (item == null) {
+      // 该工具卡不在当前列表（分页边界）：给一行只读摘要，不假装能展开详情。
+      return Padding(
+        padding: const EdgeInsets.only(left: 24, bottom: 6),
+        child: Text(
+          '${_isPlaceholderToolName(row.toolName) ? L10n.t('工具调用', 'Tool call') : row.toolName} · '
+          '${switch (row.status) {
+            'success' => L10n.t('成功', 'Succeeded'),
+            'failed' => L10n.t('失败', 'Failed'),
+            _ => L10n.t('进行中', 'Running'),
+          }}',
+          style: TextStyle(fontSize: 12, color: DshColors.ink3(context)),
+        ),
+      );
+    }
+    // 单张工具卡在所有档位默认收起（note 1700 / 桌面 useDisclosure 默认关闭）。
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: _buildToolCard(item),
+    );
+  }
+
+  /// issue #70：过程块里的运行中思考行（provisional）。
+  ///
+  /// 行内容由 `_liveReasoningRevision` 行级通知驱动（读同一份 [LiveReasoning] 快照），
+  /// 计划里只有排序键、没有文本 → delta 增长不会重建整轮计划；展开态由用户动作控制，
+  /// 收起态恒定一行（最近非空行预览），delta 不改变行高（issue「不得明显跳动」）。
+  Widget _buildProvisionalReasoningRow(_ProvisionalSlot slot) {
+    final stepKey = slot.step ?? 'null';
+    final stateKey = '${slot.turn}:$stepKey';
+    return ValueListenableBuilder<int>(
+      valueListenable: _liveReasoningRevision,
+      builder: (context, _, _) {
+        LiveProcessCounters.provisionalRowBuilds++;
+        final live = _liveReasoning.current;
+        if (live == null || live.turn != slot.turn || live.step != slot.step) {
+          // 落定/清理后计划会在同帧重建；退化为空占位，不渲染陈旧行。
+          return const SizedBox.shrink();
+        }
+        final expanded = _provisionalExpansions[stateKey] ?? false;
+        return _ReasoningProcessRow(
+          rowKey: ValueKey<String>(
+            'provisional-reasoning-row:${slot.turn}:$stepKey',
+          ),
+          bodyKey: ValueKey<String>(
+            'provisional-reasoning-body:${slot.turn}:$stepKey',
+          ),
+          text: live.text,
+          chars: live.chars,
+          preview: latestReasoningLinePreview(live.text),
+          collapsedLabel: L10n.t('思考中…', 'Thinking…'),
+          expandedLabel: L10n.t(
+            '思考中…（${live.chars} 字）',
+            'Thinking… (${live.chars} chars)',
+          ),
+          expanded: expanded,
+          cappedBody: true,
+          onToggle: () => setState(() {
+            _provisionalExpansions[stateKey] = !expanded;
+          }),
+        );
+      },
+    );
+  }
+
+  Widget _buildToolCard(_MsgItem item) {
+    final toolKey = 'tool:${item.toolCallId ?? item.seq}';
+    return _ToolActivityCard(
+      key: ValueKey<String>(
+        'tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}',
+      ),
+      expandedOverride: _failureExpansionOverrides[toolKey],
+      onExpandedOverride: (value) => setState(
+        () => _failureExpansionOverrides[toolKey] = value,
+      ),
+      onAutoLoadDetail: () => _autoLoadFailureDetail(item),
+      item: item,
+      debug: widget.store.timelineDebug,
+      sessionId: _mySessionId ?? '',
+      api: _api,
+      // issue #54：仅服务端声明支持的工具有专用卡；旧插件/未知工具一律通用卡。
+      toolCardsEnabled: _api.toolCardsCapabilities.supports(item.toolName),
+      // issue #68：PTC 子调用树能力位（旧插件 false → 计数/子行完全不渲染）。
+      ptcEnabled: _api.toolCardsCapabilities.ptcAvailable,
+      // issue #66：待答问询入口——构建时实时读取当前会话的 pending 问询（resolved 后自然为空）。
+      pendingQuestionIds: _pendingQuestionIdsForCards,
+      onOpenQuestion: _openPendingQuestion,
+      // issue #67：折叠行路径可点进预览（服务端两字段同现时才渲染为链接）。
+      onOpenFilePath: _openFilePathPreview,
+      onLoadDetail: _api.timelineCapabilities.detail &&
+              item.detailAvailable &&
+              item.detailSeq != null
+          ? () => _loadEventDetail(item)
+          : null,
+    );
+  }
+
+  /// issue #66：当前会话仍待回答的问题 id 集合（来源与 composer 问询卡同一条 pending 通道）。
+  Set<String> get _pendingQuestionIdsForCards {
+    final question = widget.store.questionForSession(_mySessionId);
+    if (question == null) return const <String>{};
+    return {
+      for (final q in question.questions)
+        if (q.id.trim().isNotEmpty) q.id,
+    };
+  }
+
+  // ── issue #53（ADR 0027 §3 / docs/03-api.md §6.20–§6.23）：轮末产出物 ──────
+
+  String? get _tailSessionId => _mySessionId ?? widget.store.sessionId;
+
+  /// 合并 `/history` 的 `turnTails`（只增不减：历史页/实时页可能先后到达）。
+  void _absorbTurnTails(Map<int, TurnTail> tails) {
+    if (tails.isEmpty) return;
+    tails.forEach((turn, tail) => _absorbTurnTail(turn, tail));
+    _turnTailVersion++;
+  }
+
+  void _absorbTurnTail(int turn, TurnTail tail) {
+    final previous = _turnTails[turn];
+    final merged = TurnTail(
+      changes: tail.changes || (previous?.changes ?? false),
+      presented: tail.presented || (previous?.presented ?? false),
+    );
+    if (merged == previous) return;
+    _turnTails[turn] = merged;
+    _turnTailVersion++;
+  }
+
+  /// 同轮多次 `present`：按路径去重、说明取最后一次声明（§6.20）。
+  void _absorbDeliverables(int turn, List<DeliverableFile> files) {
+    _deliverablesByTurn[turn] = mergeDeliverableDeclarations(
+      _deliverablesByTurn[turn] ?? const <DeliverableFile>[],
+      files,
+    );
+    _absorbTurnTail(turn, const TurnTail(presented: true));
+    _turnTailVersion++;
+  }
+
+  /// 行内链接解析器：只吃本轮**已到达**的记录（交付声明 + 已加载改动摘要）。
+  TurnFileLinkResolver? _fileLinkResolverForTurn(int turn) {
+    final cached = _linkResolvers[turn];
+    if (cached != null && cached.version == _turnTailVersion) {
+      return cached.resolver;
+    }
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return null;
+    final presented = _deliverablesByTurn[turn] ?? const <DeliverableFile>[];
+    final summary = _changedSummaryCache.lookup(turn);
+    final changed = summary != null && summary.state == ChangesState.available
+        ? summary.files
+        : const <ChangedFile>[];
+    if (presented.isEmpty && changed.isEmpty) return null;
+    final resolver = TurnFileLinkResolver(
+      sessionId: sessionId,
+      presented: presented,
+      changed: changed,
+    );
+    _linkResolvers[turn] = (version: _turnTailVersion, resolver: resolver);
+    return resolver;
+  }
+
+  /// 懒加载本轮改动摘要：`tail.changes` 为真时才拉；失败静默重试 1 次后整卡不显示
+  /// （调试模式留原因行）。`absent/unavailable` 由缓存短 TTL 承担负结果节流。
+  void _scheduleChangedSummary(int turn) {
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return;
+    if (_changedSummaryRequested.contains(turn)) return;
+    final retryAfter = _changedSummaryRetryAfter[turn];
+    if (retryAfter != null && retryAfter.isAfter(DateTime.now())) return;
+    _changedSummaryRequested.add(turn);
+    unawaited(_loadChangedSummary(sessionId, turn));
+  }
+
+  /// 失败退避时长：只抑制短时间内的重复请求；负结果的正规节流由缓存 TTL 承担。
+  static const Duration _changedSummaryFailureBackoff = Duration(seconds: 60);
+
+  Future<void> _loadChangedSummary(String sessionId, int turn) async {
+    final generation = _tailLoadGeneration;
+    final stillCurrent = () =>
+        mounted && generation == _tailLoadGeneration && sessionId == _tailSessionId;
+    try {
+      for (var attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          final summary = await _api.changesSummary(sessionId, turn);
+          // issue #60 recheck-11：reset/重同步后旧请求完成 → 丢弃，不回填缓存。
+          if (!stillCurrent()) return;
+          _changedSummaryCache.store(turn, summary);
+          _changedSummaryErrors.remove(turn);
+          _changedSummaryRetryAfter.remove(turn);
+          setState(() => _turnTailVersion++);
+          return;
+        } catch (e) {
+          if (!stillCurrent()) return;
+          _changedSummaryErrors[turn] = e.toString();
+          if (attempt == 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+            if (!stillCurrent()) return;
+          }
+        }
+      }
+      if (!stillCurrent()) return;
+      // 两次都失败：记录下来并退避；**不**阻止 TTL/重建后的恢复性重试。
+      _changedSummaryRetryAfter[turn] =
+          DateTime.now().add(_changedSummaryFailureBackoff);
+      if (mounted) setState(() {});
+    } finally {
+      // in-flight 门闩必须总是释放：否则缓存 TTL 到期后卡片永久消失（issue #60 R06）。
+      // 旧代际完成不得移除 reset 后新请求的门闩（recheck-11）。
+      if (generation == _tailLoadGeneration) {
+        _changedSummaryRequested.remove(turn);
+      }
+    }
+  }
+
+  /// 轮末两卡：改动卡（懒加载摘要）→ 交付卡。无文件不占位；能力位缺失不渲染。
+  Widget _buildTurnTailSection(int turn, {required bool historyView}) {
+    final caps = _api.turnTailCapabilities;
+    if (!caps.available) return const SizedBox.shrink();
+    final children = <Widget>[];
+
+    if (caps.changed && (_turnTails[turn]?.changes ?? false)) {
+      final summary = _changedSummaryCache.lookup(turn);
+      if (summary == null) {
+        _scheduleChangedSummary(turn);
+      } else if (summary.state == ChangesState.available &&
+          summary.files.isNotEmpty) {
+        children.add(
+          ChangedFilesCard(
+            turn: turn,
+            summary: summary,
+            onOpenFile: (file) => _openTurnFile(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.changed,
+                seq: file.seq,
+                index: file.index,
+              ),
+              display: file.display,
+              name: file.name,
+            ),
+            onOpenDiff: (index) => _openTurnChangesDiff(
+              turn,
+              summary.files,
+              index,
+            ),
+          ),
+        );
+      }
+    }
+
+    if (caps.presented) {
+      final delivered = _deliverablesByTurn[turn] ?? const <DeliverableFile>[];
+      if (delivered.isNotEmpty) {
+        children.add(
+          DeliveredFilesCard(
+            turn: turn,
+            files: delivered,
+            onOpen: (file) => _openTurnFile(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.presented,
+                seq: file.seq,
+                index: file.index,
+              ),
+              display: file.display,
+              name: file.name,
+            ),
+            onActions: (file) => _openTurnFileActions(
+              TurnFileCoordinate(
+                sessionId: _tailSessionId ?? '',
+                kind: TurnFileKind.presented,
+                seq: file.seq,
+                index: file.index,
+              ),
+              file.name,
+            ),
+          ),
+        );
+      }
+    }
+
+    if (children.isEmpty) {
+      final error = _changedSummaryErrors[turn];
+      if (widget.store.timelineDebug && error != null) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            L10n.t('改动摘要不可用：$error', 'Changed-files summary unavailable: $error'),
+            style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+          ),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
+    );
+  }
+
+  void _openTurnFile(
+    TurnFileCoordinate coordinate, {
+    required String display,
+    required String name,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TurnFilePreviewScreen(
+          api: _api,
+          coordinate: coordinate,
+          display: display,
+          name: name,
+        ),
+      ),
+    );
+  }
+
+  void _openTurnFileActions(TurnFileCoordinate coordinate, String name) {
+    unawaited(
+      showTurnFileActions(
+        context,
+        api: _api,
+        coordinate: coordinate,
+        name: name,
+      ),
+    );
+  }
+
+  void _openTurnChangesDiff(int turn, List<ChangedFile> files, int index) {
+    final sessionId = _tailSessionId;
+    if (sessionId == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TurnChangesDiffScreen(
+          api: _api,
+          sessionId: sessionId,
+          turn: turn,
+          files: files,
+          initialIndex: index,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTurnFooter(int turn, {required bool historyView}) {
+    final process = _ensureProcessTurnMap()[turn];
+    if (process == null || !process.ended) return const SizedBox.shrink();
+    final assistant = _currentAssistantItem(
+      _planFor(history: historyView).assistantSeqByTurn[turn],
+      historyView: historyView,
+    );
+    final ink3 = DshColors.ink3(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 14),
+      child: Row(
+        children: [
+          Text(turnFooterText(process), style: TextStyle(fontSize: 11, color: ink3)),
+          const Spacer(),
+          // 无 hover → 页脚操作常显；助手气泡内不再重复（issue #52 §5）。
+          if (assistant != null)
+            _MessageActionsBar(
+              item: assistant,
+              padding: EdgeInsets.zero,
+              onAction: (action) => _runMessageAction(assistant, action),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItem(_MsgItem item, {bool historyView = false}) {
     switch (item.kind) {
       case _MsgKind.user:
         // v3.1.4（issue #12）：系统注入消息（内核 source.kind ≠ "user"）不当普通气泡铺屏，
@@ -5315,9 +6665,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _ImagesGrid(
+                        ImageGalleryGrid(
                           images: item.images,
                           sessionId: _mySessionId ?? '',
+                          api: _api,
                         ),
                         if (item.files.isNotEmpty)
                           _FileResults(files: item.files),
@@ -5352,7 +6703,11 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             if (images.isNotEmpty)
               userBubble(
-                _ImagesGrid(images: images, sessionId: _mySessionId ?? ''),
+                ImageGalleryGrid(
+                  images: images,
+                  sessionId: _mySessionId ?? '',
+                  api: _api,
+                ),
               ),
             if (item.files.isNotEmpty)
               userBubble(_FileResults(files: item.files)),
@@ -5381,26 +6736,56 @@ class _ChatScreenState extends State<ChatScreen> {
         // v2.8.0：常驻操作栏（对齐 PC 端 MessageIconActions）——复制/好的回答/有问题的回答/分支，
         // 移除长按弹面板（操作可见即用）；逻辑与 _showMessageActions 共用 _runMessageAction
         final rk = item.messageId ?? 's${item.seq}';
+        // issue #52：思维链改为过程组首成员、消息操作迁到轮次页脚；
+        // 仅当该轮没有可锚定的过程块（旧数据/无 turn 事件）时才保留气泡内旧形态。
+        final turn = _turnProcess.turnOfSeq(item.seq);
+        final inProcess = turn != null &&
+            _planFor(history: historyView).anchoredTurns.contains(turn);
+        // issue #53 §6：收尾正文的行内文件链接只认本轮记录内的路径（精确优先、
+        // 唯一 basename 次之、歧义不链接）。
+        final linkResolver =
+            turn == null ? null : _fileLinkResolverForTurn(turn);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _AssistantBubble(
               text: item.text,
+              api: _api,
               usage: item.usage,
               images: item.images,
               sessionId: _mySessionId ?? '',
               streaming: false,
-              reasoning: item.reasoning,
+              reasoning: inProcess ? null : item.reasoning,
               defaultExpanded: widget.store.reasoningDefaultExpanded,
-              expandedOverride: widget.store.reasoningOverrideOf(
-                _mySessionId ?? '',
-                rk,
-              ),
+              expandedOverride: inProcess
+                  ? null
+                  : widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
               // 同上：异步方法不得放进 setState 闭包（否则点按思维链折叠会断言失败）
-              onOverride: (v) {
-                widget.store.setReasoningOverride(_mySessionId ?? '', rk, v);
-                setState(() {});
-              },
+              onOverride: inProcess
+                  ? null
+                  : (v) {
+                      widget.store.setReasoningOverride(
+                        _mySessionId ?? '',
+                        rk,
+                        v,
+                      );
+                      setState(() {});
+                    },
+              codeTap: linkResolver == null
+                  ? null
+                  : (code) {
+                      final coordinate = linkResolver.resolve(code);
+                      if (coordinate == null) return null;
+                      final name = code.split('/').last;
+                      return () => _openTurnFile(
+                        coordinate,
+                        display: code,
+                        name: name,
+                      );
+                    },
+              codeTapKey: linkResolver == null
+                  ? ''
+                  : '$_turnTailVersion:$turn',
             ),
             if (item.detailDegraded)
               Padding(
@@ -5498,37 +6883,26 @@ class _ChatScreenState extends State<ChatScreen> {
                   style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
                 ),
               ),
-            _MessageActionsBar(
-              item: item,
-              onAction: (a) => _runMessageAction(item, a),
-            ),
+            if (!inProcess)
+              _MessageActionsBar(
+                item: item,
+                onAction: (a) => _runMessageAction(item, a),
+              ),
           ],
         );
       case _MsgKind.tool:
+        // 过程块已经呈现该工具行时不再平铺重复；折叠轮因此不构建任何工具子项。
+        // 只按「这一行真的被渲染进过程块」判断——缺 turn 字段的旧宿主事件、
+        // 以及分页截断导致过程块未锚定的工具卡仍按原样平铺（不会凭空消失）。
+        if (item.toolCallId != null &&
+            _planFor(history: historyView)
+                .renderedCallIds
+                .contains(item.toolCallId)) {
+          return const SizedBox.shrink();
+        }
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
-          child: _ToolActivityCard(
-            key: ValueKey<String>(
-              'tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}',
-            ),
-            expandedOverride:
-                _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'],
-            onExpandedOverride: (value) => setState(
-              () =>
-                  _failureExpansionOverrides['tool:${item.toolCallId ?? item.seq}'] =
-                      value,
-            ),
-            onAutoLoadDetail: () => _autoLoadFailureDetail(item),
-            item: item,
-            debug: widget.store.timelineDebug,
-            sessionId: _mySessionId ?? '',
-            onLoadDetail:
-                _api.timelineCapabilities.detail &&
-                    item.detailAvailable &&
-                    item.detailSeq != null
-                ? () => _loadEventDetail(item)
-                : null,
-          ),
+          child: _buildToolCard(item),
         );
       case _MsgKind.event:
         // 协议/运行时元数据在普通模式不渲染（模型里仍保留 seq 与详情指针）；
@@ -5566,6 +6940,28 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       case _MsgKind.divider:
+        final seq = item.seq;
+        // issue #52：轮次边界分隔条原位替换为「过程块」/「轮次页脚」。
+        final startTurn = seq == null ? null : _turnProcess.turnOfStartSeq(seq);
+        if (startTurn != null) {
+          // 过程块已移到过程行位置（提示词之后）；轮次开始分隔条不再单独占位。
+          return const SizedBox.shrink();
+        }
+        final endTurn = seq == null ? null : _turnProcess.turnOfEndSeq(seq);
+        if (endTurn != null && _ensureProcessTurnMap().containsKey(endTurn)) {
+          // 同一轮多次 turn/end：页脚只渲染在末个边界，避免重复操作栏。
+          if (_turnProcess.endSeqOfTurn(endTurn) != seq) {
+            return const SizedBox.shrink();
+          }
+          // issue #53：轮末顺序 = 过程(折叠) → 最终回答 → 改动卡 → 交付卡 → 页脚。
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTurnTailSection(endTurn, historyView: historyView),
+              _buildTurnFooter(endTurn, historyView: historyView),
+            ],
+          );
+        }
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Center(
@@ -5624,6 +7020,14 @@ class _MsgItem {
 
   /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
   final int? detailTextChars;
+
+  /// issue #54（M3 Batch 1）：工具卡结构化摘要（tool/call 与 tool/result 分别投影）。
+  final ToolCallSummary? callSummary;
+  final ToolResultSummary? resultSummary;
+
+  /// issue #68（M3 Batch 2-C）：PTC 子调用树（仅根工具卡携带；默认收起）。
+  final List<ToolSubCall> subCalls;
+  final bool subCallsTruncated;
   _MsgItem.user(
     this.text, {
     this.seq,
@@ -5650,7 +7054,11 @@ class _MsgItem {
        detailLoading = false,
        detailDegraded = false,
        detailMode = null,
-       detailErrorCode = null;
+       detailErrorCode = null,
+       callSummary = null,
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
   _MsgItem.assistant(
     this.text, {
     this.usage,
@@ -5677,7 +7085,11 @@ class _MsgItem {
        toolResult = '',
        toolStatus = 'complete',
        toolError = false,
-       eventType = null;
+       eventType = null,
+       callSummary = null,
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
   _MsgItem.divider(this.text, {this.seq})
     : kind = _MsgKind.divider,
       latestSeq = seq,
@@ -5702,7 +7114,11 @@ class _MsgItem {
       detailLoading = false,
       detailDegraded = false,
       detailMode = null,
-      detailErrorCode = null;
+      detailErrorCode = null,
+      callSummary = null,
+      resultSummary = null,
+      subCalls = const <ToolSubCall>[],
+      subCallsTruncated = false;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -5722,6 +7138,10 @@ class _MsgItem {
     this.detailMode,
     this.detailErrorCode,
     this.detailTextChars,
+    this.callSummary,
+    this.resultSummary,
+    this.subCalls = const <ToolSubCall>[],
+    this.subCallsTruncated = false,
   }) : kind = _MsgKind.tool,
        text = toolResult.isNotEmpty ? toolResult : toolArguments,
        usage = null,
@@ -5759,7 +7179,11 @@ class _MsgItem {
        toolName = null,
        toolArguments = '',
        toolResult = '',
-       toolStatus = 'complete';
+       toolStatus = 'complete',
+       callSummary = null,
+       resultSummary = null,
+       subCalls = const <ToolSubCall>[],
+       subCallsTruncated = false;
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
@@ -5796,6 +7220,10 @@ class _MsgItem {
     String? detailMode,
     String? detailErrorCode,
     bool clearDetailError = false,
+    ToolCallSummary? callSummary,
+    ToolResultSummary? resultSummary,
+    List<ToolSubCall>? subCalls,
+    bool? subCallsTruncated,
   }) => _MsgItem.tool(
     toolCallId: toolCallId,
     toolName: name ?? toolName ?? L10n.t('工具', 'Tool'),
@@ -5817,6 +7245,10 @@ class _MsgItem {
         ? null
         : (detailErrorCode ?? this.detailErrorCode),
     detailTextChars: detailTextChars,
+    callSummary: callSummary ?? this.callSummary,
+    resultSummary: resultSummary ?? this.resultSummary,
+    subCalls: subCalls ?? this.subCalls,
+    subCallsTruncated: subCallsTruncated ?? this.subCallsTruncated,
   );
 
   _MsgItem copyAssistant({
@@ -5965,6 +7397,50 @@ class _InjectedBubble extends StatelessWidget {
   }
 }
 
+/// issue #61：通用占位名（不是真实工具名）。工具卡标题/摘要据此判断「缺名」。
+bool _isPlaceholderToolName(String? name) =>
+    name == null ||
+    name.isEmpty ||
+    name == L10n.t('工具', 'Tool') ||
+    name == L10n.t('工具调用', 'Tool call');
+
+/// issue #61：缺名工具卡的折叠行摘要——优先参数 JSON 的 `description`，其次参数首行，
+/// 再次结果首行；压平成一行、截断 ≤[max] 字。都没有时返回空串（不占位）。
+String _genericToolSummary(
+  String arguments,
+  String result, {
+  int max = 80,
+}) {
+  String firstLine(String text) {
+    for (final raw in text.split('\n')) {
+      final line = raw.trim();
+      if (line.isNotEmpty) return line;
+    }
+    return '';
+  }
+
+  var text = '';
+  final args = arguments.trim();
+  if (args.isNotEmpty) {
+    try {
+      final decoded = jsonDecode(args);
+      if (decoded is Map) {
+        final description = decoded['description'];
+        if (description is String && description.trim().isNotEmpty) {
+          text = description.trim();
+        }
+      }
+    } catch (_) {
+      // 参数不是合法 JSON（旧内核/半截 delta）：退回首行文本。
+    }
+    if (text.isEmpty) text = firstLine(args);
+  }
+  if (text.isEmpty) text = firstLine(result);
+  final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (flat.length <= max) return flat;
+  return '${flat.substring(0, max)}…';
+}
+
 String _detailErrorLabel(String code) {
   switch (code) {
     case 'session-not-found':
@@ -5986,6 +7462,25 @@ class _ToolActivityCard extends StatefulWidget {
   final _MsgItem item;
   final bool debug;
   final String sessionId;
+
+  /// issue #69：附图拉取用 ChatScreen 注入的 Api（测试可计数/打桩，生产同全局单例）。
+  final Api api;
+
+  /// issue #54：服务端能力位声明的工具集合包含当前工具（旧插件 false → 通用卡）。
+  final bool toolCardsEnabled;
+
+  /// issue #68：PTC 子调用树能力位（`capabilities.toolCards.ptc.version >= 1`）。
+  /// 旧插件/无能力位时即便 wire 带 subCalls 也完全不渲染（widget 层 gating）。
+  final bool ptcEnabled;
+
+  /// issue #66：当前会话仍待回答的问题 id 集合；question 卡命中时折叠行尾给「打开问询」。
+  final Set<String> pendingQuestionIds;
+
+  /// issue #66：点「打开问询」的回调（复用既有问询卡作答；行内不出现作答控件）。
+  final VoidCallback? onOpenQuestion;
+
+  /// issue #67：折叠行路径点击回调（参数是服务端下发的 cwd 相对路径，原样透传）。
+  final ValueChanged<String>? onOpenFilePath;
   final bool? expandedOverride;
   final ValueChanged<bool>? onExpandedOverride;
   final VoidCallback? onLoadDetail;
@@ -5995,6 +7490,12 @@ class _ToolActivityCard extends StatefulWidget {
     required this.item,
     required this.debug,
     required this.sessionId,
+    required this.api,
+    this.toolCardsEnabled = false,
+    this.ptcEnabled = false,
+    this.pendingQuestionIds = const <String>{},
+    this.onOpenQuestion,
+    this.onOpenFilePath,
     this.expandedOverride,
     this.onExpandedOverride,
     this.onLoadDetail,
@@ -6009,6 +7510,16 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   bool expanded = false;
   bool requested = false;
   bool userOverride = false;
+
+  /// issue #67：折叠行路径段的点击识别器（与 State 同生命周期，dispose 必须释放）。
+  TapGestureRecognizer? _pathTap;
+
+  @override
+  void dispose() {
+    _pathTap?.dispose();
+    _pathTap = null;
+    super.dispose();
+  }
 
   bool get _failed =>
       widget.item.toolError || widget.item.toolStatus == 'failed';
@@ -6147,6 +7658,588 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     ),
   );
 
+  // ── issue #54（M3 Batch 1）：专用工具卡投影（fail-open 到通用卡） ──────────
+
+  IconData _kindIcon(ToolCardKind kind) => switch (kind) {
+    ToolCardKind.command => Icons.terminal,
+    ToolCardKind.file => Icons.description_outlined,
+    ToolCardKind.search => Icons.search,
+    ToolCardKind.web => Icons.language,
+    ToolCardKind.image => Icons.image_outlined,
+    ToolCardKind.todo => Icons.checklist,
+    ToolCardKind.question => Icons.forum_outlined,
+    ToolCardKind.skill => Icons.auto_awesome_outlined,
+  };
+
+  Widget _chip(String text, Color color) => Container(
+    margin: const EdgeInsets.only(left: 5),
+    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .10),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      text,
+      maxLines: 1,
+      style: TextStyle(fontSize: 10.5, color: color, fontFamily: 'monospace'),
+    ),
+  );
+
+  /// issue #61：当前条目是否缺真实工具名（占位名不算已知名称）。
+  bool get _nameUnknown => _isPlaceholderToolName(widget.item.toolName);
+
+  /// issue #61：缺名通用卡的折叠行。摘要可读；调试模式额外保留原始 callId/事件类型。
+  Widget _genericFoldRow(String summary) {
+    final ink3 = DshColors.ink3(context);
+    final debugLine = 'callId: ${widget.item.toolCallId} · '
+        '${widget.item.eventType ?? 'tool/activity'}';
+    if (summary.isEmpty && !widget.debug) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (summary.isNotEmpty)
+            Text(
+              summary,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: ink3),
+            ),
+          if (widget.debug)
+            Padding(
+              padding: EdgeInsets.only(top: summary.isEmpty ? 0 : 2),
+              child: Text(
+                debugLine,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: ink3,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 折叠行：`$ command` / 路径+行范围 / pattern / URL + 统计/退出码/命中数胶囊。
+  ///
+  /// issue #67：file/image 卡在服务端两字段同现时，把**路径段**渲染成品牌色 + 下划线的
+  /// 行内链接（Text.rich 两段 span，`toPlainText()` 仍是整行原字符串，既有 find.text 不破）；
+  /// 不可点时保持原纯 Text 代码路径与视觉（零布局位移）。点击只把 `relative` 交给页面，
+  /// 不在卡片里拼路径；卡片标题的手势与本行无关，点击路径不改变展开态。
+  Widget _foldRow(ToolCallSummary call) {
+    final ink3 = DshColors.ink3(context);
+    final text = toolFoldText(call) ?? '';
+    final stats = toolFileStats(call);
+    // issue #60 R14：退出码/信号只对**已关联 command 工具**的卡片展示；非命令工具即便
+    // 结果摘要带了终止字段（旧服务端/伪造内容）也不显示。
+    final exit = call.isCommand ? toolExitBadge(widget.item.resultSummary) : null;
+    final count = toolResultCountBadge(call, widget.item.resultSummary);
+    // issue #66：仅当该问询卡仍有命中当前会话 pending 集合的问题时，行尾给「打开问询」入口。
+    final showOpenQuestion =
+        widget.onOpenQuestion != null &&
+        questionCallPending(call, widget.pendingQuestionIds);
+    final tapParts = _previewTapParts(call);
+    final baseStyle = TextStyle(
+      fontSize: 11.5,
+      color: ink3,
+      fontFamily: call.isCommand ? 'monospace' : null,
+    );
+    final Widget foldText;
+    if (tapParts == null) {
+      // B/D 态：与 issue #54/#66 完全同形（无手势、无下划线、无 key）。
+      foldText = Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: baseStyle,
+      );
+    } else {
+      final pathText = tapParts.path;
+      final suffix = tapParts.suffix;
+      final relative = tapParts.relative;
+      final linkStyle = baseStyle.copyWith(
+        color: DshColors.brand(context),
+        decoration: TextDecoration.underline,
+        decorationColor: DshColors.brand(context),
+      );
+      foldText = Semantics(
+        label: L10n.t('打开文件预览：$pathText', 'Open file preview: $pathText'),
+        link: true,
+        onTap: () => widget.onOpenFilePath?.call(relative),
+        excludeSemantics: true,
+        child: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(text: pathText, style: linkStyle, recognizer: _pathTap),
+              // suffix（如 ` · 行 2–5`）沿用折叠行 ink3 基础样式。
+              TextSpan(text: suffix),
+            ],
+          ),
+          key: Key(
+            'tool-path-fold:${widget.item.toolCallId ?? widget.item.seq}',
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: baseStyle,
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Row(
+        children: [
+          Expanded(child: foldText),
+          if (stats != null) _chip(stats, DshColors.ink3(context)),
+          if (exit != null) _chip(exit, Colors.redAccent),
+          if (count != null) _chip(count, DshColors.ink3(context)),
+          if (showOpenQuestion)
+            TextButton(
+              key: Key('open-question:${widget.item.toolCallId}'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                minimumSize: const Size(0, 32),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: widget.onOpenQuestion,
+              child: Text(
+                L10n.t('打开问询', 'Open question'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// issue #67：可点的「路径 + 其余文案 + 相对路径」；不可点返回 null。
+  ///
+  /// 识别器只在 State 生命周期内创建/复用、在 [dispose] 统一释放——不在 build 中途
+  /// dispose（用户按住路径时若发生重建，中途释放会打断手势）。
+  ({String path, String suffix, String relative})? _previewTapParts(
+    ToolCallSummary call,
+  ) {
+    final parts = toolFoldPathParts(call);
+    final relative = call.relativePath;
+    if (parts == null || relative == null || widget.onOpenFilePath == null) {
+      _pathTap?.onTap = null;
+      return null;
+    }
+    final tap = _pathTap ??= TapGestureRecognizer();
+    tap.onTap = () => widget.onOpenFilePath?.call(relative);
+    return (path: parts.path, suffix: parts.suffix, relative: relative);
+  }
+
+  /// 通用参数/结果块（issue #60 R12：无内联 diff 时普通模式也要可达参数，不只是结果）。
+  List<Widget> _genericBody({bool includeResult = true}) => [
+    if (widget.item.toolArguments.isNotEmpty)
+      _code(L10n.t('参数', 'Arguments'), widget.item.toolArguments),
+    if (includeResult && widget.item.toolResult.isNotEmpty)
+      _looksMarkdown(widget.item.toolResult) && !widget.debug
+          ? _markdownResult(widget.item.toolResult)
+          : _code(L10n.t('结果', 'Result'), widget.item.toolResult),
+  ];
+
+  /// 展开态专用内容；返回空列表时由调用方回退通用参数/结果块。
+  List<Widget> _specializedBody(ToolCallSummary call) {
+    final resultText = widget.item.toolResult;
+    // issue #60 R11：write/edit 的内联 diff 来自**调用参数**，不代表执行成功；失败时
+    // 必须保留真实结果原因（old_string 未找到/沙箱拒绝/read_image 读取失败）。
+    // 红色 Failed 抬头不能替代失败原因。
+    final failed = widget.item.toolError || widget.item.toolStatus == 'failed';
+    if (failed) {
+      // issue #60 recheck-5（R12 交叉场景）：失败也必须是"错误原因 + 通用参数/结果"，
+      // 失败的大 write/edit（diffTruncated/无 diff）在普通模式仍要能看到参数。
+      return [
+        if (resultText.isNotEmpty)
+          _code(L10n.t('错误', 'Error'), resultText)
+        else
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              L10n.t('工具失败（无错误详情）', 'Tool failed (no error detail)'),
+              style: TextStyle(fontSize: 11.5, color: Colors.redAccent),
+            ),
+          ),
+        // 结果已作为错误原因展示，这里只补参数，避免重复。
+        ..._genericBody(includeResult: false),
+      ];
+    }
+    switch (call.kind) {
+      case ToolCardKind.command:
+        return [
+          if (resultText.isNotEmpty)
+            _code(L10n.t('输出', 'Output'), resultText)
+          else
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                L10n.t('无输出', 'No output'),
+                style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+              ),
+            ),
+        ];
+      case ToolCardKind.file:
+        // write/edit：服务端给了内联 diff 就直接用统一查看器（issue #54 §4）。
+        if (toolHasInlineDiff(call)) {
+          return [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: SizedBox(
+                height: 320,
+                child: GitFileViewer(
+                  key: const Key('tool-diff-viewer'),
+                  mode: GitFileViewerMode.diff,
+                  path: call.filePath,
+                  diff: call.diff!,
+                  keys: const GitFileViewerKeys(prefix: 'tool-diff'),
+                ),
+              ),
+            ),
+          ];
+        }
+        // issue #60 R12：缺 diff / 超过 8 KiB 被截断时，按规格回退**通用参数+结果**
+        // （普通模式参数必须可达），而不是只给一句提示。
+        if (call.diffTruncated) {
+          return [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                L10n.t(
+                  'diff 较大，未内联展示；以下为参数/结果',
+                  'Diff too large to inline; showing arguments/result',
+                ),
+                style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+              ),
+            ),
+            ..._genericBody(),
+          ];
+        }
+        // read 或没有内联 diff 的 write/edit：回退通用参数+结果。
+        return _genericBody();
+      case ToolCardKind.search:
+        return resultText.isEmpty
+            ? const []
+            : [_code(L10n.t('结果', 'Result'), resultText)];
+      case ToolCardKind.web:
+        if (resultText.isEmpty) return const [];
+        return [
+          _looksMarkdown(resultText) && !widget.debug
+              ? _markdownResult(resultText)
+              : _code(L10n.t('结果', 'Result'), resultText),
+        ];
+      case ToolCardKind.image:
+        // 图片本体仍由既有 images 元数据网格渲染（下方通用块）。
+        return const [];
+      // issue #66（M3 Batch 2-A）：todo / question / skill 展开态均为只读回放。
+      case ToolCardKind.todo:
+        return _todoBody(call);
+      case ToolCardKind.question:
+        return _questionBody(call);
+      case ToolCardKind.skill:
+        return _skillBody(resultText);
+    }
+  }
+
+  // ── issue #66（M3 Batch 2-A）：todo / question / skill 专用行（只读，无作答控件） ──
+
+  IconData _todoStatusIcon(String status) => switch (status) {
+    'completed' => Icons.check_circle,
+    'in_progress' => Icons.radio_button_checked,
+    _ => Icons.radio_button_unchecked,
+  };
+
+  Color _todoStatusColor(String status) => status == 'in_progress'
+      ? DshColors.brand(context)
+      : DshColors.ink3(context);
+
+  /// todo：只读清单（状态图标 + 文本，不可点）；空清单显示「无任务」。
+  List<Widget> _todoBody(ToolCallSummary call) {
+    final items = call.todoItems ?? const <TodoCardItem>[];
+    if (items.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            L10n.t('无任务', 'No tasks'),
+            style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+          ),
+        ),
+      ];
+    }
+    return [
+      for (final item in items)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                _todoStatusIcon(item.status),
+                size: 16,
+                color: _todoStatusColor(item.status),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  item.content,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, height: 1.35),
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  /// 某题在结果摘要里的答案项（无该题答案项返回 null）。
+  QuestionAnswerItem? _answerItemOf(
+    ToolResultSummary? result,
+    String? questionId,
+  ) {
+    if (result == null || questionId == null) return null;
+    for (final answer in result.answers ?? const <QuestionAnswerItem>[]) {
+      if (answer.questionId == questionId) return answer;
+    }
+    return null;
+  }
+
+  /// question：每题只读块（header / 问题文本 / 选项 / 答案行）——绝不放作答控件。
+  List<Widget> _questionBody(ToolCallSummary call) {
+    final questions = call.questions ?? const <QuestionCardItem>[];
+    final result = widget.item.resultSummary;
+    final pending = questionCallPending(call, widget.pendingQuestionIds);
+    return [
+      for (var index = 0; index < questions.length; index++)
+        _questionBlock(
+          question: questions[index],
+          result: result,
+          pending: pending,
+          first: index == 0,
+        ),
+    ];
+  }
+
+  Widget _questionBlock({
+    required QuestionCardItem question,
+    required ToolResultSummary? result,
+    required bool pending,
+    required bool first,
+  }) {
+    final ink3 = DshColors.ink3(context);
+    final brand = DshColors.brand(context);
+    final answerItem = _answerItemOf(result, question.id);
+    final values = answerItem?.values ?? const <String>[];
+    final answer = answerTextOf(result, question.id);
+    // 同题缺少稳定 id 时不给 key（避免多题 null 键在兄弟节点重复）。
+    final answerKey = question.id == null
+        ? null
+        : ValueKey<String>('tool-question-answer:${question.id}');
+    return Padding(
+      padding: EdgeInsets.only(top: first ? 6 : 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (question.header != null)
+            Text(
+              question.header!,
+              style: TextStyle(fontSize: 11, color: ink3),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              question.question,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+          for (final option in question.options)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    values.contains(option.label)
+                        ? Icons.check
+                        : Icons.radio_button_unchecked,
+                    size: 15,
+                    color: values.contains(option.label) ? brand : ink3,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          option.label,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: values.contains(option.label)
+                                ? FontWeight.w600
+                                : null,
+                          ),
+                        ),
+                        if (option.description != null)
+                          Text(
+                            option.description!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: ink3,
+                              height: 1.3,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (answer != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                key: answerKey,
+                L10n.t('答案：$answer', 'Answer: $answer'),
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+            )
+          // values 为空数组 → 未回答；结果里完全没该题答案时，仅在该卡仍待答时隐藏
+          // 答案行（作答入口在行尾），已结束/取消则明确显示未回答。
+          else if (answerItem != null || !pending)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                key: answerKey,
+                L10n.t('未回答', 'Unanswered'),
+                style: TextStyle(fontSize: 12, color: ink3),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// skill：只读说明（结果文本为空 → 无说明）。
+  List<Widget> _skillBody(String resultText) => resultText.isEmpty
+      ? [
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              L10n.t('无说明', 'No details'),
+              style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+            ),
+          ),
+        ]
+      : [_code(L10n.t('说明', 'Details'), resultText)];
+
+  // ── issue #68（M3 Batch 2-C）：PTC 子调用树（根卡内计数行 + 缩进只读子行） ──
+  //
+  // 只显示名称 + 状态 + 安全摘要；不做 args/结果二级展开、不显示图片；子调用不进入
+  // M1 过程行（它们只存在于根工具卡内部）。默认收起、失败不自动展开（#61 语义不变）。
+
+  bool get _ptcVisible =>
+      widget.ptcEnabled &&
+      (widget.item.subCalls.isNotEmpty || widget.item.subCallsTruncated);
+
+  Color _subCallStatusColor(String status) => switch (status) {
+    'failed' => Colors.redAccent,
+    'success' => DshColors.ink3(context),
+    _ => DshColors.brand(context),
+  };
+
+  /// 折叠行计数：「N 个子调用」+ truncated 后缀（根卡未展开时也可见）。
+  Widget _ptcCountRow() {
+    final count = widget.item.subCalls.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Row(
+        children: [
+          Icon(
+            Icons.account_tree_outlined,
+            size: 13,
+            color: DshColors.ink3(context),
+          ),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              toolSubCallCountLabel(
+                count,
+                truncated: widget.item.subCallsTruncated,
+              ),
+              key: Key(
+                'tool-ptc-count:${widget.item.toolCallId ?? widget.item.seq}',
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: DshColors.ink3(context),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 展开后的缩进子行（仅名称 + 状态 + 安全摘要；无二级详情）。
+  List<Widget> _ptcChildRows() {
+    final ink3 = DshColors.ink3(context);
+    final rows = <Widget>[];
+    for (final sub in widget.item.subCalls) {
+      final name = sub.name.isEmpty ? L10n.t('工具', 'Tool') : sub.name;
+      final status = toolSubCallStatusLabel(sub.status);
+      final fold = toolSubCallFoldText(
+        sub.summary,
+        text: sub.text,
+        isError: sub.isError,
+      );
+      final label = fold == null ? '$name · $status' : '$name · $status · $fold';
+      // A3：按 depth 分级缩进（depth1=10、2=24、3=38…；≥9 层封顶 122，避免
+      // 16 层嵌套在小屏横向溢出），仍单行 ellipsis、无二级交互。
+      final indent = 10 + ((sub.depth - 1).clamp(0, 8)) * 14;
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(top: 4, left: indent.toDouble()),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 5),
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: _subCallStatusColor(sub.status),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  key: Key('tool-ptc-subcall:${sub.callId}'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, color: ink3),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
@@ -6163,6 +8256,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         rawData['schema'] ??
         rawData['inputSchema'];
     final accent = item.toolError ? Colors.redAccent : DshColors.brand(context);
+    // issue #54：能力位声明支持 + 摘要可渲染才启用专用卡；否则完整回退通用卡。
+    final call = item.callSummary;
+    final specialized = widget.toolCardsEnabled && call != null && call.renderable;
+    final fold = specialized ? toolFoldText(call) : null;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -6184,14 +8281,21 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               child: Row(
                 children: [
                   Icon(
-                    item.toolError ? Icons.error_outline : Icons.build_outlined,
+                    item.toolError
+                        ? Icons.error_outline
+                        : specialized
+                        ? _kindIcon(call.kind)
+                        : Icons.build_outlined,
                     size: 16,
                     color: accent,
                   ),
                   const SizedBox(width: 7),
                   Expanded(
                     child: Text(
-                      item.toolName ?? L10n.t('工具', 'Tool'),
+                      // issue #61：缺名时明确是「工具调用」，不再用信息量为零的「工具」。
+                      _nameUnknown
+                          ? L10n.t('工具调用', 'Tool call')
+                          : item.toolName!,
                       style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -6220,6 +8324,15 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               ),
             ),
           ),
+          if (specialized && fold != null)
+            _foldRow(call)
+          else if (_nameUnknown)
+            // issue #61：通用卡缺名时给一行可读摘要（description → 参数首行 → 结果首行）。
+            _genericFoldRow(
+              _genericToolSummary(item.toolArguments, item.toolResult),
+            ),
+          // issue #68：子调用计数行在收起态也可见（能力位缺失时完全不渲染）。
+          if (_ptcVisible) _ptcCountRow(),
           if (expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
@@ -6234,18 +8347,27 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                         color: DshColors.ink3(context),
                       ),
                     ),
-                  if (item.toolArguments.isNotEmpty)
-                    _code(L10n.t('参数', 'Arguments'), item.toolArguments),
-                  if (item.toolResult.isNotEmpty)
-                    _looksMarkdown(item.toolResult) && !widget.debug
-                        ? _markdownResult(item.toolResult)
-                        : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  // issue #68：展开后缩进子行（名称/状态/安全摘要，只读，无二级详情）。
+                  if (_ptcVisible) ..._ptcChildRows(),
+                  if (specialized) ...[
+                    ..._specializedBody(call),
+                    if (widget.debug && item.toolArguments.isNotEmpty)
+                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                  ] else ...[
+                    if (item.toolArguments.isNotEmpty)
+                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                    if (item.toolResult.isNotEmpty)
+                      _looksMarkdown(item.toolResult) && !widget.debug
+                          ? _markdownResult(item.toolResult)
+                          : _code(L10n.t('结果', 'Result'), item.toolResult),
+                  ],
                   if (item.images.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: _ImagesGrid(
+                      child: ImageGalleryGrid(
                         images: item.images,
                         sessionId: widget.sessionId,
+                        api: widget.api,
                       ),
                     ),
                   // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
@@ -6691,6 +8813,9 @@ class _AssistantBubble extends StatefulWidget {
   // v3.0.0 图像链路：附图元数据（渲染按 attachmentId 经 /attachment 拉取）
   final List<Map<String, dynamic>> images;
   final String sessionId;
+
+  /// issue #69：附图拉取用 ChatScreen 注入的 Api（测试可计数/打桩，生产同全局单例）。
+  final Api api;
   // 思维链正文（null/空 = 不渲染折叠块）
   final String? reasoning;
   // 设置项：思维链默认折叠还是展开
@@ -6698,8 +8823,14 @@ class _AssistantBubble extends StatefulWidget {
   // 用户手动切换的覆盖值（null = 跟随设置项）；提升到界面层按消息持久化，列表回收重建不丢
   final bool? expandedOverride;
   final ValueChanged<bool>? onOverride;
+  // issue #53 §6：行内代码 → 本轮记录内文件链接（null = 不可链接）。
+  final InlineCodeTap? codeTap;
+
+  /// 解析缓存附加键：记录集合变化（新交付声明/改动摘要到达）时强制重新解析。
+  final String codeTapKey;
   const _AssistantBubble({
     required this.text,
+    required this.api,
     this.usage,
     this.images = const [],
     this.sessionId = '',
@@ -6708,6 +8839,8 @@ class _AssistantBubble extends StatefulWidget {
     this.defaultExpanded = false,
     this.expandedOverride,
     this.onOverride,
+    this.codeTap,
+    this.codeTapKey = '',
   });
 
   @override
@@ -6723,12 +8856,14 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   Widget build(BuildContext context) {
     // v2.9.0 review(M4)：缓存键含亮度——切深/浅色后已渲染气泡颜色需重建
     // （原仅按文本缓存 key,渲染颜色已烘焙进 Widget,切换主题不刷新）
-    final cacheKey = '${widget.text}\u0000${Theme.of(context).brightness}';
+    final cacheKey =
+        '${widget.text}\u0000${Theme.of(context).brightness}\u0000${widget.codeTapKey}';
     if (cacheKey != _parsedFor) {
       _parsedFor = cacheKey;
       _blocks = renderMarkdownBlocks(
         widget.text.isEmpty ? '…' : widget.text,
         context,
+        codeTap: widget.codeTap,
       );
       if (_parseLogs < 3) {
         _parseLogs++;
@@ -6773,7 +8908,11 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
             // v3.0.0 图像链路：附图（agent 回复里的图片，点击全屏）
             if (widget.images.isNotEmpty) ...[
               const SizedBox(height: 6),
-              _ImagesGrid(images: widget.images, sessionId: widget.sessionId),
+              ImageGalleryGrid(
+                images: widget.images,
+                sessionId: widget.sessionId,
+                api: widget.api,
+              ),
             ],
             if (widget.usage != null &&
                 ((widget.usage!['inputTokens'] as num? ?? 0) > 0 ||
@@ -6874,24 +9013,6 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
   }
 }
 
-// ── v3.0.0 图像链路：消息附图渲染（按 attachmentId 经 /attachment 拉取字节，LRU 缓存） ──
-
-/// 下载/保存目标目录。Android 优先应用外部私有目录（可经文件管理器/USB 访问），
-/// 其它平台回退应用文档目录——`getExternalStorageDirectory()` 在 iOS 会抛
-/// `UnsupportedError`，异常不会走到 `??` 的右操作数，必须显式 platform 判定 + try。
-/// 两者都是**应用私有**目录，不会出现在系统相册/下载列表，提示文案需如实说明。
-Future<Directory> _appSaveDirectory() async {
-  if (Platform.isAndroid) {
-    try {
-      final external = await getExternalStorageDirectory();
-      if (external != null) return external;
-    } catch (_) {
-      // 外部存储不可用（无介质/被策略限制）→ 回退内部目录
-    }
-  }
-  return getApplicationDocumentsDirectory();
-}
-
 /// 消息附件展示（issue #1 需求变更）：只显示文件名/类型/大小，**不提供下载**。
 /// 工具与 assistant 产出的文件行已整体移除，这里只服务用户自己的附件。
 class _FileResults extends StatelessWidget {
@@ -6972,274 +9093,25 @@ class _FileResultTile extends StatelessWidget {
   }
 }
 
-class _ImagesGrid extends StatelessWidget {
-  final List<Map<String, dynamic>> images;
-  final String sessionId;
-  const _ImagesGrid({required this.images, required this.sessionId});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final img in images) ...[
-          if (img != images.first) const SizedBox(height: 6),
-          _MsgImage(
-            key: ValueKey<String>('$sessionId:${img['attachmentId']}'),
-            image: img,
-            sessionId: sessionId,
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _MsgImage extends StatefulWidget {
-  final Map<String, dynamic> image;
-  final String sessionId;
-  const _MsgImage({super.key, required this.image, required this.sessionId});
-
-  @override
-  State<_MsgImage> createState() => _MsgImageState();
-}
-
-class _MsgImageState extends State<_MsgImage> {
-  Uint8List? _bytes;
-  bool _loading = true;
-  int _loadToken = 0;
-
-  String get _attachmentId => widget.image['attachmentId'] as String? ?? '';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void didUpdateWidget(covariant _MsgImage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final oldId = oldWidget.image['attachmentId'] as String? ?? '';
-    if (oldId != _attachmentId || oldWidget.sessionId != widget.sessionId) {
-      _loadToken++;
-      _bytes = null;
-      _loading = true;
-      _load();
-    }
-  }
-
-  Future<void> _load() async {
-    final token = ++_loadToken;
-    if (!_loading && mounted) setState(() => _loading = true);
-    final id = _attachmentId;
-    final sessionId = widget.sessionId;
-    if (id.isEmpty || sessionId.isEmpty) {
-      if (mounted && token == _loadToken) setState(() => _loading = false);
-      return;
-    }
-    try {
-      final bytes = await api.attachmentBytes(sessionId, id);
-      if (!mounted ||
-          token != _loadToken ||
-          sessionId != widget.sessionId ||
-          id != _attachmentId) {
-        return;
-      }
-      setState(() {
-        _bytes = bytes;
-        _loading = false;
-      });
-    } catch (_) {
-      if (!mounted ||
-          token != _loadToken ||
-          sessionId != widget.sessionId ||
-          id != _attachmentId) {
-        return;
-      }
-      setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _saveImage() async {
-    final b = _bytes;
-    if (b == null) return;
-    try {
-      final dir = await _appSaveDirectory();
-      final media = widget.image['mediaType']?.toString() ?? 'image/jpeg';
-      final ext = media
-          .split('/')
-          .last
-          .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '');
-      final target = File(
-        '${dir.path}/dsh-$_attachmentId.${ext.isEmpty ? 'jpg' : ext}',
-      );
-      await target.writeAsBytes(b, flush: true);
-      if (mounted) {
-        showToast(context, '${L10n.t('已保存：', 'Saved: ')}${target.path}');
-      }
-    } catch (e) {
-      if (mounted) showToast(context, '${L10n.t('保存失败：', 'Save failed: ')}$e');
-    }
-  }
-
-  void _openFull() {
-    final b = _bytes;
-    if (b == null) return;
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.black,
-        insetPadding: const EdgeInsets.all(12),
-        child: Stack(
-          children: [
-            InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4,
-              child: Image.memory(
-                b,
-                fit: BoxFit.contain,
-                width: double.infinity,
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    onPressed: _saveImage,
-                    tooltip: L10n.t('保存图片', 'Save image'),
-                    icon: const Icon(
-                      Icons.download_outlined,
-                      color: Colors.white,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final w = (widget.image['width'] as num?)?.toDouble() ?? 4;
-    final h = (widget.image['height'] as num?)?.toDouble() ?? 3;
-    // v3.0.0：竖图完整显示——比例不再硬收进方形（旧：clamp 0.4~2.5 且高上限 236 = 方形裁剪），
-    // 上限放宽到 480 并配合 BoxFit.contain（cover 会把竖图裁成中间一条，即"显示不全"的根因）
-    final ratio = (w > 0 && h > 0) ? (w / h).clamp(0.3, 3.0) : 1.5;
-    final boxW = 236.0;
-    final boxH = (boxW / ratio).clamp(80.0, 480.0);
-    final line = DshColors.line(context);
-    // v3.0.0(版本二)：GIF 动图 Flutter 原生支持（MultiFrameImageStreamCompleter 逐帧播放），
-    // 无需第三方包；超大 GIF（长边>4096 或 >16MB）解码耗 CPU/首帧慢，加"GIF·原图较大"角标提醒
-    final isGif = widget.image['mediaType'] == 'image/gif';
-    final bigGif =
-        isGif &&
-        ((w > 0 && h > 0 && (w > 4096 || h > 4096)) ||
-            (_bytes?.length ?? 0) > 16 * 1024 * 1024);
-    return GestureDetector(
-      onTap: _bytes != null ? _openFull : null,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: boxW,
-          height: boxH,
-          color: line,
-          child: _loading
-              ? const Center(
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              : _bytes != null
-              ? Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // v3.1.6（app-audit ①4）：按卡片显示宽度（236 逻辑像素）2x 解码，
-                    // 避免每条附图都按原始分辨率（12MP≈48MB）解码。
-                    Image.memory(
-                      _bytes!,
-                      fit: BoxFit.contain,
-                      gaplessPlayback: true,
-                      cacheWidth: 480,
-                    ),
-                    if (bigGif)
-                      Positioned(
-                        right: 4,
-                        bottom: 4,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            L10n.t('GIF·原图较大', 'GIF · large file'),
-                            style: const TextStyle(
-                              fontSize: 9.5,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                )
-              : InkWell(
-                  onTap: _load,
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.broken_image_outlined,
-                          size: 24,
-                          color: DshColors.ink3(context),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          L10n.t('加载失败，点按重试', 'Failed to load — tap to retry'),
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            color: DshColors.ink3(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-        ),
-      ),
-    );
-  }
-}
-
 /// v2.8.0：消息常驻操作栏（对齐 PC 端 MessageIconActions）——复制 / 好的回答 / 有问题的回答 / 在新对话中分支。
 /// 小尺寸图标一行，置于消息气泡下方；逻辑经 onAction 回调复用 _runMessageAction。
 /// 反馈选中态对齐 PC 端 data-active：品牌蓝图标 + 浅蓝圆底（positive/negative 同色，与 PC 一致）。
 class _MessageActionsBar extends StatelessWidget {
   final _MsgItem item;
   final void Function(String action) onAction;
-  const _MessageActionsBar({required this.item, required this.onAction});
+  /// issue #52：页脚内复用同一组操作图标（无 hover → 常显），间距由调用方决定。
+  final EdgeInsetsGeometry padding;
+  const _MessageActionsBar({
+    required this.item,
+    required this.onAction,
+    this.padding = const EdgeInsets.only(left: 2, bottom: 14),
+  });
 
   @override
   Widget build(BuildContext context) {
     final rating = item.rating;
     return Padding(
-      padding: const EdgeInsets.only(left: 2, bottom: 14),
+      padding: padding,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -7321,6 +9193,305 @@ class _ActionIcon extends StatelessWidget {
   }
 }
 
+// ── issue #52：轮次过程的三层折叠控件 ──────────────────────────────
+
+/// 整轮抬头：折叠时替代整个过程块的一行摘要；展开时兼作「收起」入口。
+class _ProcessSummaryRow extends StatelessWidget {
+  final String text;
+  final bool expanded;
+
+  /// 强制展开时为空：摘要不可点（避免「点了没反应」）。
+  final VoidCallback? onTap;
+  const _ProcessSummaryRow({
+    required this.text,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final line = DshColors.line(context);
+    final row = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      child: Row(
+        children: [
+          Icon(Icons.account_tree_outlined, size: 14, color: ink2),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: ink2,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Icon(
+            expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+            size: 16,
+            color: onTap == null ? line : ink3,
+          ),
+        ],
+      ),
+    );
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        border: Border.all(color: line),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: onTap == null
+          ? row
+          : InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(10),
+              child: row,
+            ),
+    );
+  }
+}
+
+/// 过程组抬头：运行中「正在调用工具…」，完成态「N 次工具调用」，不显示用时。
+class _ProcessGroupHeader extends StatelessWidget {
+  final String text;
+  final bool expanded;
+  final bool running;
+  final VoidCallback onTap;
+  const _ProcessGroupHeader({
+    required this.text,
+    required this.expanded,
+    required this.running,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ink3 = DshColors.ink3(context);
+    final brand = DshColors.brand(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+        child: Row(
+          children: [
+            if (running)
+              const SizedBox(
+                width: 11,
+                height: 11,
+                child: CircularProgressIndicator(strokeWidth: 1.5),
+              )
+            else
+              Icon(Icons.build_outlined, size: 12, color: ink3),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(fontSize: 11.5, color: ink3),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Icon(
+              expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+              size: 15,
+              color: running ? brand : ink3,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// issue #61：展开态过程块末尾的紧凑「收起过程」控件。
+///
+/// 行内样式（无卡片底色/边框），与 [_ProcessGroupHeader] 的文字/图标层级一致；
+/// chevron 向上表示「点这里收起」。只在非强制展开的过程块出现。
+class _CollapseProcessRow extends StatelessWidget {
+  final VoidCallback onTap;
+  const _CollapseProcessRow({super.key, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final ink3 = DshColors.ink3(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.keyboard_arrow_up, size: 15, color: ink3),
+              const SizedBox(width: 4),
+              Text(
+                L10n.t('收起过程', 'Collapse process'),
+                style: TextStyle(fontSize: 11.5, color: ink3),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 思维链过程行：折叠态保留一行预览，展开后显示全文（SelectableText，可复制）。
+///
+/// issue #70 起同一外观承载两种语义：
+/// - 落定行（默认分叉）：收起态显示首行预览 / `思维链 N 字`，正文不设高度上限；
+/// - provisional 行（[collapsedLabel] 非空）：收起态显示「思考中…」+ 最近一行预览，
+///   展开态显示「思考中…（N 字）」+ 全文；正文 `maxHeight: 200` 内部滚动，不撑高消息流。
+class _ReasoningProcessRow extends StatelessWidget {
+  final String text;
+  final int chars;
+  final String preview;
+  final bool expanded;
+  final VoidCallback onToggle;
+
+  /// 非空 = provisional 行：收起态标签（L10n「思考中…」/「Thinking…」）。
+  final String? collapsedLabel;
+
+  /// provisional 展开态标签（含字数）。
+  final String? expandedLabel;
+
+  /// 展开正文是否限制高度并内部滚动（provisional：true；落定行：false，保持现状）。
+  final bool cappedBody;
+
+  /// 行根节点 key（`provisional-reasoning-row:*` / `reasoning-row:*`，供测试断言唯一性）。
+  final Key? rowKey;
+
+  /// 展开正文滚动容器 key（`provisional-reasoning-body:*`）。
+  final Key? bodyKey;
+
+  const _ReasoningProcessRow({
+    required this.text,
+    required this.chars,
+    required this.preview,
+    required this.expanded,
+    required this.onToggle,
+    this.collapsedLabel,
+    this.expandedLabel,
+    this.cappedBody = false,
+    this.rowKey,
+    this.bodyKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final line = DshColors.line(context);
+    final brand = DshColors.brand(context);
+    final settledLabel =
+        L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars');
+    final label = expanded
+        ? (expandedLabel ?? settledLabel)
+        : (collapsedLabel ?? (preview.isEmpty ? settledLabel : preview));
+    final showPreview = !expanded && collapsedLabel != null && preview.isNotEmpty;
+    final bodyStyle = TextStyle(
+      fontSize: 12,
+      height: 1.6,
+      color: ink3,
+      fontStyle: FontStyle.italic,
+    );
+    final body = SelectableText(text, style: bodyStyle);
+    return Container(
+      key: rowKey,
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: DshColors.brandSoft(context),
+        border: Border.all(color: line),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  Icon(Icons.psychology_outlined, size: 14, color: brand),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: showPreview
+                        ? Row(
+                            children: [
+                              Text(
+                                collapsedLabel!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: ink2,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  preview,
+                                  style: TextStyle(fontSize: 12, color: ink3),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: ink2,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                  ),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 16,
+                    color: ink3,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded && text.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: cappedBody
+                  // issue #70 裁决 D1：展开正文不撑高消息流（与活动条内容面板同口径）。
+                  ? ConstrainedBox(
+                      key: bodyKey,
+                      constraints: const BoxConstraints(maxHeight: 200),
+                      child: SingleChildScrollView(child: body),
+                    )
+                  : body,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 活动条：agent 当前在干什么（思考中 / 工具执行中）。
 /// 思考面板可展开看实时思考内容（仅 showContent 时）；工具执行结束即消失；正文流式开始后由文字本身反馈。
 class _ActivityBar extends StatelessWidget {
@@ -7369,6 +9540,7 @@ class _ActivityBar extends StatelessWidget {
                   'Thought: ${reasoning.length} chars',
                 ));
     return Container(
+      key: const ValueKey<String>('activity-bar'),
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -7383,6 +9555,7 @@ class _ActivityBar extends StatelessWidget {
         children: [
           if (reasoning.isNotEmpty)
             InkWell(
+              key: const ValueKey<String>('activity-bar-thinking'),
               onTap: showContent ? onToggleReasoning : null,
               borderRadius: BorderRadius.circular(8),
               child: Padding(
@@ -7431,6 +9604,7 @@ class _ActivityBar extends StatelessWidget {
             Padding(
               padding: EdgeInsets.only(top: reasoning.isNotEmpty ? 4 : 0),
               child: Row(
+                key: const ValueKey<String>('activity-bar-tools'),
                 children: [
                   Icon(Icons.handyman_outlined, size: 15, color: ink2),
                   const SizedBox(width: 6),
@@ -8231,4 +10405,104 @@ class _ApprovalCardState extends State<_ApprovalCard> {
       ),
     );
   }
+}
+
+// ── issue #52：过程块渲染计划（结构变化时重建一次，每帧只查表） ─────────────
+
+/// issue #70：仅在渲染层使用的 provisional 定位信息（不可变，不污染纯模型）。
+///
+/// [orderSeq] = 该 (turn, step) 首个 reasoning delta 的 seq：与落定后持久行的排序键
+/// 完全相同，因此「工具先到 → 追加其后」与「思考先到 → 不被工具挤到后面」同时成立，
+/// 且落定瞬间不跳位。
+class _ProvisionalSlot {
+  final int turn;
+  final int? step;
+  final int orderSeq;
+
+  const _ProvisionalSlot({
+    required this.turn,
+    required this.step,
+    required this.orderSeq,
+  });
+}
+
+/// 单个过程段在某条目处渲染的计划。
+class _ProcessBlockPlan {
+  final TurnProcess process;
+  final int segmentIndex;
+  final ProcessSegment segment;
+  final bool expanded;
+  final bool grouping;
+  final String intervalKey;
+  final bool isLastSegmentOfTurn;
+  final int hiddenTotalInTurn;
+  final Set<int> visibleRowSeqs;
+  final bool liveProcessDetail;
+  final bool historyView;
+
+  /// issue #70：该段要注入的 provisional（仅运行中最后一段可见时非空）。
+  final _ProvisionalSlot? provisional;
+
+  const _ProcessBlockPlan({
+    required this.process,
+    required this.segmentIndex,
+    required this.segment,
+    required this.expanded,
+    required this.grouping,
+    required this.intervalKey,
+    required this.isLastSegmentOfTurn,
+    required this.hiddenTotalInTurn,
+    required this.visibleRowSeqs,
+    required this.liveProcessDetail,
+    required this.historyView,
+    this.provisional,
+  });
+
+  _ProcessBlockPlan copyWith({int? hiddenTotalInTurn}) => _ProcessBlockPlan(
+        process: process,
+        segmentIndex: segmentIndex,
+        segment: segment,
+        expanded: expanded,
+        grouping: grouping,
+        intervalKey: intervalKey,
+        isLastSegmentOfTurn: isLastSegmentOfTurn,
+        hiddenTotalInTurn: hiddenTotalInTurn ?? this.hiddenTotalInTurn,
+        visibleRowSeqs: visibleRowSeqs,
+        liveProcessDetail: liveProcessDetail,
+        historyView: historyView,
+        provisional: provisional,
+      );
+}
+
+/// 一棵时间线列表的完整过程渲染计划。
+class _ProcessPlan {
+  /// 该计划对应的过程折叠版本（live/历史分段各存各的，互不失效误判）。
+  final int processVersion;
+
+  /// 折叠状态/分批/设置变化版本。
+  final int epoch;
+  final Map<int, List<_ProcessBlockPlan>> hostsBySeq;
+  final Set<String> renderedCallIds;
+  final Set<int> anchoredTurns;
+
+  /// 该轮最后一条助手消息的 seq（渲染时再从当前列表取对象，见 `_currentAssistantItem`）。
+  final Map<int, int> assistantSeqByTurn;
+
+  /// issue #70：该计划是否真的在过程块里注入了 provisional（活动条据此去重）。
+  final bool provisionalRendered;
+
+  /// issue #70：当前流式轮次的可见过程块里是否已有 reasoning 行（provisional 或落定）。
+  /// 活动条只显示工具/状态，不再重复思考文本。
+  final bool reasoningRowVisible;
+
+  const _ProcessPlan({
+    required this.processVersion,
+    required this.epoch,
+    required this.hostsBySeq,
+    required this.renderedCallIds,
+    required this.anchoredTurns,
+    required this.assistantSeqByTurn,
+    this.provisionalRendered = false,
+    this.reasoningRowVisible = false,
+  });
 }
