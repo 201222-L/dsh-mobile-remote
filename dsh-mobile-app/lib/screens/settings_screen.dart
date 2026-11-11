@@ -1444,7 +1444,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           //
           // issue #53（§6.20）：这三个能力位是旧插件缺失的增量契约——旧插件下两卡与
           // 展示模式设置都不显示（不按宿主/App 版本推断，只看服务端显式声明）。
-          if (store.api.turnTailCapabilities.available) ...[
+          if (api.turnTailCapabilities.available) ...[
             _row(
               leading: const Icon(Icons.tune_outlined),
               title: L10n.t('工作步骤展示模式', 'Work-step display mode'),

@@ -1,6 +1,7 @@
 // issue #53（§6.20）：旧插件（无 turnTail 能力位）时隐藏「工作步骤展示模式」等设置；
 // 新插件声明能力后显示。这是对 M1 设置项的能力位 gating 回归测试。
 
+import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/screens/settings_screen.dart';
 import 'package:dsh_mobile_app/store.dart';
@@ -15,7 +16,7 @@ void main() {
   Future<AppStore> makeStore({required bool withCapability}) async {
     final store = AppStore();
     await store.loadPrefs();
-    store.api.turnTailCapabilities = withCapability
+    api.turnTailCapabilities = withCapability
         ? const TurnTailCapabilities(
             version: 1,
             presented: true,
