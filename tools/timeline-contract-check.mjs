@@ -1,6 +1,9 @@
 // Issue #1：可见事件协议的无损指针/未知事件/工具关联回归。
 // 需要 DSH_MOBILE_PLUGIN 指向可加载的插件模块；与现有 hotfix07-unit-check 同一导入策略。
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 const configuredPath = process.env.DSH_MOBILE_PLUGIN;
 const selectedPath = configuredPath ?? fileURLToPath(new URL("../lib/index.js", import.meta.url));
@@ -40,6 +43,29 @@ check("token chunk 不进入历史时间线", mod.isTimelineRecord({ seq: 8, typ
 check("token chunk 仍进入实时流", mod.isLiveTimelineRecord({ seq: 8, type: "assistant/chunk", data: {} }) === true);
 check("内部事件不进入实时 session/event", mod.isLiveTimelineRecord({ seq: 8, type: "request/header", data: {} }) === false);
 check("compaction 控制事件进入实时但不进历史", mod.isLiveTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === true && mod.isTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === false);
+
+// issue #52（ADR 0027 §2/§6.20）：事件摘要顶层 `time`（Unix 毫秒，取自 SessionEvent.time）——
+// 只增不改；旧宿主不下发时字段缺省，App 不得用本地接收时间推算耗时。
+const timedMessage = mod.summarizeEvent({
+  seq: 40,
+  type: "user/message",
+  time: 1730000000123,
+  data: { id: "m-time", content: [{ type: "text", text: "hi" }] },
+});
+check("摘要下发顶层 time（Unix 毫秒）", timedMessage.time === 1730000000123, JSON.stringify(timedMessage.time));
+check("time 只加在顶层，不污染 data", timedMessage.data?.time === undefined, JSON.stringify(timedMessage.data));
+check("time 不改变既有摘要字段", timedMessage.type === "user/message" && timedMessage.seq === 40 && timedMessage.data?.text === "hi" && timedMessage.data?.messageId === "m-time");
+check("缺 time 的旧宿主不下发该字段", mod.summarizeEvent({ seq: 41, type: "user/message", data: { id: "m2", content: [] } }).time === undefined);
+check("非法 time（负数/非整数/字符串/NaN）不下发", [
+  -1,
+  1.5,
+  "1730000000123",
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.MAX_SAFE_INTEGER + 2,
+].every((time) => mod.summarizeEvent({ seq: 42, type: "tool/call", time, data: { callId: "c", name: "shell" } }).time === undefined));
+check("未知可见事件同样带顶层 time", mod.summarizeEvent({ seq: 43, type: "future/visible", time: 1730000000999, data: { secretLike: "raw-value" } }).time === 1730000000999);
+check("内部事件仍被过滤（time 不改变过滤判据）", mod.isTimelineRecord({ seq: 44, type: "request/header", time: 1730000000123, data: {} }) === false && mod.isLiveTimelineRecord({ seq: 44, type: "step/start", time: 1730000000123, data: {} }) === false);
 
 // PR #24 复核（阻断级泄露）：LLM 请求快照含 system prompt / messages 正文，按命名约定拦截。
 const llmRequestTypes = ["session/title-llm-request", "web/deepseek-search-llm-request", "web/future-provider-llm-request", "future/llm-request"];
@@ -162,6 +188,78 @@ const userWithFile = mod.summarizeEvent({
 });
 check("user/message 仍下发附件元数据", userWithFile.data?.files?.length === 1 && userWithFile.data.files[0].name === "a.md", JSON.stringify(userWithFile.data?.files));
 
+// issue #53（§6.20）：轮末产出物投影——只下发 name/display/description，绝不泄露主机路径。
+// HOME 在 verify 的隔离环境里会被改写，因此家目录用例必须用运行时的 homedir() 构造。
+const contractHome = homedir();
+const presentedSummary = mod.summarizeEvent({
+  seq: 40,
+  time: 1_700_000_000_000,
+  type: "deliverables/presented",
+  data: { turn: 2, callId: "call-x", files: [
+    { path: "/home/mark/proj/src/a.ts", description: "最终交付" },
+    { path: `${contractHome}/.config/secret.json` },
+    { path: "/opt/elsewhere/report.pdf" },
+    { path: "rel/z.ts" },
+  ] },
+}, { cwd: "/home/mark/proj" });
+const presentedFiles = presentedSummary.data?.files ?? [];
+check(
+  "deliverables/presented 只下发 name/display/description（无 path/绝对路径）",
+  presentedFiles.length === 4
+    && presentedFiles.every((file) => Object.keys(file).every((key) => ["id", "name", "display", "description"].includes(key)))
+    && presentedFiles.every((file) => typeof file.id === "string" && /^[0-9a-f]{16}$/.test(file.id))
+    && !JSON.stringify(presentedSummary.data).includes("/home/mark")
+    && !JSON.stringify(presentedSummary.data).includes("/opt/"),
+  JSON.stringify(presentedSummary.data),
+);
+check(
+  "deliverables/presented display 派生：工作目录相对 / 家目录 ~ / 其余 basename",
+  presentedFiles[0]?.display === "src/a.ts"
+    && presentedFiles[1]?.display === "~/.config/secret.json"
+    && presentedFiles[2]?.display === "report.pdf"
+    && presentedFiles[3]?.display === "rel/z.ts",
+  JSON.stringify(presentedFiles.map((file) => file.display)),
+);
+check(
+  "deliverables/presented 保留 name/description/turn/callId",
+  presentedFiles[0]?.name === "a.ts"
+    && presentedFiles[0]?.description === "最终交付"
+    && presentedSummary.data?.turn === 2
+    && presentedSummary.data?.callId === "call-x",
+  JSON.stringify({ data: presentedSummary.data }),
+);
+const workspaceChangesSummary = mod.summarizeEvent({ seq: 41, type: "workspace/changes", data: { turn: 2 } });
+check(
+  "workspace/changes 摘要保留 type/seq 但不含 data",
+  workspaceChangesSummary.type === "workspace/changes" && workspaceChangesSummary.seq === 41 && workspaceChangesSummary.data === undefined,
+  JSON.stringify(workspaceChangesSummary),
+);
+check(
+  "workspace/changes 移出移动时间线（history/live/detail 同一判据）",
+  mod.isTimelineRecord({ seq: 41, type: "workspace/changes", data: { turn: 2 } }) === false
+    && mod.isLiveTimelineRecord({ seq: 41, type: "workspace/changes", data: { turn: 2 } }) === false
+    && mod.isDetailVisibleType("workspace/changes") === false,
+);
+check(
+  "recordFileId 为不可逆 16 位 hex，presented 与 changes/summary 同源",
+  typeof mod.recordFileId === "function"
+    && /^[0-9a-f]{16}$/.test(mod.recordFileId("/a/b/c.ts"))
+    && mod.recordFileId("/a/b/c.ts") === mod.recordFileId("/a/b/c.ts")
+    && mod.recordFileId("/a/b/c.ts") !== mod.recordFileId("/a/b/d.ts"),
+  String(mod.recordFileId?.("/a/b/c.ts")),
+);
+const tailSignals = mod.turnTailsOf([
+  { type: "workspace/changes", data: { turn: 2 } },
+  { type: "deliverables/presented", data: { turn: 2, files: [{ path: "/tmp/a" }] } },
+  { type: "workspace/changes", data: { turn: 3 } },
+]);
+check(
+  "turnTails 单次遍历、只含有产出物的轮次且形状一致",
+  JSON.stringify(tailSignals) === JSON.stringify({ "2": { changes: true, presented: true }, "3": { changes: true, presented: false } })
+    && JSON.stringify(mod.turnTailOf([{ type: "workspace/changes", data: { turn: 5 } }], 5)) === JSON.stringify({ changes: true, presented: false }),
+  JSON.stringify(tailSignals),
+);
+
 // 最小真实路由 harness：验证 bootstrap/history/event-detail 走同一鉴权/路由入口，
 // 同时覆盖 active session 与 session-query 的 dormant fallback。
 if (typeof mod.apply === "function" && typeof mod.Config === "function") {
@@ -191,7 +289,17 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
   const huge = { id: "session-huge", header: { createdAt: 1, cwd: "/tmp" }, events: [{ seq: 1, type: "tool/result", data: { callId: "call-huge", text: hugeText } }], snapshotEvents() { return this.events; } };
   const active = { id: "session-1", header: { createdAt: 1, cwd: "/tmp" }, events, snapshotEvents() { return this.events; } };
   const activeReadError = { id: "session-active-read-error", header: { createdAt: 1, cwd: "/tmp" }, events: [], snapshotEvents() { return this.events; } };
-  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge]]);
+  // issue #53：轮末产出物夹具（工作目录里有真实文件，供 /turn-file 读字节）。
+  const turnTailCwd = mkdtempSync(join(tmpdir(), "contract-tail-"));
+  writeFileSync(join(turnTailCwd, "a.txt"), "TURN-FILE-BYTES\n");
+  const turnTailEvents = [
+    { seq: 1, type: "turn/start", data: { turn: 2 } },
+    { seq: 2, type: "workspace/changes", data: { turn: 2 } },
+    { seq: 3, type: "deliverables/presented", data: { turn: 2, callId: "call-tail", files: [{ path: join(turnTailCwd, "a.txt"), description: "交付" }] } },
+    { seq: 4, type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } },
+  ];
+  const tailSession = { id: "session-tail", header: { createdAt: 1, cwd: turnTailCwd }, events: turnTailEvents, snapshotEvents() { return this.events; } };
+  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge], [tailSession.id, tailSession]]);
   const dormant = [{ seq: 8, type: "tool/result", data: { dormant: true, callId: "call-dormant", text: "dormant raw result" } }];
   const dormantUnlisted = [{ seq: 8, type: "future/dormant-unlisted", data: { secret: "DORMANT-SECRET" } }];
   const seededSurface = [{ seq: 8, type: "tool/result", data: { recovered: true, callId: "call-surface", text: "surface raw result" } }];
@@ -273,6 +381,26 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         throw new Error("outline unavailable");
       },
     },
+    workspaceChanges: {
+      summary(sessionId, seq) {
+        if (sessionId !== tailSession.id || seq !== 2) return undefined;
+        return {
+          turn: 2,
+          cwd: turnTailCwd,
+          files: [{ path: "a.txt", display: "a.txt", added: 3, deleted: 1 }],
+          total: 1,
+          added: 3,
+          deleted: 1,
+        };
+      },
+      async diff(sessionId, seq, index) {
+        if (sessionId !== tailSession.id || seq !== 2 || index !== 0) return undefined;
+        return {
+          kind: "text", path: "a.txt", display: "a.txt", before: true, after: true, coarse: false,
+          hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] }],
+        };
+      },
+    },
   };
   const ctx = {
     logger: { info() {}, warn(...args) { wireWarnings.push(args.join(' ')); }, error() {}, debug() {} },
@@ -287,10 +415,10 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
   try {
     mod.apply(ctx, mod.Config({ path: "/m", authToken: "secret-secret-secret-1234", pushUrls: [], lanBridge: { enabled: false } }));
     const route = routes.find((r) => r.path === "/m/api");
-    const request = (url, { token = "secret-secret-secret-1234", host = "127.0.0.1:3080", remoteAddress = "127.0.0.1", method = "GET" } = {}) => ({
+    const request = (url, { token = "secret-secret-secret-1234", host = "127.0.0.1:3080", remoteAddress = "127.0.0.1", method = "GET", headers = {} } = {}) => ({
       url,
       method,
-      headers: { host, ...(token === null ? {} : { "x-mobile-token": token }) },
+      headers: { host, ...(token === null ? {} : { "x-mobile-token": token }), ...headers },
       socket: { remoteAddress },
       on() { return this; },
       pause() {},
@@ -308,6 +436,10 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         end(chunk) { if (chunk !== undefined) chunks.push(String(chunk)); this.ended = true; },
         destroy() { this.ended = true; },
         on() { return this; },
+        once() { return this; },
+        emit() { return true; },
+        removeListener() { return this; },
+        removeAllListeners() { return this; },
         get text() { return chunks.join(""); },
         get json() { try { return JSON.parse(chunks.join("")); } catch { return null; } },
       };
@@ -356,6 +488,61 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       "bootstrap registry 存在但零单元 → supported=false",
       bootstrapNoUnit.json?.capabilities?.turnOutline?.supported === false,
       JSON.stringify(bootstrapNoUnit.json?.capabilities?.turnOutline),
+    );
+
+    // issue #53：能力位 / turnTails / 三个端点走同一真实路由入口。
+    check(
+      "bootstrap 按 workspaceChanges 服务声明 turnTail 能力位",
+      bootstrap.json?.capabilities?.turnTail?.presented === true
+        && bootstrap.json?.capabilities?.turnTail?.changed === true
+        && bootstrap.json?.capabilities?.turnTail?.changesDiff === true,
+      JSON.stringify(bootstrap.json?.capabilities?.turnTail),
+    );
+    const tailHistory = await call("/m/api/history?sessionId=session-tail&limit=100");
+    check(
+      "history turnTails 只含有产出物的轮次且 workspace/changes 不进时间线",
+      JSON.stringify(tailHistory.json?.turnTails) === JSON.stringify({ "2": { changes: true, presented: true } })
+        && tailHistory.json?.events?.every((event) => event.type !== "workspace/changes"),
+      JSON.stringify({ turnTails: tailHistory.json?.turnTails, types: tailHistory.json?.events?.map((event) => event.type) }),
+    );
+    check(
+      "history 的 presented 摘要不含主机绝对路径",
+      !tailHistory.text.includes(turnTailCwd) && !JSON.stringify(tailHistory.json?.events).includes(turnTailCwd),
+      tailHistory.text.slice(0, 500),
+    );
+    const tailSummary = await call("/m/api/changes/summary?sessionId=session-tail&turn=2");
+    check(
+      "changes/summary 可用态映射坐标且不泄露 path/cwd",
+      tailSummary.json?.state === "available"
+        && tailSummary.json?.files?.[0]?.seq === 2
+        && tailSummary.json?.files?.[0]?.index === 0
+        && tailSummary.json?.files?.[0]?.name === "a.txt"
+        && typeof tailSummary.json?.files?.[0]?.id === "string"
+        && /^[0-9a-f]{16}$/.test(tailSummary.json?.files?.[0]?.id ?? "")
+        && !JSON.stringify(tailSummary.json).includes(turnTailCwd)
+        && !("cwd" in (tailSummary.json ?? {})),
+      JSON.stringify(tailSummary.json),
+    );
+    const tailDiff = await call("/m/api/changes/diff?sessionId=session-tail&turn=2&index=0");
+    check(
+      "changes/diff 由 hunks 渲染统一 diff 文本",
+      tailDiff.json?.diff?.kind === "text"
+        && tailDiff.json?.diff?.diff?.startsWith("--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@")
+        && tailDiff.json?.diff?.diff?.includes("-old")
+        && tailDiff.json?.diff?.diff?.includes("+new"),
+      JSON.stringify(tailDiff.json),
+    );
+    const tailFile = await call("/m/api/turn-file?sessionId=session-tail&kind=presented&seq=3&index=0");
+    check(
+      "turn-file 按记录坐标返回字节（不接受客户端路径）",
+      tailFile.statusCode === 200 && tailFile.text === "TURN-FILE-BYTES\n",
+      `${tailFile.statusCode} ${JSON.stringify(tailFile.text).slice(0, 120)}`,
+    );
+    const tailFileRange = await call("/m/api/turn-file?sessionId=session-tail&kind=presented&seq=3&index=0", { headers: { range: "bytes=0-3" } });
+    check(
+      "turn-file 支持 Range（与 /files 同一实现）",
+      tailFileRange.statusCode === 206 && tailFileRange.text === "TURN",
+      `${tailFileRange.statusCode} ${JSON.stringify(tailFileRange.text)}`,
     );
     services.sessionProjections = { registrations: new Map([["turnOutline", {}]]) };
     const savedObserve = services.sessionQuery.observeSession;
@@ -938,7 +1125,7 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     const sse = response();
     route?.handler(request("/m/api/events"), sse);
     await new Promise((resolve) => setTimeout(resolve, 15));
-    check("SSE hello 宣布 eventTimeline capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true'), sse.text.slice(0, 300));
+    check("SSE hello 宣布 eventTimeline 与 turnTail capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}'), sse.text.slice(0, 400));
     const sessionEvent = hooks.get("session/event");
     sessionEvent?.(active, { seq: 30, type: "future/live", data: { visible: true } });
     sessionEvent?.(active, { seq: 31, type: "request/header", data: { systemPrompt: "SECRET" } });

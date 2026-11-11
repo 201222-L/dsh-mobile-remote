@@ -13,6 +13,7 @@ import 'logger.dart';
 import 'models.dart';
 import 'session_list.dart';
 import 'theme.dart';
+import 'turn_process.dart';
 
 /// 内核 `AgentStatus` 是 **`idle | running` 二元联合**（ADR 0013）——不存在 `waiting`。
 /// 等待用户审批/作答时驱动仍在跑，属于 `running`；该事实由挂起的问询/审批独立承载。
@@ -53,6 +54,10 @@ class AppStore extends ChangeNotifier {
   bool showHiddenFiles = true;
   bool reasoningDefaultExpanded = false; // 思维链默认展开还是折叠（默认折叠：防英文思考刷屏；单条消息仍可点按切换）
   bool timelineDebug = false; // 普通/调试模式：默认普通，调试显示原始事件详情
+  /// issue #52（ADR 0027 §2）：工作步骤展示模式（四档）与收起时机（两档）。
+  /// 偏好只存手机本地（不新增宿主设置端点）；默认「标准」+「回答结束后」。
+  WorkStepDisplayMode stepDisplayMode = WorkStepDisplayMode.standard;
+  TurnFoldTiming turnFoldTiming = TurnFoldTiming.afterAnswer;
   /// 思维链折叠手动状态（会话 -> 消息key -> 手动展开值；滚动/重进/重启持久，null=跟随设置默认）
   Map<String, Map<String, bool>> reasoningOverrides = {};
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
@@ -278,6 +283,8 @@ class AppStore extends ChangeNotifier {
   static const _kShowHiddenFiles = 'dsh_mr_show_hidden_files';
   static const _kReasoningDefaultExpanded = 'dsh_mr_reasoning_default_expanded';
   static const _kTimelineDebug = 'dsh_mr_timeline_debug';
+  static const _kStepDisplayMode = 'dsh_mr_step_display_mode';
+  static const _kTurnFoldTiming = 'dsh_mr_turn_fold_timing';
   static const _kReasoningOverrides = 'dsh_mr_reasoning_overrides';
   static const _kWorkspace = 'dsh_mr_workspace';
   static const _kSessCache = 'dsh_mr_sessions_cache';
@@ -306,6 +313,14 @@ class AppStore extends ChangeNotifier {
     reasoningDefaultExpanded =
         prefs.getBool(_kReasoningDefaultExpanded) ?? false;
     timelineDebug = prefs.getBool(_kTimelineDebug) ?? false;
+    stepDisplayMode = WorkStepDisplayMode.values.firstWhere(
+      (mode) => mode.name == prefs.getString(_kStepDisplayMode),
+      orElse: () => WorkStepDisplayMode.standard,
+    );
+    final foldTiming = prefs.getString(_kTurnFoldTiming);
+    turnFoldTiming = foldTiming == 'onNewMessage'
+        ? TurnFoldTiming.onNewMessage
+        : TurnFoldTiming.afterAnswer;
     try {
       final raw = prefs.getString(_kReasoningOverrides);
       if (raw != null && raw.isNotEmpty) {
@@ -822,6 +837,22 @@ class AppStore extends ChangeNotifier {
     await _persistPrefs(_kTimelineDebug, v);
   }
 
+  /// issue #52：工作步骤展示模式四档（简洁/标准/详细/完全展开）——改动即时重算。
+  Future<void> setStepDisplayMode(WorkStepDisplayMode mode) async {
+    if (stepDisplayMode == mode) return;
+    stepDisplayMode = mode;
+    notifyListeners();
+    await _persistPrefs(_kStepDisplayMode, mode.name);
+  }
+
+  /// issue #52：收起时机两档（回答结束后 / 下次有新消息时）——改动即时重算。
+  Future<void> setTurnFoldTiming(TurnFoldTiming timing) async {
+    if (turnFoldTiming == timing) return;
+    turnFoldTiming = timing;
+    notifyListeners();
+    await _persistPrefs(_kTurnFoldTiming, timing.name);
+  }
+
   bool? reasoningOverrideOf(String sessionId, String messageKey) =>
       reasoningOverrides[sessionId]?[messageKey];
 
@@ -1265,6 +1296,13 @@ class AppStore extends ChangeNotifier {
               Map<String, dynamic>.from(capabilities['turnOutline'] as Map),
             )
           : const TurnOutlineCapabilities();
+      // issue #53：轮末产出物能力位（bootstrap 与 hello 同判据；旧插件不下发 → 降级隐藏）。
+      api.turnTailCapabilities =
+          capabilities is Map && capabilities['turnTail'] is Map
+          ? TurnTailCapabilities.fromJson(
+              Map<String, dynamic>.from(capabilities['turnTail'] as Map),
+            )
+          : const TurnTailCapabilities();
       _emitChatEvent(ChatEvent(type: '_capabilities', data: {}));
       _setConnState('connected');
       _catchup();
@@ -1576,6 +1614,10 @@ class AppStore extends ChangeNotifier {
           data: ce.data,
           sessionId: fsid as String?,
           detailAvailable: ce.detailAvailable,
+          // issue #52/#53：实时摘要的 time 与 turn/end 的 tail 必须原样带给时间线，
+          // 否则 live 轮次页脚没有用时、轮末卡片要等重进会话才出现。
+          time: ce.time,
+          tail: ce.tail,
         ),
       );
     } else if (type == 'agent/status') {

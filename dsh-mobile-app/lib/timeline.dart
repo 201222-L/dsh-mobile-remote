@@ -59,7 +59,12 @@ const debugOnlyTimelineTypes = <String>{
   'tool/ptc-dispatch-start',
   'tool/ptc-dispatch',
   // 与内核 KNOWN_SESSION_EVENT_TYPES 对差补齐（此前遗漏 → 普通模式会显示裸类型名）：
+  // issue #53：`deliverables/presented` 由轮末卡片专用渲染收口（_buildInto 显式分支）；
+  // 旧插件没有该投影 data 时退回调试可见，普通模式不显示裸事件卡。
   'deliverables/presented',
+  // issue #53 / ADR 0027 §4：新插件已把它移出移动时间线；旧插件仍会下发，
+  // 归入调试可见（普通模式不出现裸 `workspace/changes` 空卡）。
+  'workspace/changes',
   'hook/invoked',
   'hook/result',
   'llm/retry',
