@@ -6,7 +6,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
+    show RenderSliver, RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -365,6 +365,30 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
   bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
+  // ── issue #77：活跃会话滚动贴底 ────────────────────────────────────
+  // 内容短于视口时用顶部占位把消息列表底部对齐视口底部（否则 center 布局会顶对齐、
+  // 下方留大片空白）；内容增长不算「上翻」（只有用户拖动才停止跟随）。
+  double _liveBottomGap = 0;
+  bool _liveGapMeasureScheduled = false;
+  int _lastContentCount = 0;
+  bool _userDragActive = false;
+  bool _followBottomScheduled = false;
+  bool _suppressOlderPaging = false; // 占位调整帧内：位置修正不得触发「上翻加载更早」
+
+  /// issue #77：分帧收敛到底部（懒构建 extent 修正后按新 max 再跳，最多 [remaining] 帧）。
+  void _settleToBottom(int remaining) {
+    if (remaining <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollCtrl.hasClients) return;
+      final pos = _scrollCtrl.position;
+      if (!pos.hasContentDimensions) return;
+      final target = pos.maxScrollExtent;
+      if ((pos.pixels - target).abs() > 0.5) {
+        pos.jumpTo(target);
+        _settleToBottom(remaining - 1);
+      }
+    });
+  }
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
   // 轮次索引是**派生结构**：turn/start 的持久序号 → 轮次号。此前轮次号只用
@@ -518,8 +542,24 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted || _inHistory) return;
     final pos = _scrollCtrl.position;
     if (!pos.hasContentDimensions) return;
-    // 距底部 160px 内视为「停留最新」：同步钉住状态 + 回到底部按钮显隐
-    final nearBottom = pos.maxScrollExtent - pos.pixels <= 160;
+    // issue #77：内容高度增长（流式/工具插入）不是「用户上翻」——长度变化本身
+    // 不得把钉住状态判成 false（旧实现只看 max-pixels，增长瞬间会被误判上翻）。
+    final max = pos.maxScrollExtent;
+    // 只有「条目数变化」才是真的内容增长；滚动过程中 SliverList 对未构建子项的
+    // extent 估算也会变化（例如 jumpTo(0) 触发懒构建），那不是新内容，不能据此
+    // 把「已上翻」误判成「仍贴底」。
+    final count = _items.length +
+        _olderItems.length +
+        ((_draft.isNotEmpty || _streaming) ? 1 : 0);
+    final contentGrew = count != _lastContentCount;
+    _lastContentCount = count;
+    final nearBottomRaw = max - pos.pixels <= 160;
+    final nearBottom = (contentGrew && _pinnedToBottom && !_userDragActive)
+        ? true
+        : nearBottomRaw;
+    // 注意：这里**不**调度贴底。extent 对懒构建子项是估算值，滚动中会持续修正；
+    // 在 tick 里跟随会让“估算变化 → jump → 再变”自激成无限帧。贴底由事件处理方
+    //（草稿刷新 / 新事件 / 显式回底）负责，tick 只维护钉住状态。
     if (nearBottom != _pinnedToBottom) {
       _pinnedToBottom = nearBottom;
     }
@@ -541,6 +581,74 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// issue #77：合并调度一次「贴底跟随」（post-frame 执行，避免布局期滚动）。
+  void _scheduleFollowBottom() {
+    if (_followBottomScheduled) return;
+    _followBottomScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _followBottomScheduled = false;
+      if (mounted) _scrollToBottom();
+    });
+  }
+
+  /// issue #77：按 live 面板实测高度维护「顶部占位」——内容短于视口时让列表底部
+  /// 对齐视口底部（center 布局默认顶对齐会在下方留大片空白）。
+  ///
+  /// 占位单独作为 center 之后的 SliverToBoxAdapter，不改 `_liveSliverKey` 的子项
+  /// 索引（轮次导航/尺寸缓存不受影响）。
+  void _scheduleLiveBottomGapMeasure() {
+    if (_liveGapMeasureScheduled) return;
+    _liveGapMeasureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _liveGapMeasureScheduled = false;
+      if (!mounted || _inHistory) return;
+      final viewport =
+          _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      final liveSliver = _liveSliverKey.currentContext?.findRenderObject();
+      if (viewport == null || !viewport.hasSize) return;
+      if (liveSliver is! RenderSliver) return;
+      final geometry = liveSliver.geometry;
+      if (geometry == null) return;
+      // SliverList 的 scrollExtent 不含外层 SliverPadding 的 6px 底部内边距。
+      // 没有任何消息/草稿时不加占位：否则「历史还在加载」的首帧会把空列表测成
+      // 满屏占位，内容到达后（下一帧才重测）会被推到视口外——真机首屏与测试都会闪。
+      final hasContent = _items.isNotEmpty ||
+          _olderItems.isNotEmpty ||
+          _draft.isNotEmpty;
+      final contentExtent = hasContent ? geometry.scrollExtent + 6 : 0.0;
+      final desired = hasContent
+          ? math.max(0.0, viewport.size.height - contentExtent)
+          : 0.0;
+      // 收敛策略（避免每个 delta 都重建）：内容增长时保留旧占位（内容仍贴底，多出的
+      // 空白在视口上方、用户不可见）；内容超过视口时清零；内容明显变短时再补足。
+      // 只在「明显短于视口」（还会留下 >80px 空白）时启用底部占位：接近一屏的
+      // 内容保持既有顶部对齐，避免与过程行位置/懒构建估算互相干扰。
+      final shortEnough = contentExtent < viewport.size.height - 80;
+      double next = _liveBottomGap;
+      if (!shortEnough || desired <= 0.5) {
+        next = 0;
+      } else if (_liveBottomGap <= 0.5 || desired > _liveBottomGap + 24) {
+        next = desired;
+      }
+      if ((next - _liveBottomGap).abs() > 0.5) {
+        _suppressOlderPaging = true;
+        setState(() => _liveBottomGap = next);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _suppressOlderPaging = false;
+        });
+        if (_pinnedToBottom) _scheduleFollowBottom();
+      }
+      // issue #77：短内容模式下若用户展开块/卡片导致内容变高，钉住底部时继续跟随
+      //（展开不是新事件、不会走 _scrollToBottom；否则内容会伸到视口下方）。
+      if (_pinnedToBottom && !_userDragActive && _scrollCtrl.hasClients) {
+        final pos = _scrollCtrl.position;
+        if (pos.hasContentDimensions && pos.extentAfter > 1) {
+          _scheduleFollowBottom();
+        }
+      }
+    });
+  }
+
   /// 一键回到最新消息：近距平滑滚动，远距直接跳（避免超长距离动画卡顿）。
   void _jumpToLatest() {
     if (!_scrollCtrl.hasClients) return;
@@ -549,15 +657,12 @@ class _ChatScreenState extends State<ChatScreen> {
     AppLog.instance.log(
       'Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}',
     );
-    if ((pos.pixels - target).abs() > 4000) {
-      _scrollCtrl.jumpTo(target);
-    } else {
-      _scrollCtrl.animateTo(
-        target,
-        duration: const Duration(milliseconds: 280),
-        curve: Curves.easeOutCubic,
-      );
-    }
+    _pinnedToBottom = true;
+    // issue #77：SliverList 对未构建子项的 extent 是估算值，长会话里一次 jump/动画的
+    // 目标可能在下一帧就被修正（真机表现为“看起来到底了、其实还差一截”）。
+    // 直接跳到当前 max，并在随后几帧按修正后的 max 收敛（帧数有界，不会自激）。
+    _scrollCtrl.jumpTo(target);
+    _settleToBottom(3);
   }
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
@@ -1071,6 +1176,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _streaming = true;
     _draftTimer ??= Timer(const Duration(milliseconds: 80), () {
       _draftTimer = null;
+      // issue #77：草稿增长会改变内容高度；先撤销短内容占位，下一帧重测。
+      if (_liveBottomGap > 0) _liveBottomGap = 0;
       if (mounted) setState(() {});
       _scrollToBottom();
     });
@@ -1347,6 +1454,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
   /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
   bool _onLiveScroll(ScrollNotification n) {
+    // issue #77：只有用户拖动才停止贴底；程序性 jump/animate 不算（ScrollEnd 一律清）。
+    if (n is ScrollStartNotification && n.dragDetails != null) {
+      _userDragActive = true;
+    } else if (n is ScrollUpdateNotification && n.dragDetails != null) {
+      _userDragActive = true;
+    } else if (n is ScrollEndNotification) {
+      _userDragActive = false;
+    }
     // issue #25 二期：跨页跳转进行中，用户主动滚动 = 取消本次跳转（故事 18）——
     // 只有带 dragDetails 的通知才是用户手势，自动滚动不受影响。
     // 同时作废导航世代：旧的落点/提示/清理一律不得再动（第二轮评审 P2）。
@@ -1356,7 +1471,11 @@ class _ChatScreenState extends State<ChatScreen> {
       _turnJumpCancelled = true;
       _cancelTurnJumpVisual();
     }
-    if (shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
+    // issue #77：短内容底部占位的调整会改变 extent，由此产生的位置修正
+    // （dragDetails=null 的 ScrollUpdate）不得被当成用户上翻去拉更早历史——
+    // 该帧内直接跳过；真实手势不受影响。
+    if (!_suppressOlderPaging &&
+        shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
     }
     return false;
@@ -1683,6 +1802,12 @@ class _ChatScreenState extends State<ChatScreen> {
               key: _liveCenterKey,
               child: SizedBox.shrink(),
             ),
+            // issue #77：内容短于视口时，顶部占位把消息列表推到底部（贴在输入框上方），
+            // 而不是顶对齐、下方留白。高度由 `_scheduleLiveBottomGapMeasure` 实测维护。
+            if (_liveBottomGap > 0)
+              SliverToBoxAdapter(
+                child: SizedBox(height: _liveBottomGap),
+              ),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               sliver: SliverList(
@@ -2572,6 +2697,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// [tail] 表示“最新一页初始加载”：允许 chunk 进草稿/重置草稿；
   /// 更早的历史页（tail=false）绝不触碰 live 流式草稿。
   void _appendEvent(ChatEvent ev, {bool history = false, bool tail = false}) {
+    // issue #77：内容变化时先撤销短内容底部占位（本帧按真实布局渲染），下一帧再按
+    // 实测高度决定是否补回——避免“占位仍按旧短内容计算、新内容被推到视口外”。
+    if (_liveBottomGap > 0) _liveBottomGap = 0;
     _buildInto(_items, ev, history: history, tail: tail);
     if (!_infiniteMode) {
       // 裁剪：live 列表最多保留 _liveMax 条，超出丢弃最旧（尾部），
@@ -3904,6 +4032,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 条目增删/分页会改变几何：本帧结束后校准"当前轮"。
     // 只在取值变化时 setState，因此会收敛，不会自激。
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateActiveTurn());
+    // issue #77：帧后实测 live 内容高度，维护「短内容底部对齐」的顶部占位。
+    if (!_inHistory) _scheduleLiveBottomGapMeasure();
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
