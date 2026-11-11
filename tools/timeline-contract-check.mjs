@@ -41,6 +41,29 @@ check("token chunk 仍进入实时流", mod.isLiveTimelineRecord({ seq: 8, type:
 check("内部事件不进入实时 session/event", mod.isLiveTimelineRecord({ seq: 8, type: "request/header", data: {} }) === false);
 check("compaction 控制事件进入实时但不进历史", mod.isLiveTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === true && mod.isTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === false);
 
+// issue #52（ADR 0027 §2/§6.20）：事件摘要顶层 `time`（Unix 毫秒，取自 SessionEvent.time）——
+// 只增不改；旧宿主不下发时字段缺省，App 不得用本地接收时间推算耗时。
+const timedMessage = mod.summarizeEvent({
+  seq: 40,
+  type: "user/message",
+  time: 1730000000123,
+  data: { id: "m-time", content: [{ type: "text", text: "hi" }] },
+});
+check("摘要下发顶层 time（Unix 毫秒）", timedMessage.time === 1730000000123, JSON.stringify(timedMessage.time));
+check("time 只加在顶层，不污染 data", timedMessage.data?.time === undefined, JSON.stringify(timedMessage.data));
+check("time 不改变既有摘要字段", timedMessage.type === "user/message" && timedMessage.seq === 40 && timedMessage.data?.text === "hi" && timedMessage.data?.messageId === "m-time");
+check("缺 time 的旧宿主不下发该字段", mod.summarizeEvent({ seq: 41, type: "user/message", data: { id: "m2", content: [] } }).time === undefined);
+check("非法 time（负数/非整数/字符串/NaN）不下发", [
+  -1,
+  1.5,
+  "1730000000123",
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.MAX_SAFE_INTEGER + 2,
+].every((time) => mod.summarizeEvent({ seq: 42, type: "tool/call", time, data: { callId: "c", name: "shell" } }).time === undefined));
+check("未知可见事件同样带顶层 time", mod.summarizeEvent({ seq: 43, type: "future/visible", time: 1730000000999, data: { secretLike: "raw-value" } }).time === 1730000000999);
+check("内部事件仍被过滤（time 不改变过滤判据）", mod.isTimelineRecord({ seq: 44, type: "request/header", time: 1730000000123, data: {} }) === false && mod.isLiveTimelineRecord({ seq: 44, type: "step/start", time: 1730000000123, data: {} }) === false);
+
 // PR #24 复核（阻断级泄露）：LLM 请求快照含 system prompt / messages 正文，按命名约定拦截。
 const llmRequestTypes = ["session/title-llm-request", "web/deepseek-search-llm-request", "web/future-provider-llm-request", "future/llm-request"];
 check("LLM 请求快照不进入历史时间线", llmRequestTypes.every((type) => mod.isTimelineRecord({ seq: 8, type, data: { system: "SECRET" } }) === false));
