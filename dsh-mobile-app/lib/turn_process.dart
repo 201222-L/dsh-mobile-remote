@@ -407,7 +407,7 @@ class TurnProcess {
 
   final List<ProcessGroup> groups;
 
-  /// 该轮期间出现的真人 user 消息 seq（用于「轮内有插话」强制展开）。
+  /// 该轮期间出现的真人 user 消息 seq（用于切段与「轮内有插话」默认展开）。
   final List<int> humanUserSeqs;
 
   const TurnProcess({
@@ -434,6 +434,9 @@ class TurnProcess {
       ];
 
   /// 轮内有插话：本轮边界内出现了真人 user 消息（含远端）。
+  ///
+  /// issue #79：插话只让该轮在「回答后」档**默认展开**（可手动折叠）；
+  /// 运行中/异常结束才是硬强制展开，「下次有新消息」档仍按新消息自动收起。
   bool get hasInterjection => humanUserSeqs.any(
         (seq) => seq > startSeq && (endSeq == null || seq < endSeq!),
       );
@@ -442,8 +445,11 @@ class TurnProcess {
   bool get abnormalEnd => const {'aborted', 'interrupted', 'error'}
       .contains(endReasonKind);
 
-  /// 强制展开（不看策略）：轮次未结束、轮内有插话、异常结束。
-  bool get forceExpanded => !ended || hasInterjection || abnormalEnd;
+  /// 强制展开（不看策略）：轮次未结束、异常结束。
+  ///
+  /// issue #79：轮内插话不再进入强制展开——结束后「回答后」档默认展开但可手动折叠；
+  /// 运行中与 aborted/interrupted/error 仍不可折叠。
+  bool get forceExpanded => !ended || abnormalEnd;
 
   /// 仅正常完成且两端的 `time` 都可用时才算用时；旧宿主/异常结束一律不显示。
   /// 桌面口径：`Math.max(1000, end - start)`（不足 1 秒按 1 秒显示）。
@@ -525,6 +531,9 @@ bool turnAutoCollapsed(
   if (!policy.foldCompletedTurns) return false;
   switch (policy.timing) {
     case TurnFoldTiming.afterAnswer:
+      // issue #79：轮内有插话 → 回答刚结束时保持默认展开（可手动折叠）；
+      // 只影响「回答后」档，不让插话把「下次有新消息」档永久变成展开。
+      if (turn.hasInterjection) return false;
       return true;
     case TurnFoldTiming.onNewMessage:
       return newMessageArrivedAfter(turn, humanUserSeqs);
