@@ -17,6 +17,7 @@ import '../local_notifications.dart';
 import '../logger.dart';
 import '../notify_diag.dart';
 import '../models.dart';
+import '../turn_process.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../toast.dart';
@@ -1430,14 +1431,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: const Icon(Icons.account_tree_outlined),
             title: L10n.t('思维链默认展开', 'Thinking chain default expanded'),
             sub: L10n.t(
-              '回复里的「思维链」块默认折叠还是展开（单条消息仍可点按切换）',
-              'Whether the thinking-chain block in replies is expanded by default (each message stays toggleable)',
+              '轮次过程行里的思维链默认折叠还是展开（单条仍可点按切换）',
+              'Whether thinking rows inside turn processes are expanded by default (each row stays toggleable)',
             ),
             trailing: DshSwitch(
               value: store.reasoningDefaultExpanded,
               onChanged: (v) => store.setReasoningDefaultExpanded(v),
             ),
           ),
+          // issue #52（ADR 0027 §2）：轮次过程折叠的工作步骤展示模式与收起时机。
+          // 偏好只存手机本地；改动即时重算时间线（store.notifyListeners）。
+          //
+          // issue #53（§6.20）：这三个能力位是旧插件缺失的增量契约——旧插件下两卡与
+          // 展示模式设置都不显示（不按宿主/App 版本推断，只看服务端显式声明）。
+          if (api.turnTailCapabilities.available) ...[
+            _row(
+              leading: const Icon(Icons.tune_outlined),
+              title: L10n.t('工作步骤展示模式', 'Work-step display mode'),
+              sub: _stepDisplayModeSummary(store.stepDisplayMode),
+              onTap: () => _pickStepDisplayMode(store),
+            ),
+            _row(
+              leading: const Icon(Icons.unfold_less_outlined),
+              title: L10n.t('过程收起时机', 'Process fold timing'),
+              sub: store.turnFoldTiming == TurnFoldTiming.onNewMessage
+                  ? L10n.t(
+                      '下次有新消息时收起上一轮（含电脑端发来的）',
+                      'Fold the previous turn when the next message arrives (including from desktop)',
+                    )
+                  : L10n.t(
+                      '回答结束后立即收起已完成轮次的过程',
+                      'Fold a completed turn as soon as its answer ends',
+                    ),
+              onTap: () => _pickTurnFoldTiming(store),
+            ),
+          ],
           _row(
             leading: const Icon(Icons.bug_report_outlined),
             title: L10n.t('对话调试模式', 'Conversation debug mode'),
@@ -1895,6 +1923,132 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// 选择界面语言（中文 / English），即时生效 + 持久化。
+  /// issue #52：工作步骤展示模式（四档）→ 一行中文摘要（按桌面策略表写实际行为）。
+  String _stepDisplayModeSummary(WorkStepDisplayMode mode) {
+    switch (mode) {
+      case WorkStepDisplayMode.concise:
+        // 运行中组因轮次未结束被强制展开（与桌面 compact 的 turnClosed=false 一致），
+        // 简洁档的差异是抬头不附带当前工具名、完成轮折叠成一行。
+        return L10n.t(
+          '简洁：已完成轮折叠成一行；运行中过程组按组且强制展开，抬头不附带当前工具名',
+          'Concise: completed turns fold into one line; running groups stay expanded without the current tool name',
+        );
+      case WorkStepDisplayMode.standard:
+        return L10n.t(
+          '标准：已完成轮折叠成一行；运行中按过程组展开，抬头附带当前工具名（默认）',
+          'Standard: completed turns fold into one line; running turns expand by process group with the current tool name (default)',
+        );
+      case WorkStepDisplayMode.detailed:
+        return L10n.t(
+          '详细：已完成轮仍折叠；运行中过程行平铺、完成后按过程组呈现',
+          'Detailed: completed turns still fold; running process rows stay flat and group only after the turn ends',
+        );
+      case WorkStepDisplayMode.expanded:
+        return L10n.t(
+          '完全展开：整轮与过程行保持展开、不分组；工具卡仍默认收起',
+          'Expanded: turns and process rows stay expanded without grouping; tool cards still start collapsed',
+        );
+    }
+  }
+
+  Future<void> _pickStepDisplayMode(AppStore store) async {
+    final brand = DshColors.brand(context);
+    final choice = await showModalBottomSheet<WorkStepDisplayMode>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Text(
+                L10n.t('工作步骤展示模式', 'Work-step display mode'),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            for (final mode in WorkStepDisplayMode.values)
+              ListTile(
+                title: Text(
+                  switch (mode) {
+                    WorkStepDisplayMode.concise => L10n.t('简洁', 'Concise'),
+                    WorkStepDisplayMode.standard => L10n.t('标准', 'Standard'),
+                    WorkStepDisplayMode.detailed => L10n.t('详细', 'Detailed'),
+                    WorkStepDisplayMode.expanded =>
+                      L10n.t('完全展开', 'Expanded'),
+                  },
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: store.stepDisplayMode == mode
+                        ? FontWeight.w700
+                        : FontWeight.w400,
+                    color: store.stepDisplayMode == mode ? brand : null,
+                  ),
+                ),
+                subtitle: Text(
+                  _stepDisplayModeSummary(mode),
+                  style: const TextStyle(fontSize: 11),
+                ),
+                trailing: store.stepDisplayMode == mode
+                    ? Icon(Icons.check, size: 18, color: brand)
+                    : null,
+                onTap: () => Navigator.of(ctx).pop(mode),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice != null) await store.setStepDisplayMode(choice);
+  }
+
+  Future<void> _pickTurnFoldTiming(AppStore store) async {
+    final brand = DshColors.brand(context);
+    final choice = await showModalBottomSheet<TurnFoldTiming>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Text(
+                L10n.t('过程收起时机', 'Process fold timing'),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            for (final timing in TurnFoldTiming.values)
+              ListTile(
+                title: Text(
+                  timing == TurnFoldTiming.onNewMessage
+                      ? L10n.t('下次有新消息时', 'When the next message arrives')
+                      : L10n.t('回答结束后', 'After the answer ends'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: store.turnFoldTiming == timing
+                        ? FontWeight.w700
+                        : FontWeight.w400,
+                    color: store.turnFoldTiming == timing ? brand : null,
+                  ),
+                ),
+                trailing: store.turnFoldTiming == timing
+                    ? Icon(Icons.check, size: 18, color: brand)
+                    : null,
+                onTap: () => Navigator.of(ctx).pop(timing),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice != null) await store.setTurnFoldTiming(choice);
+  }
+
   Future<void> _pickLanguage(AppStore store) async {
     final brand = DshColors.brand(context);
     final choice = await showModalBottomSheet<String>(
