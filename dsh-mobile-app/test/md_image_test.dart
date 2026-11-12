@@ -51,7 +51,6 @@ Future<void> _pumpMarkdown(
 void main() {
   setUp(() {
     L10n.lang = 'en';
-    clearMarkdownImageCache();
   });
 
   testWidgets('块级本地图片：经 loader 加载并渲染 Image，不直接读文件系统', (tester) async {
@@ -65,7 +64,8 @@ void main() {
       },
     );
     expect(calls, ['pics/demo.png']);
-    expect(find.byType(Image), findsOneWidget);
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.image, isA<ResizeImage>(), reason: '按布局/DPR 降采样');
     // 加载占位可以存在（Image 解码首帧），但不得显示失败文案。
     expect(find.text('Failed to load image'), findsNothing);
   });
@@ -84,7 +84,7 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
   });
 
-  testWidgets('同路径（同一 loader）只请求一次（缓存）', (tester) async {
+  testWidgets('md 不持全局缓存：请求去重由 ChatScreen LRU 注入；双图各调用 loader', (tester) async {
     var count = 0;
     final loader = (String source) async {
       count += 1;
@@ -95,7 +95,7 @@ void main() {
       '![a](pics/same.png)\n\n![b](pics/same.png)',
       loader: loader,
     );
-    expect(count, 1);
+    expect(count, 2);
   });
 
   testWidgets('代码块内的 ![] 不解析；不会调用 loader', (tester) async {
@@ -127,7 +127,6 @@ void main() {
     expect(find.text('产品截图'), findsOneWidget);
     expect(find.text('Image not found'), findsOneWidget);
 
-    clearMarkdownImageCache();
     await _pumpMarkdown(
       tester,
       '![坏类型](pics/doc.png)',
@@ -156,6 +155,21 @@ void main() {
     expect(find.text('Unsupported image URL'), findsOneWidget);
   });
 
+  testWidgets('501（宿主不支持安全校验）显示明确占位', (tester) async {
+    await _pumpMarkdown(
+      tester,
+      '![旧宿主](pics/a.png)',
+      loader: (source) async => throw ApiException(
+        'verification unavailable',
+        code: 'image-verification-unavailable',
+        status: 501,
+      ),
+    );
+    expect(find.byKey(const Key('markdown-image-placeholder')), findsOneWidget);
+    expect(find.text('旧宿主'), findsOneWidget);
+    expect(find.textContaining('cannot verify images safely'), findsOneWidget);
+  });
+
   testWidgets('320 + 深色 + 1.5x：图片/占位不溢出', (tester) async {
     await _pumpMarkdown(
       tester,
@@ -180,7 +194,8 @@ void main() {
       },
     );
     expect(count, 0);
-    expect(find.byType(Image), findsOneWidget);
+    expect(find.byType(Image), findsNothing, reason: '远程图不发起第三方请求');
+    expect(find.textContaining('Remote images are not loaded automatically'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

@@ -34,6 +34,7 @@ import '../turn_outline.dart';
 import '../turn_tail.dart';
 import '../turn_file_actions.dart';
 import '../md.dart';
+import '../workspace_image_cache.dart';
 import '../fmt.dart';
 import '../image_gallery.dart';
 import '../git_browser_controller.dart';
@@ -349,6 +350,10 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+/// issue #95：200 `unavailable:true` 的短 TTL（默认 30s；测试可注入更短值验证重试）。
+/// 不用永久空缓存，避免旧宿主/临时故障导致技能菜单一直缺失。
+Duration slashSkillsUnavailableTtl = const Duration(seconds: 30);
+
 class _ChatScreenState extends State<ChatScreen> {
   final _inputCtrl = _SlashHighlightController();
   // issue #97：菜单在输入框上方/composer 外；用 composer 位置计算可用最大高度。
@@ -429,16 +434,32 @@ class _ChatScreenState extends State<ChatScreen> {
   int _loadGeneration = 0; // 丢弃跨越 reset/会话切换的旧 history 响应
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
-  // issue #94：Markdown 本地图片加载器（稳定实例 → md.dart 缓存按 loader+路径复用）。
+  // issue #94/#95：Markdown 本地图片 loader；缓存/并发/会话隔离由本页 LRU 负责。
   late final MarkdownImageLoader _markdownImageLoader = _loadMarkdownImage;
+  late final WorkspaceImageCache _workspaceImageCache = WorkspaceImageCache();
 
   Future<MarkdownImageData> _loadMarkdownImage(String source) async {
     final id = _mySessionId;
     if (id == null || id.isEmpty) {
       throw ApiException('no-session', code: 'session-not-found');
     }
-    final data = await _api.workspaceImage(id, source);
-    return MarkdownImageData(bytes: data.bytes, contentType: data.contentType);
+    final bytes = await _workspaceImageCache.load(
+      '$id|$source',
+      () async {
+        final data = await _api.workspaceImage(id, source);
+        // 服务端 8MiB + 客户端二次校验（防旧宿主/中间层异常大响应）。
+        if (data.bytes.length > 8 * 1024 * 1024) {
+          throw ApiException(
+            'image too large',
+            code: 'image-too-large',
+            status: 413,
+          );
+        }
+        return data.bytes;
+      },
+      stillWanted: () => mounted && _mySessionId == id,
+    );
+    return MarkdownImageData(bytes: bytes);
   }
   Api get _api => widget.apiClient ?? api;
   String get _pageAgentStatus =>
@@ -835,6 +856,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _workspaceImageCache.clear();
     _draftTimer?.cancel();
     _activityTimer?.cancel();
     _queueRefreshTimer?.cancel();
@@ -5278,7 +5300,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final readApi = widget.gitReadApi ?? _api;
     final controller =
         widget.gitControllerFactory?.call(readApi) ??
-        GitBrowserController(readApi);
+        GitBrowserController(
+          readApi,
+          graphPageSize: 16,
+          branchLimit: widget.store.gitGraphBranchLimit,
+        );
     _gitController = controller;
     unawaited(controller.open(sid));
     final graphScrollController = ScrollController();

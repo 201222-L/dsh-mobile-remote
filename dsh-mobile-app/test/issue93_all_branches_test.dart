@@ -184,6 +184,75 @@ void main() {
       expect(controller.state.commits.map((commit) => commit.oid).toSet().length, 6, reason: '跨页无重复');
     });
 
+    test('双向分页 cursor：older 只更新 next、newer 只更新 prev；交替 old→new→old 不串', () async {
+      final api = _FakeGitApi()
+        ..onAll = (focus, snapshotId, cursor) async {
+          if (snapshotId == null) {
+            return _page(oids: ['c10', 'c11'], snapshotId: 's', focusOid: 'c10', prevCursor: 'p1', nextCursor: 'n1');
+          }
+          if (cursor == 'p1') {
+            // newer 页故意回传错误的 nextCursor，必须被忽略以保留当前 older 锚点。
+            return _page(oids: ['c8', 'c9'], snapshotId: 's', prevCursor: 'p2', nextCursor: 'BAD-next');
+          }
+          if (cursor == 'n1') {
+            // older 页故意回传错误的 prevCursor，必须保留当前 newer 锚点 p2。
+            return _page(oids: ['c12', 'c13'], snapshotId: 's', prevCursor: 'BAD-prev', nextCursor: 'n2');
+          }
+          if (cursor == 'p2') return _page(oids: ['c6', 'c7'], snapshotId: 's', prevCursor: 'p3');
+          return _page(oids: ['c14'], snapshotId: 's', nextCursor: 'n3');
+        };
+      final controller = GitBrowserController(api, branchLimit: GitGraphBranchLimit.unlimited, graphPageSize: 16);
+      await controller.open('session-a');
+      await controller.openAllGraph();
+      expect(controller.state.graphPrevCursor, 'p1');
+      expect(controller.state.graphNextCursor, 'n1');
+
+      await controller.loadPrevGraphPage();
+      expect(controller.state.graphPrevCursor, 'p2');
+      expect(controller.state.graphNextCursor, 'n1', reason: 'newer 页不得覆盖 older 锚点');
+
+      await controller.loadNextGraphPage();
+      expect(api.requests.last['cursor'], 'n1');
+      expect(controller.state.graphNextCursor, 'n2');
+      expect(controller.state.graphPrevCursor, 'p2', reason: 'older 页不得覆盖 newer 锚点');
+
+      await controller.loadPrevGraphPage();
+      expect(api.requests.last['cursor'], 'p2');
+      expect(controller.state.graphPrevCursor, 'p3');
+      expect(controller.state.graphNextCursor, 'n2');
+      expect(api.requests.every((r) => r['limit'] == 16), isTrue, reason: '初始+续页统一 limit 16');
+    });
+
+    test('双向分页 cursor：newer→older→newer 交替，不串锚点/limit16', () async {
+      final api = _FakeGitApi()
+        ..onAll = (focus, snapshotId, cursor) async {
+          if (snapshotId == null) {
+            return _page(oids: ['c10'], snapshotId: 's', focusOid: 'c10', prevCursor: 'p1', nextCursor: 'n1');
+          }
+          if (cursor == 'n1') {
+            return _page(oids: ['c11'], snapshotId: 's', prevCursor: 'BAD-prev', nextCursor: 'n2');
+          }
+          if (cursor == 'p1') {
+            return _page(oids: ['c9'], snapshotId: 's', prevCursor: 'p2', nextCursor: 'BAD-next');
+          }
+          return _page(oids: ['c12'], snapshotId: 's', nextCursor: 'n3');
+        };
+      final controller = GitBrowserController(api, branchLimit: GitGraphBranchLimit.unlimited, graphPageSize: 16);
+      await controller.open('session-a');
+      await controller.openAllGraph();
+      await controller.loadNextGraphPage();
+      expect(controller.state.graphNextCursor, 'n2');
+      expect(controller.state.graphPrevCursor, 'p1');
+      await controller.loadPrevGraphPage();
+      expect(api.requests.last['cursor'], 'p1');
+      expect(controller.state.graphPrevCursor, 'p2');
+      expect(controller.state.graphNextCursor, 'n2', reason: 'newer 页不得覆盖 older 锚点');
+      await controller.loadNextGraphPage();
+      expect(api.requests.last['cursor'], 'n2');
+      expect(controller.state.graphNextCursor, 'n3');
+      expect(api.requests.every((r) => r['limit'] == 16), isTrue);
+    });
+
     test('409 stale：保留已加载页并置 stale，不替换整图', () async {
       var calls = 0;
       final api = _FakeGitApi()

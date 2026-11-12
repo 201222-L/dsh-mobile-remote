@@ -1093,8 +1093,14 @@ class GitBrowserController extends ChangeNotifier {
       _emit(_state.copyWith(
         commits: commits,
         snapshotId: page.snapshotId,
-        graphNextCursor: page.nextCursor,
-        graphPrevCursor: page.prevCursor,
+        // issue #95（#93 review）：older 页只更新 next、newer 页只更新 prev；
+        // 不能用响应里的另一侧 cursor 覆盖当前浏览方向已加载页的锚点。
+        graphNextCursor: initial
+            ? page.nextCursor
+            : (newer ? _state.graphNextCursor : page.nextCursor),
+        graphPrevCursor: initial
+            ? page.prevCursor
+            : (newer ? page.prevCursor : _state.graphPrevCursor),
         graphFocusOid: initial ? page.focusOid : _state.graphFocusOid,
         graphPageStart: initial ? page.pageStart : _state.graphPageStart,
         graphAll: true,

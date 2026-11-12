@@ -31,19 +31,6 @@ class MarkdownImageData {
 /// 按会话加载图片字节；失败必须 throw（UI 显示 alt + 可读原因，不静默空白）。
 typedef MarkdownImageLoader = Future<MarkdownImageData> Function(String source);
 
-/// 同一 loader（同一 ChatScreen/会话）+ 同一路径只请求一次；测试可清空。
-final Map<String, Future<MarkdownImageData>> _markdownImageCache = {};
-void clearMarkdownImageCache() => _markdownImageCache.clear();
-
-Future<MarkdownImageData> _cachedMarkdownImage(
-  MarkdownImageLoader loader,
-  String source,
-) =>
-    _markdownImageCache.putIfAbsent(
-      '${identityHashCode(loader)}|$source',
-      () => loader(source),
-    );
-
 /// 行内 token：**加粗** *斜体* `代码` [链接](url) ![alt](图片)
 final _inlineRe = RegExp(
   r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|!\[[^\]]*\]\([^)\s]+\)|\[[^\]]*\]\([^)\s]+\))',
@@ -558,6 +545,7 @@ class _MarkdownImage extends StatefulWidget {
 
 class _MarkdownImageState extends State<_MarkdownImage> {
   Future<MarkdownImageData>? _future;
+  ImageProvider? _provider;
 
   bool get _isHttp =>
       widget.source.startsWith('http://') || widget.source.startsWith('https://');
@@ -576,14 +564,25 @@ class _MarkdownImageState extends State<_MarkdownImage> {
   @override
   void didUpdateWidget(covariant _MarkdownImage old) {
     super.didUpdateWidget(old);
-    if (old.source != widget.source) _future = _load();
+    if (old.source != widget.source) {
+      _provider?.evict();
+      _provider = null;
+      _future = _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _provider?.evict(); // 页面销毁释放图片 provider 缓存，避免跨页残留
+    super.dispose();
   }
 
   Future<MarkdownImageData>? _load() {
     if (_isHttp || _hasUnsupportedScheme) return null;
     final loader = widget.loader;
     if (loader == null) return null;
-    return _cachedMarkdownImage(loader, widget.source);
+    // 缓存/并发/会话隔离由 ChatScreen 注入的 loader 负责；md 不持全局 Map。
+    return loader(widget.source);
   }
 
   String _reason(Object error) {
@@ -593,6 +592,10 @@ class _MarkdownImageState extends State<_MarkdownImage> {
         404 => L10n.t('图片不存在', 'Image not found'),
         413 => L10n.t('图片过大', 'Image too large'),
         415 => L10n.t('不支持的图片类型', 'Unsupported image type'),
+        501 => L10n.t(
+            '当前电脑端不支持图片安全校验，请升级',
+            'This desktop cannot verify images safely; please update',
+          ),
         _ => L10n.t('图片加载失败', 'Failed to load image'),
       };
     }
@@ -650,7 +653,7 @@ class _MarkdownImageState extends State<_MarkdownImage> {
     );
   }
 
-  Widget _image(ImageProvider provider, {required bool network}) {
+  Widget _imageWidget(ImageProvider provider) {
     final image = Image(
       image: provider,
       fit: BoxFit.contain,
@@ -682,10 +685,39 @@ class _MarkdownImageState extends State<_MarkdownImage> {
           );
   }
 
+  /// 按布局/DPR 生成 ResizeImage，避免大图全分辨率驻留内存。
+  Widget _resizedImage(Uint8List bytes) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        final logicalWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : (widget.block
+                ? MediaQuery.sizeOf(context).width - 32
+                : 280.0);
+        final targetMax = widget.block ? 1600 : 800;
+        final physical = (logicalWidth * dpr).round().clamp(1, targetMax);
+        final provider = ResizeImage(
+          MemoryImage(bytes),
+          width: physical,
+          policy: ResizeImagePolicy.fit,
+        );
+        _provider = provider;
+        return _imageWidget(provider);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    // issue #95：本轮不自动加载 http(s) 第三方图片，避免隐私/追踪请求。
     if (_isHttp) {
-      return _image(NetworkImage(widget.source), network: true);
+      return _placeholder(
+        L10n.t(
+          '远程图片不自动加载（本轮仅支持工作区本地图片）',
+          'Remote images are not loaded automatically (workspace-local images only)',
+        ),
+      );
     }
     if (_hasUnsupportedScheme) {
       return _placeholder(
@@ -707,10 +739,7 @@ class _MarkdownImageState extends State<_MarkdownImage> {
         if (snapshot.hasError || snapshot.data == null) {
           return _placeholder(_reason(snapshot.error ?? Object()));
         }
-        return _image(
-          MemoryImage(snapshot.data!.bytes),
-          network: false,
-        );
+        return _resizedImage(snapshot.data!.bytes);
       },
     );
   }
