@@ -125,7 +125,7 @@ void main() {
     );
     expect(find.byKey(const Key('markdown-image-placeholder')), findsOneWidget);
     expect(find.text('产品截图'), findsOneWidget);
-    expect(find.text('Image not found'), findsOneWidget);
+    expect(find.textContaining('Image not found'), findsOneWidget);
 
     await _pumpMarkdown(
       tester,
@@ -183,7 +183,7 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
     expect(tester.takeException(), isNull, reason: '320+1.5x+深色不得 overflow');
   });
-  testWidgets('http(s) 图片走网络 Image，不调用本地 loader', (tester) async {
+  testWidgets('http(s) 图片仅占位、不自动加载第三方 Image', (tester) async {
     var count = 0;
     await _pumpMarkdown(
       tester,

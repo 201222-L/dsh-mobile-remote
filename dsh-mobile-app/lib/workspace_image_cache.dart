@@ -98,7 +98,7 @@ class WorkspaceImageCache {
       return bytes;
     } finally {
       _removeInFlight(key, token);
-      _release(generation);
+      _release();
     }
   }
 
@@ -134,7 +134,7 @@ class WorkspaceImageCache {
     return granted;
   }
 
-  void _release(int generation) {
+  void _release() {
     // 活跃槽位结束：优先直接交接给下一个**当前代** waiter，不先减后唤醒；
     // 过期 waiter（clear 前排队）已完成 false，不消耗槽位，继续找下一个。
     while (_waiters.isNotEmpty) {

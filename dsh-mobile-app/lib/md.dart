@@ -627,8 +627,14 @@ class _MarkdownImageState extends State<_MarkdownImage> {
         );
       }
       return switch (error.status) {
-        403 => L10n.t('没有权限读取该图片', 'Not allowed to read this image'),
-        404 => L10n.t('图片不存在', 'Image not found'),
+        403 => L10n.t(
+            '图片不可读取：工作区未授权或路径不允许',
+            'Image not readable: workspace not authorized or path not allowed',
+          ),
+        404 => L10n.t(
+            '图片不存在，或电脑端版本过旧不支持该端点',
+            'Image not found, or the desktop is too old for this endpoint',
+          ),
         413 => L10n.t('图片过大', 'Image too large'),
         415 => L10n.t('不支持的图片类型', 'Unsupported image type'),
         501 => L10n.t(

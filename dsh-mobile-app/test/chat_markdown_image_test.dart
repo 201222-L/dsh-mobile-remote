@@ -19,9 +19,10 @@ final Uint8List _png = base64Decode(
 );
 
 class _Backend {
-  _Backend({required this.imageStatus, this.bytes});
+  _Backend({required this.imageStatus, this.bytes, this.assistantText = '说明\n\n![截图](pics/a.png)'});
   final int imageStatus;
   final Uint8List? bytes;
+  final String assistantText;
   final List<Uri> imageRequests = [];
 
   late final Api api = Api(client: MockClient(_handle))
@@ -48,7 +49,7 @@ class _Backend {
             'data': {
               'turn': 1,
               'messageId': 'a1',
-              'text': '说明\n\n![截图](pics/a.png)',
+              'text': assistantText,
             },
           },
         ],
@@ -132,4 +133,15 @@ void main() {
     expect(find.textContaining('cannot verify images safely'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('同路径多图只发一次 HTTP（LRU/in-flight 去重）', (tester) async {
+    final backend = _Backend(
+      imageStatus: 200,
+      assistantText: '双图\n\n![一](pics/a.png)\n\n![二](pics/a.png)',
+    );
+    await _pump(tester, backend);
+    expect(backend.imageRequests, hasLength(1), reason: '同 session|path 只请求一次');
+    expect(find.byType(Image), findsNWidgets(2));
+    await tester.pumpWidget(const SizedBox());
+  });
+
 }

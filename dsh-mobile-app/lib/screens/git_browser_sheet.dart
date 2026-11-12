@@ -630,7 +630,18 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         );
       }
     } else {
+      // issue #95：刷新后重新允许默认图请求；all 模式必须重新 openAllGraph(focus 当前分支)，
+      // 不能因 _defaultGraphRequested 常驻而停留在旧/空选择集。
+      _defaultGraphRequested = false;
+      _allGraphAutoRequested = false;
       await widget.controller.refresh();
+      if (mounted &&
+          widget.controller.graphAllMode &&
+          (_activeTab == 'graph' || _temporaryGraph)) {
+        await widget.controller.openAllGraph(
+          focus: widget.controller.state.repository?.currentBranch,
+        );
+      }
     }
   }
 
@@ -1671,7 +1682,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     final textScaler = MediaQuery.textScalerOf(context);
     final rowHeight = math.max(
       kGitGraphRowHeight,
-      textScaler.scale(kGitGraphRowHeight - 22) + 22,
+      // issue #95：大字号下 commit 标签行比纯文本多一行，原公式在 1.5x 时
+      // 会有 8px 纵向溢出；按多出的一行文本高度补偿（1x 保持设计值 86）。
+      textScaler.scale(kGitGraphRowHeight - 22) +
+          22 +
+          math.max(0.0, textScaler.scale(20) - 20),
     );
     _graphRowHeight = rowHeight;
     // issue #102 复审：必须先调度/更新可见 lane，再计算 targetGraphWidth。
@@ -1740,6 +1755,27 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             ],
           ),
         ),
+        // issue #95：all 模式向上加载（更新页）超时——顶部单侧重试，保留已加载页。
+        if (allMode && state.graphPageTimedOut && state.graphPageTimedOutNewer)
+          Container(
+            key: const Key('git-graph-page-timeout-top'),
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  L10n.t('加载更新超时', 'Loading newer commits timed out'),
+                  style: TextStyle(fontSize: 12, color: DshColors.ink2(context)),
+                ),
+                TextButton(
+                  key: const Key('git-graph-page-retry-top'),
+                  onPressed: () => widget.controller.retryGraphPage(),
+                  child: Text(L10n.t('重试', 'Retry')),
+                ),
+              ],
+            ),
+          ),
         if (!allMode && _choosingBranches) ...[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -2010,10 +2046,15 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 controller: widget.scrollController,
                 itemCount:
                     state.commits.length +
-                    (state.graphNextCursor != null ? 1 : 0),
+                    (state.graphNextCursor != null ||
+                            (state.graphPageTimedOut &&
+                                !state.graphPageTimedOutNewer)
+                        ? 1
+                        : 0),
                 itemBuilder: (context, index) {
                   if (index == state.commits.length) {
-                    if (state.graphPageTimedOut) {
+                    if (state.graphPageTimedOut &&
+                        !state.graphPageTimedOutNewer) {
                       return Padding(
                         key: const Key('git-graph-page-timeout'),
                         padding: const EdgeInsets.symmetric(vertical: 12),
