@@ -246,7 +246,16 @@ test("graph uses opaque session-bound snapshots, explicit cursors, and revalidat
     ];
     const five = await service.graph("session-1", repository.repositoryId, { tips: fiveTips, limit: 10 });
     assert.equal(five.tips.length, 5);
-    await assert.rejects(() => service.graph("session-1", repository.repositoryId, { tips: [...fiveTips, { name: "refs/heads/sixth" }] }), (e) => e.code === "graph-too-many-tips" && e.status === 400);
+    // task-28：GET 上限 32 → 33 才拒绝（POST 128 上限见 graph transport 用例）。
+    const tooMany = [
+      ...fiveTips,
+      ...Array.from({ length: 28 }, (_, index) => ({ name: `refs/heads/extra-${index}`, tipOid })),
+    ];
+    assert.equal(tooMany.length, 33);
+    await assert.rejects(
+      () => service.graph("session-1", repository.repositoryId, { tips: tooMany }),
+      (e) => e.code === "graph-too-many-tips" && e.status === 400 && /tips limit is 32/.test(e.message),
+    );
     appendFileSync(`${root}/a.txt`, "three\n"); git(root, "commit", "-am", "three");
     await assert.rejects(() => service.graph("session-1", repository.repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor }), (e) => e.code === "graph-stale" && e.status === 409);
     const deletion = await service.graph("session-1", repository.repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
@@ -452,4 +461,106 @@ test("commit details omit secrets and page root, rename, and binary changed file
     assert.ok(renamed.files.items.some((file) => file.path === "renamed.txt" && file.oldPath === "a.txt" && file.status === "renamed"));
     await assert.rejects(() => service.commit("session-1", repository.repositoryId, rootOid, { filesCursor: first.files.nextCursor + "x" }), (e) => e.code === "invalid-files-cursor" && e.status === 400);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function graphProvider({ withRefs = true, graph = null, refNames = [] } = {}) {
+	const oid = "a".repeat(40);
+	const state = { refsCalls: 0, resolveCalls: 0, resolveGraphCalls: 0 };
+	const provider = {
+		contractVersion: "1.0.0",
+		capabilities: () => ({ available: true }),
+		repositoryRoot: async (cwd) => cwd,
+		repositoryInfo: async () => ({ headOid: oid, currentBranch: "refs/heads/main", empty: false }),
+		branches: async () => [{ name: "refs/heads/main", displayName: "main", oid, kind: "local", current: true }],
+		resolveTip: async () => { state.resolveCalls += 1; return oid; },
+		graph: async (root, options) => {
+			void root;
+			state.resolveGraphCalls += 1;
+			if (graph) return graph(options);
+			return [{ oid, parents: [], author: "A", timestamp: 1, subject: "one" }];
+		},
+		commit: async () => ({ oid, parents: [], author: "A", timestamp: 1, message: "one", files: [] }),
+	};
+	if (withRefs) {
+		provider.refs = async () => {
+			state.refsCalls += 1;
+			return [
+				{ name: "HEAD", commitOid: oid },
+				{ name: "refs/heads/main", commitOid: oid },
+				...refNames.map((name) => ({ name, commitOid: oid })),
+			];
+		};
+	}
+	return { provider, state, oid };
+}
+
+function serviceWithProvider(provider, { graphDeadlineMs } = {}) {
+	const root = mkdtempSync(`${tmpdir()}/git-graph-provider-`);
+	fixture(root);
+	const session = { id: "session-1", header: { cwd: root } };
+	const ctx = { get(name) {
+		if (name === "sessions") return { get: (id) => id === session.id ? session : undefined };
+		if (name === "workspaceRegistry") return { list: () => [{ path: root }] };
+		if (name === "gitReadProvider") return provider;
+		throw new Error(`missing ${name}`);
+	} };
+	return { root, service: createGitReadService(ctx, { graphDeadlineMs }) };
+}
+
+test("task-28: 128 POST tips resolve via one provider.refs batch (no per-tip resolveTip)", async () => {
+	const refNames = Array.from({ length: 128 }, (_, index) => index === 0 ? "refs/heads/main" : `refs/heads/main-${index}`);
+	const { provider, state, oid } = graphProvider({ refNames });
+	const { root, service } = serviceWithProvider(provider);
+	try {
+		const { repositoryId } = await service.repositoryForSession("session-1");
+		const tips = refNames.map((name) => ({ name, tipOid: oid }));
+		const page = await service.graph("session-1", repositoryId, { tips, limit: 1, maxTips: 128 });
+		assert.equal(page.tips.length, 128);
+		assert.equal(state.resolveGraphCalls, 1);
+		// resolve(1) + pre/post verify(2) + 行 refs 装饰(1) = 4 次批量 refs；绝不逐 tip。
+		assert.ok(state.refsCalls >= 2 && state.refsCalls <= 4, `refs batch calls: ${state.refsCalls}`);
+		assert.equal(state.resolveCalls, 0, "批量 refs 命中后不得逐 tip resolveTip");
+		// 129 → 400（POST 上限）。
+		await assert.rejects(
+			() => service.graph("session-1", repositoryId, { tips: [...tips, { name: "refs/heads/main-extra" }], maxTips: 128 }),
+			(e) => e.code === "graph-too-many-tips" && e.status === 400 && /tips limit is 128/.test(e.message),
+		);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("task-28: 外部 provider 无 refs 时回退逐 tip（兼容旧契约）", async () => {
+	const { provider, state, oid } = graphProvider({ withRefs: false });
+	const { root, service } = serviceWithProvider(provider);
+	try {
+		const { repositoryId } = await service.repositoryForSession("session-1");
+		const tips = Array.from({ length: 5 }, (_, index) => ({
+			name: index === 0 ? "refs/heads/main" : `refs/heads/main-${index}`,
+			tipOid: oid,
+		}));
+		const page = await service.graph("session-1", repositoryId, { tips, limit: 1 });
+		assert.equal(page.tips.length, 5);
+		assert.ok(state.resolveCalls >= 5, `fallback resolveTip calls: ${state.resolveCalls}`);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("task-28: graph 25s 截止 → graph-timeout 504；provider timedOut 不返回半页", async () => {
+	const hanging = graphProvider({ graph: () => new Promise(() => {}) });
+	const first = serviceWithProvider(hanging.provider, { graphDeadlineMs: 50 });
+	try {
+		const { repositoryId } = await first.service.repositoryForSession("session-1");
+		await assert.rejects(
+			() => first.service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }] }),
+			(e) => e.code === "graph-timeout" && e.status === 504,
+		);
+	} finally { rmSync(first.root, { recursive: true, force: true }); }
+
+	const timedOut = graphProvider({ graph: async () => ({ timedOut: true, entries: [] }) });
+	const second = serviceWithProvider(timedOut.provider);
+	try {
+		const { repositoryId } = await second.service.repositoryForSession("session-1");
+		await assert.rejects(
+			() => second.service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }] }),
+			(e) => e.code === "graph-timeout" && e.status === 504,
+		);
+	} finally { rmSync(second.root, { recursive: true, force: true }); }
 });

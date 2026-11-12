@@ -84,6 +84,9 @@ class WidgetGitApi implements GitReadApi {
     return GitReadCapabilities(
       available: available,
       reason: available ? null : 'Git is unavailable here',
+      // task-28：此 fake 模拟新宿主（10/不限可用；GET≤32/POST≤128）。
+      graphTipsMax: 128,
+      graphTipsGetMax: 32,
     );
   }
 

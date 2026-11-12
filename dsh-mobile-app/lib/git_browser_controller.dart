@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -30,6 +32,12 @@ class GitBrowserState {
   final bool stale;
   final String? error;
 
+  /// issue #86：当前生效的分支图选中上限（5/10/不限）。
+  final GitGraphBranchLimit branchLimit;
+
+  /// issue #86：仅「不限」档的 30s 超时态（不自动降档，等待用户三选一）。
+  final bool graphTimedOut;
+
   const GitBrowserState({
     this.sessionId,
     this.capabilities,
@@ -54,6 +62,8 @@ class GitBrowserState {
     this.loadingFilesPage = false,
     this.stale = false,
     this.error,
+    this.branchLimit = GitGraphBranchLimit.fallback,
+    this.graphTimedOut = false,
   });
 
   List<GitBranch> get filteredBranches {
@@ -90,6 +100,8 @@ class GitBrowserState {
     bool? loadingFilesPage,
     bool? stale,
     Object? error = _keep,
+    GitGraphBranchLimit? branchLimit,
+    bool? graphTimedOut,
   }) => GitBrowserState(
     sessionId: identical(sessionId, _keep)
         ? this.sessionId
@@ -136,6 +148,8 @@ class GitBrowserState {
     loadingFilesPage: loadingFilesPage ?? this.loadingFilesPage,
     stale: stale ?? this.stale,
     error: identical(error, _keep) ? this.error : error as String?,
+    branchLimit: branchLimit ?? this.branchLimit,
+    graphTimedOut: graphTimedOut ?? this.graphTimedOut,
   );
 }
 
@@ -146,11 +160,19 @@ class GitBrowserController extends ChangeNotifier {
     this._api, {
     this.graphPageSize = 100,
     this.filesPageSize = 100,
-  });
+    GitGraphBranchLimit branchLimit = GitGraphBranchLimit.fallback,
+    this.graphLoadTimeout = const Duration(seconds: 30),
+  }) : _branchLimit = branchLimit; // ignore: prefer_initializing_formals
 
   final GitReadApi _api;
   final int graphPageSize;
   final int filesPageSize;
+
+  /// issue #86：仅「不限」档生效的初始 graph 加载超时（测试可注入更短值）。
+  final Duration graphLoadTimeout;
+
+  GitGraphBranchLimit _branchLimit;
+  Timer? _graphTimeoutTimer;
   GitBrowserState _state = const GitBrowserState();
   int _generation = 0;
   int _graphGeneration = 0;
@@ -164,12 +186,34 @@ class GitBrowserController extends ChangeNotifier {
 
   GitBrowserState get state => _state;
 
+  GitGraphBranchLimit get branchLimit => _branchLimit;
+
+  /// task-28：可选 POST 能力（旧宿主/旧 fake 不实现 → GET）。
+  GitGraphPostApi? get _postApi => _api is GitGraphPostApi ? _api as GitGraphPostApi : null;
+
+  /// 宿主声明的 GET/POST tips 上限；capability 缺失按旧宿主 5/5。
+  int get _graphGetMax =>
+      _state.capabilities?.effectiveGraphTipsGetMax ?? 5;
+  int get _graphMaxTips => _state.capabilities?.effectiveGraphTipsMax ?? 5;
+  bool get _supportsGraphPost =>
+      _state.capabilities?.supportsGraphPost == true;
+
+  /// GET URL 预算：编码后的 tips JSON 超过 ~8KB 直接走 POST（避免 431/16KB URL 上限）。
+  int _encodedTipsBytes(List<GitGraphTip> tips) =>
+      Uri.encodeQueryComponent(
+        jsonEncode([for (final tip in tips) tip.toJson()]),
+      ).length;
+
+  int get selectedGraphBranchCount => _state.selectedBranches.length;
+
   /// 只读 Git API：sheet 里的文件历史等附加视图复用同一注入实现（测试可替换）。
   GitReadApi get readApi => _api;
 
   @override
   void dispose() {
     _disposed = true;
+    _graphTimeoutTimer?.cancel();
+    _graphTimeoutTimer = null;
     _generation++;
     _graphGeneration++;
     _commitGeneration++;
@@ -185,6 +229,185 @@ class GitBrowserController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _cancelGraphTimeout() {
+    _graphTimeoutTimer?.cancel();
+    _graphTimeoutTimer = null;
+  }
+
+  /// issue #86：仅「不限」档为初始 graph 请求装 30s 超时；超时即作废本次 generation，
+  /// 迟到响应由 `_loadGraph` 的 generation 检查丢弃。
+  void _armGraphTimeout(int generation, int graphGeneration) {
+    _cancelGraphTimeout();
+    if (!_branchLimit.isUnlimited) return;
+    _graphTimeoutTimer = Timer(graphLoadTimeout, () {
+      _graphTimeoutTimer = null;
+      if (_disposed ||
+          generation != _generation ||
+          graphGeneration != _graphGeneration) {
+        return;
+      }
+      _graphGeneration++; // 丢弃本请求的迟到响应
+      _emit(
+        _state.copyWith(
+          loadingGraph: false,
+          loadingGraphPage: false,
+          graphTimedOut: true,
+          error: null,
+        ),
+      );
+    });
+  }
+
+  /// issue #86：切换三档上限——升档保留选择，降档保留前 N 个；返回被裁剪的数量。
+  ///
+  /// P2-2：选择集与上限**同步原子更新**，graph 加载异步发起（不等待网络）；
+  /// 旧请求由 `_graphGeneration` 作废，迟到响应不回写。
+  int setBranchLimit(GitGraphBranchLimit limit) {
+    // task-28：旧宿主（capability 已解析且无 POST graphTips）不允许升到 10/不限。
+    // capability 还没加载时不做判断——由 `_loadSession` 在解析后 clamp。
+    final caps = _state.capabilities;
+    if (caps != null && !caps.supportsGraphPost &&
+        limit != GitGraphBranchLimit.five) {
+      limit = GitGraphBranchLimit.five;
+    }
+    if (limit == _branchLimit) return 0;
+    _branchLimit = limit;
+    final max = limit.max;
+    final selected = [..._state.selectedBranches];
+    final trimmed = max == null || selected.length <= max
+        ? 0
+        : selected.length - max;
+    if (trimmed > 0) selected.removeRange(max!, selected.length);
+    _graphGeneration++; // 旧请求/旧超时作废
+    _cancelGraphTimeout();
+    _graphPageRequest = null;
+    _emit(
+      _state.copyWith(
+        branchLimit: limit,
+        selectedBranches: selected,
+        commits: const [],
+        snapshotId: null,
+        graphNextCursor: null,
+        loadingGraph: selected.isNotEmpty,
+        loadingGraphPage: false,
+        graphTimedOut: false,
+        stale: false,
+        error: null,
+      ),
+    );
+    if (selected.isNotEmpty && _state.repository != null) {
+      unawaited(_reloadGraphAfterSelectionChange());
+    }
+    return trimmed;
+  }
+
+  /// issue #86：重试一次 graph（超时面板「重试」）。
+  Future<void> retryGraphLoad() async {
+    if (_state.sessionId == null ||
+        _state.repository == null ||
+        _state.selectedBranches.isEmpty) {
+      return;
+    }
+    final graphGeneration = ++_graphGeneration;
+    _cancelGraphTimeout();
+    _emit(
+      _state.copyWith(
+        commits: const [],
+        snapshotId: null,
+        graphNextCursor: null,
+        loadingGraph: true,
+        graphTimedOut: false,
+        stale: false,
+        error: null,
+      ),
+    );
+    await _loadGraph(
+      generation: _generation,
+      graphGeneration: graphGeneration,
+      append: false,
+    );
+  }
+
+  Future<void> _reloadGraphAfterSelectionChange() async {
+    final graphGeneration = ++_graphGeneration;
+    _cancelGraphTimeout();
+    _emit(
+      _state.copyWith(
+        loadingGraph: true,
+        graphTimedOut: false,
+        stale: false,
+        error: null,
+      ),
+    );
+    await _loadGraph(
+      generation: _generation,
+      graphGeneration: graphGeneration,
+      append: false,
+    );
+  }
+
+  /// issue #86：「不限」档全选（**union**）——把当前搜索结果中未选的分支加入现有选择，
+  /// 搜索范围外已选分支保留（分页未加载的不选）。返回本次新增数量。
+  Future<int> selectGraphBranches(List<GitBranch> branches) async {
+    if (!_branchLimit.isUnlimited || _state.repository == null) return 0;
+    final known = {for (final branch in _state.selectedBranches) branch.name};
+    final cap = _state.capabilities?.effectiveGraphTipsMax ?? 5;
+    final room = cap - _state.selectedBranches.length;
+    if (room <= 0) return 0;
+    final added = <GitBranch>[
+      for (final branch in branches)
+        if (known.add(branch.name)) branch,
+    ].take(room).toList(growable: false);
+    if (added.isEmpty) return 0;
+    final selected = [..._state.selectedBranches, ...added];
+    _graphGeneration++;
+    _cancelGraphTimeout();
+    _graphPageRequest = null;
+    _commitGeneration++;
+    _emit(
+      _state.copyWith(
+        selectedBranches: selected,
+        commits: const [],
+        snapshotId: null,
+        graphNextCursor: null,
+        commit: null,
+        loadingGraph: selected.isNotEmpty,
+        graphTimedOut: false,
+        stale: false,
+        error: null,
+      ),
+    );
+    await _loadGraph(
+      generation: _generation,
+      graphGeneration: _graphGeneration,
+      append: false,
+    );
+    return added.length;
+  }
+
+  /// issue #86：「不限」档清空选择（graph 区域显示「请选择分支」占位）。
+  void clearGraphBranches() {
+    if (!_branchLimit.isUnlimited) return;
+    _graphGeneration++;
+    _commitGeneration++;
+    _cancelGraphTimeout();
+    _graphPageRequest = null;
+    _emit(
+      _state.copyWith(
+        selectedBranches: const [],
+        commits: const [],
+        snapshotId: null,
+        graphNextCursor: null,
+        commit: null,
+        loadingGraph: false,
+        loadingGraphPage: false,
+        graphTimedOut: false,
+        stale: false,
+        error: null,
+      ),
+    );
+  }
+
   Future<void> open(String sessionId) async {
     final generation = ++_generation;
     _graphGeneration++;
@@ -194,7 +417,14 @@ class GitBrowserController extends ChangeNotifier {
     _previewGeneration++;
     _graphPageRequest = null;
     _filesPageRequest = null;
-    _emit(GitBrowserState(sessionId: sessionId, loading: true));
+    _cancelGraphTimeout();
+    _emit(
+      GitBrowserState(
+        sessionId: sessionId,
+        loading: true,
+        branchLimit: _branchLimit,
+      ),
+    );
     await _loadSession(sessionId, generation, preserveSelection: false);
   }
 
@@ -209,6 +439,7 @@ class GitBrowserController extends ChangeNotifier {
     _previewGeneration++;
     _graphPageRequest = null;
     _filesPageRequest = null;
+    _cancelGraphTimeout();
     _emit(
       _state.copyWith(
         loading: true,
@@ -217,6 +448,7 @@ class GitBrowserController extends ChangeNotifier {
         loadingFilesPage: false,
         loadingWorktree: false,
         loadingPreview: false,
+        graphTimedOut: false,
         error: null,
       ),
     );
@@ -271,11 +503,24 @@ class GitBrowserController extends ChangeNotifier {
         final fallback = _defaultBranch(repository, sorted);
         selected = fallback == null ? const [] : [fallback];
       }
+      // task-28：旧宿主无 graphTips（不支持 POST）→ 10/不限回退 5（一次性 clamp）。
+      if (!capabilities.supportsGraphPost &&
+          _branchLimit != GitGraphBranchLimit.five) {
+        _branchLimit = GitGraphBranchLimit.five;
+      }
+      // issue #86：按当前上限（含服务端 max）裁剪，保留前 N 个。
+      final limit = _branchLimit.isUnlimited
+          ? capabilities.effectiveGraphTipsMax
+          : _branchLimit.max;
+      if (limit != null && selected.length > limit) {
+        selected = selected.sublist(0, limit);
+      }
       _emit(
         _state.copyWith(
           capabilities: capabilities,
           repository: repository,
           branches: sorted,
+          branchLimit: _branchLimit,
           selectedBranches: selected,
           commits: selectionMissing ? const [] : null,
           snapshotId: selectionMissing ? null : _keep,
@@ -353,6 +598,7 @@ class GitBrowserController extends ChangeNotifier {
         graphNextCursor: null,
         commit: null,
         loadingGraph: true,
+        graphTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -368,10 +614,35 @@ class GitBrowserController extends ChangeNotifier {
     final selected = [..._state.selectedBranches];
     final index = selected.indexWhere((item) => item.name == branch.name);
     if (index >= 0) {
-      if (selected.length == 1) return false;
+      // issue #86 P2-3：5/10 至少保留 1 个；不限档允许取消最后一项 → 0 选择空态。
+      if (selected.length == 1) {
+        if (!_branchLimit.isUnlimited) return false;
+        _graphGeneration++;
+        _commitGeneration++;
+        _cancelGraphTimeout();
+        _graphPageRequest = null;
+        _emit(
+          _state.copyWith(
+            selectedBranches: const [],
+            commits: const [],
+            snapshotId: null,
+            graphNextCursor: null,
+            commit: null,
+            loadingGraph: false,
+            loadingGraphPage: false,
+            graphTimedOut: false,
+            stale: false,
+            error: null,
+          ),
+        );
+        return true;
+      }
       selected.removeAt(index);
     } else {
-      if (selected.length >= maxSelectedGraphBranches) return false;
+      final limit = _branchLimit.isUnlimited
+          ? (_state.capabilities?.effectiveGraphTipsMax ?? 5)
+          : _branchLimit.max;
+      if (limit != null && selected.length >= limit) return false;
       selected.add(branch);
     }
     final graphGeneration = ++_graphGeneration;
@@ -386,6 +657,7 @@ class GitBrowserController extends ChangeNotifier {
         graphNextCursor: null,
         commit: null,
         loadingGraph: true,
+        graphTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -408,21 +680,81 @@ class GitBrowserController extends ChangeNotifier {
     final selected = _state.selectedBranches;
     final snapshotId = append ? _state.snapshotId : null;
     final cursor = append ? _state.graphNextCursor : null;
-    if (sessionId == null || repository == null || selected.isEmpty) return;
-    try {
-      final page = await _api.graph(
+    if (sessionId == null || repository == null) return;
+    if (selected.isEmpty && !append) return;
+    _cancelGraphTimeout();
+    final tips = selected
+        .map((branch) => GitGraphTip(name: branch.name, tipOid: branch.oid))
+        .toList(growable: false);
+    // task-28：>服务端 max 的事前阻止（UI 已阻止；controller 兜底不发请求）。
+    if (!append && tips.length > _graphMaxTips) {
+      _emit(
+        _state.copyWith(
+          loadingGraph: false,
+          loadingGraphPage: false,
+          error: 'graph-too-many-tips',
+        ),
+      );
+      return;
+    }
+    if (!append) {
+      // issue #86：仅「不限」档启用 30s 超时；5/10 沿用普通加载/失败处理。
+      _armGraphTimeout(generation, graphGeneration);
+    }
+    final timeout = _branchLimit.isUnlimited
+        ? const Duration(seconds: 35)
+        : const Duration(seconds: 15);
+    final postApi = _postApi;
+    final supportsPost = _supportsGraphPost && postApi != null;
+    // 续页只带 snapshotId/cursor（服务端忽略 tips）；初始按 GET/POST 阈值与 URL 预算选择。
+    final requestTips = append ? const <GitGraphTip>[] : tips;
+    final usePost = supportsPost &&
+        (append
+            ? selected.length > _graphGetMax
+            : tips.length > _graphGetMax || _encodedTipsBytes(tips) > 8192);
+    Future<GitGraphPage> fetch({required bool post}) {
+      if (post) {
+        return postApi!.graphPost(
+          sessionId,
+          repository.repositoryId,
+          requestTips,
+          snapshotId: snapshotId,
+          cursor: cursor,
+          limit: graphPageSize,
+          timeout: timeout,
+        );
+      }
+      return _api.graph(
         sessionId,
         repository.repositoryId,
-        selected
-            .map((branch) => GitGraphTip(name: branch.name, tipOid: branch.oid))
-            .toList(growable: false),
+        requestTips,
         snapshotId: snapshotId,
         cursor: cursor,
         limit: graphPageSize,
+        timeout: timeout,
       );
+    }
+
+    try {
+      GitGraphPage page;
+      try {
+        page = await fetch(post: usePost);
+      } catch (error) {
+        // GET URL 超长（Node 431）/ 网关 414：一次性回退 POST（task-28）。
+        final urlTooLarge = error is ApiException &&
+            (error.status == 431 ||
+                error.status == 414 ||
+                error.code == 'payload-too-large');
+        if (!usePost && supportsPost && urlTooLarge) {
+          page = await fetch(post: true);
+        } else {
+          rethrow;
+        }
+      }
       if (generation != _generation || graphGeneration != _graphGeneration) {
         return;
       }
+      _cancelGraphTimeout();
       final commits = append
           ? _appendUnique(_state.commits, page.commits, (commit) => commit.oid)
           : page.commits;
@@ -433,6 +765,7 @@ class GitBrowserController extends ChangeNotifier {
           graphNextCursor: page.nextCursor,
           loadingGraph: false,
           loadingGraphPage: false,
+          graphTimedOut: false,
           stale: false,
           error: null,
         ),
@@ -441,13 +774,29 @@ class GitBrowserController extends ChangeNotifier {
       if (generation != _generation || graphGeneration != _graphGeneration) {
         return;
       }
-      final graphStale = error is ApiException && error.code == 'graph-stale';
+      _cancelGraphTimeout();
+      final apiError = error is ApiException ? error : null;
+      final code = apiError?.code;
+      final graphStale = code == 'graph-stale';
+      final timedOut = apiError?.status == 504 || code == 'graph-timeout';
+      if (timedOut && _branchLimit.isUnlimited) {
+        // 服务端 25s deadline（504）与客户端 30s 兜底同一超时三动作面板。
+        _emit(
+          _state.copyWith(
+            loadingGraph: false,
+            loadingGraphPage: false,
+            graphTimedOut: true,
+            error: null,
+          ),
+        );
+        return;
+      }
       _emit(
         _state.copyWith(
           loadingGraph: false,
           loadingGraphPage: false,
           stale: graphStale ? true : _state.stale,
-          error: graphStale ? 'graph-stale' : error.toString(),
+          error: graphStale ? 'graph-stale' : (code ?? error.toString()),
         ),
       );
     }

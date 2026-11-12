@@ -17,18 +17,44 @@ class GitReadCapabilities {
   final String? reason;
   final Map<String, bool> features;
 
+  /// task-28（#86 方案 B）：POST graph 的 tips 上限；旧宿主缺字段 = null（回退 5）。
+  final int? graphTipsMax;
+
+  /// GET graph 的 tips 上限；旧宿主缺字段时与 max 一起回退 5。
+  final int? graphTipsGetMax;
+
   const GitReadCapabilities({
     this.available = false,
     this.reason,
     this.features = const {},
+    this.graphTipsMax,
+    this.graphTipsGetMax,
   });
 
-  factory GitReadCapabilities.fromJson(Map<String, dynamic> json) =>
-      GitReadCapabilities(
-        available: json['available'] == true,
-        reason: json['reason']?.toString(),
-        features: _boolMap(json['features']),
-      );
+  /// 是否支持 POST graph（新宿主才暴露 graphTips）。
+  bool get supportsGraphPost => graphTipsMax != null;
+
+  /// 实际生效的 POST 上限（旧宿主回退 5）。
+  int get effectiveGraphTipsMax => graphTipsMax ?? 5;
+
+  /// 实际生效的 GET 上限（缺 getMax 按 5，保持旧契约）。
+  int get effectiveGraphTipsGetMax => graphTipsGetMax ?? 5;
+
+  factory GitReadCapabilities.fromJson(Map<String, dynamic> json) {
+    final tips = json['graphTips'];
+    final tipsMap = tips is Map ? tips : const {};
+    int? readTipLimit(Object? value) {
+      final parsed = value is num ? value.toInt() : int.tryParse('${value ?? ''}');
+      return parsed != null && parsed > 0 ? parsed : null;
+    }
+    return GitReadCapabilities(
+      available: json['available'] == true,
+      reason: json['reason']?.toString(),
+      features: _boolMap(json['features']),
+      graphTipsMax: readTipLimit(tipsMap['max']),
+      graphTipsGetMax: readTipLimit(tipsMap['getMax']),
+    );
+  }
 
   /// 宿主是否返回结构化 `refsDetail`/`tagsDetail`（契约 1.1.0+）。
   ///

@@ -54,6 +54,169 @@ void showSheet(BuildContext context, String title, List<Widget> children) {
   );
 }
 
+/// issue #86：Git 分支图上限三档弹层（设置页与 Git 筛选面板/超时卡共用同一形态）。
+///
+/// - 当前项：check + brand 标题 +「当前上限」副标题；
+/// - 降档预警：已选数 > 目标上限时副标题追加「将保留前 N 个已选分支」；
+/// - 底部固定「取消」行；不含任何持久化暗示（说明为「下次打开分支图时生效」）。
+///
+/// 返回选中的档位；取消/点外/返回键均为 null。
+Future<GitGraphBranchLimit?> showGitGraphLimitSheet(
+  BuildContext context, {
+  required GitGraphBranchLimit current,
+  required int currentSelectedCount,
+  String? title,
+  String? note,
+  bool supportsGraphPost = true,
+}) {
+  return showModalBottomSheet<GitGraphBranchLimit>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: DshColors.surface(context),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(DshTheme.radiusLg)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: DshColors.line(sheetContext),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title ?? L10n.t('Git 分支图上限', 'Git graph branch limit'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              note ??
+                  L10n.t(
+                    '对所有仓库生效；下次打开分支图时生效',
+                    'Applies to all repositories; takes effect the next time the branch graph opens',
+                  ),
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11.5, color: DshColors.ink2(sheetContext)),
+            ),
+            const SizedBox(height: 8),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final limit in GitGraphBranchLimit.values)
+                      _sheetItem(
+                        sheetContext,
+                        key: Key('git-graph-limit-${limit.storageValue}'),
+                        name: limit == current
+                            ? switch (limit) {
+                                GitGraphBranchLimit.five =>
+                                  L10n.t('5 个分支（默认）', '5 branches (default)'),
+                                GitGraphBranchLimit.ten =>
+                                  L10n.t('10 个分支', '10 branches'),
+                                GitGraphBranchLimit.unlimited =>
+                                  L10n.t('不限', 'Unlimited'),
+                              }
+                            : switch (limit) {
+                                GitGraphBranchLimit.five =>
+                                  L10n.t('5 个分支', '5 branches'),
+                                GitGraphBranchLimit.ten =>
+                                  L10n.t('10 个分支', '10 branches'),
+                                GitGraphBranchLimit.unlimited =>
+                                  L10n.t('不限', 'Unlimited'),
+                              },
+                        sub: _graphLimitOptionSub(
+                          limit,
+                          current: current,
+                          currentSelectedCount: currentSelectedCount,
+                          supportsGraphPost: supportsGraphPost,
+                        ),
+                        active: limit == current,
+                        // 旧宿主（无 graphTips/POST）不得升到 10/不限。
+                        onTap: !supportsGraphPost && limit != GitGraphBranchLimit.five
+                            ? null
+                            : () => Navigator.of(sheetContext).pop(limit),
+                      ),
+                    const SizedBox(height: 4),
+                    InkWell(
+                      key: const Key('git-graph-limit-cancel'),
+                      onTap: () => Navigator.of(sheetContext).pop(),
+                      child: Container(
+                        height: 44,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          border: Border(
+                            top: BorderSide(color: DshColors.line(sheetContext)),
+                          ),
+                        ),
+                        child: Text(
+                          L10n.t('取消', 'Cancel'),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: DshColors.ink2(sheetContext),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+String _graphLimitOptionSub(
+  GitGraphBranchLimit limit, {
+  required GitGraphBranchLimit current,
+  required int currentSelectedCount,
+  bool supportsGraphPost = true,
+}) {
+  final base = switch (limit) {
+    GitGraphBranchLimit.five => L10n.t('最多 5 个；加载更快', 'Up to 5; faster to load'),
+    GitGraphBranchLimit.ten => L10n.t(
+      '最多 10 个；颜色仍可区分',
+      'Up to 10; colors stay distinct',
+    ),
+    GitGraphBranchLimit.unlimited => L10n.t(
+      '不限制数量；大仓库可能 30 秒超时',
+      'No cap; large repos may time out after 30s',
+    ),
+  };
+  if (!supportsGraphPost && limit != GitGraphBranchLimit.five) {
+    return L10n.t(
+      '$base · 电脑端版本过低，不支持',
+      '$base · Unsupported by this desktop version',
+    );
+  }
+  if (limit == current) {
+    return L10n.t('$base · 当前上限', '$base · Current limit');
+  }
+  final max = limit.max;
+  if (max != null && currentSelectedCount > max) {
+    return L10n.t(
+      '$base · 将保留前 $max 个已选分支',
+      '$base · Keeps the first $max selected branches',
+    );
+  }
+  return base;
+}
+
 /// 通用单项选择弹层（用于设置页修改默认 Agent 预设 / 默认权限预设）。
 void showChoiceSheet(
   BuildContext context, {
@@ -80,7 +243,7 @@ void showChoiceSheet(
   ]);
 }
 
-Widget _sheetItem(BuildContext context, {required String name, String? sub, bool active = false, required VoidCallback onTap}) {
+Widget _sheetItem(BuildContext context, {Key? key, required String name, String? sub, bool active = false, VoidCallback? onTap}) {
   final ink3 = DshColors.ink3(context);
   final brand = DshColors.brand(context);
   return InkWell(

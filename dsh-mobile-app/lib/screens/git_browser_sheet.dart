@@ -15,6 +15,7 @@ import '../widgets/git_file_history_body.dart';
 import '../widgets/git_file_viewer.dart';
 import '../widgets/git_logo.dart';
 import 'session_files_screen.dart';
+import 'sheets.dart';
 
 /// Full-screen, read-only Git browser route.
 class GitBrowserSheet extends StatefulWidget {
@@ -69,6 +70,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   String? _previewOid;
   bool _choosingBranches = false;
   String _graphQuery = '';
+  bool _legacyLimitNoticeDone = false;
   String? _openingOid;
 
   /// 文件提交历史：tab 与独立历史视图共用同一个 controller/body。
@@ -202,6 +204,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   @override
   void initState() {
     super.initState();
+    // issue #86：上限来自全局设置；打开面板即生效（控制器可能由调用方按默认档构造）。
+    _syncLimitFromStore();
     _tabs = TabController(length: _tabIds.length, vsync: this);
     _lastTabIndex = _tabs.index;
     _tabs.addListener(_onTabControllerChanged);
@@ -231,6 +235,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_onState);
       widget.controller.addListener(_onState);
+      _syncLimitFromStore();
       _layout = null;
       _laidOutOids = const [];
       _history?.dispose();
@@ -267,6 +272,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       widget.controller.loadWorktree();
     }
     setState(() {});
+    _maybeHandleLegacyLimit();
     _maybeHandleHistoryDeepLink();
     _maybeOpenDefaultGraph();
     // A short first page may not generate a scroll event at all.
@@ -526,7 +532,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       );
     }
     final history = _ensureHistoryController(state);
-    final canBrowse = widget.store != null || widget.fileBrowserPicker != null;
+    final canBrowse =
+        widget.store != null || widget.fileBrowserPicker != null;
     return GitFileHistoryBody(
       controller: history,
       onOpenCommitDiff: _openHistoryEntryDiff,
@@ -667,7 +674,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 state.branches.isNotEmpty &&
                 _view == _View.tab)
               MaterialBanner(
-                content: Text(state.error!),
+                content: Text(_graphErrorText(state.error!)),
                 actions: [
                   TextButton(
                     onPressed: _refresh,
@@ -739,7 +746,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     }
     if (id == 'worktree') return _worktree(state);
     if (state.error != null && state.branches.isEmpty && !state.stale) {
-      return _MessageState(message: state.error!, onRetry: _refresh);
+      return _MessageState(message: _graphErrorText(state.error!), onRetry: _refresh);
     }
     if (state.repository?.empty == true || state.branches.isEmpty) {
       return _MessageState(
@@ -1005,8 +1012,342 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
   }
 
+  /// issue #86：从全局设置同步上限（打开面板 / 从设置页返回时）。
+  void _syncLimitFromStore() {
+    final store = widget.store;
+    if (store == null) return;
+    final limit = store.gitGraphBranchLimit;
+    if (limit != widget.controller.branchLimit) {
+      widget.controller.setBranchLimit(limit);
+    }
+  }
+
+  /// task-28：旧宿主（无 graphTips/POST）打开面板时把已持久化的 10/不限回退 5，
+  /// 一次性 toast 并写回偏好（之后不再反复提示）。
+  void _maybeHandleLegacyLimit() {
+    if (_legacyLimitNoticeDone || !mounted) return;
+    final caps = widget.controller.state.capabilities;
+    if (caps == null || caps.supportsGraphPost) return;
+    _legacyLimitNoticeDone = true;
+    final store = widget.store;
+    final needsPersist =
+        store != null && store.gitGraphBranchLimit != GitGraphBranchLimit.five;
+    if (needsPersist) {
+      unawaited(store.setGitGraphBranchLimit(GitGraphBranchLimit.five));
+    }
+    if (widget.controller.branchLimit != GitGraphBranchLimit.five) {
+      widget.controller.setBranchLimit(GitGraphBranchLimit.five);
+    }
+    if (!needsPersist) return;
+    _toast(
+      L10n.t(
+        '电脑端版本过低：分支图上限已回退为 5',
+        'Desktop version too old: branch graph limit reverted to 5',
+      ),
+    );
+  }
+
+  Future<void> _persistLimit(GitGraphBranchLimit limit) async {
+    final store = widget.store;
+    if (store != null) await store.setGitGraphBranchLimit(limit);
+  }
+
+  String _limitLabel(GitGraphBranchLimit limit) => limit.isUnlimited
+      ? L10n.t('不限', 'Unlimited')
+      : '${limit.max}';
+
+  String get _limitStatusText {
+    final limit = widget.controller.branchLimit;
+    return L10n.t(
+      '已选 ${widget.controller.state.selectedBranches.length} / 上限 ${_limitLabel(limit)}',
+      'Selected ${widget.controller.state.selectedBranches.length} / limit ${_limitLabel(limit)}',
+    );
+  }
+
+  /// issue #86：三档快捷 sheet（设置页同款底部弹层）——改档保留选择；
+  /// 降档由 controller 裁剪前 N 并 toast，升档 toast 档位。
+  Future<bool> _showGraphLimitSheet({bool capReached = false}) async {
+    final current = widget.controller.branchLimit;
+    final selectedCount = widget.controller.state.selectedBranches.length;
+    final choice = await showGitGraphLimitSheet(
+      context,
+      current: current,
+      currentSelectedCount: selectedCount,
+      supportsGraphPost:
+          widget.controller.state.capabilities?.supportsGraphPost ?? true,
+      title: capReached
+          ? L10n.t(
+              '已达上限（${current.max} 个）',
+              'Limit reached (${current.max})',
+            )
+          : null,
+      note: capReached
+          ? L10n.t(
+              '可提高上限继续；本次筛选的选择会保留',
+              'Raise the limit to keep selecting; your selection stays for this session',
+            )
+          : null,
+    );
+    if (!mounted || choice == null || choice == current) return false;
+    // P2-2：上限/选择先同步原子更新，偏好写入与 graph 加载异步进行（不阻塞 UI）。
+    final removed = widget.controller.setBranchLimit(choice);
+    unawaited(_persistLimit(choice));
+    if (!mounted) return true;
+    if (removed > 0) {
+      _toast(
+        L10n.t(
+          '已按新上限保留前 ${widget.controller.state.selectedBranches.length} 个分支',
+          'Kept the first ${widget.controller.state.selectedBranches.length} branches under the new limit',
+        ),
+      );
+    } else {
+      final label = choice.isUnlimited
+          ? L10n.t('不限', 'unlimited')
+          : '${choice.max}';
+      _toast(L10n.t('已改为 $label 档', 'Limit changed to $label'));
+    }
+    return true;
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// issue #86：勾选分支（5/10 达上限 → 快捷改档；升档后自动补选触发项）。
+  Future<void> _toggleGraphBranch(GitBranch branch, bool? value) async {
+    final controller = widget.controller;
+    final selected = controller.state.selectedBranches;
+    final unlimited = controller.branchLimit.isUnlimited;
+    if (value == false && selected.length <= 1 && !unlimited) {
+      _toast(L10n.t('至少保留 1 个分支', 'Keep at least one branch'));
+      return;
+    }
+    if (value == true) {
+      if (unlimited) {
+        final serverMax =
+            widget.controller.state.capabilities?.effectiveGraphTipsMax ?? 5;
+        if (selected.length >= serverMax) {
+          _toast(
+            L10n.t(
+              '已达电脑端上限（$serverMax 个分支）',
+              'Desktop limit reached ($serverMax branches)',
+            ),
+          );
+          return;
+        }
+      }
+      final max = controller.branchLimit.max;
+      if (max != null && selected.length >= max) {
+        final changed = await _showGraphLimitSheet(capReached: true);
+        if (!mounted || !changed) return;
+        // 升档（或改到不限）后，若触发项仍属于当前搜索结果则自动补选；
+        // 降档已被裁剪到新上限，不再补选。
+        final newMax = controller.branchLimit.max;
+        final count = controller.state.selectedBranches.length;
+        if (newMax != null && count >= newMax) return;
+        final query = _graphQuery.trim().toLowerCase();
+        if (query.isNotEmpty &&
+            !branch.displayName.toLowerCase().contains(query)) {
+          return;
+        }
+        // 补选无需等待 graph 网络：controller 先同步更新选择再异步加载。
+        unawaited(controller.toggleGraphBranch(branch));
+        return;
+      }
+    }
+    await controller.toggleGraphBranch(branch);
+  }
+
+  /// issue #86：超时面板「改回 10 档」——写偏好、裁剪并重载，toast 提示。
+  Future<void> _applyLimitTenAndReload() async {
+    unawaited(_persistLimit(GitGraphBranchLimit.ten));
+    widget.controller.setBranchLimit(GitGraphBranchLimit.ten);
+    if (!mounted) return;
+    _toast(
+      L10n.t('已改回 10 档，正在重新加载', 'Switched to 10; reloading'),
+    );
+  }
+
+  /// issue #86：超时面板「打开设置」——**在 Git sheet 内**打开同一个三档设置弹层，
+  /// 不 push 主设置页、不丢当前选择/controller。
+  Future<void> _openGitGraphSettings() async {
+    await _showGraphLimitSheet();
+  }
+
+  /// issue #86：超时面板（仅「不限」档可达）：标题/正文/主次动作分层，窄屏堆叠。
+  Widget _graphTimeoutPanel() {
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final width = MediaQuery.sizeOf(context).width;
+    final scale = MediaQuery.textScalerOf(context).scale(12) / 12;
+    final singleRow = width >= 360 && scale <= 1.2;
+    const compact = ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      ),
+      minimumSize: WidgetStatePropertyAll(Size(0, 40)),
+    );
+    final primary = FilledButton.tonal(
+      key: const Key('git-graph-timeout-ten'),
+      style: compact,
+      onPressed: _applyLimitTenAndReload,
+      child: Text(L10n.t('改回 10 档', 'Switch to 10')),
+    );
+    final secondary = OutlinedButton(
+      key: const Key('git-graph-timeout-settings'),
+      style: compact,
+      onPressed: _openGitGraphSettings,
+      child: Text(L10n.t('打开设置', 'Open settings')),
+    );
+    final retry = TextButton(
+      key: const Key('git-graph-timeout-retry'),
+      style: compact,
+      onPressed: () => widget.controller.retryGraphLoad(),
+      child: Text(L10n.t('重试', 'Retry')),
+    );
+    // 优先单行；装不下（英文/大字号/320）时 Wrap 自动换行，绝不强制一行溢出。
+    final actions = singleRow
+        ? Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [primary, secondary, retry],
+          )
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              primary,
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [secondary, retry],
+              ),
+            ],
+          );
+    return Expanded(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: DshColors.surface(context),
+                border: Border.all(color: DshColors.line(context)),
+                borderRadius: BorderRadius.circular(DshTheme.radiusMd),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.hourglass_bottom, size: 32, color: ink3),
+                  const SizedBox(height: 8),
+                  Text(
+                    L10n.t('加载超时', 'Load timed out'),
+                    key: const Key('git-graph-timeout-message'),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    L10n.t(
+                      '分支过多或网络较慢。可改回 10 个上限分支，或稍后重试。',
+                      'Too many branches or a slow network. Switch back to a 10-branch limit, or try again later.',
+                    ),
+                    key: const Key('git-graph-timeout-body'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12.5, height: 1.4, color: ink2),
+                  ),
+                  const SizedBox(height: 14),
+                  actions,
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// task-28：POST 新错误码 → 可读文案（旧错误原样显示）。
+  String _graphErrorText(String error) => switch (error) {
+    'graph-too-many-tips' => L10n.t(
+      '分支数超过电脑端上限',
+      'Too many branches for this desktop',
+    ),
+    'payload-too-large' || 'git-output-too-large' => L10n.t(
+      '请求或输出过大',
+      'Request or output too large',
+    ),
+    'graph-timeout' => L10n.t('分支图加载超时', 'Branch graph timed out'),
+    _ => error,
+  };
+
+  bool get _allMatchesSelected {
+    final query = _graphQuery.trim().toLowerCase();
+    final matches = widget.controller.state.branches.where(
+      (branch) => branch.displayName.toLowerCase().contains(query),
+    );
+    if (matches.isEmpty) return true;
+    final names = {
+      for (final branch in widget.controller.state.selectedBranches) branch.name,
+    };
+    return matches.every((branch) => names.contains(branch.name));
+  }
+
+  bool get _atSelectedBranchCap {
+    final max = widget.controller.branchLimit.max;
+    return max != null && widget.controller.state.selectedBranches.length >= max;
+  }
+
+  /// issue #86：达上限 chip（warn@10% 底 + ink 文字；可点开三档快捷 sheet）。
+  Widget _limitReachedChip() {
+    final warn = DshColors.warn(context);
+    final ink = DshColors.ink(context);
+    return Semantics(
+      button: true,
+      label: L10n.t('已达上限，点按改上限', 'Limit reached; tap to change'),
+      child: InkWell(
+        key: const Key('git-graph-limit-reached'),
+        onTap: () => _showGraphLimitSheet(capReached: true),
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 7),
+          decoration: BoxDecoration(
+            color: warn.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.info_outline, size: 12, color: warn),
+              const SizedBox(width: 4),
+              Text(
+                L10n.t('已达上限', 'Limit reached'),
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w600,
+                  color: ink,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _graph(GitBrowserState state) {
     final selected = state.selectedBranches;
+    final unlimited = widget.controller.branchLimit.isUnlimited;
     final query = _graphQuery.trim().toLowerCase();
     final matches = state.branches.where(
       (branch) => branch.displayName.toLowerCase().contains(query),
@@ -1032,10 +1373,29 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  selected.map((branch) => branch.displayName).join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      selected.map((branch) => branch.displayName).join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 2,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          _limitStatusText,
+                          key: const Key('git-graph-limit-status'),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (_atSelectedBranchCap) _limitReachedChip(),
+                      ],
+                    ),
+                  ],
                 ),
               ),
               TextButton.icon(
@@ -1043,7 +1403,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 onPressed: () =>
                     setState(() => _choosingBranches = !_choosingBranches),
                 icon: const Icon(Icons.filter_alt_outlined),
-                label: Text(L10n.t('分支 (1–5)', 'Branches (1–5)')),
+                label: Text(L10n.t('分支', 'Branches')),
               ),
             ],
           ),
@@ -1060,6 +1420,82 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               ),
             ),
           ),
+          // issue #86：不限档动作行（搜索框下、复选框列表上）；5/10 不显示。
+          if (widget.controller.branchLimit.isUnlimited)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  TextButton(
+                    key: const Key('git-graph-select-all'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      minimumSize: const Size(44, 36),
+                    ),
+                    onPressed: matches.isEmpty || _allMatchesSelected
+                        ? null
+                        : () async {
+                            final candidates = matches
+                                .where((branch) => !widget.controller.state
+                                    .selectedBranches
+                                    .any((item) => item.name == branch.name))
+                                .length;
+                            final added = await widget.controller
+                                .selectGraphBranches(matches.toList(growable: false));
+                            if (!mounted || added <= 0) return;
+                            final skipped = candidates - added;
+                            _toast(
+                              skipped > 0
+                                  ? L10n.t(
+                                      '已加入 $added 个（达到电脑端上限，$skipped 个未加入）',
+                                      'Added $added (desktop limit reached; $skipped skipped)',
+                                    )
+                                  : L10n.t(
+                                      '已加入当前搜索结果中的 $added 个分支',
+                                      'Added $added branches from the current search',
+                                    ),
+                            );
+                          },
+                    child: Text(
+                      L10n.t('全选 (${matches.length})', 'Select all (${matches.length})'),
+                    ),
+                  ),
+                  TextButton(
+                    key: const Key('git-graph-clear'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      minimumSize: const Size(44, 36),
+                    ),
+                    onPressed: selected.isEmpty
+                        ? null
+                        : () {
+                            widget.controller.clearGraphBranches();
+                            _toast(L10n.t('已清空已选分支', 'Cleared selected branches'));
+                            setState(() {});
+                          },
+                    child: Text(L10n.t('清空', 'Clear')),
+                  ),
+                ],
+              ),
+            ),
+          if (widget.controller.branchLimit.isUnlimited &&
+              _graphQuery.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+              child: Text(
+                L10n.t(
+                  '全选只作用于当前搜索结果',
+                  'Select-all applies to the current search only',
+                ),
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: DshColors.ink3(context),
+                ),
+              ),
+            ),
           SizedBox(
             height: 176,
             child: ListView(
@@ -1071,32 +1507,132 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     dense: true,
                     title: Text(branch.displayName),
                     value: selected.any((item) => item.name == branch.name),
-                    onChanged: (value) {
-                      if (value == true &&
-                          selected.length >= maxSelectedGraphBranches) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              L10n.t(
-                                '最多选择 $maxSelectedGraphBranches 个分支',
-                                'Select up to $maxSelectedGraphBranches branches',
-                              ),
-                            ),
-                          ),
-                        );
-                        return;
-                      }
-                      if (value == false && selected.length <= 1) return;
-                      widget.controller.toggleGraphBranch(branch);
-                    },
+                    onChanged: (value) => _toggleGraphBranch(branch, value),
                   ),
               ],
             ),
           ),
+          if (!widget.controller.branchLimit.isUnlimited &&
+              _atSelectedBranchCap)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text(
+                L10n.t(
+                  '已达上限：继续勾选可改档',
+                  'Limit reached: keep selecting to raise the limit',
+                ),
+                key: const Key('git-graph-at-limit-hint'),
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: DshColors.ink2(context),
+                ),
+              ),
+            ),
         ],
-        if (state.loadingGraph || state.loadingGraphPage)
+        // issue #86：不限档初始加载用 spinner 卡（不双进度）；分页仍用顶部细进度条。
+        if ((state.loadingGraph || state.loadingGraphPage) &&
+            !(unlimited &&
+                state.loadingGraph &&
+                state.commits.isEmpty &&
+                !state.graphTimedOut))
           const LinearProgressIndicator(),
-        Expanded(
+        if (state.graphTimedOut)
+          _graphTimeoutPanel()
+        else if (selected.isEmpty)
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.call_split,
+                      size: 40,
+                      color: DshColors.ink3(context),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      L10n.t('未选择分支', 'No branches selected'),
+                      key: const Key('git-graph-empty-selection'),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      L10n.t(
+                        '在上方筛选里选择要显示的分支，或使用「全选」',
+                        'Pick branches in the filter above, or use Select all',
+                      ),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        height: 1.4,
+                        color: DshColors.ink2(context),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextButton(
+                      key: const Key('git-graph-empty-pick'),
+                      onPressed: () =>
+                          setState(() => _choosingBranches = true),
+                      child: Text(L10n.t('选择分支', 'Pick branches')),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else if (unlimited &&
+            state.loadingGraph &&
+            state.commits.isEmpty &&
+            !state.graphTimedOut)
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: DshColors.brand(context),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      L10n.t('正在加载分支图…', 'Loading branch graph…'),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      L10n.t(
+                        '分支较多，可在设置中调回 10 档',
+                        'Many branches; you can switch back to 10 in Settings',
+                      ),
+                      key: const Key('git-graph-unlimited-hint'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        height: 1.4,
+                        color: DshColors.ink2(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else
+          Expanded(
           child: SingleChildScrollView(
             key: const Key('git-graph-horizontal'),
             controller: _horizontal,
@@ -1332,7 +1868,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                 _metadata(L10n.t('Tagger', 'Tagger'), tag.tagger!),
               if (tag.timestamp != null)
                 _metadata(L10n.t('日期', 'Date'), _time(tag.timestamp!)),
-              if ((tag.subject ?? '').isNotEmpty) SelectableText(tag.subject!),
+              if ((tag.subject ?? '').isNotEmpty)
+                SelectableText(tag.subject!),
             ],
           ),
         ),
