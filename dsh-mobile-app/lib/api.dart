@@ -115,7 +115,22 @@ abstract interface class GitGraphPostApi {
   });
 }
 
-class Api implements GitReadApi, GitGraphPostApi {
+/// issue #93（全部分支模式）：all=true 的图请求只走 POST，固定页大小由宿主声明。
+/// 旧宿主/测试 fake 不实现本接口 → controller 回退现有 5/10/不限选择档。
+abstract interface class GitGraphAllApi {
+  Future<GitGraphPage> graphAll(
+    String sessionId,
+    String repositoryId, {
+    required bool all,
+    String? focus,
+    String? snapshotId,
+    String? cursor,
+    int limit = 16,
+    Duration timeout = const Duration(seconds: 35),
+  });
+}
+
+class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
   bool releaseUpdatesSupported = false;
   int? pairedAppBuild;
   String? pairedAppVersion;
@@ -1610,6 +1625,33 @@ class Api implements GitReadApi, GitGraphPostApi {
         'sessionId': sessionId,
         'repositoryId': repositoryId,
         'tips': [for (final tip in tips) tip.toJson()],
+        'limit': limit,
+        'snapshotId': ?snapshotId,
+        'cursor': ?cursor,
+      },
+      timeout: timeout,
+    ),
+  );
+
+  /// issue #93：全部分支图（all=true，仅 POST；忽略 tips 选择集）。
+  @override
+  Future<GitGraphPage> graphAll(
+    String sessionId,
+    String repositoryId, {
+    required bool all,
+    String? focus,
+    String? snapshotId,
+    String? cursor,
+    int limit = 16,
+    Duration timeout = const Duration(seconds: 35),
+  }) async => GitGraphPage.fromJson(
+    await postJson(
+      '/api/git/graph',
+      {
+        'sessionId': sessionId,
+        'repositoryId': repositoryId,
+        'all': all,
+        'focus': ?focus,
         'limit': limit,
         'snapshotId': ?snapshotId,
         'cursor': ?cursor,

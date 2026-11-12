@@ -669,3 +669,273 @@ test("re-review P1-3: 新建 snapshot 的初始请求超时可重试（不残留
     void oid;
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("re-review P1 分页闭环：append pre-verify 超时 → 504；同 cursor 重试 200", async () => {
+  const { provider } = graphProvider({ refsHangOnCall: 5 });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 80,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    assert.ok(first.nextCursor && first.snapshotId);
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    assert.deepEqual(disposed, [], "已交付快照纯 timeout 不得清理");
+    const retried = await service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 });
+    assert.equal(retried.snapshotId, first.snapshotId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 分页闭环：append post-verify 超时 → 504；同 cursor 重试 200", async () => {
+  const { provider } = graphProvider({ refsHangOnCall: 6 });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 80,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    assert.deepEqual(disposed, [], "post-verify 纯 timeout 也不得清理已交付快照");
+    const retried = await service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 });
+    assert.equal(retried.snapshotId, first.snapshotId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 分页闭环：装饰 readRefRecords 超时 → 504；同 cursor 重试 200", async () => {
+  const { provider } = graphProvider({ refsHangOnCall: 7 });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 80,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    assert.deepEqual(disposed, []);
+    const retried = await service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 });
+    assert.equal(retried.snapshotId, first.snapshotId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 分页闭环：ref 变化 → 409 stale 并清理；同 cursor 重试仍 409", async () => {
+  const { provider } = graphProvider({ refsOidOnCall: 6 });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 500,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-stale" && e.status === 409,
+    );
+    assert.deepEqual(disposed, [first.snapshotId], "ref 变化必须清理快照");
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-stale" && e.status === 409,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 分页闭环：未交付 initial timeout 清理快照；已交付 append 保留", async () => {
+  const { provider } = graphProvider({ graphHangOnCall: 1 });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 80,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    assert.equal(disposed.length, 1, "未交付 initial 超时应清理新建快照");
+    // 新请求可正常重试（无残留半页）。
+    const retried = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    assert.ok(retried.snapshotId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 混合错误：provider.graph 503 → 二次 verify 挂起 → 504（不误判 stale），同 cursor 重试 200", async () => {
+  const transient = Object.assign(new Error("temporary unavailable"), {
+    code: "git-provider-unavailable",
+    status: 503,
+  });
+  const { provider } = graphProvider({
+    graphErrorOnCall: 2,
+    graphError: transient,
+    refsHangOnCall: 6,
+  });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 60,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    assert.ok(first.snapshotId && first.nextCursor);
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    assert.deepEqual(disposed, [], "混合错误下的二次 verify 超时也不得清理已交付快照");
+    const retried = await service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 });
+    assert.equal(retried.snapshotId, first.snapshotId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1 混合错误：provider.graph 503 后 verify 发现 ref 真变化 → 409 + 清理", async () => {
+  const transient = Object.assign(new Error("temporary unavailable"), {
+    code: "git-provider-unavailable",
+    status: 503,
+  });
+  const { provider } = graphProvider({
+    graphErrorOnCall: 2,
+    graphError: transient,
+    refsOidOnCall: 6,
+  });
+  const disposed = [];
+  const { root, service } = serviceWithProvider(provider, {
+    graphDeadlineMs: 500,
+    onSnapshotDisposed: (id) => disposed.push(id),
+  });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-stale" && e.status === 409,
+    );
+    assert.deepEqual(disposed, [first.snapshotId], "ref 真变化仍必须清理快照");
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-stale" && e.status === 409,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("issue #93: all mode resolves every local/remote branch and tags stay labels only", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-all-refs-`);
+  try {
+    fixture(root);
+    const { writeFileSync, appendFileSync } = await import("node:fs");
+    writeFileSync(`${root}/a.txt`, "one\n"); git(root, "add", "a.txt"); git(root, "commit", "-m", "one");
+    appendFileSync(`${root}/a.txt`, "two\n"); git(root, "commit", "-am", "two");
+    const tip = git(root, "rev-parse", "HEAD");
+    git(root, "branch", "topic", tip);
+    git(root, "tag", "v1", tip);
+    git(root, "update-ref", "refs/remotes/origin/main", tip);
+    const service = createGitReadService(context(root));
+    const repository = await service.repositoryForSession("session-1");
+    const page = await service.graph("session-1", repository.repositoryId, { all: true, limit: 1 });
+    assert.equal(page.all, true);
+    assert.equal(page.pageSize, 16);
+    assert.equal(page.pageStart, 0);
+    assert.equal(page.focusOid, null);
+    const tipNames = page.tips.map((tip) => tip.name).sort();
+    assert.deepEqual(tipNames, ["refs/heads/main", "refs/heads/topic", "refs/remotes/origin/main"]);
+    assert.ok(!tipNames.some((name) => name.startsWith("refs/tags/")), "tags must not become tips");
+    assert.equal(page.commits[0].oid, tip);
+    assert.equal(page.commits.length, 2, "both commits reachable from branch tips are in page");
+    assert.equal(page.commits[1].oid, git(root, "rev-parse", "HEAD~1"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("issue #93: all mode focus locates a non-first page and supports bidirectional cursors", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-all-focus-`);
+  try {
+    fixture(root);
+    const { writeFileSync, appendFileSync } = await import("node:fs");
+    const oids = [];
+    for (let index = 0; index < 40; index += 1) {
+      if (index === 0) { writeFileSync(`${root}/a.txt`, `${index}\n`); git(root, "add", "a.txt"); }
+      else appendFileSync(`${root}/a.txt`, `${index}\n`);
+      git(root, "commit", "-am", `commit ${index}`);
+      oids.push(git(root, "rev-parse", "HEAD"));
+    }
+    const focusOid = oids[10];
+    git(root, "branch", "old", focusOid);
+    const service = createGitReadService(context(root));
+    const repository = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repository.repositoryId, { all: true, focus: "refs/heads/old", limit: 16 });
+    assert.equal(first.all, true);
+    assert.equal(first.focusOid, focusOid);
+    assert.ok(first.pageStart > 0, `focus page should not be first: ${first.pageStart}`);
+    assert.equal(first.commits.length, 16);
+    assert.ok(first.commits.some((commit) => commit.oid === focusOid), "focus commit must be in its page");
+    assert.equal(first.hasNewer, true);
+    assert.ok(first.prevCursor, "non-first focus page must expose prevCursor");
+    assert.ok(first.nextCursor, "full page must expose nextCursor");
+
+    const newer = await service.graph("session-1", repository.repositoryId, {
+      all: true, snapshotId: first.snapshotId, cursor: first.prevCursor,
+    });
+    assert.ok(newer.pageStart < first.pageStart, "prev page must be newer (smaller offset)");
+    assert.equal(newer.commits.length, 16);
+    assert.ok(newer.nextCursor, "prev page should allow returning older");
+
+    const older = await service.graph("session-1", repository.repositoryId, {
+      all: true, snapshotId: first.snapshotId, cursor: first.nextCursor,
+    });
+    assert.ok(older.pageStart > first.pageStart, "next page must be older (larger offset)");
+    const firstOids = new Set(first.commits.map((commit) => commit.oid));
+    assert.ok(older.commits.every((commit) => !firstOids.has(commit.oid)), "pages must not overlap");
+    const newerOids = new Set(newer.commits.map((commit) => commit.oid));
+    assert.ok(first.commits.every((commit) => !newerOids.has(commit.oid)), "newer page must not duplicate focus page");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("issue #93: all snapshot fingerprint covers every branch; adding a branch makes continuation stale", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-all-stale-`);
+  try {
+    fixture(root);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${root}/a.txt`, "one\n"); git(root, "add", "a.txt"); git(root, "commit", "-m", "one");
+    const service = createGitReadService(context(root));
+    const repository = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repository.repositoryId, { all: true, limit: 16 });
+    git(root, "branch", "new-branch");
+    await assert.rejects(
+      () => service.graph("session-1", repository.repositoryId, { all: true, snapshotId: first.snapshotId, cursor: first.nextCursor }),
+      (error) => error.code === "graph-stale" && error.status === 409,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("issue #93: all mode rejects unknown focus refs and supports 211 branches without truncation", async () => {
+  const root = mkdtempSync(`${tmpdir()}/git-all-211-`);
+  try {
+    fixture(root);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${root}/a.txt`, "one\n"); git(root, "add", "a.txt"); git(root, "commit", "-m", "one");
+    const head = git(root, "rev-parse", "HEAD");
+    for (let index = 0; index < 210; index += 1) git(root, "update-ref", `refs/heads/branch-${index}`, head);
+    const service = createGitReadService(context(root));
+    const repository = await service.repositoryForSession("session-1");
+    const page = await service.graph("session-1", repository.repositoryId, { all: true, limit: 16 });
+    assert.equal(page.tips.length, 211);
+    assert.equal(new Set(page.tips.map((tip) => tip.name)).size, 211);
+    await assert.rejects(
+      () => service.graph("session-1", repository.repositoryId, { all: true, focus: "refs/heads/does-not-exist" }),
+      (error) => error.code === "graph-focus-invalid" && error.status === 400,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

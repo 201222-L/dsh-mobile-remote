@@ -23,13 +23,24 @@ class GitReadCapabilities {
   /// GET graph 的 tips 上限；旧宿主缺字段时与 max 一起回退 5。
   final int? graphTipsGetMax;
 
+  /// issue #93：全部分支模式（all=true）的服务端页大小；旧宿主缺字段 = 不支持 all。
+  final int? graphAllPageSize;
+  final int? graphAllMaxRefs;
+  final int? graphAllMaxScan;
+
   const GitReadCapabilities({
     this.available = false,
     this.reason,
     this.features = const {},
     this.graphTipsMax,
     this.graphTipsGetMax,
+    this.graphAllPageSize,
+    this.graphAllMaxRefs,
+    this.graphAllMaxScan,
   });
+
+  /// 旧宿主无 all 能力 → App 回退现有 5/10/不限选择档。
+  bool get graphAll => graphAllPageSize != null;
 
   /// 是否支持 POST graph（新宿主才暴露 graphTips）。
   bool get supportsGraphPost => graphTipsMax != null;
@@ -47,12 +58,16 @@ class GitReadCapabilities {
       final parsed = value is num ? value.toInt() : int.tryParse('${value ?? ''}');
       return parsed != null && parsed > 0 ? parsed : null;
     }
+    final allMap = json['graphAll'] is Map ? json['graphAll'] as Map : const {};
     return GitReadCapabilities(
       available: json['available'] == true,
       reason: json['reason']?.toString(),
       features: _boolMap(json['features']),
       graphTipsMax: readTipLimit(tipsMap['max']),
       graphTipsGetMax: readTipLimit(tipsMap['getMax']),
+      graphAllPageSize: readTipLimit(allMap['pageSize']),
+      graphAllMaxRefs: readTipLimit(allMap['maxRefs']),
+      graphAllMaxScan: readTipLimit(allMap['maxScan']),
     );
   }
 
@@ -478,13 +493,29 @@ class GitGraphPage {
   final List<GitCommitSummary> commits;
   final String? snapshotId;
   final String? nextCursor;
+
+  /// issue #93：更**新**一页的 cursor（向上加载）；旧宿主/5/10 为 null。
+  final String? prevCursor;
   final List<GitGraphTip> tips;
+  final bool all;
+  final int? pageSize;
+  final int? pageStart;
+  final String? focusOid;
+  final bool hasNewer;
+  final bool hasOlder;
 
   const GitGraphPage({
     this.commits = const [],
     this.snapshotId,
     this.nextCursor,
+    this.prevCursor,
     this.tips = const [],
+    this.all = false,
+    this.pageSize,
+    this.pageStart,
+    this.focusOid,
+    this.hasNewer = false,
+    this.hasOlder = false,
   });
 
   factory GitGraphPage.fromJson(Map<String, dynamic> json) => GitGraphPage(
@@ -493,6 +524,13 @@ class GitGraphPage {
         (item) => GitCommitSummary.fromJson(Map<String, dynamic>.from(item)),
       ),
     ),
+    prevCursor: json['prevCursor']?.toString(),
+    all: json['all'] == true,
+    pageSize: json['pageSize'] is num ? (json['pageSize'] as num).toInt() : null,
+    pageStart: json['pageStart'] is num ? (json['pageStart'] as num).toInt() : null,
+    focusOid: json['focusOid']?.toString(),
+    hasNewer: json['hasNewer'] == true,
+    hasOlder: json['hasOlder'] == true,
     snapshotId: json['snapshotId']?.toString(),
     nextCursor: json['nextCursor']?.toString(),
     tips: List.unmodifiable(

@@ -293,3 +293,86 @@ test("re-review P1-1/P1-4: graph GET/HEAD/POST 方法矩阵；HEAD 200 无 body/
     assert.equal(del.status, 405);
   } finally { h.clean(); }
 });
+
+test("issue #93: capability exposes graphAll protection; POST all=true works without tips and GET all is rejected", async () => {
+  const h = await harness();
+  try {
+    const caps = await h.request("/m/api/git/capabilities?sessionId=s1");
+    assert.equal(caps.status, 200);
+    assert.deepEqual(caps.body.git.graphAll, { pageSize: 16, maxRefs: 4096, maxScan: 5000 });
+    const repositoryId = await h.repositoryId();
+
+    const all = await h.request("/m/api/git/graph", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "s1", repositoryId, all: true, limit: 16 }),
+    });
+    assert.equal(all.status, 200, JSON.stringify(all.body));
+    assert.equal(all.body.all, true);
+    assert.equal(all.body.pageSize, 16);
+    assert.equal(all.body.commits.length, 16);
+    assert.ok(all.body.nextCursor);
+    assert.equal(h.refsCalls.count >= 1, true, "all mode must resolve branch refs");
+    // all 模式的 tips 来自服务端解析，包含本地 + 远程分支名（不含 tags）。
+    assert.ok(all.body.tips.some((tip) => tip.name === "refs/heads/main"));
+    assert.ok(all.body.tips.every((tip) => !tip.name.startsWith("refs/tags/")));
+
+    const continuation = await h.request("/m/api/git/graph", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "s1", repositoryId, all: true, snapshotId: all.body.snapshotId, cursor: all.body.nextCursor }),
+    });
+    assert.equal(continuation.status, 200);
+    assert.equal(continuation.body.all, true);
+    assert.ok(continuation.body.pageStart > all.body.pageStart);
+
+    const withTips = await h.request("/m/api/git/graph", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "s1", repositoryId, all: true, tips: tips(h.oid, 1) }),
+    });
+    assert.equal(withTips.status, 400);
+    assert.equal(withTips.body.error, "bad-request");
+
+    const getAll = await h.request(`/m/api/git/graph?sessionId=s1&repositoryId=${encodeURIComponent(repositoryId)}&all=true`);
+    assert.equal(getAll.status, 400);
+    assert.equal(getAll.body.error, "bad-request");
+  } finally { h.clean(); }
+});
+
+test("issue #93: all mode focus invalid → 409 graph-focus-invalid; >maxRefs → 400 graph-too-many-refs", async () => {
+  const oid = "a".repeat(40);
+  const workspace = mkdtempSync(`${tmpdir()}/git-graph-all-protect-`);
+  try {
+    const makeProvider = (refs) => ({
+      contractVersion: "1.0.0", capabilities: () => ({ available: true }),
+      repositoryRoot: async (cwd) => cwd,
+      repositoryInfo: async () => ({ headOid: oid, currentBranch: "refs/heads/main", empty: false }),
+      branches: async () => [{ name: "refs/heads/main", displayName: "main", oid, kind: "local", current: true }],
+      resolveTip: async () => oid,
+      refs: async () => refs,
+      graph: async (_root, { offset, limit }) => Array.from({ length: limit }, (_, index) => ({
+        oid: (offset + index + 1).toString(16).padStart(40, "0"), parents: [], author: "A", timestamp: 1, subject: `c${offset + index}`,
+      })),
+      commit: async () => ({ oid, parents: [], author: "A", timestamp: 1, message: "one", files: [] }),
+    });
+    const h = await harness({ provider: makeProvider([{ name: "refs/heads/main", commitOid: oid }]), name: "protect-invalid" });
+    try {
+      const repositoryId = await h.repositoryId();
+      const missingFocus = await h.request("/m/api/git/graph", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: "s1", repositoryId, all: true, focus: "refs/heads/nope" }),
+      });
+      assert.equal(missingFocus.status, 400);
+      assert.equal(missingFocus.body.error, "graph-focus-invalid");
+    } finally { h.clean(); }
+
+    const many = await harness({ provider: makeProvider(Array.from({ length: 4097 }, (_, index) => ({ name: `refs/heads/b${index}`, commitOid: oid }))), name: "protect-many" });
+    try {
+      const repositoryId = await many.repositoryId();
+      const tooMany = await many.request("/m/api/git/graph", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: "s1", repositoryId, all: true }),
+      });
+      assert.equal(tooMany.status, 400);
+      assert.equal(tooMany.body.error, "graph-too-many-refs");
+    } finally { many.clean(); }
+  } finally { rmSync(workspace, { recursive: true, force: true }); }
+});

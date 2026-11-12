@@ -87,6 +87,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   final ScrollController _horizontal = ScrollController();
   Timer? _freshnessTimer;
   bool _defaultGraphRequested = false;
+  bool _allGraphAutoRequested = false;
 
   /// 图行标签缓存：标签只在图数据变化时计算/测量一次（TextPainter 是 O(标签数)）。
   final Map<String, List<GitGraphLabel>> _rowLabels = {};
@@ -97,12 +98,20 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   TextStyle? _labelStyle;
   TextScaler? _labelTextScaler;
   GraphLayout? _layout;
+  String? _focusScrolledSnapshotId;
+  // issue #93：prev 页前插后的滚动锚定（保持当前可见 commit 不跳）。
+  String? _pendingPrependAnchorOid;
+  double? _pendingPrependAnchorOffset;
   String? _layoutSnapshot;
   String? _layoutTips;
   List<String> _laidOutOids = const [];
 
   GraphLayout _graphLayout(GitBrowserState state) {
-    final tips = state.selectedBranches
+    // issue #93：all 模式没有选择集，图/标签按全部分支 tips 计算 lane。
+    final tipBranches = widget.controller.graphAllMode
+        ? state.branches
+        : state.selectedBranches;
+    final tips = tipBranches
         .map((branch) => '${branch.name}\u0000${branch.oid}')
         .join('\u0001');
     final commits = state.commits;
@@ -117,11 +126,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         ).every((same) => same);
     _syncGraphLabels(state, rebuild: !append);
     if (!append) {
-      _layout = layoutGraph(commits, state.selectedBranches);
+      _layout = layoutGraph(commits, tipBranches);
     } else if (commits.length > _laidOutOids.length) {
       final tail = layoutGraph(
         commits.sublist(_laidOutOids.length),
-        state.selectedBranches,
+        tipBranches,
         state: _layout!.continuation,
       );
       _layout = GraphLayout(
@@ -143,7 +152,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   void _syncGraphLabels(GitBrowserState state, {required bool rebuild}) {
     final style = Theme.of(context).textTheme.labelSmall;
     final textScaler = MediaQuery.textScalerOf(context);
-    final tips = state.selectedBranches
+    final tips = (widget.controller.graphAllMode
+            ? state.branches
+            : state.selectedBranches)
         .map((branch) => '${branch.name}\u0000${branch.oid}')
         .join('\u0001');
     // 字号或系统文字缩放变化都会改变标签宽度，必须重算横向滚动范围。
@@ -306,6 +317,14 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         !state.graphPageTimedOut &&
         source.position.extentAfter <= 240) {
       widget.controller.loadNextGraphPage();
+    } else if ((_view == _View.tab && _activeTab == 'graph' || _temporaryGraph) &&
+        identical(source, widget.scrollController) &&
+        widget.controller.graphAllMode &&
+        state.graphPrevCursor != null &&
+        !state.loadingGraphPage &&
+        !state.graphPageTimedOut &&
+        source.position.extentBefore <= 240) {
+      _loadPrevGraphPageWithAnchor();
     } else if (_view == _View.commit &&
         identical(source, _commitScroll) &&
         state.commit?.filesNextCursor != null &&
@@ -325,11 +344,22 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     if (state.loading ||
         state.loadingGraph ||
         state.repository == null ||
-        state.selectedBranches.isEmpty ||
         state.snapshotId != null ||
         state.capabilities?.available != true) {
       return;
     }
+    if (widget.controller.graphAllMode) {
+      // issue #93：全部分支模式不需要选择集；首屏直接 all=true + focus 当前分支。
+      if (_allGraphAutoRequested) return;
+      _allGraphAutoRequested = true;
+      _defaultGraphRequested = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _allGraphAutoRequested = false;
+        if (mounted) widget.controller.openAllGraph();
+      });
+      return;
+    }
+    if (state.selectedBranches.isEmpty) return;
     _defaultGraphRequested = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) widget.controller.openBranch(state.selectedBranches.first);
@@ -359,7 +389,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       if (_graphTabIndex >= 0) _tabs.animateTo(_graphTabIndex);
     });
     _defaultGraphRequested = true;
-    widget.controller.openBranch(branch);
+    if (widget.controller.graphAllMode) {
+      widget.controller.openAllGraph(focus: branch.name);
+    } else {
+      widget.controller.openBranch(branch);
+    }
   }
 
   Future<void> _showCommit(String oid) async {
@@ -1288,6 +1322,22 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       'Request or output too large',
     ),
     'graph-timeout' => L10n.t('分支图加载超时', 'Branch graph timed out'),
+    'graph-too-many-refs' => L10n.t(
+      '分支数量超过电脑端全部分支图保护上限',
+      'Too many branches for the all-branches guard on this desktop',
+    ),
+    'graph-focus-invalid' => L10n.t(
+      '当前分支定位参数无效',
+      'Current branch focus is invalid',
+    ),
+    'graph-focus-not-found' => L10n.t(
+      '当前分支在扫描上限内未找到，无法自动定位',
+      'Current branch was not found within the scan limit',
+    ),
+    'graph-stale' => L10n.t(
+      '分支已变化，保留已加载页；刷新以更新',
+      'Branches changed; loaded pages are kept. Refresh to update.',
+    ),
     _ => error,
   };
 
@@ -1346,9 +1396,81 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
   }
 
+  /// issue #93：请求更新（prev）页前记录当前首行与偏移；前插完成后按新增行高补偿，
+  /// 让用户正在看的 commit 保持在原屏幕位置（而不是整体向下跳一页）。
+  void _loadPrevGraphPageWithAnchor() {
+    if (_pendingPrependAnchorOid != null) return;
+    final state = widget.controller.state;
+    if (state.commits.isNotEmpty) {
+      _pendingPrependAnchorOid = state.commits.first.oid;
+      _pendingPrependAnchorOffset = widget.scrollController.hasClients
+          ? widget.scrollController.offset
+          : null;
+    }
+    widget.controller.loadPrevGraphPage();
+  }
+
+  /// issue #93：把 prev 前插造成的内容高度位移补回滚动位置。
+  void _maybeReconcilePrependAnchor(GitBrowserState state, double rowHeight) {
+    final anchorOid = _pendingPrependAnchorOid;
+    if (anchorOid == null || state.commits.isEmpty) return;
+    final index = state.commits.indexWhere((commit) => commit.oid == anchorOid);
+    if (index <= 0) {
+      // 尚未前插（或 anchor 就是首行）：保留锚点等待状态落地。
+      return;
+    }
+    final baseOffset = _pendingPrependAnchorOffset;
+    _pendingPrependAnchorOid = null;
+    _pendingPrependAnchorOffset = null;
+    final addedExtent = index * rowHeight;
+    final desired = (baseOffset ?? 0) + addedExtent;
+    void apply(int attempt) {
+      if (!mounted) return;
+      final controller = widget.scrollController;
+      // 列表未 attach / 新尺寸尚未布局时，下一帧（有界）再校准，避免把 0 当成上限。
+      if (!controller.hasClients || controller.position.maxScrollExtent + 0.5 < desired) {
+        if (attempt < 3) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => apply(attempt + 1));
+        }
+        return;
+      }
+      final position = controller.position;
+      final target = desired.clamp(position.minScrollExtent, position.maxScrollExtent);
+      controller.jumpTo(target);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => apply(0));
+  }
+
+  /// issue #93：focus 页不在第一页时，加载完成后滚动到 focus 行（每 snapshot 一次）。
+  void _maybeScrollToGraphFocus(GitBrowserState state, double rowHeight) {
+    if (!widget.controller.graphAllMode) return;
+    final focusOid = state.graphFocusOid;
+    final snapshotId = state.snapshotId;
+    if (focusOid == null || snapshotId == null || state.commits.isEmpty) return;
+    if (_focusScrolledSnapshotId == snapshotId) return;
+    final index = state.commits.indexWhere((commit) => commit.oid == focusOid);
+    if (index < 0) return;
+    _focusScrolledSnapshotId = snapshotId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.scrollController.hasClients) return;
+      final position = widget.scrollController.position;
+      final target = (index * rowHeight).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      widget.scrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   Widget _graph(GitBrowserState state) {
     final selected = state.selectedBranches;
     final unlimited = widget.controller.branchLimit.isUnlimited;
+    // issue #93：不限档 + 宿主 graphAll → 真正的全部分支模式（无选择集/筛选）。
+    final allMode = widget.controller.graphAllMode;
     final query = _graphQuery.trim().toLowerCase();
     final matches = state.branches.where(
       (branch) => branch.displayName.toLowerCase().contains(query),
@@ -1367,6 +1489,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       kGitGraphRowHeight,
       textScaler.scale(kGitGraphRowHeight - 22) + 22,
     );
+    _maybeReconcilePrependAnchor(state, rowHeight);
+    _maybeScrollToGraphFocus(state, rowHeight);
     return Column(
       children: [
         Padding(
@@ -1379,7 +1503,13 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      selected.map((branch) => branch.displayName).join(' · '),
+                      allMode
+                          ? L10n.t(
+                              '全部分支 · 当前分支 ${state.repository?.currentBranch?.replaceFirst('refs/heads/', '') ?? ''}',
+                              'All branches · current ${state.repository?.currentBranch?.replaceFirst('refs/heads/', '') ?? ''}',
+                            )
+                          : selected.map((branch) => branch.displayName).join(' · '),
+                      key: allMode ? const Key('git-graph-all-label') : null,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1389,27 +1519,33 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Text(
-                          _limitStatusText,
+                          allMode
+                              ? L10n.t(
+                                  '覆盖全部 ${state.branches.length} 个 local + remote 分支',
+                                  'All ${state.branches.length} local + remote branches',
+                                )
+                              : _limitStatusText,
                           key: const Key('git-graph-limit-status'),
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
-                        if (_atSelectedBranchCap) _limitReachedChip(),
+                        if (!allMode && _atSelectedBranchCap) _limitReachedChip(),
                       ],
                     ),
                   ],
                 ),
               ),
-              TextButton.icon(
-                key: const Key('git-graph-filter'),
-                onPressed: () =>
-                    setState(() => _choosingBranches = !_choosingBranches),
-                icon: const Icon(Icons.filter_alt_outlined),
-                label: Text(L10n.t('分支', 'Branches')),
-              ),
+              if (!allMode)
+                TextButton.icon(
+                  key: const Key('git-graph-filter'),
+                  onPressed: () =>
+                      setState(() => _choosingBranches = !_choosingBranches),
+                  icon: const Icon(Icons.filter_alt_outlined),
+                  label: Text(L10n.t('分支', 'Branches')),
+                ),
             ],
           ),
         ),
-        if (_choosingBranches) ...[
+        if (!allMode && _choosingBranches) ...[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
@@ -1539,15 +1675,27 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             ),
         ],
         // issue #86：不限档初始加载用 spinner 卡（不双进度）；分页仍用顶部细进度条。
-        if ((state.loadingGraph || state.loadingGraphPage) &&
-            !(unlimited &&
-                state.loadingGraph &&
-                state.commits.isEmpty &&
-                !state.graphTimedOut))
-          const LinearProgressIndicator(),
+        // issue #93：进度条槽位**始终存在**（高度 0/2），避免加载态插入/移除兄弟节点导致
+        // ListView 被重建、滚动位置在前插锚定后又被重置为 0。
+        SizedBox(
+          height: (state.loadingGraph || state.loadingGraphPage) &&
+                  !(unlimited &&
+                      state.loadingGraph &&
+                      state.commits.isEmpty &&
+                      !state.graphTimedOut)
+              ? 2
+              : 0,
+          child: (state.loadingGraph || state.loadingGraphPage) &&
+                  !(unlimited &&
+                      state.loadingGraph &&
+                      state.commits.isEmpty &&
+                      !state.graphTimedOut)
+              ? const LinearProgressIndicator(minHeight: 2)
+              : null,
+        ),
         if (state.graphTimedOut)
           _graphTimeoutPanel()
-        else if (selected.isEmpty)
+        else if (!allMode && selected.isEmpty)
           Expanded(
             child: Center(
               child: SingleChildScrollView(
@@ -1594,7 +1742,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               ),
             ),
           )
-        else if (unlimited &&
+        else if ((allMode || unlimited) &&
             state.loadingGraph &&
             state.commits.isEmpty &&
             !state.graphTimedOut)
