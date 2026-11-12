@@ -7771,7 +7771,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       setState(() {});
                     },
               codeTap: (code) {
-                final coordinate = linkResolver?.resolve(code);
+                // issue #88：绝对路径只做精确记录匹配，绝不走 basename 兜底
+                // （`/tmp/B/report.pdf` 不得因为本轮记录了 /tmp/A/report.pdf 的同名
+                // display 而直接打开 A）；未命中则走确认 sheet → /api/files。
+                final absolutePath = looksLikeInlineFilePath(code);
+                final coordinate = absolutePath
+                    ? linkResolver?.resolveExact(code)
+                    : linkResolver?.resolve(code);
                 if (coordinate != null) {
                   final name = code.split('/').last;
                   return () => _openTurnFile(
@@ -7782,7 +7788,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
                 // issue #83：未记录在本轮产出物里的绝对路径（如 /tmp/...）也允许
                 // 用户确认后预览；不在渲染阶段发起任何读取。
-                if (!looksLikeInlineFilePath(code)) return null;
+                if (!absolutePath) return null;
                 return () => _confirmOpenPath(code);
               },
               codeTapKey: linkResolver == null

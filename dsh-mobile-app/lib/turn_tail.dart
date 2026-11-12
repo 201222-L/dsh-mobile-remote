@@ -416,13 +416,24 @@ class TurnFileLinkResolver {
     }
   }
 
-  /// 行内代码文本 → 预览坐标；未命中/存在不同逻辑文件歧义返回 null。
-  TurnFileCoordinate? resolve(String code) {
+  /// 只做**精确记录匹配**（issue #88）：命中精确 display/记录键才返回坐标；
+  /// 绝不使用 basename 唯一兜底。绝对路径必须走这里，避免把 `/tmp/B/report.pdf`
+  /// 误匹配到本轮记录的 `/tmp/A/report.pdf`（display 可能同为裸 `report.pdf`）。
+  TurnFileCoordinate? resolveExact(String code) {
     final token = _normalize(code);
     if (token.isEmpty) return null;
     final exact = _exact[token];
-    if (exact != null) {
-      return _resolveCandidates(exact, legacyExactDisplayMerge: true);
+    if (exact == null) return null;
+    return _resolveCandidates(exact, legacyExactDisplayMerge: true);
+  }
+
+  /// 行内代码文本 → 预览坐标；精确优先，未命中且无精确键时才做唯一 basename 兜底；
+  /// 存在不同逻辑文件歧义返回 null。绝对路径调用方应使用 [resolveExact]。
+  TurnFileCoordinate? resolve(String code) {
+    final token = _normalize(code);
+    if (token.isEmpty) return null;
+    if (_exact.containsKey(token)) {
+      return _resolveCandidates(_exact[token]!, legacyExactDisplayMerge: true);
     }
     return _resolveCandidates(_byBasename[_basenameOf(token)]);
   }

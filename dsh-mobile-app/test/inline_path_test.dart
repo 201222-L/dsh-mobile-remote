@@ -164,4 +164,114 @@ void main() {
     expect(fileRequests, ['/tmp/upstream-pr-a-cn.md']);
     expect(find.textContaining('hello from /tmp'), findsOneWidget);
   });
+
+  testWidgets('issue #88：绝对路径未精确命中记录时先确认，不误开同 basename 的记录', (tester) async {
+    final fileRequests = <String>[];
+    final turnFileRequests = <String>[];
+    final api = Api(
+      client: MockClient((request) async {
+        if (request.url.path == '/m/api/history') {
+          return http.Response(
+            jsonEncode({
+              'ok': true,
+              'hasMore': false,
+              'turnTails': <String, dynamic>{},
+              'events': [
+                {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+                {
+                  'seq': 2,
+                  'type': 'user/message',
+                  'data': {'messageId': 'u1', 'text': '看一下报告', 'sourceKind': 'user'},
+                  'time': 1100,
+                },
+                {
+                  'seq': 3,
+                  'type': 'assistant/message',
+                  'data': {
+                    'turn': 1,
+                    'step': 1,
+                    'messageId': 'a1',
+                    'text': '结果见 `/tmp/B/report.pdf`',
+                  },
+                  'time': 1200,
+                },
+                {
+                  'seq': 4,
+                  'type': 'deliverables/presented',
+                  'data': {
+                    'turn': 1,
+                    'files': [
+                      {'id': 'id-a', 'name': 'report.pdf', 'display': 'report.pdf'},
+                    ],
+                  },
+                  'time': 1300,
+                },
+                {
+                  'seq': 5,
+                  'type': 'turn/end',
+                  'data': {'turn': 1, 'reason': {'kind': 'completed'}},
+                  'time': 1400,
+                },
+              ],
+            }),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        if (request.url.path == '/m/api/turn-file') {
+          turnFileRequests.add(request.url.toString());
+          return http.Response.bytes(utf8.encode('record A'), 200);
+        }
+        if (request.url.path == '/m/api/files') {
+          fileRequests.add(request.url.queryParameters['path'] ?? '');
+          return http.Response.bytes(
+            utf8.encode('file B content'),
+            200,
+            headers: {'content-type': 'text/plain; charset=utf-8'},
+          );
+        }
+        return http.Response(
+          jsonEncode({'ok': true, 'rows': <Object>[], 'todos': <Object>[], 'config': <String, dynamic>{}}),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    )
+      ..baseUrl = 'http://inline88.test'
+      ..path = '/m'
+      ..token = ''
+      ..timelineCapabilities = const TimelineCapabilities(
+        version: 1,
+        live: true,
+        history: true,
+        detail: true,
+        unknownEvents: true,
+        callCorrelation: true,
+      );
+    final store = AppStore()..sessionId = 'session-inline88';
+    await tester.pumpWidget(MaterialApp(
+      home: ChatScreen(
+        store: store,
+        apiClient: api,
+        onTitleChanged: () {},
+      ),
+    ));
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+
+    expect(find.text('/tmp/B/report.pdf'), findsOneWidget);
+    await tester.tap(find.text('/tmp/B/report.pdf'));
+    await tester.pumpAndSettle();
+
+    // 必须走确认 sheet：不直接按记录 A 的 turn-file 坐标打开。
+    expect(find.text('打开文件预览'), findsOneWidget);
+    expect(turnFileRequests, isEmpty, reason: '绝对路径未精确命中时不得打开同 basename 的记录');
+    expect(fileRequests, isEmpty, reason: '确认前不读取文件');
+
+    await tester.tap(find.widgetWithText(FilledButton, '打开预览'));
+    await tester.pumpAndSettle();
+    expect(turnFileRequests, isEmpty);
+    expect(fileRequests, ['/tmp/B/report.pdf'], reason: '确认后按用户点击的绝对路径读取');
+    expect(find.textContaining('file B content'), findsOneWidget);
+  });
 }
