@@ -260,3 +260,36 @@ test("task-28: graph 超时 → 504 graph-timeout（provider 抛错/返回 timed
     } finally { h.clean(); }
   }
 });
+
+test("re-review P1-1/P1-4: graph GET/HEAD/POST 方法矩阵；HEAD 200 无 body/不建快照；其他 Git 仅 GET/HEAD", async () => {
+  const h = await harness();
+  try {
+    const repositoryId = await h.repositoryId();
+    const query = `sessionId=s1&repositoryId=${encodeURIComponent(repositoryId)}`;
+    const refsBefore = h.refsCalls.count;
+
+    const head = await h.request(`/m/api/git/graph?${query}`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(h.refsCalls.count, refsBefore, "HEAD 不应创建 snapshot/解析 refs");
+
+    const get = await h.request(`/m/api/git/graph?${query}&limit=1`);
+    assert.equal(get.status, 200);
+    const post = await h.request("/m/api/git/graph", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "s1", repositoryId, tips: tips(h.oid, 1), limit: 1 }),
+    });
+    assert.equal(post.status, 200);
+
+    // 其他 8 个只读 Git 端点：POST 一律 405。
+    for (const route of ["/git/branches", "/git/capabilities", "/git/repository", "/git/commit", "/git/worktree", "/git/preview", "/git/files", "/git/file-history"]) {
+      const res = await h.request(`/m/api${route}?${query}`, { method: "POST", body: JSON.stringify({}) });
+      assert.equal(res.status, 405, `${route} POST`);
+      // HEAD 方法允许；部分端点缺必填参数会 400（仍非 405）。
+      const headRes = await h.request(`/m/api${route}?${query}`, { method: "HEAD" });
+      assert.notEqual(headRes.status, 405, `${route} HEAD 不能 405`);
+    }
+    // graph 非法方法 → 405。
+    const del = await h.request(`/m/api/git/graph?${query}`, { method: "DELETE" });
+    assert.equal(del.status, 405);
+  } finally { h.clean(); }
+});

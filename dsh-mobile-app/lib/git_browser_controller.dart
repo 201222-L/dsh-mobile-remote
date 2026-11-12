@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -38,6 +39,9 @@ class GitBrowserState {
   /// issue #86：仅「不限」档的 30s 超时态（不自动降档，等待用户三选一）。
   final bool graphTimedOut;
 
+  /// re-review P1-3：**分页** append 超时——保留已加载 commits，页级重试，不替换整图。
+  final bool graphPageTimedOut;
+
   const GitBrowserState({
     this.sessionId,
     this.capabilities,
@@ -64,6 +68,7 @@ class GitBrowserState {
     this.error,
     this.branchLimit = GitGraphBranchLimit.fallback,
     this.graphTimedOut = false,
+    this.graphPageTimedOut = false,
   });
 
   List<GitBranch> get filteredBranches {
@@ -102,6 +107,7 @@ class GitBrowserState {
     Object? error = _keep,
     GitGraphBranchLimit? branchLimit,
     bool? graphTimedOut,
+    bool? graphPageTimedOut,
   }) => GitBrowserState(
     sessionId: identical(sessionId, _keep)
         ? this.sessionId
@@ -150,6 +156,7 @@ class GitBrowserState {
     error: identical(error, _keep) ? this.error : error as String?,
     branchLimit: branchLimit ?? this.branchLimit,
     graphTimedOut: graphTimedOut ?? this.graphTimedOut,
+    graphPageTimedOut: graphPageTimedOut ?? this.graphPageTimedOut,
   );
 }
 
@@ -195,6 +202,11 @@ class GitBrowserController extends ChangeNotifier {
   int get _graphGetMax =>
       _state.capabilities?.effectiveGraphTipsGetMax ?? 5;
   int get _graphMaxTips => _state.capabilities?.effectiveGraphTipsMax ?? 5;
+
+  /// re-review P2-6：实际可选上限 = min(档位, host max)；不限 = host max。
+  int get _effectiveTierCap => _branchLimit.isUnlimited
+      ? _graphMaxTips
+      : math.min(_branchLimit.max ?? _graphMaxTips, _graphMaxTips);
   bool get _supportsGraphPost =>
       _state.capabilities?.supportsGraphPost == true;
 
@@ -272,12 +284,14 @@ class GitBrowserController extends ChangeNotifier {
     }
     if (limit == _branchLimit) return 0;
     _branchLimit = limit;
-    final max = limit.max;
+    final hostMax = _graphMaxTips;
+    final cap = limit.isUnlimited
+        ? hostMax
+        : math.min(limit.max ?? hostMax, hostMax);
     final selected = [..._state.selectedBranches];
-    final trimmed = max == null || selected.length <= max
-        ? 0
-        : selected.length - max;
-    if (trimmed > 0) selected.removeRange(max!, selected.length);
+    final trimmed =
+        selected.length <= cap ? 0 : selected.length - cap;
+    if (trimmed > 0) selected.removeRange(cap, selected.length);
     _graphGeneration++; // 旧请求/旧超时作废
     _cancelGraphTimeout();
     _graphPageRequest = null;
@@ -317,6 +331,7 @@ class GitBrowserController extends ChangeNotifier {
         graphNextCursor: null,
         loadingGraph: true,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -335,6 +350,7 @@ class GitBrowserController extends ChangeNotifier {
       _state.copyWith(
         loadingGraph: true,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -347,18 +363,25 @@ class GitBrowserController extends ChangeNotifier {
   }
 
   /// issue #86：「不限」档全选（**union**）——把当前搜索结果中未选的分支加入现有选择，
-  /// 搜索范围外已选分支保留（分页未加载的不选）。返回本次新增数量。
-  Future<int> selectGraphBranches(List<GitBranch> branches) async {
-    if (!_branchLimit.isUnlimited || _state.repository == null) return 0;
+  /// 搜索范围外已选分支保留；max 截断。
+  ///
+  /// re-review P2-5：选择与 toast 数据**同步**返回并立即生效，graph 加载异步发起
+  /// （慢网络不阻塞反馈）。返回 `added`（已加入）与 `skipped`（超上限/未纳入）。
+  ({int added, int skipped}) selectGraphBranches(List<GitBranch> branches) {
+    if (!_branchLimit.isUnlimited || _state.repository == null) {
+      return (added: 0, skipped: 0);
+    }
     final known = {for (final branch in _state.selectedBranches) branch.name};
-    final cap = _state.capabilities?.effectiveGraphTipsMax ?? 5;
-    final room = cap - _state.selectedBranches.length;
-    if (room <= 0) return 0;
-    final added = <GitBranch>[
+    final candidates = <GitBranch>[
       for (final branch in branches)
         if (known.add(branch.name)) branch,
-    ].take(room).toList(growable: false);
-    if (added.isEmpty) return 0;
+    ];
+    final room = _effectiveTierCap - _state.selectedBranches.length;
+    final added = room <= 0
+        ? const <GitBranch>[]
+        : candidates.take(room).toList(growable: false);
+    final skipped = candidates.length - added.length;
+    if (added.isEmpty) return (added: 0, skipped: skipped);
     final selected = [..._state.selectedBranches, ...added];
     _graphGeneration++;
     _cancelGraphTimeout();
@@ -371,18 +394,19 @@ class GitBrowserController extends ChangeNotifier {
         snapshotId: null,
         graphNextCursor: null,
         commit: null,
-        loadingGraph: selected.isNotEmpty,
+        loadingGraph: true,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
     );
-    await _loadGraph(
+    unawaited(_loadGraph(
       generation: _generation,
       graphGeneration: _graphGeneration,
       append: false,
-    );
-    return added.length;
+    ));
+    return (added: added.length, skipped: skipped);
   }
 
   /// issue #86：「不限」档清空选择（graph 区域显示「请选择分支」占位）。
@@ -402,6 +426,7 @@ class GitBrowserController extends ChangeNotifier {
         loadingGraph: false,
         loadingGraphPage: false,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -508,11 +533,12 @@ class GitBrowserController extends ChangeNotifier {
           _branchLimit != GitGraphBranchLimit.five) {
         _branchLimit = GitGraphBranchLimit.five;
       }
-      // issue #86：按当前上限（含服务端 max）裁剪，保留前 N 个。
+      // re-review P2-6：实际上限 = min(档位, host max)；不限 = host max。
+      final hostMax = capabilities.effectiveGraphTipsMax;
       final limit = _branchLimit.isUnlimited
-          ? capabilities.effectiveGraphTipsMax
-          : _branchLimit.max;
-      if (limit != null && selected.length > limit) {
+          ? hostMax
+          : math.min(_branchLimit.max ?? hostMax, hostMax);
+      if (selected.length > limit) {
         selected = selected.sublist(0, limit);
       }
       _emit(
@@ -599,6 +625,7 @@ class GitBrowserController extends ChangeNotifier {
         commit: null,
         loadingGraph: true,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -631,6 +658,7 @@ class GitBrowserController extends ChangeNotifier {
             loadingGraph: false,
             loadingGraphPage: false,
             graphTimedOut: false,
+            graphPageTimedOut: false,
             stale: false,
             error: null,
           ),
@@ -639,10 +667,7 @@ class GitBrowserController extends ChangeNotifier {
       }
       selected.removeAt(index);
     } else {
-      final limit = _branchLimit.isUnlimited
-          ? (_state.capabilities?.effectiveGraphTipsMax ?? 5)
-          : _branchLimit.max;
-      if (limit != null && selected.length >= limit) return false;
+      if (selected.length >= _effectiveTierCap) return false;
       selected.add(branch);
     }
     final graphGeneration = ++_graphGeneration;
@@ -658,6 +683,7 @@ class GitBrowserController extends ChangeNotifier {
         commit: null,
         loadingGraph: true,
         graphTimedOut: false,
+        graphPageTimedOut: false,
         stale: false,
         error: null,
       ),
@@ -766,6 +792,7 @@ class GitBrowserController extends ChangeNotifier {
           loadingGraph: false,
           loadingGraphPage: false,
           graphTimedOut: false,
+          graphPageTimedOut: false,
           stale: false,
           error: null,
         ),
@@ -779,6 +806,21 @@ class GitBrowserController extends ChangeNotifier {
       final code = apiError?.code;
       final graphStale = code == 'graph-stale';
       final timedOut = apiError?.status == 504 || code == 'graph-timeout';
+      // re-review P1-3：分页 append 超时——保留已加载 commits，页级错误/重试，
+      // 不置 global graphTimedOut、不替换整图。
+      if (append && timedOut) {
+        _emit(
+          _state.copyWith(
+            loadingGraph: false,
+            loadingGraphPage: false,
+            graphPageTimedOut: true,
+            loading: false,
+            stale: _state.stale,
+            error: null,
+          ),
+        );
+        return;
+      }
       if (timedOut && _branchLimit.isUnlimited) {
         // 服务端 25s deadline（504）与客户端 30s 兜底同一超时三动作面板。
         _emit(
@@ -795,6 +837,7 @@ class GitBrowserController extends ChangeNotifier {
         _state.copyWith(
           loadingGraph: false,
           loadingGraphPage: false,
+          graphPageTimedOut: false,
           stale: graphStale ? true : _state.stale,
           error: graphStale ? 'graph-stale' : (code ?? error.toString()),
         ),
@@ -802,16 +845,30 @@ class GitBrowserController extends ChangeNotifier {
     }
   }
 
+  /// re-review P1-3：分页超时后的页级重试（不重载整图）。
+  Future<void> retryGraphPage() async {
+    if (_state.graphNextCursor == null) return;
+    _graphPageRequest = null;
+    _emit(_state.copyWith(graphPageTimedOut: false, error: null));
+    await loadNextGraphPage();
+  }
+
   Future<void> loadNextGraphPage() {
     if (_graphPageRequest != null) return _graphPageRequest!;
     if (_state.stale ||
         _state.graphNextCursor == null ||
-        _state.loadingGraphPage) {
+        _state.loadingGraphPage ||
+        // 页级超时后等用户点重试，不因滚动自动反复重试。
+        _state.graphPageTimedOut) {
       return Future.value();
     }
     final generation = _generation;
     final graphGeneration = _graphGeneration;
-    _emit(_state.copyWith(loadingGraphPage: true));
+    _emit(_state.copyWith(
+      loadingGraphPage: true,
+      graphPageTimedOut: false,
+      error: null,
+    ));
     late final Future<void> request;
     request =
         _loadGraph(

@@ -463,7 +463,15 @@ test("commit details omit secrets and page root, rename, and binary changed file
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-function graphProvider({ withRefs = true, graph = null, refNames = [] } = {}) {
+function graphProvider({
+	withRefs = true,
+	graph = null,
+	refNames = [],
+	refsHangOnCall = 0,
+	resolveHang = false,
+	graphHangOnCall = 0,
+	graphByCall = null,
+} = {}) {
 	const oid = "a".repeat(40);
 	const state = { refsCalls: 0, resolveCalls: 0, resolveGraphCalls: 0 };
 	const provider = {
@@ -472,10 +480,18 @@ function graphProvider({ withRefs = true, graph = null, refNames = [] } = {}) {
 		repositoryRoot: async (cwd) => cwd,
 		repositoryInfo: async () => ({ headOid: oid, currentBranch: "refs/heads/main", empty: false }),
 		branches: async () => [{ name: "refs/heads/main", displayName: "main", oid, kind: "local", current: true }],
-		resolveTip: async () => { state.resolveCalls += 1; return oid; },
+		resolveTip: async () => {
+			state.resolveCalls += 1;
+			if (resolveHang) return new Promise(() => {});
+			return oid;
+		},
 		graph: async (root, options) => {
 			void root;
 			state.resolveGraphCalls += 1;
+			if (state.resolveGraphCalls === graphHangOnCall) return new Promise(() => {});
+			if (graphByCall && graphByCall[state.resolveGraphCalls - 1]) {
+				return graphByCall[state.resolveGraphCalls - 1](options);
+			}
 			if (graph) return graph(options);
 			return [{ oid, parents: [], author: "A", timestamp: 1, subject: "one" }];
 		},
@@ -484,6 +500,9 @@ function graphProvider({ withRefs = true, graph = null, refNames = [] } = {}) {
 	if (withRefs) {
 		provider.refs = async () => {
 			state.refsCalls += 1;
+			if (refsHangOnCall > 0 && state.refsCalls === refsHangOnCall) {
+				return new Promise(() => {});
+			}
 			return [
 				{ name: "HEAD", commitOid: oid },
 				{ name: "refs/heads/main", commitOid: oid },
@@ -563,4 +582,90 @@ test("task-28: graph 25s 截止 → graph-timeout 504；provider timedOut 不返
 			(e) => e.code === "graph-timeout" && e.status === 504,
 		);
 	} finally { rmSync(second.root, { recursive: true, force: true }); }
+});
+
+test("re-review P1-2: 25s absolute deadline 覆盖 refs/resolveTip/readRefRecords 各阶段", async () => {
+  // refs 挂起（解析阶段）。
+  const hangRefs = graphProvider({ refsHangOnCall: 1 });
+  const a = serviceWithProvider(hangRefs.provider, { graphDeadlineMs: 60 });
+  try {
+    const { repositoryId } = await a.service.repositoryForSession("session-1");
+    await assert.rejects(
+      () => a.service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }] }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+  } finally { rmSync(a.root, { recursive: true, force: true }); }
+
+  // 外部 provider 逐 tip resolveTip 挂起（解析阶段回退路径）。
+  const hangResolve = graphProvider({ withRefs: false, resolveHang: true });
+  const b = serviceWithProvider(hangResolve.provider, { graphDeadlineMs: 60 });
+  try {
+    const { repositoryId } = await b.service.repositoryForSession("session-1");
+    await assert.rejects(
+      () => b.service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }] }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+  } finally { rmSync(b.root, { recursive: true, force: true }); }
+
+  // 最后 readRefRecords/装饰阶段挂起（第 3 次 refs 调用）。
+  const hangRecords = graphProvider({ refsHangOnCall: 3 });
+  const c = serviceWithProvider(hangRecords.provider, { graphDeadlineMs: 80 });
+  try {
+    const { repositoryId } = await c.service.repositoryForSession("session-1");
+    await assert.rejects(
+      () => c.service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }] }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+  } finally { rmSync(c.root, { recursive: true, force: true }); }
+});
+
+test("re-review P1-3: 已交付 snapshot 的 append 超时保留，同 cursor 可重试成功", async () => {
+  const oid = "a".repeat(40);
+  const { provider, state } = graphProvider({
+    graphHangOnCall: 2,
+    graphByCall: [
+      (options) => [{ oid, parents: [], author: "A", timestamp: 1, subject: "one" }].slice(0, options.limit),
+      null,
+      (options) => [{ oid: "b".repeat(40), parents: [], author: "A", timestamp: 2, subject: "two" }].slice(0, options.limit),
+    ],
+  });
+  const { root, service } = serviceWithProvider(provider, { graphDeadlineMs: 80 });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    const first = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    assert.ok(first.snapshotId && first.nextCursor);
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    // 同 snapshot/cursor 重试：超时未删已交付快照 → 成功续页。
+    const retried = await service.graph("session-1", repositoryId, { snapshotId: first.snapshotId, cursor: first.nextCursor, limit: 1 });
+    assert.equal(retried.snapshotId, first.snapshotId);
+    assert.equal(retried.commits[0].oid, "b".repeat(40));
+    void state;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("re-review P1-3: 新建 snapshot 的初始请求超时可重试（不残留半页）", async () => {
+  const oid = "a".repeat(40);
+  let calls = 0;
+  const provider = graphProvider();
+  const base = provider.provider.graph;
+  provider.provider.graph = async (root, options) => {
+    calls += 1;
+    if (calls === 1) return new Promise(() => {});
+    return base(root, options);
+  };
+  const { root, service } = serviceWithProvider(provider.provider, { graphDeadlineMs: 80 });
+  try {
+    const { repositoryId } = await service.repositoryForSession("session-1");
+    await assert.rejects(
+      () => service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 }),
+      (e) => e.code === "graph-timeout" && e.status === 504,
+    );
+    const retried = await service.graph("session-1", repositoryId, { tips: [{ name: "refs/heads/main" }], limit: 1 });
+    assert.ok(retried.snapshotId);
+    assert.equal(retried.commits.length, 1);
+    void oid;
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

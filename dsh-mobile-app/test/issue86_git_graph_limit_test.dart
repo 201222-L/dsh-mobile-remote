@@ -127,6 +127,12 @@ class _TransportApi extends _FakeGitApi implements GitGraphPostApi {
   int postCalls = 0;
   bool failGet431Once = false;
   Object? postError;
+  bool pageWithCursor = false;
+  bool pageTimeoutOnce = false;
+  int pageRequests = 0;
+  final List<GitCommitSummary> pageCommits = [
+    GitCommitSummary(oid: 'commit-one'),
+  ];
 
   @override
   Future<GitReadCapabilities> capabilities(String sessionId) async =>
@@ -153,8 +159,25 @@ class _TransportApi extends _FakeGitApi implements GitGraphPostApi {
       throw ApiException('request header fields too large', status: 431);
     }
     graphTips.add(tips.map((tip) => tip.name).toList());
+    if (queueGates) {
+      final gate = Completer<GitGraphPage>();
+      pendingGates.add(gate);
+      return gate.future;
+    }
+    if (cursor != null && pageTimeoutOnce && ++pageRequests == 1) {
+      throw ApiException('graph deadline', code: 'graph-timeout', status: 504);
+    }
     return Future.value(
-      GitGraphPage(snapshotId: 'get', nextCursor: null, tips: tips),
+      GitGraphPage(
+        snapshotId: 'get',
+        nextCursor: pageWithCursor && cursor == null ? 'cursor-1' : null,
+        tips: tips,
+        commits: pageWithCursor
+            ? (cursor == null
+                  ? pageCommits
+                  : const [GitCommitSummary(oid: 'commit-two')])
+            : const <GitCommitSummary>[],
+      ),
     );
   }
 
@@ -170,10 +193,27 @@ class _TransportApi extends _FakeGitApi implements GitGraphPostApi {
   }) {
     postCalls += 1;
     graphTips.add(tips.map((tip) => tip.name).toList());
+    if (queueGates) {
+      final gate = Completer<GitGraphPage>();
+      pendingGates.add(gate);
+      return gate.future;
+    }
+    if (cursor != null && pageTimeoutOnce && ++pageRequests == 1) {
+      return Future.error(
+        ApiException('graph deadline', code: 'graph-timeout', status: 504),
+      );
+    }
     final error = postError;
     if (error != null) return Future.error(error);
     return Future.value(
-      GitGraphPage(snapshotId: 'post', nextCursor: null, tips: tips),
+      GitGraphPage(
+        snapshotId: 'post',
+        nextCursor: pageWithCursor && cursor == null ? 'cursor-1' : null,
+        tips: tips,
+        commits: pageWithCursor
+            ? (cursor == null ? pageCommits : const <GitCommitSummary>[])
+            : const <GitCommitSummary>[],
+      ),
     );
   }
 }
@@ -297,8 +337,8 @@ void main() {
       final all = _branches(12);
       // 搜索外已选 b0（默认）；搜索结果（endWith '1'）是 b1/b11。
       final searchResults = all.where((b) => b.displayName.endsWith('1')).toList();
-      final added = await controller.selectGraphBranches(searchResults);
-      expect(added, 2);
+      final added = controller.selectGraphBranches(searchResults);
+      expect(added.added, 2);
       expect(controller.state.selectedBranches, hasLength(3));
       expect(
         controller.state.selectedBranches.map((b) => b.name),
@@ -311,7 +351,9 @@ void main() {
 
       // 再点全选同一搜索结果：幂等（没有新增，不发起重复请求）。
       final tipsBefore = api.graphTips.length;
-      expect(await controller.selectGraphBranches(searchResults), 0);
+      final again = controller.selectGraphBranches(searchResults);
+      expect(again.added, 0);
+      expect(again.skipped, 0);
       expect(api.graphTips.length, tipsBefore);
 
       controller.clearGraphBranches();
@@ -324,7 +366,7 @@ void main() {
       final controller = GitBrowserController(_FakeGitApi());
       addTearDown(controller.dispose);
       await controller.open('s');
-      await controller.selectGraphBranches(_branches(12));
+      controller.selectGraphBranches(_branches(12));
       expect(controller.state.selectedBranches, hasLength(1));
       controller.clearGraphBranches();
       expect(controller.state.selectedBranches, hasLength(1));
@@ -502,7 +544,7 @@ void main() {
       addTearDown(controller.dispose);
       await controller.open('s');
       final longBranches = _namedBranches(32, 300);
-      await controller.selectGraphBranches(longBranches);
+      controller.selectGraphBranches(longBranches);
       expect(api.postCalls, greaterThan(0), reason: 'URL 预算超限 → POST');
     });
 
@@ -524,7 +566,7 @@ void main() {
       );
       addTearDown(controller.dispose);
       await controller.open('s');
-      await controller.selectGraphBranches(_branches(160).take(64).toList());
+      controller.selectGraphBranches(_branches(160).take(64).toList());
       expect(api.postCalls, greaterThan(0));
 
       api.postError = ApiException(
@@ -572,18 +614,116 @@ void main() {
       );
       addTearDown(controller.dispose);
       await controller.open('s');
-      await controller.selectGraphBranches(_branches(160).take(120).toList());
+      controller.selectGraphBranches(_branches(160).take(120).toList());
       expect(controller.state.selectedBranches, hasLength(120));
-      final added = await controller.selectGraphBranches(
+      final added = controller.selectGraphBranches(
         _branches(160).skip(120).take(10).toList(),
       );
-      expect(added, 8);
+      expect(added.added, 8);
+      expect(added.skipped, 2);
       expect(controller.state.selectedBranches, hasLength(128));
       expect(
         await controller.toggleGraphBranch(_branches(160)[130]),
         isFalse,
         reason: '超过服务端 max 时不加',
       );
+    });
+  });
+  group('re-review P1-3/P2-5/P2-6', () {
+    test('P2-5 全选同步反馈：选择立即生效，graph 加载可滞后/挂起', () async {
+      final api = _TransportApi()..queueGates = true;
+      final controller = GitBrowserController(
+        api,
+        branchLimit: GitGraphBranchLimit.unlimited,
+      );
+      addTearDown(controller.dispose);
+      await controller.open('s');
+      final targets = _branches(160).skip(1).take(40).toList();
+      final result = controller.selectGraphBranches(targets);
+      // 慢网络下选择与计数立即可用（不 await graph）。
+      expect(result.added, 40);
+      expect(result.skipped, 0);
+      expect(controller.state.selectedBranches, hasLength(41));
+      expect(controller.state.loadingGraph, isTrue);
+      expect(api.pendingGates, isNotEmpty);
+      final gate = api.pendingGates.removeLast();
+      gate.complete(
+        const GitGraphPage(snapshotId: 'slow', nextCursor: null, commits: []),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state.snapshotId, 'slow');
+      expect(controller.state.loadingGraph, isFalse);
+    });
+
+    test('P2-6 各档实际上限 = min(档位, host max)；旧宿主 5', () async {
+      // host max=6：五档 5、十档 6、不限 6。
+      final api = _TransportApi(
+        capsOverride: const GitReadCapabilities(
+          available: true,
+          graphTipsMax: 6,
+          graphTipsGetMax: 6,
+        ),
+      );
+      final controller = GitBrowserController(api);
+      addTearDown(controller.dispose);
+      await controller.open('s');
+      controller.setBranchLimit(GitGraphBranchLimit.ten);
+      for (var i = 1; i <= 6; i++) {
+        await controller.toggleGraphBranch(_branches(160)[i]);
+      }
+      expect(controller.state.selectedBranches, hasLength(6));
+      expect(
+        await controller.toggleGraphBranch(_branches(160)[7]),
+        isFalse,
+        reason: '十档在 host max=6 下最多 6',
+      );
+      final unlimited = GitBrowserController(
+        _TransportApi(
+          capsOverride: const GitReadCapabilities(
+            available: true,
+            graphTipsMax: 6,
+            graphTipsGetMax: 6,
+          ),
+        ),
+        branchLimit: GitGraphBranchLimit.unlimited,
+      );
+      addTearDown(unlimited.dispose);
+      await unlimited.open('s');
+      for (var i = 1; i <= 6; i++) {
+        await unlimited.toggleGraphBranch(_branches(160)[i]);
+      }
+      expect(
+        await unlimited.toggleGraphBranch(_branches(160)[7]),
+        isFalse,
+        reason: '不限档同样受 host max=6 限制',
+      );
+    });
+
+    test('P1-3 分页 504：保留已加载 commits、页级重试，不置全局超时/不换图', () async {
+      final api = _TransportApi()
+        ..pageWithCursor = true
+        ..pageTimeoutOnce = true;
+      final controller = GitBrowserController(
+        api,
+        branchLimit: GitGraphBranchLimit.unlimited,
+      );
+      addTearDown(controller.dispose);
+      await controller.open('s');
+      await controller.openBranch(_branches(160)[0]);
+      expect(controller.state.graphNextCursor, 'cursor-1');
+      final firstOid = controller.state.commits.first.oid;
+
+      await controller.loadNextGraphPage();
+      expect(controller.state.commits.single.oid, firstOid,
+          reason: '分页 504 不得替换/丢弃已加载整图');
+      expect(controller.state.graphPageTimedOut, isTrue);
+      expect(controller.state.graphTimedOut, isFalse,
+          reason: '分页超时不能触发首屏三动作面板');
+      expect(controller.state.loadingGraphPage, isFalse);
+
+      await controller.retryGraphPage();
+      expect(controller.state.graphPageTimedOut, isFalse);
+      expect(controller.state.commits.length, greaterThan(1));
     });
   });
 }

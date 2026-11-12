@@ -303,6 +303,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         identical(source, widget.scrollController) &&
         state.graphNextCursor != null &&
         !state.loadingGraphPage &&
+        !state.graphPageTimedOut &&
         source.position.extentAfter <= 240) {
       widget.controller.loadNextGraphPage();
     } else if (_view == _View.commit &&
@@ -1437,27 +1438,35 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     ),
                     onPressed: matches.isEmpty || _allMatchesSelected
                         ? null
-                        : () async {
-                            final candidates = matches
-                                .where((branch) => !widget.controller.state
-                                    .selectedBranches
-                                    .any((item) => item.name == branch.name))
-                                .length;
-                            final added = await widget.controller
-                                .selectGraphBranches(matches.toList(growable: false));
-                            if (!mounted || added <= 0) return;
-                            final skipped = candidates - added;
-                            _toast(
-                              skipped > 0
-                                  ? L10n.t(
-                                      '已加入 $added 个（达到电脑端上限，$skipped 个未加入）',
-                                      'Added $added (desktop limit reached; $skipped skipped)',
-                                    )
-                                  : L10n.t(
-                                      '已加入当前搜索结果中的 $added 个分支',
-                                      'Added $added branches from the current search',
-                                    ),
+                        : () {
+                            final result = widget.controller.selectGraphBranches(
+                              matches.toList(growable: false),
                             );
+                            if (!mounted) return;
+                            final added = result.added;
+                            final skipped = result.skipped;
+                            if (added == 0) {
+                              _toast(
+                                L10n.t(
+                                  '已达电脑端上限，未加入新分支',
+                                  'Desktop limit reached; no branches added',
+                                ),
+                              );
+                            } else if (skipped > 0) {
+                              _toast(
+                                L10n.t(
+                                  '已加入 $added 个（达到上限，$skipped 个未加入）',
+                                  'Added $added (limit reached; $skipped skipped)',
+                                ),
+                              );
+                            } else {
+                              _toast(
+                                L10n.t(
+                                  '已加入当前搜索结果中的 $added 个分支',
+                                  'Added $added branches from the current search',
+                                ),
+                              );
+                            }
                           },
                     child: Text(
                       L10n.t('全选 (${matches.length})', 'Select all (${matches.length})'),
@@ -1647,6 +1656,27 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     (state.graphNextCursor != null ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (index == state.commits.length) {
+                    if (state.graphPageTimedOut) {
+                      return Padding(
+                        key: const Key('git-graph-page-timeout'),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              L10n.t('加载更多超时', 'Loading more timed out'),
+                              style: TextStyle(color: DshColors.ink2(context)),
+                            ),
+                            TextButton(
+                              key: const Key('git-graph-page-retry'),
+                              onPressed: () =>
+                                  widget.controller.retryGraphPage(),
+                              child: Text(L10n.t('重试', 'Retry')),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
                     return Center(
                       child: state.loadingGraphPage
                           ? const CircularProgressIndicator()
