@@ -87,4 +87,104 @@ void main() {
     expect(cache.get('s1|pics/a.png')!.length, 2);
     expect(cache.get('s2|pics/a.png')!.length, 3);
   });
+
+  test('review P1：12 key + gate + clear → 排队不再启动 fetch、loading≤4、无回填', () async {
+    final cache = WorkspaceImageCache(maxPending: 4);
+    final gate = Completer<Uint8List>();
+    var started = 0;
+    final futures = <Future<Uint8List>>[];
+    for (var i = 0; i < 12; i++) {
+      futures.add(cache.load('k$i', () {
+        started += 1;
+        return gate.future;
+      }).catchError((Object _) => _bytes(0)));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(started, 4);
+    expect(cache.loading, 4);
+
+    cache.clear();
+    await Future<void>.delayed(Duration.zero);
+    expect(started, 4, reason: 'clear 后排队 waiter 不得启动/fetch');
+    expect(cache.loading, lessThanOrEqualTo(4));
+
+    gate.complete(_bytes(2));
+    await Future.wait(futures);
+    expect(started, 4, reason: '旧代完成不得启动新请求');
+    expect(cache.loading, 0);
+    expect(cache.length, 0, reason: '旧代结果不回填');
+  });
+
+  test('review P1：旧完成不回填/不误删 clear 后的新 in-flight', () async {
+    final cache = WorkspaceImageCache();
+    final oldGate = Completer<Uint8List>();
+    final oldFuture = cache.load('a', () => oldGate.future);
+    cache.clear();
+
+    final newGate = Completer<Uint8List>();
+    var newFetch = 0;
+    final newFuture = cache.load('a', () {
+      newFetch += 1;
+      return newGate.future;
+    });
+    // 旧请求迟到完成：抛 stale、不可回填，更不能从 map 删除新请求。
+    oldGate.complete(_bytes(9));
+    await expectLater(oldFuture, throwsA(isA<StateError>()));
+    expect(cache.get('a'), isNull);
+
+    // 新请求仍在 in-flight：同 key 的第三次 load 必须复用，不重复 fetch。
+    await Future<void>.delayed(Duration.zero);
+    expect(newFetch, 1, reason: 'clear 后的新请求应正常启动');
+    var thirdFetch = 0;
+    final third = cache.load('a', () {
+      thirdFetch += 1;
+      return Future.value(_bytes(1));
+    });
+    expect(thirdFetch, 0);
+    newGate.complete(_bytes(3));
+    expect((await newFuture).length, 3);
+    expect((await third).length, 3);
+    expect(cache.get('a')!.length, 3);
+  });
+
+  test('review P1：槽位直接交接（不先减后唤醒），连续 load/clear 收敛', () async {
+    final cache = WorkspaceImageCache(maxPending: 2);
+    final gates = <Completer<Uint8List>>[];
+    final pending = <Future<Uint8List>>[];
+    var started = 0;
+    for (var i = 0; i < 4; i++) {
+      final gate = Completer<Uint8List>();
+      gates.add(gate);
+      pending.add(cache.load('x$i', () {
+        started += 1;
+        return gate.future;
+      }));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(started, 2);
+    expect(cache.loading, 2);
+    gates[0].complete(_bytes(1));
+    await Future<void>.delayed(Duration.zero);
+    expect(started, 3, reason: '空槽直接交给 waiter，无抖动');
+    expect(cache.loading, 2, reason: '交接期间 loading 不降到 1');
+    gates[1].complete(_bytes(1));
+    gates[2].complete(_bytes(1));
+    gates[3].complete(_bytes(1));
+    await Future.wait(pending);
+    await Future<void>.delayed(Duration.zero);
+    expect(cache.loading, 0);
+
+    // 连续 load/clear：每次先 clear 再放行，必须全部 stale 且不累积缓存/槽位。
+    for (var i = 0; i < 5; i++) {
+      final gate = Completer<Uint8List>();
+      final future = cache.load('loop$i', () => gate.future);
+      cache.clear();
+      gate.complete(_bytes(1));
+      await expectLater(future, throwsA(isA<StateError>()));
+      expect(cache.loading, lessThanOrEqualTo(2));
+      expect(cache.length, 0);
+    }
+    expect(cache.loading, 0);
+  });
+
 }
