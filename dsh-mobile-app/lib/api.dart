@@ -16,6 +16,13 @@ import 'turn_tail.dart';
 import 'git_models.dart';
 import 'turn_outline.dart';
 
+/// issue #94：/workspace-image 返回的图片字节。
+class WorkspaceImageData {
+  final Uint8List bytes;
+  final String? contentType;
+  const WorkspaceImageData({required this.bytes, this.contentType});
+}
+
 class ApiException implements Exception {
   final String message;
 
@@ -1123,6 +1130,46 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
       'messageId': messageId,
       'rating': rating,
     });
+  }
+
+  /// issue #94：只读工作区图片字节（本地 Markdown `![alt](path)`）。
+  ///
+  /// 只由服务端 `/workspace-image` 端点读取会话 cwd 内图片；客户端不直接读文件系统。
+  /// 失败抛 [ApiException]（UI 显示 alt + 可读原因）。
+  Future<WorkspaceImageData> workspaceImage(
+    String sessionId,
+    String path, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final uri = _uri(
+      '/api/workspace-image?sessionId=${Uri.encodeQueryComponent(sessionId)}'
+      '&path=${Uri.encodeQueryComponent(path)}',
+    );
+    final res = await _client
+        .get(uri, headers: {
+          if (token.isNotEmpty) 'x-mobile-token': token,
+          if (appVersion.isNotEmpty) 'x-mobile-app-version': appVersion,
+          'accept': 'image/*',
+        })
+        .timeout(timeout);
+    if (res.statusCode == 200) {
+      return WorkspaceImageData(
+        bytes: res.bodyBytes,
+        contentType: res.headers['content-type'],
+      );
+    }
+    Map<String, dynamic>? body;
+    try {
+      body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {}
+    throw ApiException(
+      (body?['detail'] as String?) ??
+          (body?['error'] as String?) ??
+          'HTTP ${res.statusCode}',
+      code: body?['error'] is String ? body!['error'] as String : null,
+      status: res.statusCode,
+      body: body,
+    );
   }
 
   /// v2.8.0：斜杠命令目录（对齐 PC 端 ctx.commands）。
