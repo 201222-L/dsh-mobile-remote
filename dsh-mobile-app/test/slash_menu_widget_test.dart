@@ -621,4 +621,75 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('review P2: overflow indicator resets after filtering', (tester) async {
+    final commands = [for (var i = 0; i < 30; i += 1) {'name': 'cmd-$i', 'description': 'command $i'}];
+    await _pumpChat(tester, _Backend(commands: commands, skills: const []));
+    await _type(tester, '/');
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('slash-menu-more')), findsOneWidget);
+    await _type(tester, '/cmd-0');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('slash-menu-command-cmd-0')), findsOneWidget);
+    expect(find.byKey(const Key('slash-menu-more')), findsNothing);
+    expect(find.byKey(const Key('slash-menu-bottom')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('review P2: overflow indicator resets after filtering at bottom', (tester) async {
+    final commands = [for (var i = 0; i < 30; i += 1) {'name': 'cmd-$i', 'description': 'command $i'}];
+    await _pumpChat(tester, _Backend(commands: commands, skills: const []));
+    await _type(tester, '/');
+    await tester.pump(const Duration(milliseconds: 200));
+    final list = find.byKey(const Key('slash-menu-list'));
+    final controller = tester.widget<ListView>(list).controller!;
+    controller.jumpTo(controller.position.maxScrollExtent);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('slash-menu-bottom')), findsOneWidget);
+    await _type(tester, '/cmd-0');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('slash-menu-more')), findsNothing);
+    expect(find.byKey(const Key('slash-menu-bottom')), findsNothing,
+        reason: '到底后过滤到 1 项不能残留旧提示');
+    expect(find.byKey(const Key('slash-menu-command-cmd-0')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('review P2: 320 keyboard 350 dense menu fits viewport', (tester) async {
+    tester.view.viewInsets = const FakeViewPadding(bottom: 350);
+    final commands = [for (var i = 0; i < 30; i += 1) {'name': 'cmd-$i', 'description': 'command $i'}];
+    await _pumpChat(tester, _Backend(commands: commands, skills: const []), size: const Size(320, 640));
+    await _type(tester, '/');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+    final rect = tester.getRect(find.byKey(const Key('slash-menu')));
+    expect(rect.top, greaterThanOrEqualTo(0));
+    expect(rect.bottom, lessThanOrEqualTo(290));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('review P2: 320 keyboard 300 dense menu fits viewport', (tester) async {
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    final commands = [for (var i = 0; i < 30; i += 1) {'name': 'cmd-$i', 'description': 'command $i'}];
+    await _pumpChat(tester, _Backend(commands: commands, skills: const []), size: const Size(320, 640));
+    await _type(tester, '/');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('review P2: known command prefix in filename not highlighted', (tester) async {
+    await _pumpChat(tester, _Backend());
+    await _type(tester, '/compact.md');
+    await tester.pump(const Duration(milliseconds: 200));
+    final c = tester.widget<TextField>(_input).controller!;
+    final span = c.buildTextSpan(
+      context: tester.element(_input),
+      style: const TextStyle(),
+      withComposing: false,
+    );
+    final children = span.children ?? const <InlineSpan>[];
+    expect(children.whereType<TextSpan>().where((s) => s.style?.backgroundColor != null), isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

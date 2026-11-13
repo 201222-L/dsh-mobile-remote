@@ -353,10 +353,13 @@ class _ChatScreenState extends State<ChatScreen> {
   final _inputCtrl = _SlashHighlightController();
   // issue #97：菜单在输入框上方/composer 外；用 composer 位置计算可用最大高度。
   final _composerKey = GlobalKey();
+  double? _bodyMaxHeight;
+  final _bottomControlsKey = GlobalKey();
   final _slashScroll = ScrollController();
   int _slashRemaining = 0;
   bool _slashOverflow = false;
   bool _slashAtBottom = true;
+  String _slashMenuSignature = '';
   int _slashScrollCheckTries = 0;
   final _scrollCtrl = ScrollController();
   static const _liveCenterKey = ValueKey<String>('chat-live-center');
@@ -4158,13 +4161,27 @@ class _ChatScreenState extends State<ChatScreen> {
   /// composer 尚未布局时保守回退 240，避免首帧菜单溢出。
   double _slashMenuMaxHeight(BuildContext context) {
     final media = MediaQuery.of(context);
-    final keyboardTop = media.size.height - media.viewInsets.bottom;
-    final box = _composerKey.currentContext?.findRenderObject() as RenderBox?;
-    final composerTop = box != null && box.hasSize
-        ? box.localToGlobal(Offset.zero).dy
-        : keyboardTop - 160;
-    final available = composerTop - media.padding.top - 16;
-    return math.min(360.0, math.max(120.0, available));
+    // Scaffold 内容区高度（已扣除 AppBar/键盘/安全区）；不能用全屏高度−inset，
+    // 否则 320×640 会多算 56px AppBar，菜单把底部 Column 撑溢出。
+    final bodyHeight = _bodyMaxHeight ??
+        (media.size.height - media.viewInsets.bottom - media.padding.top - 56);
+    // 只测量独立 composer 卡片（不能量包含菜单的外层 Padding，否则菜单一出现
+    // composer 高度就把它算进去，形成循环并算出负可用空间）。
+    final composerBox =
+        _composerKey.currentContext?.findRenderObject() as RenderBox?;
+    final composerHeight = (composerBox != null && composerBox.hasSize
+            ? composerBox.size.height
+            : 102.0) +
+        14.0 +
+        media.padding.bottom;
+    final controlsBox =
+        _bottomControlsKey.currentContext?.findRenderObject() as RenderBox?;
+    final controlsHeight = controlsBox != null && controlsBox.hasSize
+        ? controlsBox.size.height
+        : 0.0;
+    // 菜单在 composer 上方，与输入区间隔 8；再留 8 安全余量。
+    final available = bodyHeight - controlsHeight - composerHeight - 16;
+    return math.min(360.0, math.max(0.0, available));
   }
 
   /// issue #97：菜单独立滚动到底时收起“上滑查看更多”，最多展示剩余项数。
@@ -4204,6 +4221,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final commandColor = _SlashPalette.commandText(pageContext);
     final skillColor = _SlashPalette.skillText(pageContext);
     final maxHeight = _slashMenuMaxHeight(pageContext);
+    if (maxHeight < 48) return const SizedBox.shrink();
     Widget header(String label, int count, Color dot) => Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
           child: Row(
@@ -4311,6 +4329,22 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
     ];
+    // 条目/过滤变化后必须重算 overflow：先复位旧提示与滚动位置，避免只剩 1 项时
+    // 仍显示“Scroll for more · 23 left”；过滤后仍溢出则从顶部重新计算。
+    final signature = entries
+        .map((entry) => '${entry.skill ? 1 : 0}:${entry.name}')
+        .join('\u0001');
+    if (signature != _slashMenuSignature) {
+      _slashMenuSignature = signature;
+      _slashRemaining = 0;
+      _slashOverflow = false;
+      _slashAtBottom = true;
+      if (_slashScroll.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _slashScroll.hasClients) _slashScroll.jumpTo(0);
+        });
+      }
+    }
     _slashScrollCheckTries = 0;
     void scheduleScrollCheck() {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4318,6 +4352,19 @@ class _ChatScreenState extends State<ChatScreen> {
         if (_slashScroll.hasClients && _slashScroll.position.maxScrollExtent > 0) {
           _slashScrollCheckTries = 0;
           _updateSlashMenuScroll(entries.length);
+          return;
+        }
+        // 列表可完整放下（maxScrollExtent==0）：必须显式清掉旧 overflow/remaining，
+        // 否则过滤到 1 项后仍残留 “Scroll for more”。
+        if (_slashScroll.hasClients) {
+          _slashScrollCheckTries = 0;
+          if (_slashOverflow || _slashRemaining != 0 || !_slashAtBottom) {
+            setState(() {
+              _slashOverflow = false;
+              _slashRemaining = 0;
+              _slashAtBottom = true;
+            });
+          }
           return;
         }
         if (_slashScrollCheckTries < 3) {
@@ -5559,7 +5606,9 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: LayoutBuilder(builder: (context, constraints) {
+        _bodyMaxHeight = constraints.maxHeight;
+        return Column(
         children: [
           // 用量条
           if (_usageLoaded && _usage.isNotEmpty)
@@ -5658,6 +5707,12 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
+          // issue #97 P2：composer 上方的底部控件统一成可测量的一组，
+          // 菜单可用高度需扣除它们，避免 320×640 + 键盘时 Column 溢出。
+          Column(
+            key: _bottomControlsKey,
+            mainAxisSize: MainAxisSize.min,
+            children: [
           // 活动条：工具状态 / 无过程块时的思考（issue #70：与 provisional 同源、三处不重复）
           if (!_inHistory)
             // re-review P2：随滚动重建，工具行滚出视口时活动条立刻恢复。
@@ -5717,6 +5772,8 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!_inHistory) _buildTodoPanel(),
           // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
           _buildQueueDock(),
+            ],
+          ),
           // composer（v2.8.0 重构为两层，对齐 PC 端 InputBar）：
           // 第一层 = [/命令] + 输入框（独占最宽）；第二层 = 模型/权限/排队胶囊 + 上下文圆环 + 发送
           SafeArea(
@@ -5901,7 +5958,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
-      ),
+      );
+      }),
     );
   }
 
