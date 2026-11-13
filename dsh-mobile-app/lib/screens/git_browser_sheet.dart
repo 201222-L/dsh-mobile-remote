@@ -102,6 +102,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   // issue #93：prev 页前插后的滚动锚定（保持当前可见 commit 不跳）。
   String? _pendingPrependAnchorOid;
   double? _pendingPrependAnchorOffset;
+  // issue #100：focus 首屏稳定前禁止预取；只有真实用户拖到顶部才请求/应用 prev。
+  bool _graphFocusSettled = false;
+  String? _graphFocusSettledSnapshotId;
+  double _graphRowHeight = kGitGraphRowHeight;
+  bool _graphAtTopIntent = false;
+  bool _graphPrefetchingPrev = false;
   String? _layoutSnapshot;
   String? _layoutTips;
   List<String> _laidOutOids = const [];
@@ -312,19 +318,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     if (state.stale || state.loading || state.error != null) return;
     if ((_view == _View.tab && _activeTab == 'graph' || _temporaryGraph) &&
         identical(source, widget.scrollController) &&
+        _graphFocusSettled &&
         state.graphNextCursor != null &&
         !state.loadingGraphPage &&
         !state.graphPageTimedOut &&
         source.position.extentAfter <= 240) {
       widget.controller.loadNextGraphPage();
-    } else if ((_view == _View.tab && _activeTab == 'graph' || _temporaryGraph) &&
-        identical(source, widget.scrollController) &&
-        widget.controller.graphAllMode &&
-        state.graphPrevCursor != null &&
-        !state.loadingGraphPage &&
-        !state.graphPageTimedOut &&
-        source.position.extentBefore <= 240) {
-      _loadPrevGraphPageWithAnchor();
     } else if (_view == _View.commit &&
         identical(source, _commitScroll) &&
         state.commit?.filesNextCursor != null &&
@@ -1396,18 +1395,88 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     );
   }
 
-  /// issue #93：请求更新（prev）页前记录当前首行与偏移；前插完成后按新增行高补偿，
-  /// 让用户正在看的 commit 保持在原屏幕位置（而不是整体向下跳一页）。
-  void _loadPrevGraphPageWithAnchor() {
-    if (_pendingPrependAnchorOid != null) return;
-    final state = widget.controller.state;
-    if (state.commits.isNotEmpty) {
-      _pendingPrependAnchorOid = state.commits.first.oid;
-      _pendingPrependAnchorOffset = widget.scrollController.hasClients
-          ? widget.scrollController.offset
-          : null;
+  /// issue #100：只有真实手势（dragDetails 非空）滚到顶部才触发 prev。
+  bool _onGraphScrollNotification(ScrollNotification notification) {
+    if (!mounted || !_graphFocusSettled) return false;
+    final dragging = (notification is ScrollStartNotification &&
+            notification.dragDetails != null) ||
+        (notification is ScrollUpdateNotification &&
+            notification.dragDetails != null) ||
+        (notification is OverscrollNotification &&
+            notification.dragDetails != null);
+    if (dragging) {
+      final atTop = notification.metrics.extentBefore <= 24;
+      _graphAtTopIntent = atTop;
+      if (atTop) _handleGraphTopIntent();
+    } else if (notification is ScrollEndNotification) {
+      final atTop = notification.metrics.extentBefore <= 24;
+      _graphAtTopIntent = atTop;
+      if (atTop) _handleGraphTopIntent();
     }
-    widget.controller.loadPrevGraphPage();
+    return false;
+  }
+
+  void _handleGraphTopIntent() {
+    final state = widget.controller.state;
+    if (!_graphFocusSettled ||
+        !_graphAtTopIntent ||
+        widget.scrollController.hasClients == false ||
+        widget.scrollController.position.extentBefore > 24 ||
+        state.stale ||
+        state.loadingGraph) {
+      return;
+    }
+    if (widget.controller.hasPendingPrevGraphPage) {
+      _applyPendingPrevGraphPage();
+    } else if (state.graphPrevCursor != null &&
+        !state.loadingGraphPage &&
+        !state.graphPageTimedOut) {
+      _prefetchPrevGraphPage();
+    }
+  }
+
+  Future<void> _prefetchPrevGraphPage() async {
+    if (_graphPrefetchingPrev) return;
+    _graphPrefetchingPrev = true;
+    try {
+      await widget.controller.prefetchPrevGraphPage();
+    } finally {
+      _graphPrefetchingPrev = false;
+    }
+    if (!mounted) return;
+    // 预取只缓存；用户此刻仍在顶部才应用，否则保持 pending 等下一次真实到顶。
+    if (_graphAtTopIntent &&
+        widget.controller.hasPendingPrevGraphPage &&
+        widget.scrollController.hasClients &&
+        widget.scrollController.position.extentBefore <= 24) {
+      await _applyPendingPrevGraphPage();
+    }
+  }
+
+  Future<void> _applyPendingPrevGraphPage() async {
+    if (_graphPrefetchingPrev ||
+        !widget.controller.hasPendingPrevGraphPage ||
+        !widget.controller.graphAllMode) {
+      return;
+    }
+    // 用“当前可见首行”做锚点（而非 commits.first）；应用后由补偿逻辑保持不跳。
+    _rememberVisiblePrependAnchor();
+    _graphAtTopIntent = false;
+    await widget.controller.applyPendingPrevGraphPage();
+  }
+
+  /// issue #100：记录当前可见首行及其像素偏移，prepend 后据此补偿。
+  void _rememberVisiblePrependAnchor() {
+    final commits = widget.controller.state.commits;
+    if (commits.isEmpty) return;
+    final offset = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final row = (offset / _graphRowHeight)
+        .floor()
+        .clamp(0, commits.length - 1);
+    _pendingPrependAnchorOid = commits[row].oid;
+    _pendingPrependAnchorOffset = offset;
   }
 
   /// issue #93：把 prev 前插造成的内容高度位移补回滚动位置。
@@ -1441,15 +1510,42 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     WidgetsBinding.instance.addPostFrameCallback((_) => apply(0));
   }
 
-  /// issue #93：focus 页不在第一页时，加载完成后滚动到 focus 行（每 snapshot 一次）。
+  /// issue #93/#100：focus 页加载后滚动到 focus 行；动画完成前 `_graphFocusSettled`
+  /// 保持 false，禁止 prev/next 预取。snapshot 变化时重算 focus，不依赖旧 target。
   void _maybeScrollToGraphFocus(GitBrowserState state, double rowHeight) {
-    if (!widget.controller.graphAllMode) return;
-    final focusOid = state.graphFocusOid;
+    if (!widget.controller.graphAllMode) {
+      // 普通 5/10 选择模式没有 all focus 滚动；首批提交稳定后允许正常分页。
+      if (state.snapshotId != null && state.commits.isNotEmpty) {
+        _graphFocusSettled = true;
+      }
+      return;
+    }
     final snapshotId = state.snapshotId;
-    if (focusOid == null || snapshotId == null || state.commits.isEmpty) return;
+    if (snapshotId == null || state.commits.isEmpty) return;
+    if (_graphFocusSettledSnapshotId != snapshotId) {
+      _graphFocusSettledSnapshotId = snapshotId;
+      _graphFocusSettled = false;
+      // 新快照不得沿用上一份图的用户意图/可见锚点。
+      _graphAtTopIntent = false;
+      _pendingPrependAnchorOid = null;
+      _pendingPrependAnchorOffset = null;
+    }
+    final focusOid = state.graphFocusOid;
+    if (focusOid == null) {
+      // 该页无 focus：首屏稳定后允许普通分页；prev 仍只由真实手势触发。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _graphFocusSettledSnapshotId == snapshotId) {
+          _graphFocusSettled = true;
+        }
+      });
+      return;
+    }
     if (_focusScrolledSnapshotId == snapshotId) return;
     final index = state.commits.indexWhere((commit) => commit.oid == focusOid);
-    if (index < 0) return;
+    if (index < 0) {
+      _graphFocusSettled = true;
+      return;
+    }
     _focusScrolledSnapshotId = snapshotId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !widget.scrollController.hasClients) return;
@@ -1458,11 +1554,17 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
         position.minScrollExtent,
         position.maxScrollExtent,
       );
-      widget.scrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
-      );
+      widget.scrollController
+          .animateTo(
+            target,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+          )
+          .whenComplete(() {
+        if (mounted && _graphFocusSettledSnapshotId == snapshotId) {
+          _graphFocusSettled = true;
+        }
+      });
     });
   }
 
@@ -1489,6 +1591,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       kGitGraphRowHeight,
       textScaler.scale(kGitGraphRowHeight - 22) + 22,
     );
+    _graphRowHeight = rowHeight;
     _maybeReconcilePrependAnchor(state, rowHeight);
     _maybeScrollToGraphFocus(state, rowHeight);
     return Column(
@@ -1796,7 +1899,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             scrollDirection: Axis.horizontal,
             child: SizedBox(
               width: horizontalWidth,
-              child: ListView.builder(
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _onGraphScrollNotification,
+                child: ListView.builder(
                 key: const Key('git-graph-vertical'),
                 controller: widget.scrollController,
                 itemCount:
@@ -1888,6 +1993,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                     ),
                   );
                 },
+              ),
               ),
             ),
           ),

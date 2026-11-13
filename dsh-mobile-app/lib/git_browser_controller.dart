@@ -49,6 +49,9 @@ class GitBrowserState {
   /// re-review P1-3：**分页** append 超时——保留已加载 commits，页级重试，不替换整图。
   final bool graphPageTimedOut;
 
+  /// issue #95：分页超时方向（true=更新页/顶部；false=更旧页/底部），供 UI 单侧重试。
+  final bool graphPageTimedOutNewer;
+
   const GitBrowserState({
     this.sessionId,
     this.capabilities,
@@ -80,6 +83,7 @@ class GitBrowserState {
     this.branchLimit = GitGraphBranchLimit.fallback,
     this.graphTimedOut = false,
     this.graphPageTimedOut = false,
+    this.graphPageTimedOutNewer = false,
   });
 
   List<GitBranch> get filteredBranches {
@@ -123,6 +127,7 @@ class GitBrowserState {
     GitGraphBranchLimit? branchLimit,
     bool? graphTimedOut,
     bool? graphPageTimedOut,
+    bool? graphPageTimedOutNewer,
   }) => GitBrowserState(
     sessionId: identical(sessionId, _keep)
         ? this.sessionId
@@ -182,6 +187,8 @@ class GitBrowserState {
     branchLimit: branchLimit ?? this.branchLimit,
     graphTimedOut: graphTimedOut ?? this.graphTimedOut,
     graphPageTimedOut: graphPageTimedOut ?? this.graphPageTimedOut,
+    graphPageTimedOutNewer:
+        graphPageTimedOutNewer ?? this.graphPageTimedOutNewer,
   );
 }
 
@@ -190,7 +197,7 @@ const _keep = Object();
 class GitBrowserController extends ChangeNotifier {
   GitBrowserController(
     this._api, {
-    this.graphPageSize = 100,
+    this.graphPageSize = 16,
     this.filesPageSize = 100,
     GitGraphBranchLimit branchLimit = GitGraphBranchLimit.fallback,
     this.graphLoadTimeout = const Duration(seconds: 30),
@@ -214,6 +221,12 @@ class GitBrowserController extends ChangeNotifier {
   int _previewGeneration = 0;
   Future<void>? _graphPageRequest;
   bool _graphPageWantedNewer = false;
+  // issue #100：prev 预取先缓存，不立即前插；用户真实到顶才应用。
+  GitGraphPage? _pendingPrevPage;
+  String? _pendingPrevSnapshotId;
+  String? _pendingPrevCursor;
+  int _pendingPrevGeneration = -1;
+  bool _prevPrefetchInFlight = false;
   Future<void>? _filesPageRequest;
   bool _disposed = false;
 
@@ -245,6 +258,9 @@ class GitBrowserController extends ChangeNotifier {
   int get _effectiveTierCap => _branchLimit.isUnlimited
       ? _graphMaxTips
       : math.min(_branchLimit.max ?? _graphMaxTips, _graphMaxTips);
+
+  /// 供 UI 使用的实际上限（状态文案/达上限 chip/点击拦截必须与 controller 一致）。
+  int get effectiveSelectionCap => _effectiveTierCap;
   bool get _supportsGraphPost =>
       _state.capabilities?.supportsGraphPost == true;
 
@@ -359,11 +375,13 @@ class GitBrowserController extends ChangeNotifier {
 
   /// issue #86：重试一次 graph（超时面板「重试」）。
   Future<void> retryGraphLoad() async {
-    if (_state.sessionId == null ||
-        _state.repository == null ||
-        _state.selectedBranches.isEmpty) {
+    if (_state.sessionId == null || _state.repository == null) return;
+    // issue #95：all 模式重试必须回到 all=true + focus 当前分支，绝不回退选择集。
+    if (graphAllMode) {
+      await openAllGraph(focus: _state.repository?.currentBranch);
       return;
     }
+    if (_state.selectedBranches.isEmpty) return;
     final graphGeneration = ++_graphGeneration;
     _cancelGraphTimeout();
     _emit(
@@ -859,6 +877,7 @@ class GitBrowserController extends ChangeNotifier {
           loadingGraphPage: false,
           graphTimedOut: false,
           graphPageTimedOut: false,
+          graphPageTimedOutNewer: false,
           stale: false,
           error: null,
         ),
@@ -880,6 +899,7 @@ class GitBrowserController extends ChangeNotifier {
             loadingGraph: false,
             loadingGraphPage: false,
             graphPageTimedOut: true,
+            graphPageTimedOutNewer: false,
             loading: false,
             stale: _state.stale,
             error: null,
@@ -904,6 +924,7 @@ class GitBrowserController extends ChangeNotifier {
           loadingGraph: false,
           loadingGraphPage: false,
           graphPageTimedOut: false,
+          graphPageTimedOutNewer: false,
           stale: graphStale ? true : _state.stale,
           error: graphStale ? 'graph-stale' : (code ?? error.toString()),
         ),
@@ -916,18 +937,27 @@ class GitBrowserController extends ChangeNotifier {
     if (graphAllMode) {
       if (_graphPageWantedNewer ? _state.graphPrevCursor == null : _state.graphNextCursor == null) return;
       _graphPageRequest = null;
-      _emit(_state.copyWith(graphPageTimedOut: false, error: null));
+      _emit(_state.copyWith(
+        graphPageTimedOut: false,
+        graphPageTimedOutNewer: false,
+        error: null,
+      ));
       await (_graphPageWantedNewer ? loadPrevGraphPage() : loadNextGraphPage());
       return;
     }
     if (_state.graphNextCursor == null) return;
     _graphPageRequest = null;
-    _emit(_state.copyWith(graphPageTimedOut: false, error: null));
+    _emit(_state.copyWith(
+      graphPageTimedOut: false,
+      graphPageTimedOutNewer: false,
+      error: null,
+    ));
     await loadNextGraphPage();
   }
 
   /// issue #93：加载更**新**一页（全部分支模式向左/上拖）。
   Future<void> loadPrevGraphPage() {
+    if (_pendingPrevPage != null) return applyPendingPrevGraphPage();
     if (_graphPageRequest != null) return _graphPageRequest!;
     if (!graphAllMode ||
         _state.stale ||
@@ -982,8 +1012,87 @@ class GitBrowserController extends ChangeNotifier {
     return request;
   }
 
+  void _resetPendingPrev() {
+    _pendingPrevPage = null;
+    _pendingPrevSnapshotId = null;
+    _pendingPrevCursor = null;
+    _pendingPrevGeneration = -1;
+    _prevPrefetchInFlight = false;
+  }
+
+  /// issue #100：是否有已缓存、等待用户主动到顶再应用的更新页。
+  bool get hasPendingPrevGraphPage => _pendingPrevPage != null;
+
+  /// issue #100：后台预取更新页——只缓存，不 emit commits/不改滚动锚点。
+  Future<void> prefetchPrevGraphPage() async {
+    final api = _allApi;
+    final sessionId = _state.sessionId;
+    final repository = _state.repository;
+    final cursor = _state.graphPrevCursor;
+    final snapshotId = _state.snapshotId;
+    if (api == null ||
+        sessionId == null ||
+        repository == null ||
+        cursor == null ||
+        snapshotId == null ||
+        !graphAllMode ||
+        _state.stale ||
+        _state.loadingGraphPage ||
+        _state.graphPageTimedOut ||
+        _prevPrefetchInFlight ||
+        _pendingPrevPage != null) {
+      return;
+    }
+    final generation = _generation;
+    final graphGeneration = _graphGeneration;
+    _prevPrefetchInFlight = true;
+    try {
+      final page = await api.graphAll(
+        sessionId,
+        repository.repositoryId,
+        all: true,
+        snapshotId: snapshotId,
+        cursor: cursor,
+        limit: graphAllPageSize,
+        timeout: const Duration(seconds: 35),
+      );
+      if (generation != _generation ||
+          graphGeneration != _graphGeneration ||
+          _state.snapshotId != snapshotId ||
+          _state.graphPrevCursor != cursor) {
+        return;
+      }
+      _pendingPrevPage = page;
+      _pendingPrevSnapshotId = snapshotId;
+      _pendingPrevCursor = cursor;
+      _pendingPrevGeneration = graphGeneration;
+    } catch (_) {
+      // 后台预取失败静默；用户真正到顶时会重新尝试。
+    } finally {
+      _prevPrefetchInFlight = false;
+    }
+  }
+
+  /// issue #100：应用缓存页；只由用户真实到顶触发（UI 负责时机）。
+  Future<void> applyPendingPrevGraphPage() async {
+    final page = _pendingPrevPage;
+    if (page == null) return;
+    final valid = _pendingPrevGeneration == _graphGeneration &&
+        _pendingPrevSnapshotId == _state.snapshotId &&
+        _pendingPrevCursor == _state.graphPrevCursor &&
+        !_state.stale &&
+        !_state.loadingGraphPage;
+    _pendingPrevPage = null;
+    _pendingPrevSnapshotId = null;
+    _pendingPrevCursor = null;
+    _pendingPrevGeneration = -1;
+    if (!valid) return;
+    _applyAllGraphPage(page, initial: false, newer: true);
+  }
+
   /// issue #93：打开全部分支图（首页或 focus 页）。
   Future<void> openAllGraph({String? focus}) async {
+    _resetPendingPrev();
     if (!graphAllMode) return;
     final generation = _generation;
     final graphGeneration = ++_graphGeneration;
@@ -1003,6 +1112,7 @@ class GitBrowserController extends ChangeNotifier {
       loadingGraphPage: false,
       graphTimedOut: false,
       graphPageTimedOut: false,
+      graphPageTimedOutNewer: false,
       stale: false,
       error: null,
     ));
@@ -1043,6 +1153,53 @@ class GitBrowserController extends ChangeNotifier {
     return request;
   }
 
+  void _applyAllGraphPage(
+    GitGraphPage page, {
+    required bool initial,
+    required bool newer,
+  }) {
+    if (initial) _resetPendingPrev();
+    final existing = _state.commits;
+    final List<GitCommitSummary> commits;
+    if (initial) {
+      commits = page.commits;
+    } else if (newer) {
+      final seen = {for (final commit in existing) commit.oid};
+      commits = [
+        ...page.commits.where((commit) => seen.add(commit.oid)),
+        ...existing,
+      ];
+    } else {
+      final seen = {for (final commit in existing) commit.oid};
+      commits = [
+        ...existing,
+        ...page.commits.where((commit) => seen.add(commit.oid)),
+      ];
+    }
+    _emit(_state.copyWith(
+      commits: commits,
+      snapshotId: page.snapshotId,
+      // issue #95（#93 review）：older 页只更新 next、newer 页只更新 prev；
+      // 不能用响应里的另一侧 cursor 覆盖当前浏览方向已加载页的锚点。
+      graphNextCursor: initial
+          ? page.nextCursor
+          : (newer ? _state.graphNextCursor : page.nextCursor),
+      graphPrevCursor: initial
+          ? page.prevCursor
+          : (newer ? page.prevCursor : _state.graphPrevCursor),
+      graphFocusOid: initial ? page.focusOid : _state.graphFocusOid,
+      graphPageStart: initial ? page.pageStart : _state.graphPageStart,
+      graphAll: true,
+      loadingGraph: false,
+      loadingGraphPage: false,
+      graphTimedOut: false,
+      graphPageTimedOut: false,
+      graphPageTimedOutNewer: false,
+      stale: false,
+      error: null,
+    ));
+  }
+
   Future<void> _loadAllGraphPage({
     required int generation,
     required int graphGeneration,
@@ -1073,44 +1230,7 @@ class GitBrowserController extends ChangeNotifier {
         return;
       }
       _cancelGraphTimeout();
-      final existing = _state.commits;
-      final List<GitCommitSummary> commits;
-      if (initial) {
-        commits = page.commits;
-      } else if (newer) {
-        final seen = {for (final commit in existing) commit.oid};
-        commits = [
-          ...page.commits.where((commit) => seen.add(commit.oid)),
-          ...existing,
-        ];
-      } else {
-        final seen = {for (final commit in existing) commit.oid};
-        commits = [
-          ...existing,
-          ...page.commits.where((commit) => seen.add(commit.oid)),
-        ];
-      }
-      _emit(_state.copyWith(
-        commits: commits,
-        snapshotId: page.snapshotId,
-        // issue #95（#93 review）：older 页只更新 next、newer 页只更新 prev；
-        // 不能用响应里的另一侧 cursor 覆盖当前浏览方向已加载页的锚点。
-        graphNextCursor: initial
-            ? page.nextCursor
-            : (newer ? _state.graphNextCursor : page.nextCursor),
-        graphPrevCursor: initial
-            ? page.prevCursor
-            : (newer ? page.prevCursor : _state.graphPrevCursor),
-        graphFocusOid: initial ? page.focusOid : _state.graphFocusOid,
-        graphPageStart: initial ? page.pageStart : _state.graphPageStart,
-        graphAll: true,
-        loadingGraph: false,
-        loadingGraphPage: false,
-        graphTimedOut: false,
-        graphPageTimedOut: false,
-        stale: false,
-        error: null,
-      ));
+      _applyAllGraphPage(page, initial: initial, newer: newer);
     } catch (error) {
       if (generation != _generation || graphGeneration != _graphGeneration) {
         return;
@@ -1124,6 +1244,7 @@ class GitBrowserController extends ChangeNotifier {
           loadingGraph: false,
           loadingGraphPage: false,
           graphPageTimedOut: true,
+          graphPageTimedOutNewer: newer,
           error: null,
         ));
         return;
@@ -1133,6 +1254,7 @@ class GitBrowserController extends ChangeNotifier {
         loadingGraphPage: false,
         graphTimedOut: initial && timedOut,
         graphPageTimedOut: false,
+        graphPageTimedOutNewer: false,
         stale: code == 'graph-stale' ? true : _state.stale,
         error: code == 'graph-stale' ? 'graph-stale' : (code ?? error.toString()),
       ));
