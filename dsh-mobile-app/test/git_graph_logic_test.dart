@@ -8,6 +8,7 @@ GitCommitSummary commit(String oid, [List<String> parents = const []]) =>
     GitCommitSummary(oid: oid, parents: parents);
 
 void main() {
+  _dynamicMarginTests();
   test('ordinary chain stays in one topology lane', () {
     final layout = layoutGraph([
       commit('tip', ['middle']),
@@ -479,6 +480,75 @@ void main() {
       }
     },
   );
+}
+
+GraphRow _laneRow(
+  int lane, {
+  List<int> parentLanes = const [],
+  List<GraphContinuation> continuations = const [],
+}) =>
+    GraphRow(
+      lane: lane,
+      incomingColorSlot: 0,
+      hasIncomingEdge: false,
+      colorSlot: 0,
+      parentLanes: parentLanes,
+      parentColorSlots: List.filled(parentLanes.length, 0),
+      tipColorSlots: const [],
+      continuations: continuations,
+      merge: parentLanes.length > 1,
+    );
+
+void _dynamicMarginTests() {
+  group('issue #102 可见行 lane span', () {
+    test('row range 按 offset/rowHeight/viewport + overscan 计算并 clamp', () {
+      final r = graphVisibleRowRange(
+        rowCount: 20,
+        offset: 86,
+        rowHeight: 86,
+        viewportExtent: 172,
+        overscan: 1,
+      );
+      expect((r.start, r.end), (0, 4));
+      final noOver = graphVisibleRowRange(
+        rowCount: 20,
+        offset: 86,
+        rowHeight: 86,
+        viewportExtent: 172,
+        overscan: 0,
+      );
+      expect((noOver.start, noOver.end), (1, 3));
+      final bottom = graphVisibleRowRange(
+        rowCount: 5,
+        offset: 600,
+        rowHeight: 86,
+        viewportExtent: 172,
+      );
+      expect((bottom.start, bottom.end), (4, 4), reason: 'start clamp 到末尾');
+      expect(graphVisibleRowRange(rowCount: 0, offset: 0, rowHeight: 86, viewportExtent: 100), (start: 0, end: -1));
+    });
+
+    test('最大 lane 覆盖 lane/parentLanes/continuation from→to', () {
+      final rows = [
+        _laneRow(0),
+        _laneRow(1, parentLanes: [0, 3]),
+        _laneRow(2, continuations: const [GraphContinuation(1, 5, 0)]),
+        _laneRow(9),
+      ];
+      expect(graphVisibleLaneCount(rows, start: 0, end: 0), 1);
+      expect(graphVisibleLaneCount(rows, start: 0, end: 1), 4);
+      expect(graphVisibleLaneCount(rows, start: 2, end: 2), 6);
+      expect(graphVisibleLaneCount(rows, start: 0, end: 3), 10);
+      expect(graphVisibleLaneCount(rows, start: 3, end: 9), 10);
+      expect(graphVisibleLaneCount(const [], start: 0, end: 0), 0);
+    });
+
+    test('只算可见区间：远端大 lane 不影响当前 span', () {
+      final rows = [for (var i = 0; i < 20; i++) _laneRow(i < 10 ? 0 : 8)];
+      expect(graphVisibleLaneCount(rows, start: 0, end: 8), 1);
+      expect(graphVisibleLaneCount(rows, start: 10, end: 18), 9);
+    });
+  });
 }
 
 List<Object> rowSignature(GraphRow row) => [

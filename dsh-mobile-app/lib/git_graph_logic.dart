@@ -223,3 +223,50 @@ GraphLayout layoutGraph(
   );
   return GraphLayout(List.unmodifiable(rows), peakLaneCount, continuation);
 }
+
+/// issue #102：视口可见行的 lane 占用范围（纯函数，供动态左边距使用）。
+///
+/// 返回闭区间 `(start, end)`；`offset` 为纵向滚动偏移，`viewportExtent` 为视口高度。
+/// 会做 ±overscan 行扩展（默认 1），并在行数边界内 clamp。
+({int start, int end}) graphVisibleRowRange({
+  required int rowCount,
+  required double offset,
+  required double rowHeight,
+  required double viewportExtent,
+  int overscan = 1,
+}) {
+  if (rowCount <= 0 || rowHeight <= 0) return (start: 0, end: -1);
+  final first = (offset / rowHeight).floor() - overscan;
+  final last = ((offset + viewportExtent) / rowHeight).floor() + overscan;
+  final start = first.clamp(0, rowCount - 1);
+  final end = last.clamp(start, rowCount - 1);
+  return (start: start, end: end);
+}
+
+/// issue #102：可见行最大占用 lane 数（lane / parentLanes / continuation from/to）。
+///
+/// 返回 `0` 表示没有可见行；调用方据此得到空图最小宽度 80。
+int graphVisibleLaneCount(
+  List<GraphRow> rows, {
+  required int start,
+  required int end,
+}) {
+  if (rows.isEmpty || end < start) return 0;
+  var maxLane = -1;
+  void take(int lane) {
+    if (lane > maxLane) maxLane = lane;
+  }
+
+  for (var index = start; index <= end && index < rows.length; index++) {
+    final row = rows[index];
+    take(row.lane);
+    for (final lane in row.parentLanes) {
+      take(lane);
+    }
+    for (final continuation in row.continuations) {
+      take(continuation.from);
+      take(continuation.to);
+    }
+  }
+  return maxLane + 1;
+}

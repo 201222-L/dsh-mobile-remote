@@ -98,6 +98,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   TextStyle? _labelStyle;
   TextScaler? _labelTextScaler;
   GraphLayout? _layout;
+  // issue #102：可见行动态左边距（debounce 100ms + 150ms 平滑）。
+  int _visibleLaneCount = 0;
+  String? _laneSnapshotId;
+  Timer? _laneDebounce;
+  bool _horizontalClampScheduled = false;
   String? _focusScrolledSnapshotId;
   // issue #93：prev 页前插后的滚动锚定（保持当前可见 commit 不跳）。
   String? _pendingPrependAnchorOid;
@@ -309,7 +314,20 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     setState(() {});
   }
 
-  void _onGraphScroll() => _onScroll(widget.scrollController);
+  void _onGraphScroll() {
+    _onScroll(widget.scrollController);
+    _scheduleLaneUpdateFromScroll();
+  }
+
+  void _scheduleLaneUpdateFromScroll() {
+    final layout = _layout;
+    if (layout == null) return;
+    _scheduleVisibleLaneUpdate(
+      layout,
+      _graphRowHeight,
+      widget.controller.state.snapshotId,
+    );
+  }
   void _onCommitScroll() => _onScroll(_commitScroll);
 
   void _onScroll(ScrollController source) {
@@ -1397,7 +1415,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
 
   /// issue #100：只有真实手势（dragDetails 非空）滚到顶部才触发 prev。
   bool _onGraphScrollNotification(ScrollNotification notification) {
-    if (!mounted || !_graphFocusSettled) return false;
+    if (!mounted) return false;
+    _scheduleLaneUpdateFromScroll();
+    if (!_graphFocusSettled) return false;
     final dragging = (notification is ScrollStartNotification &&
             notification.dragDetails != null) ||
         (notification is ScrollUpdateNotification &&
@@ -1567,6 +1587,75 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
     });
   }
 
+  /// issue #102：按当前滚动视口计算目标 lane 数；快照切换立即重置，其余 100ms debounce。
+  int _visibleLaneTarget(GraphLayout layout, double rowHeight) {
+    final controller = widget.scrollController;
+    final offset = controller.hasClients ? controller.position.pixels : 0.0;
+    final viewport = controller.hasClients
+        ? controller.position.viewportDimension
+        : rowHeight * 8;
+    final range = graphVisibleRowRange(
+      rowCount: layout.rows.length,
+      offset: offset,
+      rowHeight: rowHeight,
+      viewportExtent: viewport,
+    );
+    return graphVisibleLaneCount(
+      layout.rows,
+      start: range.start,
+      end: range.end,
+    );
+  }
+
+  void _scheduleVisibleLaneUpdate(GraphLayout layout, double rowHeight, String? snapshotId) {
+    if (snapshotId != _laneSnapshotId) {
+      // snapshot 切换：取消旧目标，立即按新首屏计算，避免沿用上一张图的宽度。
+      _laneSnapshotId = snapshotId;
+      _laneDebounce?.cancel();
+      _laneDebounce = null;
+      _visibleLaneCount = _visibleLaneTarget(layout, rowHeight);
+      // 首帧可能还没 attach ScrollController（viewportDimension 用 8 行兜底）；
+      // attach 后下一帧按真实视口重算一次，避免初始左边距偏差。
+      final snapshot = snapshotId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _laneSnapshotId != snapshot) return;
+        final target = _visibleLaneTarget(layout, rowHeight);
+        if (target != _visibleLaneCount) {
+          setState(() => _visibleLaneCount = target);
+        }
+      });
+      return;
+    }
+    final immediate = _visibleLaneTarget(layout, rowHeight);
+    if (immediate == _visibleLaneCount) {
+      _laneDebounce?.cancel();
+      _laneDebounce = null;
+      return;
+    }
+    _laneDebounce?.cancel();
+    _laneDebounce = Timer(const Duration(milliseconds: 100), () {
+      _laneDebounce = null;
+      if (!mounted || _laneSnapshotId != snapshotId) return;
+      final target = _visibleLaneTarget(layout, rowHeight);
+      if (target != _visibleLaneCount) {
+        setState(() => _visibleLaneCount = target);
+      }
+    });
+  }
+
+  /// issue #102：共享横向滚动宽度变化后 offset clamp，不自动跳左/不重置 0。
+  void _clampHorizontalOffset() {
+    if (_horizontalClampScheduled) return;
+    _horizontalClampScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _horizontalClampScheduled = false;
+      if (!mounted || !_horizontal.hasClients) return;
+      final position = _horizontal.position;
+      final max = position.maxScrollExtent;
+      if (position.pixels > max) position.jumpTo(max);
+    });
+  }
+
   Widget _graph(GitBrowserState state) {
     final selected = state.selectedBranches;
     final unlimited = widget.controller.branchLimit.isUnlimited;
@@ -1577,11 +1666,11 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       (branch) => branch.displayName.toLowerCase().contains(query),
     );
     final layout = _graphLayout(state);
-    final graphWidth = math.max(80.0, layout.laneCount * 30.0 + 32);
-    // 全部标签单行展示、与图共用同一条横向滚动轴：滚动范围按最宽一行标签计算。
-    final horizontalWidth = math.max(
-      MediaQuery.sizeOf(context).width,
-      graphWidth + _labelLineWidth + 56,
+    // issue #102：只按视口内可见行（含 parentLanes/continuation、±1 overscan）的
+    // 最大 lane 决定左边距；空图/无可见 lane 时最小 80。
+    final targetGraphWidth = math.max(
+      80.0,
+      math.max(1, _visibleLaneCount) * 30.0 + 32,
     );
     // 正常字号下保持设计稿固定 86；系统文字缩放时按文本高度放大行高，
     // 避免主题/无障碍字号下标签行被纵向裁切。
@@ -1591,6 +1680,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       textScaler.scale(kGitGraphRowHeight - 22) + 22,
     );
     _graphRowHeight = rowHeight;
+    _scheduleVisibleLaneUpdate(layout, rowHeight, state.snapshotId);
     _maybeReconcilePrependAnchor(state, rowHeight);
     _maybeScrollToGraphFocus(state, rowHeight);
     return Column(
@@ -1892,7 +1982,19 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
           )
         else
           Expanded(
-          child: SingleChildScrollView(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween<double>(end: targetGraphWidth),
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+            builder: (context, animatedWidth, _) {
+              final graphWidth = math.max(80.0, animatedWidth);
+              // 标签列左边界随 graphWidth 变化；横向滚动范围按同宽重算。
+              final horizontalWidth = math.max(
+                MediaQuery.sizeOf(context).width,
+                graphWidth + _labelLineWidth + 56,
+              );
+              _clampHorizontalOffset();
+              return SingleChildScrollView(
             key: const Key('git-graph-horizontal'),
             controller: _horizontal,
             scrollDirection: Axis.horizontal,
@@ -1947,6 +2049,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
                       child: Row(
                         children: [
                           CustomPaint(
+                            key: Key('git-graph-painter-${commit.oid}'),
                             size: Size(graphWidth, rowHeight),
                             painter: _GraphRowPainter(
                               row,
@@ -1995,6 +2098,8 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
               ),
               ),
             ),
+          );
+            },
           ),
         ),
       ],

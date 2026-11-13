@@ -372,17 +372,53 @@ Api makeChatApi() {
     );
 }
 
+class DynamicMarginGitApi extends WidgetGitApi {
+  DynamicMarginGitApi(this.commits);
+
+  final List<GitCommitSummary> commits;
+
+  @override
+  Future<GitGraphPage> graph(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    graphCalls++;
+    graphRequests.add(tips.map((tip) => tip.name).toList());
+    graphCursors.add(cursor);
+    if (cursor != null) {
+      return GitGraphPage(snapshotId: 'snapshot', tips: tips, commits: const []);
+    }
+    return GitGraphPage(snapshotId: 'snapshot', tips: tips, commits: commits);
+  }
+}
+
 Future<GitBrowserController> mountSheet(
   WidgetTester tester,
   WidgetGitApi api, {
   List<String> tabs = const ['branches', 'graph', 'worktree'],
+  Size size = const Size(800, 600),
+  ThemeData? theme,
+  TextScaler textScaler = TextScaler.noScaling,
 }) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
   final controller = GitBrowserController(api);
   final graphScrollController = ScrollController();
   addTearDown(graphScrollController.dispose);
   await controller.open('session-1');
   await tester.pumpWidget(
     MaterialApp(
+      theme: theme,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: child!,
+      ),
       home: Scaffold(
         body: SizedBox(
           height: 700,
@@ -402,6 +438,157 @@ Future<GitBrowserController> mountSheet(
 void main() {
   setUp(() => L10n.lang = 'en');
   tearDown(() => L10n.lang = 'zh');
+
+  testWidgets('issue #102：可见行最大 lane 动态决定图宽（初始/下滚/回滚 + 150ms）', (tester) async {
+    final commits = <GitCommitSummary>[
+      for (var i = 0; i < 24; i++)
+        GitCommitSummary(
+          oid: i == 0 ? 'main-oid' : 'c$i',
+          parents: i < 23
+              ? [i == 15 ? 'side-$i' : 'c${i + 1}']
+              : const [],
+          author: 'A',
+          timestamp: 1700000000 - i,
+          subject: 'commit $i',
+        ),
+    ];
+    final api = DynamicMarginGitApi(commits);
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    final painter0 = find.byKey(const Key('git-graph-painter-main-oid'));
+    expect(painter0, findsOneWidget);
+    expect(tester.getSize(painter0).width, 80.0, reason: '首屏只有 lane0，最小宽 80');
+
+    final vertical = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byKey(const Key('git-graph-vertical')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    vertical.position.jumpTo(16 * kGitGraphRowHeight);
+    // debounce 100ms 内不得换 target。
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-c16'))).width, 80.0,
+        reason: 'debounce 期间宽度不变');
+    await tester.pump(const Duration(milliseconds: 20));
+    // debounce 后 150ms 平滑动画到 2 lanes = 30*2+32 = 92。
+    await tester.pump(const Duration(milliseconds: 180));
+    final painter16 = find.byKey(const Key('git-graph-painter-c16'));
+    expect(painter16, findsOneWidget);
+    expect(tester.getSize(painter16).width, closeTo(92.0, 1.0),
+        reason: 'merge 行可见时图宽=2 lane，且 150ms 内完成平滑');
+
+    vertical.position.jumpTo(0);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-main-oid'))).width, 80.0,
+        reason: '回滚后宽度恢复');
+  });
+
+  testWidgets('issue #102：横向 offset 在宽度变化后 clamp 且不跳左', (tester) async {
+    final longName = 'refs/heads/${'x' * 180}';
+    final commits = <GitCommitSummary>[
+      for (var i = 0; i < 24; i++)
+        if (i == 16)
+          GitCommitSummary(
+            oid: 'c$i',
+            parents: const ['side-16'],
+            author: 'A',
+            timestamp: 1700000000 - i,
+            subject: 'commit $i',
+            decoration: GitDecoration(
+              refs: [
+                GitRefDetail(
+                  kind: 'localBranch',
+                  name: longName,
+                  shortName: longName.substring('refs/heads/'.length),
+                  oid: 'c16',
+                ),
+              ],
+            ),
+          )
+        else
+          GitCommitSummary(
+            oid: i == 0 ? 'main-oid' : 'c$i',
+            parents: i < 23 ? ['c${i + 1}'] : const [],
+            author: 'A',
+            timestamp: 1700000000 - i,
+            subject: 'commit $i',
+          ),
+    ];
+    final api = DynamicMarginGitApi(commits);
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    final horizontal = tester.state<ScrollableState>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable &&
+            widget.axisDirection == AxisDirection.right,
+      ),
+    );
+    horizontal.position.jumpTo(horizontal.position.maxScrollExtent);
+    await tester.pump();
+    final offsetBefore = horizontal.position.pixels;
+    expect(offsetBefore, greaterThan(0));
+
+    final vertical = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byKey(const Key('git-graph-vertical')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    vertical.position.jumpTo(16 * kGitGraphRowHeight);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(horizontal.position.pixels, closeTo(offsetBefore, 0.5),
+        reason: '变宽不自动跳左');
+
+    vertical.position.jumpTo(0);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(horizontal.position.pixels, lessThanOrEqualTo(
+        horizontal.position.maxScrollExtent + 0.5));
+    expect(horizontal.position.pixels, greaterThan(0),
+        reason: '变窄 clamp 到新 max，不重置 0');
+  });
+
+  testWidgets('issue #102：320/深色/1.5x 下动态边距与滚动不溢出', (tester) async {
+    final commits = <GitCommitSummary>[
+      for (var i = 0; i < 24; i++)
+        GitCommitSummary(
+          oid: i == 0 ? 'main-oid' : 'c$i',
+          parents: i < 23 ? [i == 15 ? 'side-$i' : 'c${i + 1}'] : const [],
+          author: 'A',
+          timestamp: 1700000000 - i,
+          subject: 'commit $i',
+        ),
+    ];
+    final controller = await mountSheet(
+      tester,
+      DynamicMarginGitApi(commits),
+      size: const Size(320, 640),
+      theme: ThemeData.dark(),
+      textScaler: const TextScaler.linear(1.5),
+    );
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final vertical = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byKey(const Key('git-graph-vertical')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    vertical.position.jumpTo(16 * 120);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 180));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('conversation action rail keeps Git navigation full-screen', (
     tester,
