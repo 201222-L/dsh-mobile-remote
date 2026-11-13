@@ -31,6 +31,10 @@ class MarkdownImageData {
 /// 按会话加载图片字节；失败必须 throw（UI 显示 alt + 可读原因，不静默空白）。
 typedef MarkdownImageLoader = Future<MarkdownImageData> Function(String source);
 
+/// 用户主动点击图片占位上的「授权读取/重试」；与自动加载区分，用于避免取消后
+/// 组件重建再次自动弹授权。
+typedef MarkdownImageUserAction = Future<MarkdownImageData> Function(String source);
+
 /// 行内 token：**加粗** *斜体* `代码` [链接](url) ![alt](图片)
 final _inlineRe = RegExp(
   r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|!\[[^\]]*\]\([^)\s]+\)|\[[^\]]*\]\([^)\s]+\))',
@@ -92,6 +96,7 @@ List<Widget> renderMarkdownBlocks(
   BuildContext context, {
   InlineCodeTap? codeTap,
   MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   final ink = DshColors.ink(context);
   final ink2 = DshColors.ink2(context);
@@ -113,7 +118,7 @@ List<Widget> renderMarkdownBlocks(
     if (para.isEmpty) return;
     blocks.add(Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader),
+      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
     ));
     para = [];
   }
@@ -138,7 +143,7 @@ List<Widget> renderMarkdownBlocks(
                       style: TextStyle(fontSize: 14, color: ink2, height: 1.6),
                     ),
                   ),
-                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader)),
+                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction)),
                 ],
               ),
             ),
@@ -150,7 +155,7 @@ List<Widget> renderMarkdownBlocks(
 
   void flushTable() {
     if (tableBuf.isEmpty) return;
-    blocks.add(_buildTable(tableBuf, context, line, ink, codeTap: codeTap, imageLoader: imageLoader));
+    blocks.add(_buildTable(tableBuf, context, line, ink, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction));
     tableBuf = [];
   }
 
@@ -258,6 +263,7 @@ List<Widget> renderMarkdownBlocks(
         alt: imageOnly.group(1)!,
         source: imageOnly.group(2)!,
         loader: imageLoader,
+        userAction: imageUserAction,
         block: true,
       ));
       i++;
@@ -290,7 +296,7 @@ List<Widget> renderMarkdownBlocks(
       final size = [18.0, 16.5, 15.5, 15.0][level - 1];
       blocks.add(Padding(
         padding: const EdgeInsets.only(top: 10, bottom: 6),
-        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink), codeTap: codeTap, imageLoader: imageLoader),
+        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
       ));
       i++;
       continue;
@@ -336,7 +342,7 @@ List<Widget> renderMarkdownBlocks(
             children: [
               Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
               Expanded(
-                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2), codeTap: codeTap, imageLoader: imageLoader),
+                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
               ),
             ],
           ),
@@ -393,6 +399,7 @@ Widget _buildTable(
   Color ink, {
   InlineCodeTap? codeTap,
   MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   List<String> parseRow(String l) =>
       l.trim().replaceAll(RegExp(r'^\||\|$'), '').split('|').map((s) => s.trim()).toList();
@@ -426,7 +433,7 @@ Widget _buildTable(
   final ambient = DefaultTextStyle.of(context).style;
   double measure(String text, {required bool header}) {
     final style = ambient.merge(cellStyle(header: header));
-    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader);
+    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction);
     // 链接在 _inlineSpans 中是 WidgetSpan，而 WidgetSpan 无法在裸 TextPainter 里布局
     // （需要 placeholder dimensions，否则断言 'dimensions != null' / 空指针 → 整条消息
     // 渲染失败）。此时退化为「按 spans 还原的纯文本」测量：链接 child 只改颜色与下划线、
@@ -471,7 +478,7 @@ Widget _buildTable(
         ),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: _InlineText(text, style: cellStyle(header: header), codeTap: codeTap, imageLoader: imageLoader),
+          child: _InlineText(text, style: cellStyle(header: header), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
         ),
       );
 
@@ -531,11 +538,13 @@ class _MarkdownImage extends StatefulWidget {
   final String alt;
   final String source;
   final MarkdownImageLoader? loader;
+  final MarkdownImageUserAction? userAction;
   final bool block;
   const _MarkdownImage({
     required this.alt,
     required this.source,
     required this.loader,
+    required this.userAction,
     required this.block,
   });
 
@@ -597,6 +606,12 @@ class _MarkdownImageState extends State<_MarkdownImage> {
         return L10n.t(
           '图片授权已失效，请重新授权',
           'Image authorization expired; please authorize again',
+        );
+      }
+      if (error.code == 'unsupported-image-symlink') {
+        return L10n.t(
+          '图片是符号链接，无法授权读取',
+          'Symbolic-link images cannot be authorized',
         );
       }
       if (error.code == 'consent-root-not-allowed') {
@@ -793,7 +808,10 @@ class _MarkdownImageState extends State<_MarkdownImage> {
                 ? L10n.t('授权读取', 'Authorize')
                 : null,
             onRetry: () {
-              final future = _load();
+              final action = widget.userAction;
+              final future = action != null
+                  ? action(widget.source)
+                  : _load();
               setState(() {
                 _future = future;
               });
@@ -811,17 +829,19 @@ class _InlineText extends StatelessWidget {
   final TextStyle style;
   final InlineCodeTap? codeTap;
   final MarkdownImageLoader? imageLoader;
+  final MarkdownImageUserAction? imageUserAction;
   const _InlineText(
     this.text, {
     required this.style,
     this.codeTap,
     this.imageLoader,
+    this.imageUserAction,
   });
 
   @override
   Widget build(BuildContext context) {
     // v2.9.0 review(M3)：行内解析带 context——深色模式下链接用品牌深色（原静态浅色对比度差）
-    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader);
+    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction);
     // 用普通 Text 渲染（SelectableText 在部分 Android 设备上长文本换行/重叠渲染异常）
     return Text.rich(
       TextSpan(children: spans, style: style),
@@ -838,6 +858,7 @@ List<InlineSpan> _inlineSpans(
   BuildContext context, {
   InlineCodeTap? codeTap,
   MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   final spans = <InlineSpan>[];
   var last = 0;
@@ -884,6 +905,7 @@ List<InlineSpan> _inlineSpans(
             alt: mm.group(1)!,
             source: mm.group(2)!,
             loader: imageLoader,
+            userAction: imageUserAction,
             block: false,
           ),
         ));

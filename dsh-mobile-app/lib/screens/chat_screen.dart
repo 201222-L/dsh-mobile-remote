@@ -455,13 +455,22 @@ class _ChatScreenState extends State<ChatScreen> {
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
   // issue #94/#95：Markdown 本地图片 loader；缓存/并发/会话隔离由本页 LRU 负责。
-  late final MarkdownImageLoader _markdownImageLoader = _loadMarkdownImage;
+  late final MarkdownImageLoader _markdownImageLoader =
+      (source) => _loadMarkdownImage(source);
+  late final MarkdownImageUserAction _markdownImageUserAction =
+      (source) => _loadMarkdownImage(source, userInitiated: true);
   late final WorkspaceImageCache _workspaceImageCache = WorkspaceImageCache();
   final List<_WorkspaceImageConsent> _imageConsents = [];
   final Map<String, Future<String?>> _imageConsentPrompts = {};
+  // issue #98 review P2：取消/失效过的 source 不再自动弹窗，只显示卡片入口；
+  // 用户主动点「授权读取」才清标记并重新弹。
+  final Set<String> _imageConsentDeclined = {};
   bool _imageConsentDialogOpen = false;
 
-  Future<MarkdownImageData> _loadMarkdownImage(String source) async {
+  Future<MarkdownImageData> _loadMarkdownImage(
+    String source, {
+    bool userInitiated = false,
+  }) async {
     final id = _mySessionId;
     if (id == null || id.isEmpty) {
       throw ApiException('no-session', code: 'session-not-found');
@@ -484,7 +493,8 @@ class _ChatScreenState extends State<ChatScreen> {
       return data.bytes;
     }
 
-    final key = '$id|$source';
+    final key = _imageConsentKey(id, source);
+    if (userInitiated) _imageConsentDeclined.remove(key);
     try {
       final bytes = await _workspaceImageCache.load(
         key,
@@ -496,10 +506,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (error.code != 'consent-required' && error.code != 'consent-invalid') {
         rethrow;
       }
-      // 首次 403 自动弹一次；卡片上的「授权读取」再次触发同一 loader，手动再弹。
       if (consentId.isNotEmpty) _removeImageConsent(consentId);
+      // 取消/失效后组件重建：不再自动弹，只让卡片显示「授权读取」。
+      if (!userInitiated && _imageConsentDeclined.contains(key)) rethrow;
       final issued = await _ensureImageConsent(id, source);
-      if (issued == null) rethrow;
+      if (issued == null) {
+        _imageConsentDeclined.add(key);
+        rethrow;
+      }
       consentId = issued;
       final bytes = await _workspaceImageCache.load(
         key,
@@ -509,6 +523,9 @@ class _ChatScreenState extends State<ChatScreen> {
       return MarkdownImageData(bytes: bytes);
     }
   }
+
+  String _imageConsentKey(String sessionId, String source) =>
+      '$sessionId|$source';
 
   String _requestDir(String source) {
     final normalized = source.replaceAll('\\', '/');
@@ -609,6 +626,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final consentId = (issued['consentId'] ?? '').toString();
         if (consentId.isEmpty) return null;
         final expiresAt = DateTime.tryParse((issued['expiresAt'] ?? '').toString());
+        _imageConsentDeclined.remove(_imageConsentKey(id, source));
         _imageConsents.add(_WorkspaceImageConsent(
           consentId: consentId,
           scope: (issued['scope'] ?? choice).toString(),
@@ -1035,6 +1053,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _clearImageConsentState() {
     _imageConsents.clear();
     _imageConsentPrompts.clear();
+    _imageConsentDeclined.clear();
     _workspaceImageCache.clear();
   }
 
@@ -2581,6 +2600,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       streaming: true,
                       api: _api,
                       imageLoader: _markdownImageLoader,
+              imageUserAction: _markdownImageUserAction,
                     );
                   }
                   return const SizedBox.shrink();
@@ -8602,6 +8622,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ? ''
                   : '$_turnTailVersion:$turn',
               imageLoader: _markdownImageLoader,
+              imageUserAction: _markdownImageUserAction,
             ),
             if (item.detailDegraded)
               Padding(
@@ -10873,6 +10894,7 @@ class _AssistantBubble extends StatefulWidget {
   /// 解析缓存附加键：记录集合变化（新交付声明/改动摘要到达）时强制重新解析。
   final String codeTapKey;
   final MarkdownImageLoader? imageLoader;
+  final MarkdownImageUserAction? imageUserAction;
   const _AssistantBubble({
     required this.text,
     required this.api,
@@ -10887,6 +10909,7 @@ class _AssistantBubble extends StatefulWidget {
     this.codeTap,
     this.codeTapKey = '',
     this.imageLoader,
+    this.imageUserAction,
   });
 
   @override
@@ -10911,6 +10934,7 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
         context,
         codeTap: widget.codeTap,
         imageLoader: widget.imageLoader,
+        imageUserAction: widget.imageUserAction,
       );
       if (_parseLogs < 3) {
         _parseLogs++;

@@ -414,6 +414,17 @@ test("issue #98：consent 不绕过类型/大小/像素限制；HEAD 复用授�
 		);
 		assert.equal(noSession.status, 404);
 
+		// P3：末级 symlink 在 consent 阶段就拒绝，避免授权后 GET 永远 403。
+		const link = join(root, "link.png");
+		symlinkSync(join(root, "outside.png"), link);
+		const symlinkConsent = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: link, scope: "once" }) },
+		);
+		assert.equal(symlinkConsent.status, 415);
+		assert.equal(symlinkConsent.json.error, "unsupported-image-symlink");
+
 		const issued = await request(
 			h.route,
 			"",

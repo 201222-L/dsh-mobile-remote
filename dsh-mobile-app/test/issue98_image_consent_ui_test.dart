@@ -19,6 +19,11 @@ final Uint8List _png = base64Decode(
 );
 
 class _Backend {
+  _Backend({
+    this.assistantText = '说明\n\n![worktree](worktree/pics/a.png)',
+  });
+
+  final String assistantText;
   final List<Map<String, dynamic>> consentBodies = [];
   final List<String?> imageConsentIds = [];
   bool rejectConsent = false;
@@ -37,7 +42,7 @@ class _Backend {
         'events': [
           {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}},
           {'seq': 2, 'type': 'user/message', 'data': {'messageId': 'u1', 'text': '看图', 'sourceKind': 'user'}},
-          {'seq': 3, 'type': 'assistant/message', 'data': {'turn': 1, 'messageId': 'a1', 'text': '说明\n\n![worktree](worktree/pics/a.png)'}},
+          {'seq': 3, 'type': 'assistant/message', 'data': {'turn': 1, 'messageId': 'a1', 'text': assistantText}},
         ],
       };
     } else if (path == '/m/api/workspace-image/consent') {
@@ -128,4 +133,36 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets('取消后滚动离屏/重建不自动弹，点「授权读取」才弹', (tester) async {
+    final backend = _Backend(
+      assistantText: '${[for (var i = 0; i < 80; i++) '行 $i'].join('\n')}\n\n![worktree](worktree/pics/a.png)',
+    );
+    await _pump(tester, backend);
+    expect(find.byKey(const Key('image-consent-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('image-consent-cancel')));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('image-consent-dialog')), findsNothing);
+
+    final scrollable = find.byType(Scrollable).first;
+    // 滚离图 → 再滚回；Sliver 回收/重建不得再次自动弹。
+    await tester.drag(scrollable, const Offset(0, 1200));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.drag(scrollable, const Offset(0, -1200));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('image-consent-dialog')), findsNothing,
+        reason: '取消后重建不得自动弹窗');
+    expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('markdown-image-retry')));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('image-consent-dialog')), findsOneWidget,
+        reason: '只有用户点授权读取才重新弹');
+    await tester.tap(find.byKey(const Key('image-consent-once')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(Image), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
 }
