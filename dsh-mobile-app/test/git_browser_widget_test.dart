@@ -397,6 +397,61 @@ class DynamicMarginGitApi extends WidgetGitApi {
   }
 }
 
+class SnapshotMarginGitApi extends DynamicMarginGitApi {
+  SnapshotMarginGitApi(super.commits);
+
+  @override
+  Future<GitGraphPage> graph(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final page = await super.graph(
+      sessionId,
+      repositoryId,
+      tips,
+      snapshotId: snapshotId,
+      cursor: cursor,
+      limit: limit,
+      timeout: timeout,
+    );
+    final wide = graphCalls.isEven;
+    return GitGraphPage(
+      snapshotId: 'snapshot-${graphCalls}',
+      tips: page.tips,
+      commits: wide ? _mergeFirst : _plain,
+    );
+  }
+
+  static const _plain = <GitCommitSummary>[
+    GitCommitSummary(oid: 'main-oid', parents: ['c1'], author: 'A', timestamp: 1, subject: 'c0'),
+    GitCommitSummary(oid: 'c1', parents: ['c2'], author: 'A', timestamp: 1, subject: 'c1'),
+    GitCommitSummary(oid: 'c2', parents: ['c3'], author: 'A', timestamp: 1, subject: 'c2'),
+    GitCommitSummary(oid: 'c3', parents: ['c4'], author: 'A', timestamp: 1, subject: 'c3'),
+    GitCommitSummary(oid: 'c4', parents: ['c5'], author: 'A', timestamp: 1, subject: 'c4'),
+    GitCommitSummary(oid: 'c5', parents: ['c6'], author: 'A', timestamp: 1, subject: 'c5'),
+    GitCommitSummary(oid: 'c6', parents: ['c7'], author: 'A', timestamp: 1, subject: 'c6'),
+    GitCommitSummary(oid: 'c7', parents: ['c8'], author: 'A', timestamp: 1, subject: 'c7'),
+    GitCommitSummary(oid: 'c8', author: 'A', timestamp: 1, subject: 'c8'),
+  ];
+
+  static const _mergeFirst = <GitCommitSummary>[
+    GitCommitSummary(oid: 'main-oid', parents: ['side-a', 'c1'], author: 'A', timestamp: 1, subject: 'merge'),
+    GitCommitSummary(oid: 'c1', parents: ['c2'], author: 'A', timestamp: 1, subject: 'c1'),
+    GitCommitSummary(oid: 'c2', parents: ['c3'], author: 'A', timestamp: 1, subject: 'c2'),
+    GitCommitSummary(oid: 'c3', parents: ['c4'], author: 'A', timestamp: 1, subject: 'c3'),
+    GitCommitSummary(oid: 'c4', parents: ['c5'], author: 'A', timestamp: 1, subject: 'c4'),
+    GitCommitSummary(oid: 'c5', parents: ['c6'], author: 'A', timestamp: 1, subject: 'c5'),
+    GitCommitSummary(oid: 'c6', parents: ['c7'], author: 'A', timestamp: 1, subject: 'c6'),
+    GitCommitSummary(oid: 'c7', parents: ['c8'], author: 'A', timestamp: 1, subject: 'c7'),
+    GitCommitSummary(oid: 'c8', author: 'A', timestamp: 1, subject: 'c8'),
+  ];
+}
+
 Future<GitBrowserController> mountSheet(
   WidgetTester tester,
   WidgetGitApi api, {
@@ -439,6 +494,34 @@ void main() {
   setUp(() => L10n.lang = 'en');
   tearDown(() => L10n.lang = 'zh');
 
+  testWidgets('issue #102 P2：首屏 merge 行 2 lane 第一帧即 92', (tester) async {
+    final commits = <GitCommitSummary>[
+      const GitCommitSummary(oid: 'main-oid', parents: ['side-a', 'c1'], author: 'A', timestamp: 1, subject: 'merge'),
+      for (var i = 1; i < 16; i++)
+        GitCommitSummary(oid: 'c$i', parents: i < 15 ? ['c${i + 1}'] : const [], author: 'A', timestamp: 1, subject: 'c$i'),
+    ];
+    final controller = await mountSheet(tester, DynamicMarginGitApi(commits));
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-main-oid'))).width, closeTo(92, 1));
+  });
+
+  testWidgets('issue #102 P2：snapshot 切换宽/窄各一次', (tester) async {
+    final api = SnapshotMarginGitApi(const []);
+    final controller = await mountSheet(tester, api);
+    addTearDown(controller.dispose);
+    await tester.tap(find.byKey(const Key('git-branch-refs/heads/main')));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-main-oid'))).width, 80);
+    await controller.refresh();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-main-oid'))).width, closeTo(92, 1));
+    await controller.refresh();
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byKey(const Key('git-graph-painter-main-oid'))).width, 80);
+  });
+
   testWidgets('issue #102：可见行最大 lane 动态决定图宽（初始/下滚/回滚 + 150ms）', (tester) async {
     final commits = <GitCommitSummary>[
       for (var i = 0; i < 24; i++)
@@ -473,8 +556,14 @@ void main() {
     expect(tester.getSize(find.byKey(const Key('git-graph-painter-c16'))).width, 80.0,
         reason: 'debounce 期间宽度不变');
     await tester.pump(const Duration(milliseconds: 20));
-    // debounce 后 150ms 平滑动画到 2 lanes = 30*2+32 = 92。
-    await tester.pump(const Duration(milliseconds: 180));
+    // debounce 后 150ms 平滑动画到 2 lanes = 30*2+32 = 92；中间帧应处于两值之间。
+    await tester.pump(const Duration(milliseconds: 75));
+    expect(
+      tester.getSize(find.byKey(const Key('git-graph-painter-c16'))).width,
+      inExclusiveRange(80.0, 92.0),
+      reason: '150ms 动画中间帧不得瞬跳',
+    );
+    await tester.pump(const Duration(milliseconds: 105));
     final painter16 = find.byKey(const Key('git-graph-painter-c16'));
     expect(painter16, findsOneWidget);
     expect(tester.getSize(painter16).width, closeTo(92.0, 1.0),

@@ -1666,12 +1666,6 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       (branch) => branch.displayName.toLowerCase().contains(query),
     );
     final layout = _graphLayout(state);
-    // issue #102：只按视口内可见行（含 parentLanes/continuation、±1 overscan）的
-    // 最大 lane 决定左边距；空图/无可见 lane 时最小 80。
-    final targetGraphWidth = math.max(
-      80.0,
-      math.max(1, _visibleLaneCount) * 30.0 + 32,
-    );
     // 正常字号下保持设计稿固定 86；系统文字缩放时按文本高度放大行高，
     // 避免主题/无障碍字号下标签行被纵向裁切。
     final textScaler = MediaQuery.textScalerOf(context);
@@ -1680,7 +1674,16 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       textScaler.scale(kGitGraphRowHeight - 22) + 22,
     );
     _graphRowHeight = rowHeight;
+    // issue #102 复审：必须先调度/更新可见 lane，再计算 targetGraphWidth。
+    // 否则首帧/快照切换会先按旧值（0→80）算宽，post-frame 又因已赋值相等
+    // 而不再 setState，导致一直沿用旧宽度。
     _scheduleVisibleLaneUpdate(layout, rowHeight, state.snapshotId);
+    // 只按视口内可见行（含 parentLanes/continuation、±1 overscan）的最大 lane
+    // 决定左边距；空图/无可见 lane 时最小 80。
+    final targetGraphWidth = math.max(
+      80.0,
+      math.max(1, _visibleLaneCount) * 30.0 + 32,
+    );
     _maybeReconcilePrependAnchor(state, rowHeight);
     _maybeScrollToGraphFocus(state, rowHeight);
     return Column(
