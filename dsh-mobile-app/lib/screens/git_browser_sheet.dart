@@ -1408,11 +1408,10 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       final atTop = notification.metrics.extentBefore <= 24;
       _graphAtTopIntent = atTop;
       if (atTop) _handleGraphTopIntent();
-    } else if (notification is ScrollEndNotification) {
-      final atTop = notification.metrics.extentBefore <= 24;
-      _graphAtTopIntent = atTop;
-      if (atTop) _handleGraphTopIntent();
     }
+    // 注意：不能处理 ScrollEndNotification——程序性 jumpTo(0)/animateTo(0) 也会
+    // 产生 ScrollEnd（无 dragDetails），会把 focus 页误判为用户到顶并触发 prev。
+    // 真实手势的 ScrollUpdate/Overscroll 已覆盖到顶场景。
     return false;
   }
 

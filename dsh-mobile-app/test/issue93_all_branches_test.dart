@@ -557,6 +557,53 @@ void main() {
     scroll.dispose();
   });
 
+  testWidgets('issue #100 P2：程序性 jumpTo/animateTo(0) 不得请求 prev', (tester) async {
+    final initial = [for (var index = 0; index < 16; index += 1) 'c$index'];
+    final newer = ['n0', 'n1'];
+    final api = _FakeGitApi()
+      ..onAll = (focus, snapshotId, cursor) async {
+        if (snapshotId == null) {
+          return _page(oids: initial, focusOid: 'c2', pageStart: 32, prevCursor: 'p1', nextCursor: 'n1');
+        }
+        return _page(oids: newer, snapshotId: 'snap-1', pageStart: 16, nextCursor: 'n2');
+      };
+    final controller = GitBrowserController(api, branchLimit: GitGraphBranchLimit.unlimited);
+    final store = AppStore()..gitGraphBranchLimit = GitGraphBranchLimit.unlimited;
+    final scroll = ScrollController();
+    tester.view.physicalSize = const Size(400, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: GitBrowserSheet(controller: controller, scrollController: scroll, tabs: const ['graph'], store: store),
+      ),
+    ));
+    await controller.open('session-a');
+    await tester.pumpAndSettle();
+    expect(api.requests, hasLength(1));
+    expect(scroll.offset, greaterThan(0), reason: 'focus 在页中');
+    // 程序性 jumpTo(0)：无 dragDetails，不得当作真实用户到顶。
+    scroll.jumpTo(0);
+    await tester.pumpAndSettle();
+    expect(api.requests, hasLength(1), reason: 'jumpTo(0) 不得请求 prev');
+    expect(controller.state.commits.map((commit) => commit.oid), initial);
+    expect(controller.hasPendingPrevGraphPage, isFalse);
+    // 程序性 animateTo(0) 同样不得请求。
+    scroll.jumpTo(120);
+    await tester.pump();
+    unawaited(scroll.animateTo(0, duration: const Duration(milliseconds: 120), curve: Curves.easeOut));
+    await tester.pumpAndSettle();
+    expect(api.requests, hasLength(1), reason: 'animateTo(0) 不得请求 prev');
+    expect(controller.state.commits.map((commit) => commit.oid), initial);
+    // 真实手势仍可触发（回归保护）。
+    await tester.drag(find.byKey(const Key('git-graph-vertical')), const Offset(0, 80));
+    await tester.pumpAndSettle();
+    expect(api.requests, hasLength(2));
+    expect(controller.state.commits.take(2).map((commit) => commit.oid), newer);
+    controller.dispose();
+    scroll.dispose();
+  });
+
   testWidgets('issue #95：all 模式刷新后标题仍“全部分支”，数据 all=true', (tester) async {
     final api = _FakeGitApi();
     final controller = GitBrowserController(api, branchLimit: GitGraphBranchLimit.unlimited);
