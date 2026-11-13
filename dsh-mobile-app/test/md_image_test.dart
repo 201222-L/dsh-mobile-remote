@@ -242,4 +242,20 @@ void main() {
     expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
   });
 
+  testWidgets('issue #98 P3：symlink 图片显示原因且隐藏授权按钮', (tester) async {
+    await _pumpMarkdown(
+      tester,
+      '![链接图](worktree/link.png)',
+      loader: (source) async => throw ApiException(
+        'symlink',
+        code: 'unsupported-image-symlink',
+        status: 415,
+      ),
+    );
+    expect(find.text('链接图'), findsOneWidget);
+    expect(find.textContaining('Symbolic-link images'), findsOneWidget);
+    expect(find.byKey(const Key('markdown-image-retry')), findsNothing,
+        reason: 'symlink 不提供授权/重试入口');
+  });
+
 }

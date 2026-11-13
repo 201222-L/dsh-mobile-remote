@@ -501,12 +501,18 @@ class _ChatScreenState extends State<ChatScreen> {
         fetch,
         stillWanted: () => mounted && _mySessionId == id,
       );
+      _imageConsentDeclined.remove(key);
       return MarkdownImageData(bytes: bytes);
     } on ApiException catch (error) {
       if (error.code != 'consent-required' && error.code != 'consent-invalid') {
         rethrow;
       }
       if (consentId.isNotEmpty) _removeImageConsent(consentId);
+      // 服务端持续 invalid：自动路径必须先标记 declined，再抛给卡片；
+      // 否则重建会再次自动弹，形成循环。只有手动 action 才清 declined。
+      if (!userInitiated && error.code == 'consent-invalid') {
+        _imageConsentDeclined.add(key);
+      }
       // 取消/失效后组件重建：不再自动弹，只让卡片显示「授权读取」。
       if (!userInitiated && _imageConsentDeclined.contains(key)) rethrow;
       final issued = await _ensureImageConsent(id, source);
@@ -520,6 +526,7 @@ class _ChatScreenState extends State<ChatScreen> {
         fetch,
         stillWanted: () => mounted && _mySessionId == id,
       );
+      _imageConsentDeclined.remove(key);
       return MarkdownImageData(bytes: bytes);
     }
   }

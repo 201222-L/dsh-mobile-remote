@@ -802,20 +802,24 @@ class _MarkdownImageState extends State<_MarkdownImage> {
           final consentError = error is ApiException &&
               (error.code == 'consent-required' ||
                   error.code == 'consent-invalid');
+          final noAction = error is ApiException &&
+              error.code == 'unsupported-image-symlink';
           return _placeholder(
             _reason(error ?? Object()),
             actionLabel: consentError
                 ? L10n.t('授权读取', 'Authorize')
                 : null,
-            onRetry: () {
+            onRetry: noAction
+                ? null
+                : () {
               final action = widget.userAction;
               final future = action != null
                   ? action(widget.source)
                   : _load();
-              setState(() {
-                _future = future;
-              });
-            },
+                    setState(() {
+                      _future = future;
+                    });
+                  },
           );
         }
         return _resizedImage(snapshot.data!.bytes);

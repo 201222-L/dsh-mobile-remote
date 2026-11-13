@@ -20,10 +20,13 @@ final Uint8List _png = base64Decode(
 
 class _Backend {
   _Backend({
-    this.assistantText = '说明\n\n![worktree](worktree/pics/a.png)',
+    this.assistantMessages,
+    this.imageErrorCode = 'consent-required',
   });
 
-  final String assistantText;
+  static const assistantText = '说明\n\n![worktree](worktree/pics/a.png)';
+  final List<String>? assistantMessages;
+  final String imageErrorCode;
   final List<Map<String, dynamic>> consentBodies = [];
   final List<String?> imageConsentIds = [];
   bool rejectConsent = false;
@@ -42,7 +45,16 @@ class _Backend {
         'events': [
           {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}},
           {'seq': 2, 'type': 'user/message', 'data': {'messageId': 'u1', 'text': '看图', 'sourceKind': 'user'}},
-          {'seq': 3, 'type': 'assistant/message', 'data': {'turn': 1, 'messageId': 'a1', 'text': assistantText}},
+          for (final entry in (assistantMessages ?? [assistantText]).asMap().entries)
+            {
+              'seq': 3 + entry.key,
+              'type': 'assistant/message',
+              'data': {
+                'turn': 1,
+                'messageId': 'a${entry.key + 1}',
+                'text': entry.value,
+              },
+            },
         ],
       };
     } else if (path == '/m/api/workspace-image/consent') {
@@ -61,7 +73,7 @@ class _Backend {
     } else if (path == '/m/api/workspace-image') {
       imageConsentIds.add(request.url.queryParameters['consentId']);
       if (request.url.queryParameters['consentId'] != 'consent-1') {
-        return http.Response(jsonEncode({'ok': false, 'error': 'consent-required'}), 403,
+        return http.Response(jsonEncode({'ok': false, 'error': imageErrorCode}), 403,
             headers: {'content-type': 'application/json'});
       }
       return http.Response.bytes(_png, 200, headers: {'content-type': 'image/png'});
@@ -135,7 +147,10 @@ void main() {
   });
   testWidgets('取消后滚动离屏/重建不自动弹，点「授权读取」才弹', (tester) async {
     final backend = _Backend(
-      assistantText: '${[for (var i = 0; i < 80; i++) '行 $i'].join('\n')}\n\n![worktree](worktree/pics/a.png)',
+      assistantMessages: [
+        [for (var i = 0; i < 80; i++) '行 $i'].join('\n'),
+        '![worktree](worktree/pics/a.png)',
+      ],
     );
     await _pump(tester, backend);
     expect(find.byKey(const Key('image-consent-dialog')), findsOneWidget);
@@ -144,12 +159,24 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const Key('image-consent-dialog')), findsNothing);
 
-    final scrollable = find.byType(Scrollable).first;
+    final scrollable = find
+        .descendant(
+          of: find.byType(CustomScrollView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
     // 滚离图 → 再滚回；Sliver 回收/重建不得再次自动弹。
-    await tester.drag(scrollable, const Offset(0, 1200));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 1200));
     await tester.pump(const Duration(milliseconds: 200));
-    await tester.drag(scrollable, const Offset(0, -1200));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2400));
+    final state = tester.state<ScrollableState>(scrollable);
+    state.position.jumpTo(state.position.maxScrollExtent);
+    await tester.pump();
+    state.position.jumpTo(state.position.maxScrollExtent);
+    await tester.pump(const Duration(seconds: 1));
     await tester.pump(const Duration(milliseconds: 300));
+    expect(backend.imageConsentIds.length, greaterThan(1),
+        reason: '滚动离屏/回滚必须触发真实重建（重新请求图片）');
     expect(find.byKey(const Key('image-consent-dialog')), findsNothing,
         reason: '取消后重建不得自动弹窗');
     expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
@@ -162,6 +189,46 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(Image), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('consent-invalid 自动路径不循环弹窗，手动授权才弹', (tester) async {
+    final backend = _Backend(
+      assistantMessages: [
+        [for (var i = 0; i < 80; i++) '行 $i'].join('\n'),
+        '![worktree](worktree/pics/a.png)',
+      ],
+      imageErrorCode: 'consent-invalid',
+    );
+    await _pump(tester, backend);
+    expect(find.byKey(const Key('image-consent-dialog')), findsNothing);
+    expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
+
+    // 真实重建：滚离再回到底部；invalid 自动路径必须保持 declined，不循环弹。
+    final scrollable = find
+        .descendant(
+          of: find.byType(CustomScrollView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 1200));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2400));
+    final state = tester.state<ScrollableState>(scrollable);
+    state.position.jumpTo(state.position.maxScrollExtent);
+    await tester.pump();
+    state.position.jumpTo(state.position.maxScrollExtent);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(backend.imageConsentIds.length, greaterThan(1));
+    expect(find.byKey(const Key('image-consent-dialog')), findsNothing,
+        reason: 'invalid 自动路径必须保持 declined，不循环弹窗');
+
+    await tester.tap(find.byKey(const Key('markdown-image-retry')));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('image-consent-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('image-consent-cancel')));
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpWidget(const SizedBox());
   });
 
