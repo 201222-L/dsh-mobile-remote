@@ -199,4 +199,47 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('issue #98：consent-required 显示可重试占位，重试后成功', (tester) async {
+    var calls = 0;
+    await _pumpMarkdown(
+      tester,
+      '![工作区外](worktree/pics/a.png)',
+      loader: (source) async {
+        calls += 1;
+        if (calls == 1) {
+          throw ApiException(
+            'consent required',
+            code: 'consent-required',
+            status: 403,
+          );
+        }
+        return MarkdownImageData(bytes: _png, contentType: 'image/png');
+      },
+    );
+    expect(find.text('工作区外'), findsOneWidget);
+    expect(find.text('Authorization is required to read this image'), findsOneWidget);
+    expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('markdown-image-retry')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(calls, 2);
+    expect(find.byType(Image), findsOneWidget);
+  });
+
+  testWidgets('issue #98：consent-invalid 显示明确原因并可重试', (tester) async {
+    await _pumpMarkdown(
+      tester,
+      '![旧授权](worktree/pics/a.png)',
+      loader: (source) async => throw ApiException(
+        'consent invalid',
+        code: 'consent-invalid',
+        status: 403,
+      ),
+    );
+    expect(find.text('旧授权'), findsOneWidget);
+    expect(find.textContaining('authorization expired'), findsOneWidget);
+    expect(find.byKey(const Key('markdown-image-retry')), findsOneWidget);
+  });
+
 }

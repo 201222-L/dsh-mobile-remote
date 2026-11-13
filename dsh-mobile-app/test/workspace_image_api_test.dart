@@ -62,4 +62,66 @@ void main() {
     await expectError(413, 'image-too-large');
     await expectError(415, 'unsupported-image-type');
   });
+
+  test('issue #98：consent 申请与带 consentId 的读取（query/token）', () async {
+    final seen = <http.Request>[];
+    final api = Api(client: MockClient((request) async {
+      seen.add(request);
+      if (request.url.path.endsWith('/workspace-image/consent')) {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'consentId': 'c-1',
+            'scope': 'session-directory',
+            'expiresAt': '2026-11-13T15:00:00Z',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      return http.Response.bytes(_png, 200, headers: {'content-type': 'image/png'});
+    }))
+      ..baseUrl = 'http://host.test'
+      ..path = '/m'
+      ..token = 't';
+    final issued = await api.createWorkspaceImageConsent(
+      sessionId: 's 1',
+      path: 'worktree/pics/a b.png',
+      scope: 'session-directory',
+    );
+    expect(issued['consentId'], 'c-1');
+    expect(seen.single.url.path, '/m/api/workspace-image/consent');
+    expect(seen.single.headers['x-mobile-token'], 't');
+    expect(jsonDecode(seen.single.body), {
+      'sessionId': 's 1',
+      'path': 'worktree/pics/a b.png',
+      'scope': 'session-directory',
+    });
+
+    await api.workspaceImage('s 1', 'worktree/pics/a b.png', consentId: 'c-1');
+    expect(seen.last.url.queryParameters, {
+      'sessionId': 's 1',
+      'path': 'worktree/pics/a b.png',
+      'consentId': 'c-1',
+    });
+  });
+
+  test('issue #98：consent-required / consent-invalid 保留 code 供 UI 分类', () async {
+    for (final code in ['consent-required', 'consent-invalid']) {
+      final api = Api(client: MockClient((request) async => http.Response(
+            jsonEncode({'ok': false, 'error': code}),
+            403,
+            headers: {'content-type': 'application/json'},
+          )))
+        ..baseUrl = 'http://host.test'
+        ..token = 't';
+      await expectLater(
+        api.workspaceImage('s', 'pics/a.png', consentId: 'c'),
+        throwsA(isA<ApiException>()
+            .having((e) => e.status, 'status', 403)
+            .having((e) => e.code, 'code', code)),
+      );
+    }
+  });
+
 }

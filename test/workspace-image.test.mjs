@@ -42,17 +42,19 @@ class FakeRequest extends EventEmitter {
 	}
 }
 
-function harness({ cwd, registered = true } = {}) {
+function harness({ cwd, registered = true, consentTtlMs } = {}) {
 	const routes = [];
 	const session = { id: "s1", header: { cwd } };
 	const services = new Map([
-		["sessions", { get: (id) => id === "s1" ? session : undefined }],
+		["sessions", { get: (id) => (id === "s1" || id === "s2") ? session : undefined }],
 		["workspaceRegistry", { list: () => registered ? [{ path: cwd }] : [] }],
 	]);
+	const serviceValues = new Map();
+	if (consentTtlMs !== undefined) serviceValues.set("workspaceImageConsentTtlMs", consentTtlMs);
 	const ctx = {
 		webServer: { host: "127.0.0.1", port: 43140, register(spec) { routes.push(spec); return () => {}; } },
 		logger: { warn() {}, info() {} },
-		get(name) { return services.get(name); },
+		get(name) { return serviceValues.get(name) ?? services.get(name); },
 		provide(name, value) { services.set(name, value); },
 		on() { return () => {}; },
 		effect(cb) { const d = cb?.(); return typeof d === "function" ? d : () => {}; },
@@ -65,11 +67,19 @@ function harness({ cwd, registered = true } = {}) {
 	};
 }
 
-async function request(route, query, { method = "GET", headers = {} } = {}) {
-	const req = new FakeRequest(`/m/api/workspace-image?${query}`, method, headers);
+async function request(route, query, { method = "GET", headers = {}, body = null, path = "/m/api/workspace-image" } = {}) {
+	const requestHeaders = { ...headers };
+	if (body !== null) requestHeaders["content-length"] = String(Buffer.byteLength(body));
+	const req = new FakeRequest(`${path}?${query}`, method, requestHeaders);
 	const res = new FakeResponse();
 	const finished = new Promise((resolve) => res.once("finish", resolve));
 	route(req, res);
+	if (body !== null) {
+		process.nextTick(() => {
+			req.emit("data", Buffer.from(body));
+			req.emit("end");
+		});
+	}
 	await finished;
 	let json = null;
 	try { json = JSON.parse(Buffer.concat(res.chunks).toString("utf8")); } catch {}
@@ -121,7 +131,7 @@ test("GET /workspace-image：目录逃逸 / 绝对路径越界 / symlink 逃逸 
 		for (const path of ["../outside.png", join(root, "outside.png"), "sub/../../outside.png"]) {
 			const res = await request(h.route, `sessionId=s1&path=${encodeURIComponent(path)}`);
 			assert.equal(res.status, 403, path);
-			assert.equal(res.json.error, "path-outside-workspace");
+			assert.equal(res.json.error, "consent-required");
 			assert.ok(!JSON.stringify(res.json).includes(root), "错误不得泄露主机路径");
 		}
 		mkdirSync(join(cwd, "linkdir"), { recursive: true });
@@ -300,4 +310,122 @@ test("openVerifiedWorkspaceImage：成功读满 bytes 并 close；不在登记�
 	const outside = fakeFs({ actualPath: "/other/project/pic.png" });
 	assert.equal(verify(outside).status, 403);
 	assert.deepEqual(outside.closed, [7]);
+});
+
+
+test("issue #98：工作区外无 consent → consent-required；once 授权后 200，换文件/换会话/伪造失效", async () => {
+	const { root, cwd } = workspace();
+	const h = harness({ cwd });
+	try {
+		const outside = encodeURIComponent(join(root, "outside.png"));
+		const noConsent = await request(h.route, `sessionId=s1&path=${outside}`);
+		assert.equal(noConsent.status, 403);
+		assert.equal(noConsent.json.error, "consent-required");
+
+		const issued = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(root, "outside.png"), scope: "once" }) },
+		);
+		assert.equal(issued.status, 200, JSON.stringify(issued.json));
+		assert.ok(issued.json.consentId);
+		assert.equal(issued.json.scope, "once");
+		const consentId = issued.json.consentId;
+
+		const ok = await request(h.route, `sessionId=s1&path=${outside}&consentId=${encodeURIComponent(consentId)}`);
+		assert.equal(ok.status, 200);
+		assert.deepEqual(ok.bytes, PNG_1X1);
+
+		writeFileSync(join(root, "outside2.png"), PNG_1X1);
+		const other = await request(h.route, `sessionId=s1&path=${encodeURIComponent(join(root, "outside2.png"))}&consentId=${encodeURIComponent(consentId)}`);
+		assert.equal(other.status, 403);
+		assert.equal(other.json.error, "consent-invalid");
+
+		const otherSession = await request(h.route, `sessionId=s2&path=${outside}&consentId=${encodeURIComponent(consentId)}`);
+		assert.equal(otherSession.status, 403);
+		assert.equal(otherSession.json.error, "consent-invalid");
+
+		const forged = await request(h.route, `sessionId=s1&path=${outside}&consentId=forged-token`);
+		assert.equal(forged.status, 403);
+		assert.equal(forged.json.error, "consent-invalid");
+	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
+});
+
+test("issue #98：session-directory 只授权图片所在目录；根目录/工作区根拒绝；过期失效", async () => {
+	const { root, cwd } = workspace();
+	const h = harness({ cwd, consentTtlMs: 60 });
+	try {
+		mkdirSync(join(root, "extras"), { recursive: true });
+		writeFileSync(join(root, "extras", "a.png"), PNG_1X1);
+		writeFileSync(join(root, "extras", "b.png"), PNG_1X1);
+		mkdirSync(join(root, "extras", "nested"), { recursive: true });
+		writeFileSync(join(root, "extras", "nested", "c.png"), PNG_1X1);
+
+		const issued = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(root, "extras", "a.png"), scope: "session-directory" }) },
+		);
+		assert.equal(issued.status, 200, JSON.stringify(issued.json));
+		const consentId = issued.json.consentId;
+		const get = (p) => request(h.route, `sessionId=s1&path=${encodeURIComponent(p)}&consentId=${encodeURIComponent(consentId)}`);
+		assert.equal((await get(join(root, "extras", "a.png"))).status, 200);
+		assert.equal((await get(join(root, "extras", "b.png"))).status, 200);
+		const nested = await get(join(root, "extras", "nested", "c.png"));
+		assert.equal(nested.status, 403);
+		assert.equal(nested.json.error, "consent-invalid");
+
+		// 目录=工作区根（cwd）或 home 根不可授权。
+		const rootDir = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(cwd, "pic.png"), scope: "session-directory" }) },
+		);
+		assert.equal(rootDir.status, 403);
+		assert.equal(rootDir.json.error, "consent-root-not-allowed");
+
+		await new Promise((r) => setTimeout(r, 80));
+		const expired = await get(join(root, "extras", "b.png"));
+		assert.equal(expired.status, 403);
+		assert.equal(expired.json.error, "consent-invalid");
+	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
+});
+
+test("issue #98：consent 不绕过类型/大小/像素限制；HEAD 复用授权；工作区内仍无需 consent", async () => {
+	const { root, cwd } = workspace();
+	const h = harness({ cwd });
+	try {
+		const bad = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(cwd, "fake.png"), scope: "once" }) },
+		);
+		assert.equal(bad.status, 415);
+		const txt = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(cwd, "note.txt"), scope: "once" }) },
+		);
+		assert.equal(txt.status, 415);
+		const noSession = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "nope", path: join(root, "outside.png"), scope: "once" }) },
+		);
+		assert.equal(noSession.status, 404);
+
+		const issued = await request(
+			h.route,
+			"",
+			{ method: "POST", path: "/m/api/workspace-image/consent", body: JSON.stringify({ sessionId: "s1", path: join(root, "outside.png"), scope: "once" }) },
+		);
+		const consentId = issued.json.consentId;
+		const head = await request(h.route, `sessionId=s1&path=${encodeURIComponent(join(root, "outside.png"))}&consentId=${encodeURIComponent(consentId)}`, { method: "HEAD" });
+		assert.equal(head.status, 200);
+		assert.equal(head.bytes.length, 0);
+
+		// 旧行为回归：cwd 内图片不带 consent 仍然 200。
+		const inside = await request(h.route, `sessionId=s1&path=${encodeURIComponent("pic.png")}`);
+		assert.equal(inside.status, 200);
+	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });

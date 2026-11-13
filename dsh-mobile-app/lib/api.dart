@@ -1132,6 +1132,20 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     });
   }
 
+  /// issue #98：为工作区外图片申请会话授权（once / session-directory）。
+  ///
+  /// 仅由用户显式操作调用；模型/Markdown 不自动申请。返回 `consentId/scope/expiresAt`。
+  Future<Map<String, dynamic>> createWorkspaceImageConsent({
+    required String sessionId,
+    required String path,
+    required String scope,
+    Duration timeout = const Duration(seconds: 15),
+  }) => postJson('/api/workspace-image/consent', {
+    'sessionId': sessionId,
+    'path': path,
+    'scope': scope,
+  }, timeout: timeout);
+
   /// issue #94：只读工作区图片字节（本地 Markdown `![alt](path)`）。
   ///
   /// 只由服务端 `/workspace-image` 端点读取会话 cwd 内图片；客户端不直接读文件系统。
@@ -1139,11 +1153,13 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
   Future<WorkspaceImageData> workspaceImage(
     String sessionId,
     String path, {
+    String? consentId,
     Duration timeout = const Duration(seconds: 20),
   }) async {
     final uri = _uri(
       '/api/workspace-image?sessionId=${Uri.encodeQueryComponent(sessionId)}'
-      '&path=${Uri.encodeQueryComponent(path)}',
+      '&path=${Uri.encodeQueryComponent(path)}'
+      '${consentId == null || consentId.isEmpty ? '' : '&consentId=${Uri.encodeQueryComponent(consentId)}'}',
     );
     final res = await _client
         .get(uri, headers: {
