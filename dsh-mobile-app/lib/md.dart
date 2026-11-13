@@ -630,6 +630,7 @@ class _MarkdownImageState extends State<_MarkdownImage> {
     String reason, {
     bool loading = false,
     VoidCallback? onRetry,
+    String? actionLabel,
   }) {
     final ink3 = DshColors.ink3(context);
     return Container(
@@ -685,7 +686,7 @@ class _MarkdownImageState extends State<_MarkdownImage> {
                       ),
                       onPressed: onRetry,
                       child: Text(
-                        L10n.t('重试', 'Retry'),
+                        actionLabel ?? L10n.t('重试', 'Retry'),
                         style: const TextStyle(fontSize: 11.5),
                       ),
                     ),
@@ -782,8 +783,15 @@ class _MarkdownImageState extends State<_MarkdownImage> {
           return _placeholder(L10n.t('图片加载中…', 'Loading image…'), loading: true);
         }
         if (snapshot.hasError || snapshot.data == null) {
+          final error = snapshot.error;
+          final consentError = error is ApiException &&
+              (error.code == 'consent-required' ||
+                  error.code == 'consent-invalid');
           return _placeholder(
-            _reason(snapshot.error ?? Object()),
+            _reason(error ?? Object()),
+            actionLabel: consentError
+                ? L10n.t('授权读取', 'Authorize')
+                : null,
             onRetry: () {
               final future = _load();
               setState(() {
