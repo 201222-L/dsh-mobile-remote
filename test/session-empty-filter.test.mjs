@@ -291,15 +291,15 @@ test("issue #109 P2：请求取消后不再写响应（readSession 挂起也不�
 test("issue #109 实机回归：300+ 休眠会话用 persistence metadata 过滤，不做逐个 readSession", async () => {
   const empty = Array.from({ length: 324 }, (_, i) => {
     const id = `session-empty-${i}`;
-    return { snapshot: { header: { id, createdAt: 1000, cwd: "/tmp" }, eventCount: 4 + (i % 3), sizeBytes: 330 + (i % 5) }, record: recorded(id) };
+    return { snapshot: { header: { id, createdAt: 1000, cwd: "/tmp" }, sizeBytes: 330 + (i % 5) }, record: recorded(id) };
   });
   const visible = Array.from({ length: 30 }, (_, i) => {
     const id = `session-visible-${i}`;
-    return { snapshot: { header: { id, createdAt: 2000 + i, cwd: "/tmp" }, eventCount: 22 + i, sizeBytes: 40000 + i }, record: recorded(id) };
+    return { snapshot: { header: { id, createdAt: 2000 + i, cwd: "/tmp" }, sizeBytes: 40000 + i }, record: recorded(id) };
   });
   const timeMissing = Array.from({ length: 7 }, (_, i) => {
     const id = `session-time-missing-${i}`;
-    return { snapshot: { header: { id, createdAt: 3000 + i, cwd: "/tmp" }, eventCount: 30 + i, sizeBytes: 50000 + i }, record: recorded(id) };
+    return { snapshot: { header: { id, createdAt: 3000 + i, cwd: "/tmp" }, sizeBytes: 50000 + i }, record: recorded(id) };
   });
   const all = [...empty, ...visible, ...timeMissing];
   let reads = 0;
@@ -315,12 +315,12 @@ test("issue #109 实机回归：300+ 休眠会话用 persistence metadata 过滤
     const def = await h.request("/m/api/sessions");
     const elapsed = performance.now() - started;
     assert.equal(def.status, 200);
-    assert.equal(def.body.sessions.length, 37, "324 个 4–7 事件的空会话必须默认隐藏，37 个正常保留");
+    assert.equal(def.body.sessions.length, 37, "324 个小文件空会话必须默认隐藏，37 个正常保留（生产 JSONL 无 eventCount）");
     assert.ok(def.body.sessions.every((row) => !row.id.startsWith("session-empty-")), "空会话不得出现");
     assert.ok(reads <= 4, `metadata 足够时不得逐个 readSession（后台回填至多4个在途，实际 ${reads}）`);
     assert.ok(elapsed < 1000, `300+ 批量应 <1s，实际 ${elapsed}ms`);
     const byId = new Map(def.body.sessions.map((row) => [row.id, row]));
-    assert.ok(byId.has("session-time-missing-0"), "eventCount 大的 time 缺失会话保留");
+    assert.ok(byId.has("session-time-missing-0"), "time 缺失但非空会话保留");
     assert.match(byId.get("session-visible-0").title, /标题 /);
 
     const allRes = await h.request("/m/api/sessions?includeEmpty=1");
@@ -328,7 +328,7 @@ test("issue #109 实机回归：300+ 休眠会话用 persistence metadata 过滤
   } finally { h.dispose(); }
 });
 
-test("issue #109：eventCount 缺失时 sizeBytes 小才判空；size 大/未知保留", async () => {
+test("issue #109：sizeBytes 小才判空；size 大保留，size 缺失走有界读确认", async () => {
   const h = harness();
   h.provide("sessionQuery", {
     async listSessions() { return [recorded("small"), recorded("large"), recorded("tool-only"), recorded("unknown-size")]; },
@@ -347,8 +347,48 @@ test("issue #109：eventCount 缺失时 sizeBytes 小才判空；size 大/未知
   try {
     const def = await h.request("/m/api/sessions");
     const ids = def.body.sessions.map((s) => s.id).sort();
-    assert.deepEqual(ids, ["large", "tool-only", "unknown-size"], "size 小才判空；eventCount 小但文件大/无大小的未知保留");
+    assert.deepEqual(ids, ["large", "tool-only"], "size 小才判空；eventCount 小但文件大保留；size 缺失读日志确认空后隐藏");
     const all = await h.request("/m/api/sessions?includeEmpty=1");
     assert.equal(all.body.sessions.length, 4);
+  } finally { h.dispose(); }
+});
+
+test("issue #111 P2：1024–2048B 灰区回退 tool-aware readSession（小 tool-only/only-user 不误删）", async () => {
+  const sessions = {
+    "grey-tool-only": { sizeBytes: 1_500, events: [{ type: "tool/call", seq: 1 }, { type: "tool/result", seq: 2 }] },
+    "grey-only-user": { sizeBytes: 1_300, events: [userEvent(1, 1000)] },
+    "grey-empty": { sizeBytes: 1_600, events: [configEvent(1), configEvent(2)] },
+    "small-empty": { sizeBytes: 700, events: [configEvent(1)] },
+    "big-visible": { sizeBytes: 40_000, events: [assistantEvent(1, 1000, "hi")] },
+  };
+  const h = harness();
+  h.provide("sessionQuery", {
+    async listSessions() { return Object.keys(sessions).map((id) => recorded(id)); },
+    async readSession(id) { return { events: sessions[id].events }; },
+    async readTitleSnapshots(ids) { return ids.map((id) => ({ status: "fulfilled", value: { title: { title: id } } })); },
+  });
+  h.provide("sessionPersistence", {
+    list: async () => Object.entries(sessions).map(([id, s]) => ({ header: { id, createdAt: 1 }, sizeBytes: s.sizeBytes })),
+  });
+  try {
+    const def = await h.request("/m/api/sessions");
+    assert.deepEqual(def.body.sessions.map((s) => s.id).sort(), ["big-visible", "grey-only-user", "grey-tool-only"]);
+    const all = await h.request("/m/api/sessions?includeEmpty=1");
+    assert.equal(all.body.sessions.length, 5);
+  } finally { h.dispose(); }
+});
+
+test("issue #111 P2：sessionPersistence.list 失败/超时 → 回退有界 readSession，不 500 不误删", async () => {
+  const h = harness();
+  h.provide("sessionQuery", {
+    async listSessions() { return [recorded("empty"), recorded("visible")]; },
+    async readSession(id) { return { events: id === "visible" ? [userEvent(1, 1000)] : [configEvent(1)] }; },
+    async readTitleSnapshots(ids) { return ids.map((id) => ({ status: "fulfilled", value: { title: { title: id } } })); },
+  });
+  h.provide("sessionPersistence", { list: async () => { throw new Error("metadata unavailable"); } });
+  try {
+    const def = await h.request("/m/api/sessions");
+    assert.equal(def.status, 200);
+    assert.deepEqual(def.body.sessions.map((s) => s.id), ["visible"]);
   } finally { h.dispose(); }
 });
