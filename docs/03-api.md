@@ -154,7 +154,12 @@
 }
 ```
 
-- 排序：`lastActivity` 倒序（无活跃记录时回退 `createdAt`）。数据源：优先 `sessionQuery.listSessions()`（含休眠会话），回退 `ctx.sessions.list()`（仅活动会话）。
+- **默认排除零可见消息的空会话**（issue #109）：没有 `user/message`（真人发言）或非空 `assistant/message` 的会话不返回，避免“创建过但从未对话”的空会话出现在列表。`?includeEmpty=1` 返回全部（排查/清理用）；其他值（含缺失、`0`、`true`、非法串）按 false 处理。
+- “可见消息”与 `lastMessageAt` 同口径：仅 `user/message`（`source.kind` 为 `user`/旧内核无 source）和正文非空的 `assistant/message`；`tool/call`、`tool/result`、权限/sandbox/approval/model selection、`session/end-seed`、系统注入等都不计入。空会话仍可通过 includeEmpty 或深链访问。
+- 过滤在标题折叠与消息时间回填之后执行；休眠/归档空会话同样默认隐藏。空会话 = **零可见对话消息且无 `tool/call`/`tool/result`**（工具活动是有价值内容，不能当空会话删除）；纯配置/生命周期/空 assistant/系统注入不算对话。判空**不看 `time`**：可见消息没有时间戳时仍保留（仅排序回退 `lastActivity`/`createdAt`）。
+- 优先用 `ctx.sessionPersistence.list()` 的廉价 metadata 判空：实测空会话 4–7 个事件、压缩后 329–704B；正常对话实测最小 22 事件/40KB。实现阈值：`eventCount ≤ 8` 且 `sizeBytes ≤ 2048`（eventCount 缺失时仅看 sizeBytes ≤2048）；eventCount 小但文件大（可能含工具调用/长参数）保留。
+- metadata 不足（服务缺失/条目缺失）才退回有界 `readSession`；只删**本次请求成功读到且确认空**的会话；读取失败、超出预算、仍在途、旧回填缓存一律保留可见，宁可多显示也不误删。兜底读取受单次 deadline + 总 2.5s 硬上限约束，并发 ≤4。
+- 排序（规划中）：优先按 `lastMessageAt` 倒序，缺失时回退 `lastActivity`，再回退 `createdAt`；等值时以 `id` 为次级键保证顺序稳定。数据源：优先 `sessionQuery.listSessions()`（含休眠会话），回退 `ctx.sessions.list()`（仅活动会话）。
 - `archived`：是否已归档（见 3.4 归档接口）。
 - `lastActivity`：最近活跃时间（ms）。任意会话事件（SSE）与移动端"打开会话"（3.4 touch）都会更新，持久化于 `~/.dsh/mobile-remote/session-activity.json`。
 
