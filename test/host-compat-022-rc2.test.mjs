@@ -89,6 +89,7 @@ function harness({ generation = "rc2", descendants = null, descendantsThrows = f
     logger: { warn() {}, info() {} },
     get(name) { return provided.get(name); }, provide(name, value) { provided.set(name, value); },
     on() { return () => {}; }, effect(cb) { return cb?.() ?? (() => {}); }, inject() {},
+    async waterfall() { return "unavailable"; },
   };
   const dispose = apply(ctx, CONFIG);
   const route = routes.find((item) => item.path === "/m/api")?.handler;
@@ -310,4 +311,70 @@ test("issue #112 firstAgent：roots 非空优先；空数组/抛错退回 list�
   assert.equal(firstAgent(null), undefined);
   assert.equal(firstAgent({ roots: () => { throw new Error("drift"); }, list: () => { throw new Error("drift2"); } }), undefined);
   assert.equal(firstAgent({ roots: () => [rootFirst], list: () => { throw new Error("list"); } }).id, "root-first");
+});
+
+// issue #112 P2：其余直接 agents.roots() 调用也全部改走 firstAgent；rc.2 仅 list 不崩。
+test("issue #112 rc.2：仅 list registry 下 /send 无 sessionId、/send-receipt、合成审批不 TypeError", async () => {
+  const sendAgent = {
+    ...agent,
+    status: "idle",
+    followup: async () => undefined,
+    steer: async () => undefined,
+  };
+  const listOnly = { list: () => [sendAgent] };
+  const h = harness({ agentsRegistry: listOnly });
+  try {
+    const send = await h.request("/m/api/send", {
+      method: "POST",
+      body: JSON.stringify({ text: "hi" }),
+    });
+    assert.equal(send.status, 200, JSON.stringify(send.body));
+    assert.equal(send.body.ok, true);
+    assert.equal(send.body.agentId, PARENT);
+
+    const receipt = await h.request(
+      "/m/api/send-receipt?requestId=req-12345678",
+    );
+    assert.equal(receipt.status, 404, "无回执应 404，而不是 rc.2 TypeError 500");
+    assert.equal(receipt.body.error, "receipt-not-found");
+
+    const approval = await h.request("/m/api/dev/approval-test", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    assert.equal(approval.status, 200, JSON.stringify(approval.body));
+    assert.equal(approval.body.synthetic, true);
+  } finally { h.dispose(); }
+});
+
+test("issue #112 rc.2：roots 抛错时 send/receipt/approval 同样 fallback list", async () => {
+  const sendAgent = {
+    ...agent,
+    status: "idle",
+    followup: async () => undefined,
+    steer: async () => undefined,
+  };
+  const rootsThrows = {
+    roots: () => { throw new TypeError("drift"); },
+    list: () => [sendAgent],
+  };
+  const h = harness({ agentsRegistry: rootsThrows });
+  try {
+    const send = await h.request("/m/api/send", {
+      method: "POST",
+      body: JSON.stringify({ text: "hi" }),
+    });
+    assert.equal(send.status, 200, JSON.stringify(send.body));
+    assert.equal(send.body.agentId, PARENT);
+    const receipt = await h.request(
+      "/m/api/send-receipt?requestId=req-87654321",
+    );
+    assert.equal(receipt.status, 404);
+    assert.equal(receipt.body.error, "receipt-not-found");
+    const approval = await h.request("/m/api/dev/approval-test", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    assert.equal(approval.status, 200, JSON.stringify(approval.body));
+  } finally { h.dispose(); }
 });
