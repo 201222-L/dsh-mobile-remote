@@ -1,5 +1,6 @@
 // DSH Mobile App — 手机远程操作 DeepSeek Harness
 // 数据模型
+import 'tool_cards.dart';
 import 'turn_tail.dart';
 
 class Session {
@@ -546,6 +547,12 @@ class ChatEvent {
   /// 轮末信号（issue #53 / §6.20）：仅 `turn/end` 摘要的 `data.tail` 携带；
   /// `turnTails` 的历史增量由 [HistoryPage.turnTails] 提供。缺省 = 旧插件/该轮无产出物。
   final TurnTail? tail;
+
+  /// issue #54（M3 Batch 1）：`tool/call` 的结构化摘要；旧插件/未知工具为 null。
+  final ToolCallSummary? callSummary;
+
+  /// issue #54：`tool/result` 的结构化摘要（退出码/信号/匹配数）；解析不到为 null。
+  final ToolResultSummary? resultSummary;
   ChatEvent({
     this.seq,
     required this.type,
@@ -555,6 +562,8 @@ class ChatEvent {
     this.detailTextChars,
     this.time,
     this.tail,
+    this.callSummary,
+    this.resultSummary,
   });
   factory ChatEvent.fromJson(Map<String, dynamic> j) {
     final detail = j['detail'];
@@ -571,6 +580,12 @@ class ChatEvent {
       tail: TurnTail.fromJson(
         j['data'] is Map ? (j['data'] as Map)['tail'] : null,
       ),
+      callSummary: j['type'] == 'tool/call' && j['data'] is Map
+          ? ToolCallSummary.fromJson((j['data'] as Map)['summary'])
+          : null,
+      resultSummary: j['type'] == 'tool/result' && j['data'] is Map
+          ? ToolResultSummary.fromJson((j['data'] as Map)['summary'])
+          : null,
     );
   }
 }
@@ -694,6 +709,33 @@ class TurnTailCapabilities {
       presented: m['presented'] == true,
       changed: m['changed'] == true,
       changesDiff: m['changesDiff'] == true,
+    );
+  }
+}
+
+/// issue #54（M3）：工具卡能力位（`/bootstrap` 与 SSE hello 的 `capabilities.toolCards`）。
+///
+/// 只有声明在 [tools] 里的工具才渲染专用卡；旧插件不下发 → [available] 为 false，
+/// App 全部回退现有通用卡（不按宿主/App 版本推断）。
+class ToolCardsCapabilities {
+  final int version;
+  final Set<String> tools;
+
+  const ToolCardsCapabilities({
+    this.version = 0,
+    this.tools = const <String>{},
+  });
+
+  bool get available => version > 0 && tools.isNotEmpty;
+
+  bool supports(String? tool) => tool != null && tools.contains(tool);
+
+  factory ToolCardsCapabilities.fromJson(Map<String, dynamic>? j) {
+    final m = j ?? const <String, dynamic>{};
+    final raw = m['tools'];
+    return ToolCardsCapabilities(
+      version: (m['version'] as num?)?.toInt() ?? 0,
+      tools: raw is List ? raw.whereType<String>().toSet() : const <String>{},
     );
   }
 }

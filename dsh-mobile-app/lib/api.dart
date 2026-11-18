@@ -154,6 +154,10 @@ class Api implements GitReadApi {
   /// 与展示模式设置；`changed/changesDiff` 由电脑端按 `workspaceChanges` 服务真实存在判定。
   TurnTailCapabilities turnTailCapabilities = const TurnTailCapabilities();
 
+  /// issue #54（M3）：工具卡结构化投影能力位。旧插件不下发 → 全部回退通用卡；
+  /// `tools` 是电脑端实际投影的工具名集合，App 逐工具判定是否启用专用卡。
+  ToolCardsCapabilities toolCardsCapabilities = const ToolCardsCapabilities();
+
   /// 电脑的全部候选地址（局域网 IP / Tailscale IP / 127.0.0.1）。
   /// 连接失败时按顺序轮换（外出自动切 Tailscale，回家自动切回局域网）。
   List<String> baseUrls = [];
@@ -336,6 +340,12 @@ class Api implements GitReadApi {
     turnTailCapabilities = TurnTailCapabilities.fromJson(
       capabilities is Map && capabilities['turnTail'] is Map
           ? Map<String, dynamic>.from(capabilities['turnTail'] as Map)
+          : null,
+    );
+    // issue #54：工具卡能力位（旧插件缺失 → 全部通用卡）。
+    toolCardsCapabilities = ToolCardsCapabilities.fromJson(
+      capabilities is Map && capabilities['toolCards'] is Map
+          ? Map<String, dynamic>.from(capabilities['toolCards'] as Map)
           : null,
     );
   }

@@ -1,0 +1,219 @@
+/**
+ * issue #54（M3 Batch 1）：工具卡结构化投影的单元测试。
+ *
+ * 覆盖：10 个工具的 `tool/call` summary 字段派生、路径 display（绝不下发绝对路径）、
+ * write/edit 的 sizeKb/diff/added/deleted、`tool/result` 的 exitCode/signal/stopped/
+ * resultCount（meta 与文本两种来源）、长输出/非法 JSON 的 fail-open、未知工具不投影。
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+	TOOL_CARD_DIFF_MAX_BYTES,
+	TOOL_CARD_TOOLS,
+	summarizeEvent,
+	toolCallSummaryOf,
+	toolCardsCapabilityOf,
+	toolNamesOf,
+	toolResultCallIdOf,
+	toolResultSummaryOf,
+} from "../lib/index.js";
+
+const CWD = "/home/mark/proj";
+const call = (name, args, cwd = CWD) =>
+	summarizeEvent({ seq: 1, type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name, arguments: typeof args === "string" ? args : JSON.stringify(args) } }, { cwd });
+const result = (name, text, meta) =>
+	summarizeEvent({
+		seq: 2,
+		type: "tool/result",
+		data: {
+			...(name ? { name } : {}),
+			message: { content: [{ type: "text", text }] },
+			...(meta === undefined ? {} : { meta }),
+		},
+	});
+const summaryOf = (event) => event.data?.summary;
+
+test("能力位：声明本插件实际投影的 10 个工具", () => {
+	const caps = toolCardsCapabilityOf();
+	assert.equal(caps.version, 1);
+	assert.deepEqual(caps.tools, [...TOOL_CARD_TOOLS]);
+	assert.deepEqual(TOOL_CARD_TOOLS, ["bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image"]);
+});
+
+test("command：bash/pwsh 的 command/workdir/background/description，换行压平并 clamp", () => {
+	const bash = summaryOf(call("bash", { command: "ls\n-la", workdir: "/home/mark/proj/src", run_in_background: true, description: "List\nfiles" }));
+	assert.deepEqual(bash, { kind: "command", tool: "bash", command: "ls -la", workdir: "src", background: true, description: "List files" });
+	const pwsh = summaryOf(call("pwsh", { command: "Get-ChildItem" }, "C:\\work"));
+	assert.equal(pwsh.kind, "command");
+	assert.equal(pwsh.command, "Get-ChildItem");
+});
+
+test("file/read：filePath display + 正整数 offset/limit（非法忽略）", () => {
+	const read = summaryOf(call("read", { file_path: "/home/mark/proj/src/a.ts", offset: 2, limit: 40 }));
+	assert.deepEqual(read, { kind: "file", tool: "read", filePath: "src/a.ts", offset: 2, limit: 40 });
+	const invalid = summaryOf(call("read", { file_path: "/home/mark/proj/src/a.ts", offset: 0, limit: -3 }));
+	assert.equal(invalid.offset, undefined);
+	assert.equal(invalid.limit, undefined);
+});
+
+test("file/write：sizeKb 按 UTF-16 长度、diff 为全新增统一 diff", () => {
+	const content = "第一行\nsecond line\n";
+	const write = summaryOf(call("write", { file_path: "src/new.ts", content }));
+	assert.equal(write.kind, "file");
+	assert.equal(write.filePath, "src/new.ts");
+	assert.equal(write.sizeKb, Math.ceil(content.length / 1024));
+	assert.equal(write.diff, "--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1,2 @@\n+第一行\n+second line\n");
+	// 路径必须已派生：summary 里任何字段都不能含主机绝对路径。
+	assert.ok(!JSON.stringify(write).includes("/home/mark/proj"));
+});
+
+test("file/edit：sizeKb、added/deleted 按行近似、统一 diff", () => {
+	const edit = summaryOf(call("edit", { file_path: "src/a.ts", old_string: "a\nb", new_string: "c" }));
+	assert.equal(edit.kind, "file");
+	assert.equal(edit.filePath, "src/a.ts");
+	assert.equal(edit.sizeKb, Math.ceil(("a\nb".length + "c".length) / 1024));
+	assert.equal(edit.added, 1);
+	assert.equal(edit.deleted, 2);
+	assert.equal(edit.diff, "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,1 @@\n-a\n-b\n+c\n");
+});
+
+test("write/edit：diff 超过 8 KiB 时缺省并标 diffTruncated", () => {
+	const huge = `${"x".repeat(TOOL_CARD_DIFF_MAX_BYTES)}\n`;
+	const write = summaryOf(call("write", { file_path: "big.txt", content: huge }));
+	assert.equal(write.diff, undefined);
+	assert.equal(write.diffTruncated, true);
+	const edit = summaryOf(call("edit", { file_path: "big.txt", old_string: huge, new_string: "" }));
+	assert.equal(edit.diff, undefined);
+	assert.equal(edit.diffTruncated, true);
+});
+
+test("search：grep/glob 的 pattern/path/include（clean 参数）", () => {
+	const grep = summaryOf(call("grep", { pattern: "foo\nbar", path: "/home/mark/proj/lib", include: "*.ts" }));
+	assert.deepEqual(grep, { kind: "search", tool: "grep", pattern: "foo bar", path: "lib", include: "*.ts" });
+	const glob = summaryOf(call("glob", { pattern: "**/*.dart", path: "/home/mark/proj/lib" }));
+	assert.deepEqual(glob, { kind: "search", tool: "glob", pattern: "**/*.dart", path: "lib" });
+	assert.equal(glob.include, undefined);
+});
+
+test("web / image：url、query、filePath", () => {
+	assert.deepEqual(
+		summaryOf(call("web_fetch", { url: "https://example.test/a?b=1" })),
+		{ kind: "web", tool: "web_fetch", url: "https://example.test/a?b=1" },
+	);
+	assert.deepEqual(
+		summaryOf(call("web_search", { queries: ["q1", "q2"] })),
+		{ kind: "web", tool: "web_search", query: "q1" },
+	);
+	assert.deepEqual(
+		summaryOf(call("read_image", { file_path: "/home/mark/proj/assets/p.png" })),
+		{ kind: "image", tool: "read_image", filePath: "assets/p.png" },
+	);
+});
+
+test("fail-open：非法 JSON / 未知工具 / 非对象参数不抛错且降级", () => {
+	assert.deepEqual(summaryOf(call("bash", "{not json")), { kind: "command", tool: "bash" });
+	assert.equal(summaryOf(call("mystery", "{}")), undefined);
+	assert.equal(toolCallSummaryOf("bash", undefined, CWD)?.kind, "command");
+	assert.equal(toolCallSummaryOf(undefined, "{}", CWD), undefined);
+});
+
+test("超长参数被 clamp，不影响摘要生成", () => {
+	const long = "x".repeat(5000);
+	const bash = summaryOf(call("bash", { command: long, description: long }));
+	// clampText 把「截断后缀」计入上限：结果长度恰好等于上限。
+	assert.equal(bash.command.length, 200);
+	assert.equal(bash.description.length, 120);
+	const pattern = summaryOf(call("grep", { pattern: long }));
+	assert.equal(pattern.pattern.length, 200);
+});
+
+test("result：bash/pwsh 从原始文本末尾解析 exitCode/signal/stopped（不受 2000 字 clamp 影响）", () => {
+	const longText = `${"x".repeat(3000)}\n[exit code: 7]`;
+	const exit = summaryOf(result("bash", longText));
+	assert.equal(exit.exitCode, 7);
+	assert.equal(result("pwsh", "[killed by signal: SIGTERM]").data.summary.signal, "SIGTERM");
+	assert.equal(result("bash", "[stopped: user cancelled]").data.summary.stopped, "user cancelled");
+	// 结果事件不带工具名时不得从内容猜（R14）；由调用方通过 callId→name 关联后传入。
+	assert.equal(summaryOf(result(undefined, "boom\n[exit code: 2]")), undefined);
+	// 非命令工具文本里的普通数字不会被误判成退出码。
+	assert.equal(summaryOf(result("read", "[exit code: 3]")), undefined);
+});
+
+test("R13：只解析结果末尾的宿主终止 trailer（最后一条），不取 stdout 正文中的首个标记", () => {
+	// 真实命令：stdout 打印 expected marker [exit code: 0]，实际退出 7，宿主在末尾追加 7。
+	const misleading = summaryOf(result("bash", "expected marker: [exit code: 0]\nboom\n[exit code: 7]"));
+	assert.equal(misleading.exitCode, 7, "必须使用末尾真实终止状态，而不是 stdout 首个匹配");
+	// 反向：末尾 0 覆盖正文里的非零假标记。
+	const recovered = summaryOf(result("bash", "failed: [exit code: 5]\nrecovered\n[exit code: 0]"));
+	assert.equal(recovered.exitCode, 0);
+	// 标记不在末尾（命令仍在输出/被截断）→ 不猜，缺省。
+	assert.equal(summaryOf(result("bash", "still running [exit code: 7]\nmore output")), undefined);
+	// 多种终止标记互斥：最后一条是 signal 时不再给 exit/stopped。
+	const precedence = summaryOf(result("bash", "[stopped: cancelled]\n[killed by signal: SIGTERM]"));
+	assert.equal(precedence.signal, "SIGTERM");
+	assert.equal(precedence.exitCode, undefined);
+	assert.equal(precedence.stopped, undefined);
+});
+
+test("R14：无工具名/非命令工具不得从内容猜终止状态；callId→name 关联后才可用", () => {
+	// 非命令工具成功结果里正文含 marker：不得下发 exit/signal。
+	assert.equal(summaryOf(result("read", "内容 [exit code: 3]")), undefined);
+	assert.equal(summaryOf(result("grep", "x\n[exit code: 3]")), undefined);
+	// 无名字的结果事件：纯函数不猜；调用方按 callId→tool/call.name 解析后传入才允许。
+	assert.equal(summaryOf(result(undefined, "x\n[exit code: 3]")), undefined);
+	const resolved = summarizeEvent(
+		{ seq: 9, type: "tool/result", data: { callId: "call-x", message: { content: [{ type: "text", text: "x\n[exit code: 3]" }] } } },
+		{ resolvedToolName: "bash" },
+	);
+	assert.equal(resolved.data?.summary?.exitCode, 3);
+	// 结果事件无 name 但会话里有同名 tool/call：/history 用 toolNamesOf 关联。
+	assert.deepEqual([...toolNamesOf([
+		{ type: "tool/call", data: { callId: "c1", name: "bash" } },
+		{ type: "tool/call", data: { callId: "c2", name: "read" } },
+	]).entries()], [["c1", "bash"], ["c2", "read"]]);
+});
+
+test("result：grep/glob 匹配总数优先取 meta.total，缺失时按文本解析，解析不到缺省", () => {
+	assert.equal(summaryOf(result("grep", "Found 3 of 9 matches", { shape: "matches", total: 9 })).resultCount, 9);
+	assert.equal(summaryOf(result("grep", "Found 3 matches")).resultCount, 3);
+	assert.equal(summaryOf(result("grep", "No matches found")).resultCount, 0);
+	assert.equal(summaryOf(result("glob", "(Showing 20 of 87 paths...")).resultCount, 87);
+	assert.equal(summaryOf(result("glob", "a.ts\nb.ts\nc.ts")).resultCount, 3);
+	assert.equal(summaryOf(result("glob", "No files found")).resultCount, 0);
+	assert.equal(summaryOf(result(undefined, "garbage text")), undefined);
+	assert.equal(summaryOf(result("read", "Found 3 matches")), undefined);
+});
+
+test("result：meta 形状可识别搜索工具（结果事件无名字时）", () => {
+	assert.equal(summaryOf(result(undefined, "", { shape: "paths", total: 12 })).resultCount, 12);
+});
+
+test("recheck-4：真实 tool/result 形状（message.source.callId / content[].toolCallId）恢复命令状态", () => {
+	// 当前 DSH 的真实形状：event.data 没有 callId；callId 在 message.source.callId、
+	// message.toolCallId 与 content[].toolCallId。
+	const event = {
+		seq: 77,
+		type: "tool/result",
+		data: {
+			turn: 1,
+			step: 1,
+			message: {
+				role: "tool",
+				toolCallId: "call-real",
+				source: { kind: "tool", callId: "call-real" },
+				content: [{
+					type: "tool-result",
+					toolCallId: "call-real",
+					content: [{ type: "text", text: "boom\n[exit code: 7]" }],
+				}],
+			},
+		},
+	};
+	assert.equal(toolResultCallIdOf(event), "call-real");
+	const summarized = summarizeEvent(event, { resolvedToolName: "bash" });
+	assert.equal(summarized.data?.callId, "call-real");
+	assert.equal(summarized.data?.summary?.exitCode, 7, "真实形状必须能恢复 exitCode，否则命令状态丢失");
+	// history/SSE 用同一坐标做 callId→name 关联。
+	const names = toolNamesOf([{ type: "tool/call", data: { callId: "call-real", name: "bash" } }]);
+	assert.equal(names.get(toolResultCallIdOf(event)), "bash");
+});

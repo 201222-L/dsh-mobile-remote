@@ -366,6 +366,11 @@ ProcessBatchWindow batchProcessRows(List<ProcessRow> rows, int limit) {
 /// 过程组抬头文案：运行中「正在调用工具…」，完成态「N 次工具调用」。
 /// **不显示用时**（ADR 0027 §2 的有意简化）。
 ///
+/// 运行态**只由调用方给定的 [running] 决定**（issue #61：= 组内仍有未 settled 的工具
+/// 且轮次未结束）。这里不再叠加 `group.running` 二次判定：轮次已结束（aborted/
+/// interrupted/error）或工具结果迟到缺失时，组内仍可能残留一条未 settled 的过程行，
+/// 但界面不得继续显示「正在调用工具…」。
+///
 /// [showDetail]（`liveProcessDetail`，标准/详细档）为真时，运行中抬头附带当前工具名；
 /// 简洁/完全展开档只显示「正在调用工具…」。该字段只影响抬头文案，**不隐藏过程行**。
 String processGroupHeader(
@@ -373,7 +378,7 @@ String processGroupHeader(
   required bool running,
   bool showDetail = false,
 }) {
-  if (running || group.running) {
+  if (running) {
     if (showDetail) {
       // 优先当前仍在跑的工具；都已结束但轮次未结束时，用最后一个工具名做细节提示。
       String? name;

@@ -478,14 +478,21 @@ void main() {
   });
 
   testWidgets('标准档运行中：按组且组强制展开，抬头附带当前工具名', (tester) async {
-    final events = oneTurn()..removeWhere((e) => e['type'] == 'turn/end');
+    // issue #61：抬头只信真实运行态——必须留一条未回结果的工具调用（只有 call 无 result）。
+    final events = oneTurn()
+      ..removeWhere(
+        (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
+      );
     await _pumpChat(tester, _Backend(events: events));
     expect(find.text('正在调用工具…（shell）'), findsOneWidget);
     expect(find.text('shell'), findsOneWidget); // 组强制展开 → 工具行可见
   });
 
   testWidgets('简洁档运行中：行仍在，抬头只给通用文案（无工具名）', (tester) async {
-    final events = oneTurn()..removeWhere((e) => e['type'] == 'turn/end');
+    final events = oneTurn()
+      ..removeWhere(
+        (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
+      );
     await _pumpChat(
       tester,
       _Backend(events: events),
@@ -595,12 +602,13 @@ void main() {
       },
     ];
     await _pumpChat(tester, _Backend(events: events));
-    // 插话切段：两段各一行摘要（标准档已完成轮默认折叠）。
-    expect(find.textContaining('1 组 · 1 次工具调用'), findsNWidgets(2));
+    // 轮内有插话 → 强制展开（不吃策略）：issue #61 起展开态不再显示整轮摘要行，
+    // 改为两段各自的组抬头（标准档已完成轮的组默认折叠）。
+    expect(find.textContaining('组 · 1 次工具调用'), findsNothing);
+    expect(find.text('1 次工具调用'), findsNWidgets(2));
     // 过程段出现在插话之后。
     final steerY = tester.getTopLeft(find.text('插话')).dy;
-    final secondY =
-        tester.getTopLeft(find.textContaining('1 组 · 1 次工具调用').last).dy;
+    final secondY = tester.getTopLeft(find.text('1 次工具调用').last).dy;
     expect(steerY, lessThan(secondY));
   });
 
@@ -679,8 +687,8 @@ void main() {
     }
     expect(backend.beforePages, greaterThan(0), reason: '上翻应触发 before 分页');
     expect(found, isTrue, reason: '旧页第 5 轮必须真的进入列表（内容按分页重建）');
-    // 旧页轮次的过程块同样重建（标准档已完成轮折叠成一行摘要）。
-    expect(find.textContaining('组 · 1 次工具调用'), findsWidgets);
+    // 旧页轮次的过程块同样重建（夹具无 turn/end → 强制展开 → 每轮一个组抬头）。
+    expect(find.text('1 次工具调用'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
