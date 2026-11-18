@@ -1217,7 +1217,7 @@ class TurnProcessTracker {
       final promptSeq = allInRange.isEmpty ? null : allInRange.first;
       final human = <int>[
         for (final seq in _humanUserSeqs)
-          if (seq > t.startSeq! &&
+          if (seq > anchor &&
               seq != promptSeq &&
               (t.endSeq == null || seq < t.endSeq!))
             seq,

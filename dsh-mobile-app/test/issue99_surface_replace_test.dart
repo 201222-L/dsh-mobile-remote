@@ -205,7 +205,7 @@ void main() {
         'surfaceOp': surfaceOp,
         'sourceEventSeqs': [3],
       });
-      expect(event.surfaceOp, isNull, reason: '${surfaceOp}');
+      expect(event.surfaceOp, isNull, reason: '$surfaceOp');
       expect(event.sourceEventSeqs, isEmpty, reason: '坏 surfaceOp 时 source 也不得解释');
     }
   });
