@@ -157,7 +157,7 @@ async function call(route, url, { method = "GET", body } = {}) {
 	return { status: res.statusCode, body: JSON.parse(res.chunks.join("") || "{}") };
 }
 
-const sessions = (route) => call(route, "/m/api/sessions");
+const sessions = (route) => call(route, "/m/api/sessions?includeEmpty=1");
 const touch = (route, sessionId) => call(route, "/m/api/sessions/touch", { method: "POST", body: { sessionId } });
 
 /** 内核会话头记录形态：{ header, live, persisted }。 */
@@ -811,7 +811,7 @@ test("客户端断开即取消：中止枚举、不写响应、不记为失败�
 	const harness = createHarness({ records: [], noQuery: true });
 	harness.provide("sessionQuery", cancellableQuery(state));
 	try {
-		const res = drive(harness, "/m/api/sessions");
+		const res = drive(harness, "/m/api/sessions?includeEmpty=1");
 		await new Promise((r) => setTimeout(r, 20));
 		assert.ok(state.signal instanceof AbortSignal, "插件必须把取消信号传给 listSessions（宿主支持，此前没传）");
 		assert.equal(state.signal.aborted, false, "尚未断开时不应已取消");
@@ -843,7 +843,7 @@ test("正常完成不触发取消：writableEnded 之后到达的 close 必须�
 		},
 	});
 	try {
-		const res = drive(harness, "/m/api/sessions");
+		const res = drive(harness, "/m/api/sessions?includeEmpty=1");
 		await new Promise((r) => setTimeout(r, 20));
 
 		assert.ok(state.signal instanceof AbortSignal, "插件必须把取消信号传进来（否则本用例没有观测点）");
@@ -907,7 +907,7 @@ test("逐个标题兜底（宿主无批量接口）：断开会取消**在途**�
 		// 刻意不提供 readTitleSnapshots → 走 else-if 的逐个循环
 	});
 	try {
-		const res = drive(harness, "/m/api/sessions");
+		const res = drive(harness, "/m/api/sessions?includeEmpty=1");
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(state.sessionId, "session-dormant", "应进入逐个标题读取路径");
 		assert.ok(state.signal instanceof AbortSignal, "单个标题读取也必须收到取消信号");
@@ -930,7 +930,7 @@ test("逐个标题兜底（批量接口抛错后）：断开会取消**在途**�
 		readTitleSnapshot: cancellableTitleRead(state),
 	});
 	try {
-		const res = drive(harness, "/m/api/sessions");
+		const res = drive(harness, "/m/api/sessions?includeEmpty=1");
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(state.sessionId, "session-dormant", "应进入批量失败后的逐个兜底路径");
 		assert.ok(state.signal instanceof AbortSignal, "逐个兜底也必须收到取消信号");
@@ -1017,7 +1017,7 @@ for (const entry of TITLE_FALLBACK_ENTRIES) {
 			},
 		});
 		try {
-			const first = drive(harness, "/m/api/sessions");
+			const first = drive(harness, "/m/api/sessions?includeEmpty=1");
 			await fourDispatched;
 			first.destroy(); // 客户端断开 → 旧轮取消
 			await new Promise((resolve) => setImmediate(resolve));
@@ -1027,7 +1027,7 @@ for (const entry of TITLE_FALLBACK_ENTRIES) {
 			await new Promise((resolve) => setImmediate(resolve));
 
 			// 立即重试：旧轮尚未全部 settle，重试不得再派发任何新读取。
-			const retry = call(harness.route, "/m/api/sessions");
+			const retry = call(harness.route, "/m/api/sessions?includeEmpty=1");
 			await new Promise((resolve) => setTimeout(resolve, 30));
 			assert.equal(hung.size, 4, "旧轮应已派出四路（本用例的场景前提）");
 			assert.equal(dispatches, 4, "旧轮清理未结束前重试不得开新读取（Promise.all 首拒即返回时会开）");
