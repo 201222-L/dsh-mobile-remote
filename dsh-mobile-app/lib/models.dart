@@ -528,6 +528,48 @@ class AppNotification {
 }
 
 // 消息流事件（服务端摘要格式）。新增 detail 元数据后，旧插件/旧 App 仍可互相忽略未知字段。
+/// issue #99：compaction surface 投影操作 union（与 DSH 真实落盘一致）。
+///
+/// - 字符串 `"append"`（真实常见）→ [op] append，无 start/end；
+/// - 对象 `{op:"replace"|"append", startSeq?, endSeq?}`；replace 必须带 start/end，
+///   append 可省略（若出现则必须成对且有序）。
+/// 只有对象 replace 触发 shadow；append 的 [ChatEvent.sourceEventSeqs] 仍保留。
+class SurfaceOp {
+  final String op;
+  final int? startSeq;
+  final int? endSeq;
+
+  const SurfaceOp({required this.op, this.startSeq, this.endSeq});
+
+  bool get isReplace => op == 'replace';
+
+  static SurfaceOp? fromJson(Object? value) {
+    if (value is String) {
+      return value == 'append' ? const SurfaceOp(op: 'append') : null;
+    }
+    if (value is! Map) return null;
+    final op = value['op'];
+    if (op != 'replace' && op != 'append') return null;
+    final rawStart = value['startSeq'];
+    final rawEnd = value['endSeq'];
+    if (op == 'replace') {
+      if (rawStart is! int || rawEnd is! int) return null;
+      if (rawStart < 0 || rawEnd < 0 || rawStart > rawEnd) return null;
+      return SurfaceOp(op: op, startSeq: rawStart, endSeq: rawEnd);
+    }
+    // append：start/end 可整体省略；显式 null 不等于省略（与服务端同输入拒绝）。
+    final hasStart = value.containsKey('startSeq');
+    final hasEnd = value.containsKey('endSeq');
+    if (!hasStart && !hasEnd) {
+      return const SurfaceOp(op: 'append');
+    }
+    if (!hasStart || !hasEnd) return null;
+    if (rawStart is! int || rawEnd is! int) return null;
+    if (rawStart < 0 || rawEnd < 0 || rawStart > rawEnd) return null;
+    return SurfaceOp(op: op, startSeq: rawStart, endSeq: rawEnd);
+  }
+}
+
 class ChatEvent {
   final int? seq;
   final String type;
@@ -553,6 +595,24 @@ class ChatEvent {
 
   /// issue #54：`tool/result` 的结构化摘要（退出码/信号/匹配数）；解析不到为 null。
   final ToolResultSummary? resultSummary;
+
+  /// issue #99：compaction surface 投影元数据。旧插件/普通事件为 null/空。
+  ///
+  /// `surfaceOp.op == 'replace'` 表示本事件替换 [sourceEventSeqs] 对应的旧事件，
+  /// 不是新的工具调用；App 必须按替换/遮蔽处理，避免多出历史工具卡。
+  final SurfaceOp? surfaceOp;
+  final List<int> sourceEventSeqs;
+
+  bool get isSurfaceReplace =>
+      surfaceOp?.op == 'replace' && sourceEventSeqs.isNotEmpty;
+
+  /// 替换事件的原始锚点 seq（用于把工具卡留在旧位置）；无 source 时退回自身 seq。
+  int? get surfaceAnchorSeq {
+    if (!isSurfaceReplace) return seq;
+    final anchor = sourceEventSeqs.reduce((a, b) => a < b ? a : b);
+    return anchor;
+  }
+
   ChatEvent({
     this.seq,
     required this.type,
@@ -564,10 +624,35 @@ class ChatEvent {
     this.tail,
     this.callSummary,
     this.resultSummary,
+    this.surfaceOp,
+    this.sourceEventSeqs = const [],
   });
   factory ChatEvent.fromJson(Map<String, dynamic> j) {
     final detail = j['detail'];
     final d = detail is Map ? detail : const <String, dynamic>{};
+    // issue #99 复审 P2：surfaceOp/sourceEventSeqs 必须**原子解析**——以原始键是否
+    // 存在区分缺失/显式 null；任一字段非法则整个 envelope 丢弃，不能保留一半。
+    final hasSurfaceOp = j.containsKey('surfaceOp');
+    final hasSources = j.containsKey('sourceEventSeqs');
+    SurfaceOp? surfaceOp;
+    var sourceEventSeqs = const <int>[];
+    var envelopeValid = true;
+    if (hasSurfaceOp) {
+      surfaceOp = SurfaceOp.fromJson(j['surfaceOp']);
+      if (surfaceOp == null) envelopeValid = false;
+    }
+    if (envelopeValid && hasSources) {
+      final parsed = _surfaceSourceSeqsStrict(j['sourceEventSeqs'], j['seq']);
+      if (parsed == null) {
+        envelopeValid = false;
+      } else {
+        sourceEventSeqs = parsed;
+      }
+    }
+    if (!envelopeValid) {
+      surfaceOp = null;
+      sourceEventSeqs = const <int>[];
+    }
     return ChatEvent(
       seq: (j['seq'] as num?)?.toInt(),
       type: j['type'] as String? ?? 'unknown',
@@ -586,8 +671,26 @@ class ChatEvent {
       resultSummary: j['type'] == 'tool/result' && j['data'] is Map
           ? ToolResultSummary.fromJson((j['data'] as Map)['summary'])
           : null,
+      surfaceOp: surfaceOp,
+      sourceEventSeqs: sourceEventSeqs,
     );
   }
+}
+
+/// issue #99 复审 P2：source seq 只接受非负整数且严格小于当前事件 seq；
+/// 返回 null 表示**非法**（调用方据此丢弃整个 envelope）；合法返回去重正序列表。
+List<int>? _surfaceSourceSeqsStrict(Object? value, Object? currentSeq) {
+  if (value is! List || value.isEmpty || value.length > 64) return null;
+  if (currentSeq is! int || currentSeq < 0) return null;
+  final unique = <int>[];
+  final seen = <int>{};
+  for (final item in value) {
+    if (item is! int || item < 0 || item >= currentSeq) return null;
+    if (seen.add(item)) unique.add(item);
+  }
+  if (unique.isEmpty) return null;
+  unique.sort();
+  return List.unmodifiable(unique);
 }
 
 /// 历史页结果：事件列表 + 服务端降级读取标记（v3.1.5，休眠会话 current-surface）

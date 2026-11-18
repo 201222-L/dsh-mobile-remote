@@ -758,6 +758,9 @@ class TurnProcessTracker {
   final Map<int, int> _turnOfStartSeq = {};
   final Map<int, int> _turnOfEndSeq = {};
   final Map<String, _MutableToolRow> _tools = {};
+
+  /// issue #99：被 surface replace 遮蔽的旧 seq；后到的 source 事件不得再被 tracker 消费。
+  final Set<int> _shadowedSeqs = {};
   final Set<int> _reasoningSeqs = {};
   // issue #70：各 (turn, step) 首个 reasoning delta 的 seq（落定后持久行继承排序键）。
   final Map<String, int> _reasoningStarts = {};
@@ -779,6 +782,7 @@ class TurnProcessTracker {
     _turnOfStartSeq.clear();
     _turnOfEndSeq.clear();
     _tools.clear();
+    _shadowedSeqs.clear();
     _itemTurn.clear();
     _reasoningSeqs.clear();
     _reasoningStarts.clear();
@@ -827,14 +831,25 @@ class TurnProcessTracker {
 
   /// 记录一条事件。可重复调用（历史/实时重叠、分页重叠都是常态）。
   void observe(ChatEvent event) {
+    // surface replace 先登记 shadow，再跳过已被替换的旧 source（即使乱序/翻旧页后到）。
+    if (event.isSurfaceReplace && event.sourceEventSeqs.isNotEmpty) {
+      _shadowedSeqs.addAll(event.sourceEventSeqs);
+    }
+    if (event.seq != null && _shadowedSeqs.contains(event.seq)) return;
     final type = event.type;
     final data = event.data ?? const <String, dynamic>{};
     final seq = event.seq;
     final time = event.time;
     final turn = _intOf(data['turn']);
     final step = _intOf(data['step']);
+    final replace = event.isSurfaceReplace;
+    final replaceAnchor = replace ? event.surfaceAnchorSeq : null;
+    // issue #99：replace replay 的工具行按 source seq 排序/挂轮次，不按新 replay seq，
+    // 从而不会落在当前轮内容附近。
+    final layoutSeq = replaceAnchor ?? seq;
     // 事件自带 turn 字段时记下 seq → turn，供界面把普通条目（assistant/tool）挂回轮次。
     if (turn != null && seq != null) _itemTurn[seq] = turn;
+    if (turn != null && replaceAnchor != null) _itemTurn[replaceAnchor] = turn;
 
     switch (type) {
       case 'turn/start':
@@ -910,26 +925,32 @@ class TurnProcessTracker {
       case 'tool/call':
         final callId = _callIdOf(data);
         if (callId == null) return;
+        final existed = _tools.containsKey(callId);
         final tool = _tool(callId);
         tool.name = _toolNameOf(data, callId, tool.name);
         if (turn != null) tool.turn = turn;
         if (step != null) tool.step = step;
-        if (seq != null) {
-          tool.reportedSeq = seq;
+        if (replace && !existed) tool.surfaceReplay = true;
+        if (!replace) tool.surfaceReplay = false;
+        if (layoutSeq != null) {
+          tool.reportedSeq = layoutSeq;
           _toolOrder(tool);
         }
         return;
       case 'tool/result':
         final callId = _callIdOf(data);
         if (callId == null) return;
+        final existed = _tools.containsKey(callId);
         final tool = _tool(callId);
         tool.name = _toolNameOf(data, callId, tool.name);
         if (turn != null) tool.turn = turn;
         if (step != null) tool.step = step;
         tool.settled = true;
         tool.isError = data['isError'] == true;
-        if (seq != null && tool.reportedSeq == null) {
-          tool.reportedSeq = seq;
+        if (replace && !existed) tool.surfaceReplay = true;
+        if (!replace) tool.surfaceReplay = false;
+        if (layoutSeq != null && tool.reportedSeq == null) {
+          tool.reportedSeq = layoutSeq;
           _toolOrder(tool);
         }
         return;
@@ -1012,7 +1033,7 @@ class TurnProcessTracker {
     for (final row in turn.rows) {
       if (anchor == null || row.seq < anchor) anchor = row.seq;
     }
-    for (final tool in _tools.values) {
+    for (final tool in _tools.values.where((t) => !t.surfaceReplay)) {
       if (tool.turn != turn.turn) continue;
       final seq = tool.reportedSeq;
       if (seq == null) continue;
@@ -1093,7 +1114,7 @@ class TurnProcessTracker {
             reasoningChars: row.reasoningChars,
           ),
       ];
-      for (final tool in _tools.values) {
+      for (final tool in _tools.values.where((t) => !t.surfaceReplay)) {
         if (tool.turn != t.turn) continue;
         final seq = tool.reportedSeq;
         if (seq == null) continue;
@@ -1161,7 +1182,7 @@ class TurnProcessTracker {
     };
     for (final turn in orphanTurns) {
       final rows = <ProcessRow>[];
-      for (final tool in _tools.values) {
+      for (final tool in _tools.values.where((t) => !t.surfaceReplay)) {
         if (tool.turn != turn) continue;
         final seq = tool.reportedSeq;
         if (seq == null) continue;
@@ -1289,4 +1310,8 @@ class _MutableToolRow {
   int order = 0;
   bool settled = false;
   bool isError = false;
+
+  /// issue #99：本行**仅由 surface replace replay 创建**（原始工具事件不在窗口内）。
+  /// 这种行不生成历史工具结果/过程组；原始事件随后到达会清除标记。
+  bool surfaceReplay = false;
 }

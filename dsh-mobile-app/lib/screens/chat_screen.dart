@@ -3225,6 +3225,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
     final old = index >= 0 ? owner[index] : null;
+    // issue #99（reviewer P1）：surface replace replay 不能新建独立工具卡。
+    // reducer 已把替代内容合并进同一 callId 生命周期；这里若列表里找不到原卡，
+    // 说明这是“旧事件被替换”而非新的工具调用（原始事件不在当前窗口），不渲染。
+    // 原始 tool/call 随后到达时会走非 replay 分支，从生命周期带出合并后的结果并生成一张卡。
+    if (ev.isSurfaceReplace && old == null) return;
     // apply() 已在 _buildInto 入口执行，故 tools[callId] 已是合并后的权威生命周期。
     final lifecycle =
         _timelineReducer.tools[callId] ??
@@ -3375,15 +3380,31 @@ class _ChatScreenState extends State<ChatScreen> {
         _advanceLiveReasoningStep(ev);
       }
     }
+    // issue #99（reviewer P1）：surface replace 的 shadow 判定必须先于所有投影生效。
+    // reducer 先登记 source seq；tracker/UI 不得再消费后到的旧 source 事件，
+    // 否则会清掉 surfaceReplay 标记并生成 turn148 partial 历史组。
+    final accepted = _timelineReducer.apply(ev);
+    if (_timelineReducer.isShadowedSeq(ev.seq)) {
+      // 替换事件可能先于旧 source 到达（历史倒序/翻旧页）。旧 source 本身不再进
+      // tracker/过程组，但若 reducer 已有同 callId 的替代生命周期，则把工具卡
+      // **物化在原 source 位置**（有原事件 → 一张卡；replay-only 永远不会走到这里）。
+      if (ev.type == 'tool/call' ||
+          ev.type == 'tool/result' ||
+          (ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') &&
+              (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null)) {
+        _upsertToolItem(out, ev, history: history);
+      }
+      return;
+    }
+    // Historical reconstruction must still render a record even when the same seq
+    // arrived via SSE while the REST request was in flight. Live ingestion can
+    // discard the duplicate because _handleEvent already owns the visible stream.
+    if (!accepted && !history) return;
     // issue #61：先记 tool 名再合并，保证没有 name 的后续事件（result/增量）能补名。
     _recordToolName(ev);
     // issue #52：轮次过程投影与时间线条目同步观察（历史/实时/分页重叠都收敛到同一结构）。
     _turnProcess.observe(ev);
     _processVersion++;
-    // Historical reconstruction must still render a record even when the same seq
-    // arrived via SSE while the REST request was in flight. Live ingestion can
-    // discard the duplicate because _handleEvent already owns the visible stream.
-    if (!_timelineReducer.apply(ev) && !history) return;
     switch (ev.type) {
       case 'deliverables/presented':
         // issue #53（§6.20）：交付文件声明收进轮末交付卡，不生成通用事件卡；
@@ -3520,23 +3541,15 @@ class _ChatScreenState extends State<ChatScreen> {
           _upsertToolItem(out, ev, history: history);
         }
       case 'tool/call':
-        final callId = _toolActivityKey(
-          d ?? const <String, dynamic>{},
-          ev.seq,
-          out.length,
-        );
-        final name = timelineToolNameOf(
-          d,
-          callId: callId,
-          fallback: L10n.t('工具', 'Tool'),
-        );
-        if (!history) {
+        final callId = _toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length);
+        final name = timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool'));
+        if (!history && !ev.isSurfaceReplace) {
           _activeTools[callId] = name;
           _scheduleActivityFlush();
         }
         _upsertToolItem(out, ev, history: history);
       case 'tool/result':
-        if (!history) {
+        if (!history && !ev.isSurfaceReplace) {
           _activeTools.remove(
             _toolActivityKey(
               d ?? const <String, dynamic>{},

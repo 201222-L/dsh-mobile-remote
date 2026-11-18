@@ -1625,6 +1625,10 @@ class AppStore extends ChangeNotifier {
           // 否则 live 轮次页脚没有用时、轮末卡片要等重进会话才出现。
           time: ce.time,
           tail: ce.tail,
+          // issue #99：surface 投影 envelope 必须原样带给时间线/跟踪器，
+          // 否则 SSE replay 会被当成新的工具调用（history 路径已直接解析）。
+          surfaceOp: ce.surfaceOp,
+          sourceEventSeqs: ce.sourceEventSeqs,
         ),
       );
     } else if (type == 'agent/status') {
