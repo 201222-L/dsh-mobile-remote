@@ -238,4 +238,56 @@ void main() {
     expect(offset(), lessThan(before), reason: '消息流照常滚动');
     expect(find.byType(TurnNavigatorRail), findsOneWidget);
   });
+
+
+  group('轮次轨道 action gutter', () {
+    test('右留白优先级：圆钮 38 > 轨道 36 > 默认 16', () {
+      expect(listRightPaddingFor(jumpVisible: false, railVisible: false), 16);
+      expect(listRightPaddingFor(jumpVisible: false, railVisible: true), 36);
+      expect(listRightPaddingFor(jumpVisible: true, railVisible: false), 38);
+      expect(listRightPaddingFor(jumpVisible: true, railVisible: true), 38);
+    });
+
+    testWidgets('上翻后轨道在右 8、正文留白 38，且与圆钮至少 12dp 不重叠', (tester) async {
+      final backend = _TurnBackend(turns: 6);
+      final store = AppStore()..sessionId = 'session-gutter';
+      await _pumpChat(tester, backend: backend, store: store);
+      await _scrollUp(tester);
+
+      expect(find.byType(TurnNavigatorRail), findsOneWidget);
+      final screen = tester.getRect(find.byType(CustomScrollView));
+      final rail = tester.getRect(find.byType(TurnNavigatorRail));
+      expect(rail.right, closeTo(screen.right - 8, 0.5), reason: '轨道右留白 8');
+      expect(rail.width, closeTo(28, 0.5), reason: '轨道宽 28');
+      for (final sliver in tester.widgetList<SliverPadding>(find.byType(SliverPadding))) {
+        expect(sliver.padding.resolve(TextDirection.ltr).right, 38,
+            reason: '圆钮可见时正文右留白 38');
+      }
+
+      final jump = tester.getRect(find.byIcon(Icons.keyboard_arrow_down));
+      expect(rail.bottom, lessThanOrEqualTo(jump.top - 12),
+          reason: '轨道与回到底部圆钮至少 12dp 避让');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('320 窄屏不缩轨，正文仍让出 38dp 且无 overflow', (tester) async {
+      tester.view.physicalSize = const Size(320, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final backend = _TurnBackend(turns: 6);
+      final store = AppStore()..sessionId = 'session-gutter-320';
+      await _pumpChat(tester, backend: backend, store: store);
+      await _scrollUp(tester, by: 300);
+
+      expect(find.byType(TurnNavigatorRail), findsOneWidget);
+      final rail = tester.getRect(find.byType(TurnNavigatorRail));
+      expect(rail.width, closeTo(28, 0.5));
+      expect(rail.right, closeTo(312, 0.5));
+      for (final sliver in tester.widgetList<SliverPadding>(find.byType(SliverPadding))) {
+        expect(sliver.padding.resolve(TextDirection.ltr).right, 38);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
