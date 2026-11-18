@@ -38,6 +38,8 @@ const hiddenTimelineTypes = <String>{
 /// 调试审阅都不丢），但普通模式不渲染——默认视图只呈现有阅读价值的事件，
 /// 避免 `session/title`、`feedback/record` 这类原始类型名铺屏。
 /// 真正未知的新事件类型**不在**此列：事件保真契约要求保留而不是静默丢弃。
+/// 插件命名空间 `plugin:*` 是协议事件（桌面端无注册 renderer），由
+/// [pluginEventTypePattern] 单独判定为 debug-only，不写进本清单（否则调试也看不到）。
 const debugOnlyTimelineTypes = <String>{
   'session/title',
   'model/selection',
@@ -78,11 +80,19 @@ const debugOnlyTimelineTypes = <String>{
 /// LLM 请求快照的段边界匹配（与服务端 `LLM_REQUEST_TYPE_PATTERN` 同规则）：
 /// 匹配 `session/title-llm-request`、`web/deepseek-search-llm-request`、
 /// `web/<provider>-llm-request`、`future/llm-request`；不误伤 `future/llm-request-note`。
+/// 插件命名空间协议事件（issue #73）：`plugin:<name>/<event>` 是插件协议
+/// （如 `plugin:translator/request`），不是对话内容。普通模式隐藏，调试模式保留。
+/// 用前缀模式而不是枚举清单：插件名/事件名由插件自定义，无法穷举；同时只影响
+/// `plugin:` 命名空间，`future/something-new` 等真正未知内核事件仍按事件保真可见。
+final RegExp pluginEventTypePattern = RegExp(r'^plugin:');
+
 final RegExp llmRequestTypePattern = RegExp(r'(?:^|[/-])llm-request$');
 
 /// 事件可见性的唯一实现：TimelineReducer 与 ChatScreen 共用，避免两处规则分叉。
 bool timelineTypeVisibleIn(TimelineMode mode, String type) {
   if (hiddenTimelineTypes.contains(type) || llmRequestTypePattern.hasMatch(type)) return false;
+  // issue #73：插件命名空间协议事件只做 debug 展示；事件本身仍保留在时间线模型里。
+  if (pluginEventTypePattern.hasMatch(type)) return mode == TimelineMode.debug;
   return mode == TimelineMode.debug || !debugOnlyTimelineTypes.contains(type);
 }
 

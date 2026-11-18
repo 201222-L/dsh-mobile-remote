@@ -7,6 +7,7 @@
 //    `web/deepseek-search-llm-request`，此前不在任何隐藏集合里 → 会以裸类型名出现在
 //    普通模式，并可经详情端点取回原始载荷。
 import 'package:flutter_test/flutter_test.dart';
+import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/timeline.dart';
 
 void main() {
@@ -73,6 +74,45 @@ void main() {
     test('真正未知的新类型仍然保留（事件保真契约：不静默丢弃）', () {
       expect(timelineTypeVisibleIn(TimelineMode.ordinary, 'future/something-new'), isTrue);
       expect(timelineTypeVisibleIn(TimelineMode.debug, 'future/something-new'), isTrue);
+    });
+  });
+
+  group('issue #73：plugin:* 插件协议事件只在调试模式展示', () {
+    test('plugin:translator/request|result 普通模式隐藏、调试模式可见', () {
+      for (final type in [
+        'plugin:translator/request',
+        'plugin:translator/result',
+      ]) {
+        expect(pluginEventTypePattern.hasMatch(type), isTrue, reason: type);
+        expect(timelineTypeVisibleIn(TimelineMode.ordinary, type), isFalse,
+            reason: '$type 普通模式不渲染协议噪声');
+        expect(timelineTypeVisibleIn(TimelineMode.debug, type), isTrue,
+            reason: '$type 调试模式保留排障能力');
+        expect(hiddenTimelineTypes.contains(type), isFalse,
+            reason: '$type 不进永隐藏清单（否则调试也看不到）');
+        expect(debugOnlyTimelineTypes.contains(type), isFalse,
+            reason: '$type 由前缀模式覆盖，不必逐个枚举');
+      }
+    });
+
+    test('只匹配 plugin: 命名空间，不误伤其它前缀', () {
+      expect(timelineTypeVisibleIn(TimelineMode.ordinary, 'pluginx/request'), isTrue);
+      expect(timelineTypeVisibleIn(TimelineMode.ordinary, 'plugin/request'), isTrue);
+      expect(timelineTypeVisibleIn(TimelineMode.ordinary, 'tool/plugin:foo'), isTrue);
+    });
+
+    test('事件仍进 TimelineReducer 模型（seq 游标/去重不受影响），仅标记普通模式过滤', () {
+      final reducer = TimelineReducer();
+      reducer.apply(ChatEvent(seq: 7, type: 'plugin:translator/request'));
+      reducer.apply(ChatEvent(seq: 8, type: 'future/something-new'));
+      expect(reducer.items, hasLength(2), reason: '两类事件都必须保留在模型中');
+      final plugin = reducer.items.firstWhere((item) => item.type.startsWith('plugin:'));
+      expect(plugin.seq, 7);
+      expect(plugin.visibleIn(TimelineMode.ordinary), isFalse);
+      expect(plugin.visibleIn(TimelineMode.debug), isTrue);
+      final future = reducer.items.firstWhere((item) => item.type == 'future/something-new');
+      expect(future.visibleIn(TimelineMode.ordinary), isTrue, reason: '未知内核事件保持可见契约');
+      expect(future.visibleIn(TimelineMode.debug), isTrue);
     });
   });
 }
