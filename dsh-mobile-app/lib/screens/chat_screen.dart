@@ -7207,7 +7207,11 @@ class _ChatScreenState extends State<ChatScreen> {
         // 改为可折叠块——默认收起、点按展开，展开状态按 messageId 持久化（同思维链机制）。
         if (_isNoiseText(item.text)) return const SizedBox.shrink();
         if (item.injected && !widget.store.timelineDebug) {
-          return const SizedBox.shrink();
+          // issue #101：只显示会触发轮次的 agent-message/team-message；
+          // subagent-settled 与系统 context 注入仍隐藏（debug 全可见）。
+          if (!_isTriggerSourceKind(item.sourceKind)) {
+            return const SizedBox.shrink();
+          }
         }
         if (item.injected) {
           final ikey = item.messageId ?? 's${item.seq}';
@@ -7223,6 +7227,7 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _InjectedBubble(
+                  key: Key('injected-${item.messageId ?? item.seq ?? 'x'}'),
                   text: item.text,
                   sourceKind: item.sourceKind,
                   expanded: expanded,
@@ -7898,13 +7903,22 @@ class _InjectedBubble extends StatelessWidget {
   final bool expanded;
   final ValueChanged<bool> onToggle;
   const _InjectedBubble({
+    super.key,
     required this.text,
     required this.sourceKind,
     required this.expanded,
     required this.onToggle,
   });
 
+  bool get _trigger => _isTriggerSourceKind(sourceKind);
+
   String get _label {
+    if (sourceKind == 'agent-message') {
+      return L10n.t('收到任务消息', 'Task message received');
+    }
+    if (sourceKind == 'team-message') {
+      return L10n.t('收到团队消息', 'Team message received');
+    }
     switch (sourceKind) {
       case 'agent-instructions':
         return L10n.t('系统指令注入', 'Injected instructions');
@@ -7917,9 +7931,84 @@ class _InjectedBubble extends StatelessWidget {
     }
   }
 
+  IconData get _icon => sourceKind == 'team-message'
+      ? Icons.groups_outlined
+      : sourceKind == 'agent-message'
+          ? Icons.send_outlined
+          : Icons.settings_suggest_outlined;
+
   @override
   Widget build(BuildContext context) {
     final ink3 = DshColors.ink3(context);
+    final preview = text.replaceAll('\r', '').split('\n').first.trim();
+    final canExpand = text.trim().isNotEmpty;
+    if (_trigger) {
+      return Container(
+        width: double.infinity,
+        key: const Key('trigger-message-card'),
+        decoration: BoxDecoration(
+          color: DshColors.surface(context),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: DshColors.line(context)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              onTap: canExpand ? () => onToggle(!expanded) : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(_icon, size: 15, color: DshColors.brand(context)),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        _label,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: ink3,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (canExpand)
+                      Icon(
+                        expanded
+                            ? Icons.keyboard_arrow_up
+                            : Icons.keyboard_arrow_down,
+                        size: 16,
+                        color: ink3,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (canExpand && !expanded && preview.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(32, 0, 10, 8),
+                child: Text(
+                  preview,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, height: 1.3, color: ink3),
+                ),
+              ),
+            if (canExpand && expanded)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(32, 0, 10, 10),
+                  child: Text(
+                    text,
+                    style: TextStyle(fontSize: 12.5, height: 1.45, color: ink3),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -7936,7 +8025,7 @@ class _InjectedBubble extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               child: Row(
                 children: [
-                  Icon(Icons.settings_suggest_outlined, size: 14, color: ink3),
+                  Icon(_icon, size: 14, color: ink3),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -7976,6 +8065,10 @@ class _InjectedBubble extends StatelessWidget {
     );
   }
 }
+
+/// issue #101：会触发轮次的代理/团队消息（普通模式显示紧凑触发卡）。
+bool _isTriggerSourceKind(String? sourceKind) =>
+    sourceKind == 'agent-message' || sourceKind == 'team-message';
 
 /// issue #61：通用占位名（不是真实工具名）。工具卡标题/摘要据此判断「缺名」。
 bool _isPlaceholderToolName(String? name) =>
