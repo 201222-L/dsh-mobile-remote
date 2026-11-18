@@ -573,6 +573,34 @@ void main() {
       expect(processGroupHeader(doneGroup, running: false), '1 次工具调用');
     });
 
+    test('reasoning-only 组抬头：显示「思考 N 字」，不得是「0 次工具调用」', () {
+      final group = ProcessGroup(step: 2, rows: [
+        ProcessRow.reasoning(
+          seq: 9,
+          step: 2,
+          reasoning: '只有思考没有工具\n第二行',
+          reasoningChars: 14,
+        ),
+      ]);
+      expect(processGroupHeader(group, running: false), '思考 14 字');
+      expect(processGroupHeader(group, running: false), isNot(contains('0 次工具调用')));
+      expect(processGroupHeader(group, running: false), isNot(contains('工具调用')));
+    });
+
+    test('缺 step 的 reasoning-only 组（旧内核退化组）：仍给思考语义，不是 0 次工具调用', () {
+      final group = ProcessGroup(step: null, rows: [
+        ProcessRow.reasoning(seq: 5, step: null, reasoning: '回想', reasoningChars: 2),
+      ]);
+      expect(processGroupHeader(group, running: false), '思考 2 字');
+    });
+
+    test('旧内核缺 reasoningChars 的 reasoning-only 组：抬头退化为「思考」', () {
+      final group = ProcessGroup(step: 3, rows: [
+        ProcessRow.reasoning(seq: 11, step: 3, reasoning: '', reasoningChars: 0),
+      ]);
+      expect(processGroupHeader(group, running: false), '思考');
+    });
+
     test('过程组抬头不显示用时（有意简化）', () {
       final group = ProcessGroup(step: 1, rows: [
         ProcessRow.tool(seq: 1, step: 1, callId: 'c', toolName: 'shell', status: 'success'),
