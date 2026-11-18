@@ -1,9 +1,8 @@
 /**
- * issue #87：DSH 0.2.2-rc.2 两处宿主契约破坏（ADR 0017 能力漂移）。
+ * issue #112：DSH 0.2.2-rc.2 的 AgentRegistry 不再提供 roots()。
  *
- * rc.1: listChildren(parent, signal) + interruptByParent(child,parent,mode)
- * rc.2: listDescendants(root, signal) 递归 + interruptByUser(childSessionId)
- * 本文件用两代真实形状夹具，断言插件按**能力探测**分叉，而不是版本号。
+ * 本文件只覆盖 firstAgent 的能力探测与 list fallback，以及 catalog/diagnostics/
+ * send/receipt/approval 在“仅 list”registry 下不抛 TypeError。
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -41,38 +40,16 @@ class Request extends EventEmitter {
 const PARENT = "session-parent";
 const agent = { id: PARENT, session: { id: PARENT, header: { cwd: "/tmp/proj" } }, status: "idle" };
 
-function harness({ generation = "rc2", descendants = null, descendantsThrows = false, children = null, sessions = [], receipt = generation === "rc2" ? { accepted: true } : undefined, emptySubagents = false, omitSubagents = false, agentsRegistry = null, rpcValue = null } = {}) {
+function harness({ agentsRegistry = null, rpcValue = null } = {}) {
   const routes = [];
-  const rpcCalls = [];
   const provided = new Map();
-  const sessionList = [
-    { id: PARENT, header: { id: PARENT, cwd: "/tmp/proj", createdAt: 1000 } },
-    ...sessions,
-  ];
+  const sessionList = [{ id: PARENT, header: { id: PARENT, cwd: "/tmp/proj", createdAt: 1000 } }];
   provided.set("agents", agentsRegistry ?? { get: (id) => (id === PARENT ? agent : undefined), list: () => [agent], roots: () => [] });
   provided.set("sessions", { get: (id) => sessionList.find((s) => s.id === id), list: () => sessionList });
-  const subagents = {};
-  if (!emptySubagents && !omitSubagents && generation === "rc2") {
-    subagents.listDescendants = async (root, signal) => {
-      if (descendantsThrows) throw new Error("descendants unavailable");
-      return descendants ?? [];
-    };
-    subagents.interruptByUser = async () => ({ accepted: true });
-  } else if (!emptySubagents && !omitSubagents) {
-    subagents.interruptByParent = async () => undefined;
-  }
-  if (!emptySubagents && !omitSubagents && children !== null) subagents.listChildren = async (parent, signal) => children;
-  if (!omitSubagents) provided.set("subagents", subagents);
-  const gateway = {
-    async invokeRpc(endpoint, payload, signal, peer) {
-      rpcCalls.push({ endpoint, args: payload?.args ?? payload });
-      return { ok: true, value: rpcValue ?? receipt };
-    },
-    async openWireStream(endpoint, payload, uplink, peer, signal, control) {
-      throw new Error("unused");
-    },
-  };
-  provided.set("typertGateway", gateway);
+  provided.set("typertGateway", {
+    async invokeRpc() { return { ok: true, value: rpcValue ?? { accepted: true } }; },
+    async openWireStream() { throw new Error("unused"); },
+  });
   provided.set("connection", { createPeer: () => ({ signal: new AbortController().signal, dispose() {} }) });
   provided.set("jobs", { list: () => [], kill: () => "requested", events: { subscribe: () => () => {} } });
   provided.set("settings", { get: () => undefined, describe: () => [] });
@@ -111,7 +88,7 @@ function harness({ generation = "rc2", descendants = null, descendantsThrows = f
     try { json = JSON.parse(raw || "{}"); } catch { json = raw; }
     return { status: response.statusCode, body: json };
   }
-  return { request, rpcCalls, dispose() { dispose?.(); } };
+  return { request, dispose() { dispose?.(); } };
 }
 
 test("issue #112 rc.2：仅 list 的 AgentRegistry → catalog 200、modelsRpc true", async () => {
@@ -172,6 +149,33 @@ test("issue #112 firstAgent：roots 非空优先；空数组/抛错退回 list�
   assert.equal(firstAgent(null), undefined);
   assert.equal(firstAgent({ roots: () => { throw new Error("drift"); }, list: () => { throw new Error("drift2"); } }), undefined);
   assert.equal(firstAgent({ roots: () => [rootFirst], list: () => { throw new Error("list"); } }).id, "root-first");
+});
+
+test("issue #112 firstAgent：roots/list getter 抛错也不阻断 fallback", async () => {
+  const rootFirst = { id: "root-first" };
+  const listSecond = { id: "list-second" };
+  const rootsGetterThrows = {
+    list: () => [listSecond],
+    get roots() { throw new TypeError("roots getter drift"); },
+  };
+  assert.equal(firstAgent(rootsGetterThrows).id, "list-second");
+  const listGetterThrows = {
+    roots: () => [rootFirst],
+    get list() { throw new TypeError("list getter drift"); },
+  };
+  assert.equal(firstAgent(listGetterThrows).id, "root-first");
+  const bothGettersThrow = {
+    get roots() { throw new TypeError("roots getter drift"); },
+    get list() { throw new TypeError("list getter drift"); },
+  };
+  assert.equal(firstAgent(bothGettersThrow), undefined);
+  // catalog 走 firstAgent：getter 抛错不能变成 500。
+  const h = harness({ agentsRegistry: rootsGetterThrows });
+  try {
+    const catalog = await h.request("/m/api/catalog");
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    assert.notEqual(catalog.body.error, "internal");
+  } finally { h.dispose(); }
 });
 
 // issue #112 P2：其余直接 agents.roots() 调用也全部改走 firstAgent；rc.2 仅 list 不崩。
