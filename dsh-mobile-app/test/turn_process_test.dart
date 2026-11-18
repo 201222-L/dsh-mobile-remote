@@ -168,10 +168,11 @@ void main() {
       );
     });
 
-    test('轮内有插话 → 强制展开（提示词本身不算插话）', () {
+    test('轮内有插话 → 结束后不强制，默认展开但可手动折叠（提示词本身不算插话）', () {
       final turn = turnWith(steerSeqs: [5]);
       expect(turn.hasInterjection, isTrue);
-      expect(turn.forceExpanded, isTrue);
+      // issue #79：插话不再进入强制展开（结束时 forced=false → UI 可手动收起）。
+      expect(turn.forceExpanded, isFalse);
       expect(
         turnAutoCollapsed(
           turn,
@@ -179,11 +180,95 @@ void main() {
           humanUserSeqs: [2, 5],
         ),
         isFalse,
+        reason: '插话轮默认展开',
+      );
+      // 「回答后」档：插话轮默认展开；「下次有新消息」档仍按新消息自动收起。
+      expect(
+        turnAutoCollapsed(
+          turn,
+          policy: const TurnFoldPolicy(timing: TurnFoldTiming.afterAnswer),
+          humanUserSeqs: const [2, 5],
+        ),
+        isFalse,
+        reason: 'afterAnswer：插话轮回答刚结束保持展开',
+      );
+      expect(
+        turnAutoCollapsed(
+          turn,
+          policy: const TurnFoldPolicy(timing: TurnFoldTiming.onNewMessage),
+          humanUserSeqs: const [2, 5],
+        ),
+        isFalse,
+        reason: 'onNewMessage：尚无轮后新消息 → 仍展开',
+      );
+      expect(
+        turnAutoCollapsed(
+          turn,
+          policy: const TurnFoldPolicy(timing: TurnFoldTiming.onNewMessage),
+          humanUserSeqs: const [2, 5, 20],
+        ),
+        isTrue,
+        reason: 'onNewMessage：插话轮结束后出现新消息 → 正常自动收起',
       );
       // 没有额外插话时，提示词不能把每个完成轮都变成强制展开。
       final promptOnly = turnWith();
       expect(promptOnly.hasInterjection, isFalse);
       expect(promptOnly.forceExpanded, isFalse);
+      // 对照：普通完成轮按「回答后」时机自动收起。
+      expect(
+        turnAutoCollapsed(
+          promptOnly,
+          policy: const TurnFoldPolicy(),
+          humanUserSeqs: const [],
+        ),
+        isTrue,
+      );
+    });
+
+    test('运行中 / 异常结束 + 插话 → 仍强制展开，不可折叠', () {
+      final running = turnWith(ended: false, endKind: null, steerSeqs: [5]);
+      expect(running.hasInterjection, isTrue);
+      expect(running.forceExpanded, isTrue);
+      for (final kind in ['aborted', 'interrupted', 'error']) {
+        final abnormal = turnWith(endKind: kind, steerSeqs: [5]);
+        expect(abnormal.forceExpanded, isTrue, reason: kind);
+        expect(
+          turnAutoCollapsed(
+            abnormal,
+            policy: const TurnFoldPolicy(),
+            humanUserSeqs: const [2, 5],
+          ),
+          isFalse,
+          reason: kind,
+        );
+      }
+    });
+
+    test('插话轮结束后：组仍按「已完成轮」默认折叠（组折叠矩阵不变）', () {
+      final turn = turnWith(steerSeqs: [5]);
+      expect(turn.groups, isNotEmpty);
+      for (final mode in WorkStepDisplayMode.values) {
+        final policy = TurnFoldPolicy(mode: mode);
+        final collapsed = groupAutoCollapsed(
+          turn.groups.first,
+          policy: policy,
+          turnRunning: false,
+        );
+        expect(
+          collapsed,
+          policy.groupsCollapsedByDefault,
+          reason: '${mode.name}：组默认折叠只由展示模式决定',
+        );
+      }
+      // 运行中组仍强制展开。
+      expect(
+        groupAutoCollapsed(
+          turn.groups.first,
+          policy: const TurnFoldPolicy(),
+          turnRunning: true,
+        ),
+        isFalse,
+      );
     });
 
     test('aborted / interrupted / error → 强制展开，且不显示用时', () {
