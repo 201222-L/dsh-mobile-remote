@@ -2427,11 +2427,16 @@ class _ChatScreenState extends State<ChatScreen> {
     final inHistory = _inHistory && _histItems.isNotEmpty;
     final ordered = inHistory ? _histItems : _items.reversed.toList();
     final debug = widget.store.timelineDebug;
+    final mode = debug ? TimelineMode.debug : TimelineMode.ordinary;
     return conversationText([
       for (final m in ordered)
         if (m.kind != _MsgKind.divider &&
             !_isNoiseText(m.text) &&
-            !(m.injected && !debug))
+            !(m.injected && !debug) &&
+            // issue #119：与渲染口径对齐——普通模式隐藏的调试专属事件卡
+            // （todo/write、session/jobs、question/* 等）不得从「复制整段」泄漏。
+            !(m.kind == _MsgKind.event &&
+                !timelineTypeVisibleIn(mode, m.eventType ?? '')))
           switch (m.kind) {
             _MsgKind.user => (m.injected ? '系统注入' : '你', m.text),
             _MsgKind.assistant => ('助手', m.text),
@@ -2597,7 +2602,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _todos = ((ev.data?['todos'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .toList();
-      // 任务面板与时间线同时更新；不要把 todo/write 静默成只有当前投影。
+      // issue #119：任务清单面板是唯一展示入口；时间线卡仅在调试模式保留
+      // （`debugOnlyTimelineTypes`，推翻 v3.1.4「任务面板与时间线同时更新」的决策）。
+      // 事件本身仍消费：上面的 `_todos` 投影必须在实时、历史回放、catch-up 三处一致更新。
     }
     if (ev.type == 'turn/start') {
       _todoProjectionVersion++;

@@ -68,6 +68,10 @@ const debugOnlyTimelineTypes = <String>{
   // issue #53 / ADR 0027 §4：新插件已把它移出移动时间线；旧插件仍会下发，
   // 归入调试可见（普通模式不出现裸 `workspace/changes` 空卡）。
   'workspace/changes',
+  // issue #119：`todo/write` 是任务面板的投影事件，**任务清单面板是唯一展示入口**；
+  // 普通模式不再生成「任务清单已更新」独立时间线卡（推翻 v3.1.4「时间线同时更新」的
+  // 决策）。调试模式仍保留该卡与原始事件（服务端 DETAIL_VISIBLE_TYPES 已含该类型）。
+  'todo/write',
   'hook/invoked',
   'hook/result',
   'llm/retry',
