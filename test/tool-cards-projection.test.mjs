@@ -1,9 +1,11 @@
 /**
- * issue #54（M3 Batch 1）：工具卡结构化投影的单元测试。
+ * issue #54（M3 Batch 1）+ issue #66（M3 Batch 2-A）：工具卡结构化投影的单元测试。
  *
- * 覆盖：10 个工具的 `tool/call` summary 字段派生、路径 display（绝不下发绝对路径）、
+ * 覆盖：13 个工具的 `tool/call` summary 字段派生、路径 display（绝不下发绝对路径）、
  * write/edit 的 sizeKb/diff/added/deleted、`tool/result` 的 exitCode/signal/stopped/
- * resultCount（meta 与文本两种来源）、长输出/非法 JSON 的 fail-open、未知工具不投影。
+ * resultCount（meta 与文本两种来源）、长输出/非法 JSON 的 fail-open、未知工具不投影；
+ * issue #66 追加 todo_write（items/counts）、ask_user_question（questions/options/
+ * multiSelect）、skill（name）与 ask_user_question 结果 answers 的回放/缺省。
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -33,11 +35,25 @@ const result = (name, text, meta) =>
 	});
 const summaryOf = (event) => event.data?.summary;
 
-test("能力位：声明本插件实际投影的 10 个工具", () => {
+test("能力位：声明本插件实际投影的 13 个工具（Batch 2-A 追加 3 个非文件工具）", () => {
 	const caps = toolCardsCapabilityOf();
 	assert.equal(caps.version, 1);
 	assert.deepEqual(caps.tools, [...TOOL_CARD_TOOLS]);
-	assert.deepEqual(TOOL_CARD_TOOLS, ["bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image"]);
+	assert.deepEqual(TOOL_CARD_TOOLS, [
+		"bash",
+		"pwsh",
+		"read",
+		"write",
+		"edit",
+		"grep",
+		"glob",
+		"web_fetch",
+		"web_search",
+		"read_image",
+		"todo_write",
+		"ask_user_question",
+		"skill",
+	]);
 });
 
 test("command：bash/pwsh 的 command/workdir/background/description，换行压平并 clamp", () => {
