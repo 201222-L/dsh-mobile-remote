@@ -44,12 +44,20 @@ class SessionFilesController extends ChangeNotifier {
     required this.store,
     required this.sessionId,
     Api? apiClient,
+    this.initialRelativePath,
   }) : _api = apiClient ?? api;
 
   final AppStore store;
 
   /// 本页绑定的会话；浏览根由它的工作目录决定。
   final String sessionId;
+
+  /// issue #67：从工具卡路径进入时的初始 cwd 相对路径（可空）。
+  ///
+  /// `open()` 在解析出会话工作目录后消费它：先过客户端词法校验与 `isWithinRoot`，
+  /// 再把 `currentPath` 设为该文件的**父目录**并复用 [openFile] 的预览链路。
+  /// 不构造任意绝对路径、不新增端点；非法值 fail-closed（零请求）。
+  final String? initialRelativePath;
 
   final Api _api;
 
@@ -114,7 +122,27 @@ class SessionFilesController extends ChangeNotifier {
   ///
   /// 拿不到工作目录就不浏览——不退回全局选中工作区，也不让用户在这里挑一个；
   /// 那会与「看当前会话的文件」这个语义分叉（见 ADR 0015）。
+  /// issue #67：只有 **open()** 会消费构造时的 [initialRelativePath]；
+  /// [openRelativeFile] 复用同一条 root 解析，但只打开显式传入的 relative。
   Future<void> open() async {
+    if (!await _ensureRoot()) return;
+    // issue #67：从工具卡深链进入时直接定位到文件预览，不先列 root（少一次请求）；
+    // 非法 relative 由 _openResolvedRelative fail-closed（零请求）。
+    final initial = initialRelativePath;
+    if (initial != null && initial.isNotEmpty) {
+      await _openResolvedRelative(initial);
+      return;
+    }
+    await loadDir(root);
+  }
+
+  /// 解析会话工作目录（幂等；**只解析 root**，不加载目录、不消费 [initialRelativePath]）。
+  ///
+  /// reviewer P2：把「root 解析」与「initial 消费」分开，[openRelativeFile] 显式入口
+  /// 才不会间接触发构造参数的目录/文件请求（只请求点击目标）。成功返回 true；
+  /// 拿不到 cwd 时保持既有错误态并返回 false（不退回全局工作区）。
+  Future<bool> _ensureRoot() async {
+    if (root.isNotEmpty) return true;
     var cwd = _sessionCwd();
     if (cwd == null || cwd.isEmpty) {
       // 会话列表可能尚未拉取（冷启动直达会话页）：补拉一次再判断。
@@ -125,11 +153,58 @@ class SessionFilesController extends ChangeNotifier {
       stage = BrowseStage.error;
       errorReason = '这个会话没有工作目录，无法浏览文件';
       notifyListeners();
-      return;
+      return false;
     }
     root = cwd;
     currentPath = cwd;
-    await loadDir(cwd);
+    return true;
+  }
+
+  /// issue #67：按 **cwd 相对路径**直接打开文件预览（工具卡点击入口）。
+  ///
+  /// 这是 App 侧的唯一拼接点：路径必须通过 [resolveSessionRelativePath]（词法校验 +
+  /// `isWithinRoot` 兜底）。非法值不发任何请求。
+  ///
+  /// reviewer P2：**显式传入的 [relative] 优先，且只请求它**。root 尚未解析时只走
+  /// [_ensureRoot] 解析 root（不消费构造时的 [initialRelativePath]），随后直接打开
+  /// 本次参数；绝不先读取构造参数指向的文件。
+  Future<void> openRelativeFile(String relative) async {
+    // 先做纯词法校验：非法值在发任何请求（包括 root 解析的根目录列举）之前 fail-closed。
+    if (normalizeSessionRelativePath(relative) == null) {
+      stage = BrowseStage.error;
+      errorReason = '无法打开文件：路径不在会话工作目录内';
+      notifyListeners();
+      return;
+    }
+    // 只解析 root；不消费 initialRelativePath，也不读取它的目标。
+    if (!await _ensureRoot()) return;
+    await _openResolvedRelative(relative);
+  }
+
+  /// 已解析 root 后的相对路径预览：父目录 → `/files`（preview 路径的父目录必须成为
+  /// `currentPath`，否则 [refresh] 用 `currentPath + basename` 重取会取错嵌套文件）。
+  Future<void> _openResolvedRelative(String relative) async {
+    final pathSep = _inferredSep();
+    final path = resolveSessionRelativePath(root, relative, sep: pathSep);
+    if (path == null) {
+      stage = BrowseStage.error;
+      errorReason = '无法打开文件：路径不在会话工作目录内';
+      notifyListeners();
+      return;
+    }
+    sep = pathSep;
+    final parent = parentBrowsePath(path, sep);
+    await loadDir(isWithinRoot(root, parent) ? parent : root);
+    // 目录加载失败时不发 /files（避免在错误页上再做一次无意义的文件请求）。
+    if (stage == BrowseStage.listing) {
+      await openFile(_basename(path));
+    }
+  }
+
+  /// 首列目录前 `sep` 还是默认 `/`；root 是 Windows 形状时按既有启发式推断（对齐 loadDir）。
+  String _inferredSep() {
+    if (sep == '/' && root.contains('\\') && !root.contains('/')) return '\\';
+    return sep;
   }
 
   /// 加载某个目录。

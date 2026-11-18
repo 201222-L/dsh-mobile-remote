@@ -8,6 +8,7 @@
 // 异常让时间线整卡失败。
 
 import 'l10n.dart';
+import 'session_files_logic.dart';
 
 /// 工具卡类型（与服务端 `summary.kind` 对齐）。
 enum ToolCardKind { command, file, search, web, image, todo, question, skill }
@@ -106,6 +107,11 @@ class ToolCallSummary {
   final String? url;
   final String? query;
 
+  // issue #67（M3 Batch 2-B）：路径可点预览（服务端 cwd 相对路径 + 同现标记）。
+  // 两者严格同现：任一不成立即都当缺省，`canPreviewFile` 是唯一判据。
+  final String? relativePath;
+  final bool previewable;
+
   // issue #66：todo_write / ask_user_question / skill 的专用字段（全部可空 = 缺省）。
   final List<TodoCardItem>? todoItems;
   final int? todoPending;
@@ -134,6 +140,8 @@ class ToolCallSummary {
     this.include,
     this.url,
     this.query,
+    this.relativePath,
+    this.previewable = false,
     this.todoItems,
     this.todoPending,
     this.todoInProgress,
@@ -150,6 +158,11 @@ class ToolCallSummary {
   bool get isTodo => kind == ToolCardKind.todo;
   bool get isQuestion => kind == ToolCardKind.question;
   bool get isSkill => kind == ToolCardKind.skill;
+
+  /// issue #67：该工具卡的路径是否可点开预览（**唯一判据**）。
+  /// 服务端只在"目标完整验证通过"时同时下发 `relative` + `previewable:true`；
+  /// 客户端再对 relative 做一次词法校验（二次夹取），任一不成立都不可点。
+  bool get canPreviewFile => previewable && relativePath != null;
 
   /// 是否具备折叠行所需的最少信息；缺 summary 时调用方回退通用卡。
   bool get renderable => switch (kind) {
@@ -169,6 +182,10 @@ class ToolCallSummary {
     final tool = _textOf(json['tool']);
     if (kind == null || tool == null) return null;
     final counts = _todoCountsOf(json['counts']);
+    // issue #67：两字段严格同现——previewable 必须为 true 且 relative 通过客户端词法校验；
+    // 任一不成立都按不可点处理（fail-closed），旧插件无字段时天然为 false。
+    final relative = normalizeSessionRelativePath(json['relative']);
+    final previewable = json['previewable'] == true && relative != null;
     return ToolCallSummary(
       kind: kind,
       tool: tool,
@@ -189,6 +206,8 @@ class ToolCallSummary {
       include: _textOf(json['include']),
       url: _textOf(json['url']),
       query: _textOf(json['query']),
+      relativePath: previewable ? relative : null,
+      previewable: previewable,
       todoItems: _todoItemsOf(json['items']),
       todoPending: counts?.pending,
       todoInProgress: counts?.inProgress,
@@ -384,6 +403,22 @@ String? toolFoldText(ToolCallSummary summary) {
       // 前缀固定为 `skill`，不翻译工具/skill 名。
       return name == null ? null : 'skill · $name';
   }
+}
+
+/// issue #67：折叠行里可点的「路径段 + 其余文案」拆分。
+///
+/// 只在 file/image 卡、服务端两字段同现且 `relative` 通过客户端词法校验时返回。
+/// `path` 是**显示用** `filePath`（点击目标用 `relative`，二者不互为推导——display
+/// 可能被 clamp 或为 `~/…`/basename）；`suffix` 是折叠行文案去掉路径前缀后的部分
+/// （含前导 ` · `，如 ` · 行 2–5`），保持既有 ink3 样式。
+({String path, String suffix})? toolFoldPathParts(ToolCallSummary summary) {
+  if (!summary.isFile && !summary.isImage) return null;
+  if (!summary.canPreviewFile) return null;
+  final path = summary.filePath;
+  if (path == null) return null;
+  final text = toolFoldText(summary) ?? '';
+  if (!text.startsWith(path)) return null;
+  return (path: path, suffix: text.substring(path.length));
 }
 
 /// 折叠行文件统计（`NKB` / `+x −y`）；无该信息返回 null。

@@ -29,6 +29,8 @@ void openSessionFiles(
   SessionFilesController? controller,
   GitReadApi? gitReadApi,
   bool selectionMode = false,
+  String? initialRelativePath,
+  Api? apiClient,
 }) {
   Navigator.of(context).push(
     MaterialPageRoute<String?>(
@@ -38,6 +40,8 @@ void openSessionFiles(
         controller: controller,
         gitReadApi: gitReadApi,
         selectionMode: selectionMode,
+        initialRelativePath: initialRelativePath,
+        apiClient: apiClient,
       ),
     ),
   );
@@ -51,6 +55,8 @@ class SessionFilesScreen extends StatefulWidget {
     this.controller,
     this.gitReadApi,
     this.selectionMode = false,
+    this.initialRelativePath,
+    this.apiClient,
   });
 
   final AppStore store;
@@ -65,6 +71,13 @@ class SessionFilesScreen extends StatefulWidget {
   /// 选择模式：预览页的「提交历史」按钮改为确认选择，`Navigator.pop(previewPath)`
   /// 返回给调用方（文件历史页用），不打开第二个 GitBrowserSheet。
   final bool selectionMode;
+
+  /// issue #67：从工具卡路径进入时的初始 cwd 相对路径；仅在页面自建控制器时生效
+  /// （注入 `controller` 的测试自行构造，页面不覆盖其状态）。
+  final String? initialRelativePath;
+
+  /// 页面自建控制器时注入的 Api（测试用；生产为 null → 全局 [api] 单例）。
+  final Api? apiClient;
 
   @override
   State<SessionFilesScreen> createState() => _SessionFilesScreenState();
@@ -86,6 +99,8 @@ class _SessionFilesScreenState extends State<SessionFilesScreen> {
         SessionFilesController(
           store: widget.store,
           sessionId: widget.sessionId,
+          apiClient: widget.apiClient,
+          initialRelativePath: widget.initialRelativePath,
         );
     _ownsController = widget.controller == null;
     _gitApi = widget.gitReadApi ?? api;
