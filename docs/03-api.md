@@ -1028,3 +1028,601 @@ graph 的每个提交与 commit 详情都**保留旧的** `refs: string[]`（dep
 `HistoryEntry`（`fileHistory()` 元素）：`{ oid, shortOid, author, timestamp, subject, status }`；`status` 为 Git 单字母（`A`/`M`/`D`/`R`/`C`/`T`，实际出现哪些由 provider 决定）；`author` 只含姓名；`timestamp` 为 Unix 秒。provider 只返回有界结果，不应抛出宿主未知的错误码（未知错误会被映射为 `git-provider-unavailable`）。
 
 约束：provider 不得返回主机绝对路径、remote URL 或邮箱；路径事实必须限定在 `repositoryRoot` 授权仓库内。
+
+### 6.20 轮末产出物与 turnTails（issue #53）
+
+> 只读投影：插件读取会话日志里的 `deliverables/presented`（交付文件声明）与 `workspace/changes`（本轮改动的坐标事件），不写持久状态、不改轮次边界、不新增事件类型。两类来源都**不下发主机绝对路径**：路径只用于服务端解析与派生展示值。本节起的 §6.20–§6.24 全部是**加法扩展**：旧 App 忽略新字段即可，旧插件不下发对应能力位时客户端按各节说明降级。
+
+本轮同时新增三个只读端点：`GET /m/api/changes/summary`（§6.21）、`GET /m/api/changes/diff`（§6.22）、`GET|HEAD /m/api/turn-file`（§6.23）；三者的坐标都来自本节的事件投影。
+
+**能力位 `capabilities.turnTail`**
+
+`GET /m/api/bootstrap`（§3.1）与 SSE `hello` 帧（§3.6）的 `capabilities.turnTail` **同判据、同形状**：
+
+```json
+"turnTail": { "version": 1, "presented": true, "changed": true, "changesDiff": true }
+```
+
+| 字段 | 类型 | 判定与含义 |
+|---|---|---|
+| `version` | number | 契约版本，当前恒为 `1` |
+| `presented` | bool | 恒为 `true`：交付文件声明来自会话日志，本插件总能投影 |
+| `changed` | bool | 宿主**真的注册**了 `workspaceChanges` 服务，且 `summary` 是函数 |
+| `changesDiff` | bool | 在上者基础上 `diff` 也是函数（`summary` 与 `diff` 同时可用） |
+
+- **不按宿主版本推断**（ADR 0017）：服务缺失或方法不是函数时 `changed=false`、`changesDiff=false`，形状仍完整下发；探测过程不抛错。
+- 旧插件完全不下发该能力位，App 视为全部不可用并隐藏两张轮末卡。
+- SSE `hello` 的 `capabilities` 对象同时包含 `eventTimeline` / `turnOutline` / `fileRange` / `turnTail` / `toolCards` / `hold`；§3.6 的示例只截取了前两项。
+
+缺服务时的声明：
+
+```json
+"turnTail": { "version": 1, "presented": true, "changed": false, "changesDiff": false }
+```
+
+**交付声明 `deliverables/presented` 的移动投影**
+
+事件本身仍进入 `/history` 与 SSE 时间线（事件保真），但**不提供详情**：原始声明含主机路径，`/event-detail` 对它返回 `404 event-not-found`（fail-closed，见 §3.5）。
+
+摘要 envelope 与其它时间线事件一致（`seq` / `type` / 可选 `time` / `data`），`data` 只保留轮号、调用 id 与文件展示字段：
+
+```json
+{
+  "seq": 3,
+  "time": 1750000000123,
+  "type": "deliverables/presented",
+  "data": {
+    "turn": 2,
+    "callId": "call_present_1",
+    "files": [
+      { "id": "4f1c2a9b7d3e5081", "name": "a.ts", "display": "src/a.ts", "description": "最终交付" },
+      { "id": "b83d0e6f1a2c4d79", "name": "inside.txt", "display": "rel/inside.txt" }
+    ]
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `data.turn` | number? | 轮号；宿主声明缺失/非正整数时省略 |
+| `data.callId` | string? | 呈报该批文件的工具调用 id；缺失/空串时省略 |
+| `data.files` | array | 最多 **200** 条（按声明顺序截断，不另发截断标记）；`path` 为空/非字符串的条目直接丢弃 |
+| `data.files[].id` | string | 不泄路径的稳定身份：规范化路径（相对路径按所属会话 cwd 展开）的 SHA-256 前 **16 位十六进制**；`presented` 与 `/changes/summary` 的 `id` 同源，供 App 合并同一逻辑文件（路径无法归一化时为空串） |
+| `data.files[].name` | string | 记录路径的 basename（不是宿主提供的展示名） |
+| `data.files[].display` | string | 按下方规则派生的展示路径；**永不包含可拼接的主机绝对路径** |
+| `data.files[].description` | string? | 仅当非空时下发；≤200 字符（超出带「已截断」后缀） |
+
+`display` 派生规则（`mobileDisplayPath`，分隔符统一为 POSIX `/`）：
+
+- 记录路径为**相对路径**：原样下发（最多剥掉一次前导 `./`）。
+- 记录路径为**绝对路径**：
+  - 位于会话工作目录内 → 换算为 cwd 相对路径（记录 `/proj/src/a.ts`、cwd `/proj` → `src/a.ts`）；
+  - 恰为 cwd 本身 → 取 basename；
+  - 位于用户家目录下 → `~/…`（如 `~/.config/x`）；
+  - 其余 → 只给 **basename**。
+- cwd 未知（休眠会话/旧宿主）：相对路径仍原样，绝对路径退化为 basename（家目录规则仍先判定）。
+- 空路径 → 空串。
+
+同一轮多次 `present` 时，App 按 `id` 去重（缺 `id` 的旧记录退回 `(seq, index)` 坐标作身份，保守保留多条）、`description` 取该轮**最后一次**声明（按持久坐标 `seq` 优先、同 `seq` 比 `index` 判定，历史与实时同判据）；`id` 不可逆且不含主机前缀，只能用于合并，不能反推路径。
+
+**`/history` 增量 `turnTails`**
+
+`GET /m/api/history` 的 200 响应新增 `turnTails`（与 `events` 同级）。它由**一次遍历完整原始事件**得出（会话日志仍含被时间线过滤的 `workspace/changes`），**不受 `after`/`before`/`limit` 分页影响**；只包含**有产出物**的轮次，key 为轮号的字符串形式，按轮号升序：
+
+```json
+{
+  "ok": true,
+  "sessionId": "session-abc",
+  "after": 5121,
+  "hasMore": false,
+  "turnTails": {
+    "2": { "changes": true, "presented": true },
+    "3": { "changes": true, "presented": false }
+  },
+  "events": []
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `turnTails` | object | 恒存在；无任何产出物时为 `{}` |
+| `turnTails[turn].changes` | bool | 该轮存在 `workspace/changes` |
+| `turnTails[turn].presented` | bool | 该轮存在 `deliverables/presented` 且 `files` 非空 |
+
+- `workspace/changes` **不进入移动时间线**（`/history`、SSE 实时流、`/event-detail` 三处同规则：已知且不具呈现价值的记录），改动信号只经 `turnTails` / `tail` 下发。
+- `turn/end` 的 **SSE 摘要**额外携带 `data.tail`（同形；无产出物时字段整体缺省，不写 `null`）。该字段**只出现在实时摘要**，`/history` 的 `turn/end` 摘要不带它——历史侧用 `turnTails`：
+
+```json
+{ "seq": 4, "type": "turn/end", "time": 1750000000000, "data": { "turn": 2, "reason": { "kind": "completed" }, "tail": { "changes": true, "presented": true } } }
+```
+
+**客户端消费约定**：`presented=true` 渲染交付卡、`changes=true` 渲染改动卡（`changesDiff` 决定能否打开单文件对比，见 §6.22）；两项都缺省时不渲染任何轮末卡。历史与实时两条路径必须得到同一结论：实时用 `turn/end.data.tail` 立即收口，重连/回放用 `turnTails` 补齐。
+
+> 验证：`test/turn-tail-routes.test.mjs`（投影、能力位、`turnTails`、SSE `tail`）、`tools/timeline-contract-check.mjs`（§6.20 契约自检）。
+
+### 6.21 GET /m/api/changes/summary（本轮改动文件摘要）
+
+**鉴权**：沿用全局 token 闸门（§1）：`X-Mobile-Token` 或 Cookie 二者任一通过；未通过 → `401 auth-required`。Host 不在白名单 → `403 host-not-allowed`；口令失败超限 → `429 rate-limited`（仅启用口令时，见 §4）。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `sessionId` | string | 是 | 目标会话 |
+| `turn` | number | 是 | 轮号，非负整数（宿主轮号从 1 开始；`turn=0` 合法但不会命中任何轮次，通常得到 `absent`） |
+
+非 GET/HEAD → `405 method-not-allowed`（HEAD 与其它 GET 端点一致：路由放行、无响应体）。参数错误走 `400 bad-request`，不返回部分结果。
+
+**响应 200（`available`）**
+
+```json
+{
+  "ok": true,
+  "state": "available",
+  "turn": 2,
+  "files": [
+    {
+      "seq": 2,
+      "index": 0,
+      "id": "4f1c2a9b7d3e5081",
+      "display": "src/a.ts",
+      "name": "a.ts",
+      "added": 12,
+      "deleted": 3,
+      "binary": false,
+      "oversized": false
+    }
+  ],
+  "total": 2,
+  "added": 12,
+  "deleted": 3,
+  "truncated": false
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `state` | string | `available` / `absent` / `unavailable`（三态见下） |
+| `turn` | number | 回显请求的轮号 |
+| `files` | array | 改动文件列表，最多 **200** 条（`TURN_TAIL_MAX_FILES`） |
+| `files[].seq` | number | 该轮**最新**一条 `workspace/changes` 事件的 durable seq；`/changes/diff` 与 `/turn-file?kind=changed` 的 `seq` 坐标来源 |
+| `files[].index` | number | 宿主摘要 `files[]` 的下标（截断前；与 `/changes/diff`、`/turn-file` 的 `index` 同一坐标） |
+| `files[].id` | string | 与 `deliverables/presented` 同源的路径摘要（规范化路径的 SHA-256 前 16 位十六进制），不泄路径；无法归一化时为空串 |
+| `files[].display` | string | 按 §6.20 规则重新派生的展示路径（**不信任**宿主给的绝对 display） |
+| `files[].name` | string | 记录路径的 basename（记录路径缺失时退回展示值） |
+| `files[].added` / `deleted` | number | 宿主统计的非负整数；缺失/非法回退 `0` |
+| `files[].binary` | bool | 宿主标记的二进制文件；缺省 `false` |
+| `files[].oversized` | bool | 宿主标记的超大文件；缺省 `false` |
+| `total` | number | **全量**改动文件计数（宿主 `total`，缺失时回退宿主 `files.length`），不受 200 截断影响 |
+| `added` / `deleted` | number | 本轮全量增删行数；缺失/非法回退 `0` |
+| `truncated` | bool | 是否还有未下发的文件 |
+
+**三态（均为 HTTP 200 正常响应，不是错误）**
+
+| `state` | 触发条件 | 响应形状 |
+|---|---|---|
+| `available` | live 会话；该轮存在 `workspace/changes`；宿主 `summary()` 返回合法对象（`files` 为数组） | 正常文件列表；`files` 可为空数组（合法的空摘要） |
+| `absent` | live 会话，但该轮**没有** `workspace/changes` 事件（如只读轮/未产生改动） | `files: []`、`total: 0`、`added: 0`、`deleted: 0`、`truncated: false` |
+| `unavailable` | `workspaceChanges` 服务缺失或无 `summary`；会话非 live（休眠/宿主重启后未激活）；`summary()` 抛错或返回非法形状 | 同 `absent` 的空形状 |
+
+- 休眠会话与「改动服务缺失」都归入 `unavailable`，**不返回 5xx**——客户端统一降级，不占位、不报错。
+- `sessions` 里查不到该会话（不存在/休眠/已归档）同样归入 `unavailable`：本端点**不返回** `404 session-not-found`，因为「读不到改动」与「会话不存在」对轮末卡是同一种降级结果。
+- `absent` 与 `unavailable` 必须区分：前者是「这一轮确实没有改动」，后者是「现在读不到改动」。`available` 配空 `files` 也是合法的空列表（宿主明确给出「没有改动文件」）。
+- **截断**：`truncated=true` 的条件是「宿主 `files.length > 200`」或「宿主 `total > files.length`」（宿主自己还有更多未返回）；`total` 始终是全量计数，绝不因 200 截断而改小。
+- 响应**不含** `cwd`、`path`；文件只以 `id` / `display` / `name` / 统计字段出现。
+
+**HTTP 错误码**
+
+| HTTP | error 值 | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId`；缺 `turn`；`turn` 非非负整数 |
+| 401 | `auth-required` / `bad-token` | 未提供凭证 / 口令错误（§1） |
+| 403 | `host-not-allowed` | Host 不在白名单（docs/04） |
+| 405 | `method-not-allowed` | 非 GET/HEAD |
+| 429 | `rate-limited` | 口令失败超限（仅启用口令时；响应带 `Retry-After`，§4） |
+| 503 | `sessions-unavailable` | 宿主 `sessions` 服务不可用（此时无法判断会话是否 live） |
+
+> 注意：本端点不会返回 `503 changes-unavailable`——`workspaceChanges` 缺失是 200 的 `unavailable` 态（与 §6.22、§6.23 的 `changed` 分支不同）。
+
+> 验证：`test/turn-tail-routes.test.mjs`（available/absent/unavailable、200 上限与 `total`、绝对路径重派生、400/503）。
+
+### 6.22 GET /m/api/changes/diff（本轮单文件统一 diff）
+
+**鉴权**：同 §6.21（全局 token 闸门）。非 GET/HEAD → `405 method-not-allowed`。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `sessionId` | string | 是 | 目标会话（必须处于 live 状态） |
+| `turn` | number | 是 | 轮号，非负整数 |
+| `index` | number | 是 | 文件下标，非负整数；与 §6.21 的 `files[].index` 同一坐标 |
+
+**响应 200（可对比文本）**
+
+```json
+{
+  "ok": true,
+  "state": "available",
+  "diff": {
+    "kind": "text",
+    "display": "src/a.ts",
+    "before": true,
+    "after": true,
+    "coarse": false,
+    "diff": "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n-const a = 0;\n+const a = 1;\n+const b = 2;\n",
+    "truncated": false
+  }
+}
+```
+
+不可对比（二进制 / 超大）：
+
+```json
+{ "ok": true, "state": "available", "diff": { "kind": "binary", "display": "bin.dat" } }
+```
+
+`ok` 恒为 `true`，`state` 恒为 `available`；本端点**没有** 200 的降级态，读不到就是 4xx/5xx。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `diff.kind` | string | `text` / `binary` / `oversized` |
+| `diff.display` | string | 展示路径，按 §6.20 规则从宿主 `diff.path`（缺失时退回 `diff.display`）+ 会话 cwd 重新派生；仍取不到则 basename。绝不直通宿主绝对路径 |
+| `diff.before` | bool | 仅 `text`：对比前文件是否存在（`false` 表示新增） |
+| `diff.after` | bool | 仅 `text`：对比后文件是否存在（`false` 表示删除） |
+| `diff.coarse` | bool | 仅 `text`：布尔值，宿主标记的近似对比（宿主未标记时为 `false`） |
+| `diff.diff` | string | 仅 `text`：统一 diff 文本（见下） |
+| `diff.truncated` | bool | 仅 `text`：是否按体积上限截断 |
+
+文本渲染规则（供客户端 `GitFileViewer` 差异模式直接消费）：
+
+- 文件头：`--- a/<display>` 与 `+++ b/<display>`；`before:false` → `--- /dev/null`，`after:false` → `+++ /dev/null`。
+- 每个 hunk 一行头：`@@ -<oldStart>,<oldLines> +<newStart>,<newLines> @@`（宿主缺省/非法值按 `0` 渲染）。
+- hunk 内的行原样输出，保留前导 `+` / `-` / 空格；整段文本以换行结尾。
+- **512 KiB 体积上限**（`TURN_TAIL_DIFF_MAX_BYTES = 512 * 1024`）：按**行边界**截断——只保留放得下的完整行，置 `truncated:true`（绝不切断一行造成解析错位）；极端情况（首行本身即超限）`diff` 为空串且 `truncated:true`。
+- `binary` / `oversized` 分支只给 `kind` 与 `display`，**不带** `diff` 文本；客户端按 `kind` 显示不可对比提示。
+- 200 响应不含 `path` / `cwd`；文件名只以 `display` 出现。
+
+**HTTP 错误码**
+
+| HTTP | error 值 | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId`；缺 `turn` 或 `index`；`turn`/`index` 非非负整数 |
+| 401 | `auth-required` / `bad-token` | 未提供凭证 / 口令错误（§1） |
+| 403 | `host-not-allowed` | Host 不在白名单（docs/04） |
+| 404 | `diff-not-found` | 会话非 live（休眠/重启后未激活）；该轮没有 `workspace/changes`；宿主 `diff(sessionId, seq, index)` 返回空（index 越界、摘要失效） |
+| 405 | `method-not-allowed` | 非 GET/HEAD |
+| 429 | `rate-limited` | 口令失败超限（仅启用口令时，§4） |
+| 503 | `changes-unavailable` | `sessions` 服务缺失；`workspaceChanges.diff` 缺失；`diff()` 读取抛错 |
+
+> 与 §6.21 的差异：休眠会话在摘要端点是 200 `unavailable`，在本端点是 `404 diff-not-found`——没有 live 会话就没有可对比的基准；客户端按各自语义降级即可。
+
+> 验证：`test/turn-tail-routes.test.mjs`（统一 diff 文本、512 KiB 截断、binary、404/400/503、绝对路径重派生）。
+
+### 6.23 GET|HEAD /m/api/turn-file（按轮末记录坐标读取文件）
+
+**鉴权**：同 §6.21（全局 token 闸门）。
+
+**客户端只提交坐标，不提交路径**（GitLab #16 收紧方向）：文件路径由服务端从会话记录/改动摘要中解析；客户端若额外传 `path` 参数会被忽略。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `sessionId` | string | 是 | 目标会话 |
+| `kind` | string | 是 | `presented`（交付文件声明）或 `changed`（本轮改动文件）；其它值 → `400` |
+| `seq` | number | 是 | `presented`：`deliverables/presented` 事件的 durable seq；`changed`：该轮 `workspace/changes` 事件的 seq（即 §6.21 `files[].seq`） |
+| `index` | number | 是 | `presented`：`data.files[index]`；`changed`：宿主摘要 `files[index]` |
+
+`seq` / `index` 必须是非负整数。坐标解析规则：
+
+- `kind=presented`：先经 `sessionQuery.readEvent({ sessionId, seq })` 读取（休眠会话可用），回退 live 会话快照，再回退 `readSession` 的完整事件；事件必须是 `deliverables/presented`，`files[index].path` 必须是非空字符串。相对记录路径按读取到的会话 cwd 展开；cwd 未知且路径为相对 → 无法解析。**不使用** `workspaceChanges`。
+- `kind=changed`：要求 live 会话且 `workspaceChanges.summary` 可用；调用 `summary(sessionId, seq)` 取 `files[index].path`，相对路径按摘要 `cwd` 展开。休眠会话、服务缺失、摘要失败/形状非法 → `503 changes-unavailable`。
+- 两种坐标都**不接受客户端指定的路径**；文件不存在/不可读只在服务端解析后进行，错误体不回显主机路径。
+
+**响应：文件字节流**
+
+| 状态 | 场景 | 关键响应头 |
+|---|---|---|
+| `200` | 完整文件（或 HEAD 探测） | `content-length`、`etag`、`last-modified`、`accept-ranges: bytes` |
+| `206` | 单区间命中 | 追加 `content-range: bytes <start>-<end>/<size>` |
+| `304` | `If-None-Match` 命中（支持 `*` 与逗号列表） | 带 `etag` 与 `cache-control`，无响应体 |
+| `416` | Range 非法/越界 | `content-range: bytes */<size>`、`content-length: 0` |
+
+响应头约定：
+
+- `content-type`：按扩展名映射（`txt`/`md`/`json`/`pdf`/`png`/`jpg`/`jpeg`/`gif`/`webp`/`zip`/`gz`/`doc`/`docx`/`xls`/`xlsx`/`csv`/`yaml`/`yml`/`js`/`ts`/`py`/`html`/`mp4`/`apk` 等）；其余一律 `application/octet-stream`。
+- `content-disposition: attachment; filename*=UTF-8''<编码后的文件名>`。
+- `etag` 为强标记，含文件大小、mtime 与 ctime（避免同大小改写且恢复 mtime 后沿用旧断点）；`cache-control: no-store`。
+- 一律 `connection: close`（一问一答，取完即断，避免半关连接复用）。
+
+Range / 条件请求语义：
+
+- **只支持单区间**：`bytes=start-end`、`bytes=start-`、`bytes=-suffix`；多区间、格式非法、`start >= size`、`end < start` 都返回 `416`（带 `Content-Range: bytes */<size>`）。
+- `If-Range` 只有**当前强 ETag 完全一致**时才返回区间；旧标记、弱标记、日期标记一律退回完整 `200`（客户端应截断旧文件后从头写）。
+- `HEAD` 与 GET 返回同一组头（`content-length`、`etag`、`last-modified`，带 Range 时含 `content-range`），但无响应体。
+- `If-None-Match` 在 Range 判断之前生效：命中即 `304`，无响应体。
+
+**HTTP 错误码**
+
+| HTTP | error 值 | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId`；`kind` 不是 `presented`/`changed`；`seq`/`index` 缺失或非非负整数 |
+| 401 | `auth-required` / `bad-token` | 未提供凭证 / 口令错误（§1） |
+| 403 | `host-not-allowed` | Host 不在白名单（docs/04） |
+| 404 | `record-not-found` | `presented` 事件不存在/类型不符、`files[index]` 无有效 `path`、相对路径无 cwd 可解析；或 `changed` 的 `summary.files[index]` 无 `path`、相对路径无摘要 cwd 可解析 |
+| 404 | `file-not-found` | 记录存在，但目标文件已删除/不可读/不是普通文件（错误体不含主机路径） |
+| 404 | `not-found` | 非 GET/HEAD：该路径只注册 GET/HEAD，其它方法落到未知子路径 |
+| 429 | `rate-limited` | 口令失败超限（仅启用口令时，§4） |
+| 503 | `sessions-unavailable` | 宿主 `sessions` 服务不可用 |
+| 503 | `changes-unavailable` | `kind=changed` 且：`workspaceChanges.summary` 缺失、会话非 live、摘要读取失败或形状非法 |
+
+> `presented` 与 `changed` 的依赖不同：前者只需要会话记录/`sessionQuery`（休眠会话也能读），后者必须依赖 live 会话的 `workspaceChanges` 摘要。客户端应按 `kind` 分别处理 503 与 404。
+
+> 验证：`test/turn-tail-routes.test.mjs`（presented 字节与 Range/HEAD/ETag/304、工作区外与相对路径、休眠会话、changed 坐标、`record-not-found`/`file-not-found`/400/503、错误体脱敏）。
+
+### 6.24 工具卡结构化投影（issue #54 / #66 / #67 / #68）
+
+> `tool/call` / `tool/result` 的既有摘要字段不变，新增**结构化 `summary`**：只从原始参数、结果文本与宿主 `meta` 的稳定形状派生，字段走安全白名单；路径一律派生为展示值。解析失败、未知工具、畸形参数都不抛错——没有 `summary` 时 App 回退现有通用卡（fail-open）。
+
+**能力位 `capabilities.toolCards`**
+
+`GET /m/api/bootstrap` 与 SSE `hello` 帧**同判据、同形状**：
+
+```json
+"toolCards": {
+  "version": 1,
+  "tools": ["bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image", "todo_write", "ask_user_question", "skill"],
+  "ptc": { "version": 1 }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `version` | number | 工具卡投影版本，当前恒为 `1`（只增不改） |
+| `tools` | string[] | 本插件实际投影的 **13** 个工具，顺序固定；只增不删 |
+| `ptc.version` | number | PTC 子调用树版本，当前恒为 `1`（见 §6.24.1） |
+
+- 声明按**本插件实现**给出，不按宿主版本推断；未列入 `tools` 的工具（未知/自定义）一律回退通用卡。
+- `tools` 固定清单（13 个）：`bash`、`pwsh`、`read`、`write`、`edit`、`grep`、`glob`、`web_fetch`、`web_search`、`read_image`、`todo_write`、`ask_user_question`、`skill`。
+- 键序固定 `version` → `tools` → `ptc`：加法扩展不破坏既有消费方的文本断言。
+- 旧插件完全不下发该能力位，App 全部回退通用卡。
+
+**`tool/call` 的 `data.summary`**
+
+按工具名映射到固定 `kind`；除 `kind` / `tool` 外，其余字段均可选（取不到就缺省，绝不发 `null`）：
+
+| `kind` | 工具 | 字段 |
+|---|---|---|
+| `command` | `bash` / `pwsh` | `command`（换行压成空格，≤200）、`workdir`（展示路径，≤300）、`background`（仅 `run_in_background === true` 时发 `true`）、`description`（单行化，≤120） |
+| `file` | `read` / `write` / `edit` | `filePath`（展示路径，≤300）；`read` 另有 `offset` / `limit`（仅正整数，非法忽略）；`write` 另有 `sizeKb`、`diff?`、`diffTruncated?`；`edit` 另有 `sizeKb`、`added`、`deleted`、`diff?`、`diffTruncated?` |
+| `search` | `grep` / `glob` | `pattern`（单行化，≤200）、`path`（展示路径，≤300）；`grep` 另有 `include`（单行化，≤200） |
+| `web` | `web_fetch` | `url`（trim，≤500） |
+| `web` | `web_search` | `query`（`queries[]` 中第一个非空字符串，单行化，≤200） |
+| `image` | `read_image` | `filePath`（展示路径，≤300） |
+| `todo` | `todo_write` | `items[]`（≤50，元素 `{ content ≤200, status }`，`status` ∈ `pending` / `in_progress` / `completed`，未知状态归一为 `pending`）、`counts`（`{ pending, inProgress, completed }`，三数之和 = `items.length`） |
+| `question` | `ask_user_question` | `questions[]`（≤10，元素 `{ question ≤300, id? ≤120, header? ≤80, options? ≤20 [{ label ≤120, description? ≤200 }], multiSelect? }`）；缺 `question` 的题整题丢弃，无 `label` 的选项逐项丢弃 |
+| `skill` | `skill` | `name`（≤120） |
+
+补充口径：
+
+- **未知工具**：不产生 `summary`（`tool/call.data` 仍保留 `name` 与 `arguments`）。
+- **参数解析**：`data.arguments` 可以是 JSON 字符串或对象；非法 JSON/非对象 → 只给 `{ kind, tool }` 的最小摘要（App 仍能渲染通用卡）。`todo_write` 的 `todos`、`ask_user_question` 的 `questions` 不是数组时同样只给最小摘要（不猜结构）。
+- **`sizeKb`**：`write` = `ceil(content 的 UTF-16 长度 / 1024)`；`edit` = `ceil((old_string.length + new_string.length) / 1024)`（与桌面 `NKB` 同口径）。
+- **`added` / `deleted`**：`edit` 按行数近似（`old_string` 全列为删除、`new_string` 全列为新增；忽略末尾换行产生的空行），仅用于折叠行统计。
+- **内联 diff**：`write` 给全新增统一 diff（`--- /dev/null`、`+++ b/<display>`、`@@ -0,0 +1,N @@`）；`edit` 给近似统一 diff（`old_string` 全列为 `-`、`new_string` 全列为 `+`）。整段体积 ≤ **8 KiB**（`TOOL_CARD_DIFF_MAX_BYTES`）时下发 `diff`；超出则**整段缺省**并置 `diffTruncated: true`（不截半段，避免 App 的 diff 解析错位）。`filePath` 缺失时 `edit` 不给 `diff`，但仍给 `added` / `deleted`。
+- **路径**：`filePath` / `workdir` / `path` 均由 `mobileDisplayPath` 派生（规则同 §6.20），摘要内绝不出现主机绝对路径。
+- **预览字段**：`read` / `write` / `edit` / `read_image` 可能额外带 `relative` / `previewable`，见 §6.24.2。
+
+示例（`write`）：
+
+```json
+{
+  "seq": 51,
+  "type": "tool/call",
+  "data": {
+    "turn": 1,
+    "step": 1,
+    "callId": "call-1",
+    "name": "write",
+    "arguments": "{\"file_path\":\"src/new.ts\",\"content\":\"第一行\\nsecond line\\n\"}",
+    "summary": {
+      "kind": "file",
+      "tool": "write",
+      "filePath": "src/new.ts",
+      "sizeKb": 1,
+      "diff": "--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1,2 @@\n+第一行\n+second line\n"
+    }
+  }
+}
+```
+
+**`tool/result` 的 `data.summary`**
+
+| 字段 | 触发工具 | 来源与规则 |
+|---|---|---|
+| `exitCode` | 仅确定是 `bash` / `pwsh` | 结果**末尾**的 `[exit code: N]`（N 可为负）；只认最后一条且其后仅剩空白，stdout 正文里的同形文本不算 |
+| `signal` | 仅 `bash` / `pwsh` | 末尾的 `[killed by signal: X]`（≤40） |
+| `stopped` | 仅 `bash` / `pwsh` | 末尾的 `[stopped: …]`（≤120） |
+| `resultCount` | `grep` / `glob`；结果事件无工具名，或 `meta.shape` 为 `matches`/`paths` 时也认 | 优先宿主 `meta.total`；否则按稳定文本句式解析（`Found x of y matches`、`No matches found`、`(Showing x of y paths`、`No files found`，以及 glob 的纯路径行数）；解析不到则缺省 |
+| `answers` | 仅 `ask_user_question` | 结果文本为 JSON `{ answers: [{ id, selected, custom? }] }` → `[{ questionId, values[] }]`；`custom` 追加在 `values` 末尾，`selected` 为空时保留空数组；`pending` 形状/坏 JSON/无有效 `id` → 缺省 |
+
+- `exitCode` / `signal` / `stopped` 互斥：取结果末尾**最后一条**终止标记（signal/stopped/exit 由宿主追加，正文里的假标记不得覆盖真实状态）；工具名未知时不从内容猜，必须由 `/history` 或 SSE 按 `callId → tool/call.name` 关联后再判定。
+- `resultCount` 只对搜索类工具、结果事件无工具名、或宿主明确给出 `meta.shape` 的结果生效；已知的非搜索工具（如 `read`）文本里出现的 `Found 3 matches` 不会被误判。
+- 解析不到任何字段时不写 `summary`（不写空对象）。
+
+示例（`bash`）：
+
+```json
+{
+  "seq": 52,
+  "type": "tool/result",
+  "data": {
+    "turn": 1,
+    "step": 1,
+    "callId": "call-1",
+    "name": "bash",
+    "isError": false,
+    "text": "boom\n[exit code: 7]",
+    "summary": { "exitCode": 7 }
+  }
+}
+```
+
+**与既有字段的关系**
+
+- `tool/call.data` 的既有 `arguments`（≤2000 字符，截断带「已截断」后缀）与 `name` 不变，`summary` 是纯增量。
+- `tool/result.data` 的既有 `text`（≤2000 字符）、`isError`、`images`（≤20）不变，`summary` 是纯增量；终止状态从**未 clamp 的原始文本**解析，长输出末尾的 trailer 不会被 2000 字上限截掉。
+- `summary` 自身没有版本号字段，版本由 `capabilities.toolCards.version` 承担。
+
+> 验证：`test/tool-cards-projection.test.mjs`（13 工具字段、8 KiB diff 降级、结果解析）、`tools/timeline-contract-check.mjs`（工具卡投影契约自检）。
+
+#### 6.24.1 PTC 子调用投影（issue #68）
+
+> PTC（`run_code` 内被调度的工具）的子调用以两条会话事件表达：`tool/ptc-dispatch-start`（执行前）与 `tool/ptc-dispatch`（落定）。服务端把二者投影为同一形状的摘要，App 以 `callId` 合并 start→result，并挂到根工具卡下。
+
+**事件仍属 debug-only**：两条事件都在 `/history` 与 SSE 实时流下发（可回放、可调试），但**不在** `/event-detail` 的 allow-list（`DETAIL_VISIBLE_TYPES`）——摘要不带 `detail` 指针，直接请求详情返回 `404 event-not-found`；普通模式不单独渲染，调试模式可展开裸事件（§3.5、§3.6 的既有口径）。
+
+**start 摘要 `data`**
+
+```json
+{
+  "seq": 19,
+  "type": "tool/ptc-dispatch-start",
+  "data": {
+    "turn": 3,
+    "step": 2,
+    "rootCallId": "call_root",
+    "parentCallId": "call_root",
+    "callId": "call_root:ptc:1",
+    "name": "read",
+    "status": "running",
+    "summary": { "kind": "file", "tool": "read", "filePath": "README.md", "limit": 3 }
+  }
+}
+```
+
+**result 摘要 `data`**（在 start 字段基础上追加/改写）
+
+```json
+{
+  "seq": 20,
+  "type": "tool/ptc-dispatch",
+  "data": {
+    "turn": 3,
+    "step": 2,
+    "rootCallId": "call_root",
+    "parentCallId": "call_root",
+    "callId": "call_root:ptc:1",
+    "name": "read",
+    "status": "success",
+    "isError": false,
+    "summary": { "kind": "file", "tool": "read", "filePath": "README.md", "limit": 3 }
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `turn` / `step` | number? | 由**原始会话事件**（含被 timeline 过滤的 `step/start`）扫描到该 `seq` 为止派生；派生不到就省略，**禁止用 0 伪造**；App 不依赖它排序 |
+| `rootCallId` | string? | 根工具调用 id；缺失/非法（非字符串、空串、>300）时省略 |
+| `parentCallId` | string | 发起子调用的父 id；**必填**，非法/缺失 → 整条 `data` 缺省 |
+| `callId` | string | 内核 `subCallId`（形如 `<parentCallId>:ptc:<n>`）；wire 字段名是 `callId`，**不是** `subCallId`；非法/缺失 → 整条 `data` 缺省 |
+| `name` | string? | 工具名，≤120；空串/非字符串时省略 |
+| `status` | string | start 恒为 `running`；result 为 `success`（`isError !== true`）或 `failed`（`isError === true`） |
+| `isError` | bool | 仅 result 下发；start 不带 |
+| `text` | string? | **仅失败 result**：只含安全错误码（`error.code` 优先，缺失时 `error.name`），≤500；语法受限（见下），绝不使用 `content` / `arguments` / `meta` / `error.reason` |
+| `error` | object? | **仅失败 result**：只含 `{ name, code }`，各 ≤120；`name` 与 `code` 必须**都**通过安全码语法才下发 |
+| `summary` | object? | 折叠行安全摘要（见下），start 与 result 都可能带 |
+| `truncated` | true? | 仅「超预算通知」条目（见 50 子调用预算）；此时不带 `turn` / `step` / `summary` / `text` / `isError` / `error`，但保留 `rootCallId` / `parentCallId` / `callId` / `name` / `status` |
+
+**安全码语法**：`^[A-Za-z][A-Za-z0-9_.-]{0,63}$`，**不做 trim**——含空格、换行、制表符、路径字符（如 `/`）的原串一律非法。非法时 `text` 退回另一个合法字段（code 非法则用 name），`error` 需要 name 与 code 同时合法，否则省略。
+
+**`summary` 白名单**：复用 `tool/call` 的派生结果，但按 App 折叠行白名单裁剪，并限制整份 JSON ≤ **2 KiB**（`PTC_MAX_SUMMARY_BYTES`）；超预算整份降级为 `{ kind, tool }`，绝不抛错。
+
+| `kind` | 保留字段 |
+|---|---|
+| `command` | `command`、`workdir`、`background`、`description` |
+| `file` | `filePath`、`offset`、`limit`、`sizeKb`、`added`、`deleted` |
+| `search` | `pattern`、`path`、`include` |
+| `web` | `url`、`query` |
+| `image` | `filePath` |
+| `todo` | `items`、`counts` |
+| `question` | `questions` |
+| `skill` | `name` |
+
+- 明确**丢弃**仅为二级详情设计的 `diff` / `diffTruncated` / `relative` / `previewable`：PTC 折叠行不承载大块 diff 与跳转坐标。
+- `command` / `description` 是自由文本，PTC 侧额外做主机路径脱敏：先保护 `http(s)://` URL，再把 cwd/cwd realpath/家目录前缀替换为 `.` / `~`，其余绝对路径（含引号内、Windows、`file:///`、`--flag=/…` 形态）折叠为 `…/<basename>`。
+- `filePath` / `workdir` / `path` 等结构字段已由 `mobileDisplayPath` 派生，不重复处理。
+- 永不下发 `arguments` 原文、`meta`、`content`、`images`、`error.reason`。
+
+**50 子调用预算**
+
+- 计数作用域：`/history` **每个响应**新建一个预算；SSE **每会话**一个（进程内 Map，最多 200 个会话、FIFO 逐出；不持久化，重启清零）。
+- 计数粒度：按 `rootCallId` 分组（缺失归入空串根），组内按 `callId` 去重；同一 `callId` 的 start/result **共享 1 个名额**，重复事件不占新名额。
+- 前 50 个唯一 `callId` 全量投影；第 51 个唯一 `callId` 只发**一条**最小截断通知（不带 `turn` / `step` / `summary` / `text` / `isError` / `error`，每个计数作用域只发一次）：
+
+```json
+{
+  "seq": 99,
+  "type": "tool/ptc-dispatch-start",
+  "data": {
+    "rootCallId": "call_root",
+    "parentCallId": "call_root",
+    "callId": "call_root:ptc:51",
+    "name": "read",
+    "status": "running",
+    "truncated": true
+  }
+}
+```
+
+- 通知之后再出现的新 `callId`（含第 51 个 `callId` 的 result）一律降级为 `{ seq, type }`（有合法顶层 `time` 时仍保留 `time`），不带 `data`。
+- 已计数的前 50 个 `callId` 的迟到 result 仍**全量**投影；不同 `rootCallId` 的预算互相独立。
+- 纯函数调用（未传预算）永不截断，仅测试/内部使用。
+
+**客户端消费约定（子调用树）**
+
+- App 按 `parentCallId` 接边，`callId` 去重；start/result 任意顺序到达都不降级：result 先行时保持 settled，start 只补缺失的 `name`/`summary`；重复 result 原地 last-write-wins。
+- 父未知 → 节点保持 orphan（不渲染、不伪造根），父到达后逐层挂回；自环/祖先环/重复父静默忽略。
+- **深度上限 16 是客户端渲染规则，服务端不做深度截断**：App 把子树物化为 DFS 先序扁平列表（根下第 1 层 `depth=1`），最多渲染 16 层；第 17 层起对应根的 `subCallsTruncated=true`。App 侧每根另有 50 条二次上限（与服务端预算独立）。恰好 16 层的叶子不误报截断。
+
+> 验证：`test/ptc-subcalls-projection.test.mjs`（真实夹具投影、安全白名单、50 预算/notice/drop、turn/step 派生、debug-only）、`test/fixtures/ptc/`（DSH 0.2.2-rc.1 真实捕获）、`tools/timeline-contract-check.mjs`（PTC 契约自检）；深度 16 的客户端规则见 `dsh-mobile-app/lib/timeline.dart` 与 `dsh-mobile-app/test/ptc_subcalls_test.dart`。
+
+#### 6.24.2 路径可点预览字段（relative / previewable，issue #67）
+
+> 只对 `read`、`write`、`edit`、`read_image` 四个文件类工具生效；其它工具即便参数里带了 `file_path` 也不产生这两个字段（不因参数形状扩大能力）。语义是 **fail-closed**：不确定可预览时两字段一起缺省，绝不下发 `previewable: false`。
+
+**同现约束**：两字段**要么同时出现，要么同时缺省**。出现时形状恒为：
+
+```json
+{ "kind": "file", "tool": "read", "filePath": "src/a.ts", "relative": "src/a.ts", "previewable": true }
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `relative` | string | cwd 相对 POSIX 路径：无前导 `/`、无盘符、无 `\`、无空段/`.`/`..`/含 `:` 段；**≤300 字符**（`TOOL_CARD_PREVIEW_PATH_MAX`），超出**整段缺省、绝不截断**——截断后的路径会指向另一个文件 |
+| `previewable` | `true` | 出现时恒为 `true`；不下发 `false`，也不下发 `null` |
+
+**fail-closed 清单**
+
+| 情形 | 结果 |
+|---|---|
+| cwd 缺失/空/非绝对路径/不存在/不是目录 | 两字段缺省 |
+| 原始路径非字符串、空串、含 NUL、首尾有空白、原始长度 >4096 | 两字段缺省 |
+| POSIX 形态 cwd 下原始路径含 `\` | 缺省（`\` 在 POSIX 是合法文件名字符，归一成 `/` 可能指向另一份文件；仅 Windows 形态 cwd 才做 `\`→`/` 归一） |
+| 绝对路径在 cwd 之外（含 `C:\…`、UNC、`/etc/passwd`） | 缺省，且**不对该路径做任何 fs 探测**（判定不得变成敏感目录存在性探测器） |
+| 空段 / `.` / `..` / 含 `:` 的段（`/`、`//x`、`a//b`、`src/./b.ts`、`a/../b`） | 缺省；只剥一次前导 `./` |
+| 目标是目录 / FIFO / socket / 设备 | 缺省（`/turn-file` 只对普通文件开放） |
+| 目标不可读（权限不足） | 缺省 |
+| 符号链接逃逸 cwd | 缺省；目标仍在 cwd 内则允许，`relative` 保留用户路径的词法形状（如 `alias/inner.txt`） |
+| 文件不存在（如 `write` 执行前的新文件） | 缺省（存在性口径：摘要生成时目标必须已存在） |
+| `relative` 长度 >300 | 两字段缺省（不截断） |
+
+**探测边界**：
+
+- preview 判定本身**零 fs 探测 cwd 外的绝对路径**：先完成全部词法校验，只有词法已在 cwd 内的候选才做 cwd realpath、目标 realpath containment（拒绝符号链接逃逸）与 `isFile` / `R_OK` 验证。
+- 同一条摘要的 `display` / `filePath` 派生（`mobileDisplayPath`）在合并 cwd 符号链接别名时可能对已给出的绝对路径祖先做 realpath；那是 §6.20 / 工具卡的既有 display 语义，不属于 preview 判定。
+- `filePath` 的 300 字 clamp 与 `relative` 的 300 字上限是两件事：前者是既有 display 口径（可截断），后者超限**整段缺省**。
+
+> 验证：`test/issue67-file-path-preview.test.mjs`（cwd 内外、词法拒绝、符号链接、不可读/FIFO、300 字边界、四工具覆盖、同现约束）、`test/tool-cards-projection.test.mjs`（旧字段只增不改）。
