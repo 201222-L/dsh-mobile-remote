@@ -861,7 +861,7 @@ class _ChatScreenState extends State<ChatScreen> {
             _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
         if (viewport != null && viewport.hasSize) {
           final viewportTop = viewport.localToGlobal(Offset.zero).dy;
-          final lineOffset = math.min(96.0, viewport.size.height * 0.2);
+          final lineOffset = _readingLineOffset(viewport);
           final line = viewportTop + lineOffset;
           final pixels = _scrollCtrl.hasClients
               ? _scrollCtrl.position.pixels
@@ -1188,7 +1188,15 @@ class _ChatScreenState extends State<ChatScreen> {
         targetIndex: childIndex < 0 ? childCount - 1 : childIndex,
         childCount: childCount,
       );
-      if (!current() || outcome.ok) return;
+      if (!current()) return;
+      if (outcome.ok) {
+        // 定位器只保证"目标与视口相交"：内容变窄（轨道留白）后估算落点可能让目标
+        // 停在阅读线下方，此时高亮仍停在上一轮。再对齐一次到阅读线，保证"点第 N 轮
+        // 就高亮第 N 轮"；已在阅读线上方则不动（保持最小滚动）。
+        final key = _turnKeysBySeq[anchor.seq];
+        if (_turnKeyUnderReadingLine(key)) await _revealTurnKey(key);
+        return;
+      }
       if (!mounted) return; // 让分析器认得 context 守卫（current() 已含 mounted）
       final message = switch (outcome.failure) {
         TurnLocateFailure.notInWindow => L10n.t(
@@ -1204,6 +1212,23 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       if (current()) setState(() => _busyTurn = null);
     }
+  }
+
+  /// 阅读线相对视口顶部的偏移（`_updateActiveTurn` 与定位落点复核共用同一公式）。
+  double _readingLineOffset(RenderBox viewport) =>
+      math.min(96.0, viewport.size.height * 0.2);
+
+  /// 目标轮边界的顶边是否落在阅读线下方——此时按几何判定高亮会停在上一轮。
+  bool _turnKeyUnderReadingLine(GlobalKey? key) {
+    final box = key?.currentContext?.findRenderObject() as RenderBox?;
+    final viewport =
+        _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || viewport == null || !box.hasSize || !viewport.hasSize) {
+      return false;
+    }
+    final top = box.localToGlobal(Offset.zero).dy;
+    final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+    return top > viewportTop + _readingLineOffset(viewport);
   }
 
   /// 精调：把已构建的目标边界带进视口（不负责判定成功）。
@@ -6740,7 +6765,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadChangedSummary(String sessionId, int turn) async {
     final generation = _tailLoadGeneration;
-    final stillCurrent = () =>
+    bool stillCurrent() =>
         mounted && generation == _tailLoadGeneration && sessionId == _tailSessionId;
     try {
       for (var attempt = 0; attempt < 2; attempt += 1) {
