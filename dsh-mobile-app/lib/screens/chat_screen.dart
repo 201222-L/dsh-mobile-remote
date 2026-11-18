@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show setEquals, visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
@@ -19,18 +19,18 @@ import '../download.dart';
 import '../download_error.dart';
 import '../download_foreground.dart';
 import '../resumable_download.dart';
-import 'download_resume_picker.dart';
 import '../scroll_follow.dart';
 import '../logger.dart';
 import '../l10n.dart';
 import '../models.dart';
+import '../slash_input.dart';
 import '../store.dart';
 import '../timeline.dart';
 import '../theme.dart';
 import '../turn_navigation.dart';
 import '../turn_process.dart';
 import '../inline_path.dart';
-import '../slash_input.dart';
+import '../pending_image_preview.dart';
 import '../turn_outline.dart';
 import '../turn_tail.dart';
 import '../turn_file_actions.dart';
@@ -48,10 +48,43 @@ import '../widgets/git_logo.dart';
 import '../widgets/turn_navigator_rail.dart';
 import '../widgets/turn_tail_cards.dart';
 import 'sheets.dart';
+import 'download_resume_picker.dart';
 import 'session_files_screen.dart';
 import 'session_tools_sheet.dart';
 import 'turn_changes_diff_screen.dart';
 import 'turn_file_preview_screen.dart';
+
+// ── issue #80：轮次导航 Gutter 36 ────────────────────────────────────
+// 轨道视觉宽 28dp（刻度条 20dp 右对齐），右侧留 8dp 不命中的 gutter；消息列表
+// 右侧 padding 在轨道可见时为 28+8=36dp，轨道隐藏（<2 轮/接近底部/历史浏览）时
+// 恢复默认 16dp，两者在**同一帧**由 build 内同一个 gate 决定。
+const double turnRailWidth = 28;
+const double turnRailRightGutter = 8;
+const double turnRailRightPadding = turnRailWidth + turnRailRightGutter; // 36
+const double chatMessageDefaultRightPadding = 16;
+
+/// 轨道区底部预留：圆钮高 38 + bottom 12 + 与圆钮至少 12dp 避让 = 62dp。
+const double turnRailBottomReserve = 62;
+
+// ── issue #81：320+大字下「回到底部」圆钮遮挡尾段 ─────────────────────
+// 圆钮也占用右侧 action gutter：可见时正文右 padding 取 38（≥轨道 36），并把圆钮
+// 移到 right 0（占用最后 38dp）；圆钮隐藏时回到轨道/默认口径。两者同帧计算。
+const double jumpToLatestSize = 38;
+const double jumpToLatestRightPadding = jumpToLatestSize;
+
+/// 消息列表右 padding 的唯一判定（issue #80/#81 共用，供 widget/单测断言四组合）。
+///
+/// - 圆钮可见（用户上翻出「回到底部」）：38（按钮占用最后 38dp）；
+/// - 否则轨道可见：36（轨道 28 + 右留白 8）；
+/// - 都隐藏：16（默认）。
+double listRightPaddingFor({
+  required bool jumpVisible,
+  required bool railVisible,
+}) {
+  if (jumpVisible) return jumpToLatestRightPadding;
+  if (railVisible) return turnRailRightPadding;
+  return chatMessageDefaultRightPadding;
+}
 
 /// v3.0.0(热修 07)：服务端"明确拒绝"的错误码白名单——这些代表消息**未被投递且服务端无回执**，
 /// 可直接判失败；其余（`bridge-unavailable`、`receipt-pending`、传输层 reset/超时等）一律走回执
@@ -101,7 +134,8 @@ final RegExp _commandLinePattern = RegExp(r'^/([a-z][a-z0-9_-]*)(?:\s|$)');
 /// 语法后果（有意，非疏漏）：`/m/api/send 是什么` **不是**命令（`m` 之后是 `/` 而不是空白），
 /// 因此这类路径样式的消息照旧原样发给模型；而 `/tmp` 这类单段文本**是**命令——语法上无法与
 /// 命令名区分，由"目录里查不到该名字 → 提示一次未知命令后照常发送"兜底（见 `_tryRunCommandLine`）。
-bool isCommandLine(String text) => _commandLinePattern.hasMatch(text.trim());
+bool isCommandLine(String text) =>
+    _commandLinePattern.hasMatch(text.trim());
 
 /// issue #25：命令行里的命令名（不是命令行时 null）。入参内部先 trim，与 [isCommandLine] 同口径。
 String? commandLineName(String text) =>
@@ -245,9 +279,7 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
           elevation: 12,
           color: Theme.of(context).colorScheme.surface,
           // 高度贴合内容后它是一条"浮动短条"，左侧圆角让它与右边缘的贴合看起来是有意的
-          borderRadius: const BorderRadius.horizontal(
-            left: Radius.circular(14),
-          ),
+          borderRadius: const BorderRadius.horizontal(left: Radius.circular(14)),
           clipBehavior: Clip.antiAlias,
           child: SizedBox(
             width: 56,
@@ -303,27 +335,6 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
       ),
     );
   }
-}
-
-// 轮次导航 action gutter：轨道 28 + 右留白 8；回到底部圆钮 38 也占用同一 gutter。
-const double turnRailWidth = 28;
-const double turnRailRightGutter = 8;
-const double turnRailRightPadding = turnRailWidth + turnRailRightGutter; // 36
-const double jumpButtonRightPadding = 38;
-// issue #81：圆钮尺寸与右 padding（与 #80 的 action gutter 同帧计算）。
-const double jumpToLatestSize = 38;
-const double jumpToLatestRightPadding = jumpToLatestSize;
-const double chatMessageDefaultRightPadding = 16;
-const double turnRailBottomReserve = 62;
-
-/// 消息列表右侧留白：圆钮可见优先 38，其次轨道 36，都隐藏恢复 16。
-double listRightPaddingFor({
-  required bool jumpVisible,
-  required bool railVisible,
-}) {
-  if (jumpVisible) return jumpButtonRightPadding;
-  if (railVisible) return turnRailRightPadding;
-  return chatMessageDefaultRightPadding;
 }
 
 /// issue #98：本会话内的工作区外图片授权记录（不持久化）。
@@ -382,18 +393,6 @@ class _ChatScreenState extends State<ChatScreen> {
   double? _bodyMaxHeight;
   final _bottomControlsKey = GlobalKey();
   final _slashScroll = ScrollController();
-  // issue #90/#97：斜杠菜单/高亮共用目录（命令沿用 /commands，技能新增 /api/skills）。
-  List<Map<String, dynamic>>? _slashCommands;
-  List<Map<String, dynamic>>? _slashSkills;
-  String? _slashCatalogSessionId;
-  bool _slashCatalogLoading = false;
-  bool _slashSkillsUnavailable = false;
-  DateTime? _slashSkillsUnavailableUntil;
-  Future<void>? _slashCatalogInFlight;
-  String? _slashCatalogInFlightId;
-  int _slashCatalogGeneration = 0;
-  bool _slashCommandsUnavailable = false;
-  SlashToken? _slashToken;
   int _slashRemaining = 0;
   bool _slashOverflow = false;
   bool _slashAtBottom = true;
@@ -692,7 +691,6 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮（派生展示，不反写意图）
-  bool _turnRailVisible = false; // 本帧轨道可见性（列表 padding 与轨道共用 gate）
   // ── issue #114（§5.2）：跟随意图/拖拽/世代/待执行校正的唯一 owner ──────────
   // 生产只负责把 ScrollMetrics/用户手势/布局版本喂给它，并执行它给出的有界校正；
   // 意图判定、合并、预算、执行时守卫都在 ScrollFollowCoordinator 内（可单测）。
@@ -708,7 +706,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _activityBarShown = false;
   double _lastGapViewportHeight = 0;
   bool _suppressOlderPaging = false; // 占位调整帧内：位置修正不得触发「上翻加载更早」
-  // issue #81：本帧消息列右 padding；宽度变化必须让依赖宽度的尺寸/内容偏移缓存失效。
+  // issue #80：本帧轨道是否可见——列表右 padding 与轨道定位共用同一个 gate（同帧生效）。
+  bool _turnRailVisible = false;
+  // issue #81：本帧消息列右 padding；宽度变化必须让依赖宽度的尺寸/内容偏移缓存失效，
+  // 否则「回到底部」圆钮/轨道显隐导致正文重排后，轮次定位仍按旧宽度高度估算。
   double _lastLiveRightPadding = -1;
   // issue #89：右 padding 同帧变化会导致正文重排/max 收缩；帧后 clamp 越界。
   int _paddingReconcileAttempts = 0;
@@ -732,6 +733,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 派生展示：回底按钮/刻度轨是否可见（只读探针，供需求用例断言）。
   @visibleForTesting
   bool get debugShowJumpToLatest => _showJumpToLatest;
+
+  /// 当前跟随意图（只读探针）：需求/按钮用例直接断言意图，而不是用几何反推。
+  @visibleForTesting
+  FollowIntent get debugFollowIntent => _scrollFollow.intent;
 
   /// 调度契约探针：owner 的 ensureFrame → 生产实现必须自己调度一帧
   /// （post-frame 回调本身不调度帧，必须 ensureVisualUpdate）。
@@ -903,7 +908,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // 已构建边界最后一次实测的**内容偏移**（turn → offset）：边界被懒构建回收后，
   // 仍能用它推断阅读线落在哪一轮（长回复场景不再无条件回退到最新轮）。
   final Map<int, double> _turnContentOffset = {};
-
   /// issue #31（方案 B）：**条目尺寸缓存**——已构建子项的实测高度，按稳定 key
   /// （`seq` 优先，工具卡用 `latestSeq`）记录。定位时用它算"索引 → 偏移"的估算，
   /// 这是本体虚拟化列表 `getOffsetForIndex` 的等价物：长跳一步落到目标附近，
@@ -963,6 +967,20 @@ class _ChatScreenState extends State<ChatScreen> {
   // ⊕ 菜单取回目录时同步刷新；`command-not-found`（目录过期）时丢弃、下次提交重新拉取。
   List<Map<String, dynamic>>? _commandCatalog;
   String? _commandCatalogSessionId;
+  // issue #90：斜杠菜单/高亮共用目录（命令沿用 /commands，技能新增 /api/skills）。
+  // 按 session 缓存；失败保持 null 以便下次重试；技能 unavailable 用标志区分。
+  List<Map<String, dynamic>>? _slashCommands;
+  List<Map<String, dynamic>>? _slashSkills;
+  String? _slashCatalogSessionId;
+  bool _slashCatalogLoading = false;
+  bool _slashSkillsUnavailable = false;
+  DateTime? _slashSkillsUnavailableUntil;
+  Future<void>? _slashCatalogInFlight;
+  String? _slashCatalogInFlightId;
+  int _slashCatalogGeneration = 0;
+
+  bool _slashCommandsUnavailable = false;
+  SlashToken? _slashToken;
   bool _pickingImages = false; // 选图在途锁（相册多选期间防重复触发）
   GitBrowserController? _gitController;
 
@@ -1084,6 +1102,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (current != null && _mySessionId != null && current != _mySessionId) {
       _mySessionId = current;
       _clearImageConsentState();
+      // issue #114：会话身份变化丢弃旧世代/旧跟随意图。
+      _scrollFollow.onSessionChanged();
     }
   }
 
@@ -1175,12 +1195,14 @@ class _ChatScreenState extends State<ChatScreen> {
       // SliverList 的 scrollExtent 不含外层 SliverPadding 的 6px 底部内边距。
       // 没有任何消息/草稿时不加占位：否则「历史还在加载」的首帧会把空列表测成
       // 满屏占位，内容到达后（下一帧才重测）会被推到视口外——真机首屏与测试都会闪。
+      // issue #76 回归：一旦加载过更早历史页，滚动位置属于历史浏览/懒构建区域，
+      // 短内容底部占位会与位置修正互相拉扯（paged 场景 provisional 行被推出）；
+      // 该场景保持既有顶部对齐，只在「当前只有实时窗口」时启用底部占位。
       final hasContent = _items.isNotEmpty ||
           _olderItems.isNotEmpty ||
           _draft.isNotEmpty;
-      final contentExtent = hasContent ? geometry.scrollExtent + 6 : 0.0;
-      // issue #77：分页加载过更早消息后不做短内容底部占位（会与位置修正互相拉扯）。
       final paged = _olderItems.isNotEmpty;
+      final contentExtent = hasContent ? geometry.scrollExtent + 6 : 0.0;
       final desired = hasContent
           ? math.max(0.0, viewport.size.height - contentExtent)
           : 0.0;
@@ -1281,12 +1303,10 @@ class _ChatScreenState extends State<ChatScreen> {
           // 判据复用时间线既有的一份（`_MsgItem.injected` + `timelineIsInjectedNoise`），
           // 不在这里另起一套，也不因普通/调试模式而分叉。
           final human = !item.injected && !timelineIsInjectedNoise(item.text);
-          rows.add(
-            TurnRow(
-              role: human ? TurnRowRole.user : TurnRowRole.other,
-              text: item.text,
-            ),
-          );
+          rows.add(TurnRow(
+            role: human ? TurnRowRole.user : TurnRowRole.other,
+            text: item.text,
+          ));
         case _MsgKind.assistant:
           rows.add(TurnRow(role: TurnRowRole.assistant, text: item.text));
         default:
@@ -1358,16 +1378,14 @@ class _ChatScreenState extends State<ChatScreen> {
             _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
         if (viewport != null && viewport.hasSize) {
           final viewportTop = viewport.localToGlobal(Offset.zero).dy;
-          final lineOffset = _readingLineOffset(viewport);
+          final lineOffset = math.min(96.0, viewport.size.height * 0.2);
           final line = viewportTop + lineOffset;
-          final pixels = _scrollCtrl.hasClients
-              ? _scrollCtrl.position.pixels
-              : 0.0;
+          final pixels =
+              _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
           final mountedTurns = <({int turn, double top})>[];
           for (final anchor in anchors) {
-            final box =
-                _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
-                    as RenderBox?;
+            final box = _turnKeysBySeq[anchor.seq]?.currentContext
+                ?.findRenderObject() as RenderBox?;
             if (box == null || !box.hasSize) continue;
             final top = box.localToGlobal(Offset.zero).dy;
             mountedTurns.add((turn: anchor.turn, top: top));
@@ -1418,9 +1436,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
     final out = <TurnMeasurement>[];
     for (final anchor in _turnAnchors) {
-      final box =
-          _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
-              as RenderBox?;
+      final box = _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+          as RenderBox?;
       if (box == null || !box.hasSize) continue;
       final offset = pixels + (box.localToGlobal(Offset.zero).dy - viewTop);
       _turnContentOffset[anchor.turn] = offset;
@@ -1498,11 +1515,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }) {
       final sliver = key.currentContext?.findRenderObject();
       if (sliver is! RenderSliverMultiBoxAdaptor) return;
-      for (
-        var child = sliver.firstChild;
-        child != null;
-        child = sliver.childAfter(child)
-      ) {
+      for (var child = sliver.firstChild;
+          child != null;
+          child = sliver.childAfter(child)) {
         final parentData = child.parentData;
         if (parentData is! SliverMultiBoxAdaptorParentData) continue;
         final local = parentData.index;
@@ -1511,9 +1526,11 @@ class _ChatScreenState extends State<ChatScreen> {
         final offset = pixels + (child.localToGlobal(Offset.zero).dy - viewTop);
         final index = base + contentIndex;
         final height = child.size.height;
-        out.add(
-          BuiltChildMeasurement(index: index, offset: offset, height: height),
-        );
+        out.add(BuiltChildMeasurement(
+          index: index,
+          offset: offset,
+          height: height,
+        ));
         // issue #31（方案 B）：顺手把实测高度回填进尺寸缓存（key 稳定，prepend/
         // 加载条出现都不会错位）。缓存只增不改，超过上限时整体清空重建。
         final stableKey = _itemKeyAtIndex(index);
@@ -1525,22 +1542,14 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // center 之前：`_olderItems` 最新在前，内容顺序与子项序号相反。
-    collect(
-      _olderSliverKey,
-      0,
-      count: _olderItems.length,
-      contentOrderReversed: true,
-    );
+    collect(_olderSliverKey, 0,
+        count: _olderItems.length, contentOrderReversed: true);
     // center 之后：`SliverMultiBoxAdaptorParentData.index` **已经包含**首项
     // 「更早」按钮 / 加载条，所以基准只加前一条 sliver 的长度，不能再加一次首项偏移——
     // 否则加载条显示期间消息的实测 index 会比目标坐标系大 1，定位器把前一条消息当成目标
     // （第二轮评审 note 1080 的对照复现：同样数据，仅"上翻在途"这一项不同就跳不到）。
-    collect(
-      _liveSliverKey,
-      _olderItems.length,
-      count: _items.length,
-      contentOrderReversed: false,
-    );
+    collect(_liveSliverKey, _olderItems.length,
+        count: _items.length, contentOrderReversed: false);
     return out;
   }
 
@@ -1590,8 +1599,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (count > 0) average = total / count;
     }
     if (average <= 0) {
-      final extent =
-          _scrollCtrl.position.maxScrollExtent -
+      final extent = _scrollCtrl.position.maxScrollExtent -
           _scrollCtrl.position.minScrollExtent;
       if (extent <= 0) return null;
       average = extent / childCount;
@@ -1620,8 +1628,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // 内容高度未必同尺度——实测里热跳的首个估算因此偏小近 2 倍，逼出 3–4 步二分。
     // 把"已缓存实测高度 + 未缓存均值"的总权重映射到布局给出的真实 extent，缓存只影响
     // **相对权重**，估算随实际高度分布伸缩而不是随样本均值漂移。
-    final extent =
-        _scrollCtrl.position.maxScrollExtent -
+    final extent = _scrollCtrl.position.maxScrollExtent -
         _scrollCtrl.position.minScrollExtent;
     if (extent <= 0) return null;
     final total = estimateSignedContentOffset(
@@ -1669,11 +1676,13 @@ class _ChatScreenState extends State<ChatScreen> {
             _scrollCtrl.hasClients ? _scrollCtrl.position.maxScrollExtent : 0,
         currentOffset: () =>
             _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0,
-        viewportExtent: () =>
-            _scrollCtrl.hasClients ? _scrollCtrl.position.viewportDimension : 0,
+        viewportExtent: () => _scrollCtrl.hasClients
+            ? _scrollCtrl.position.viewportDimension
+            : 0,
         // 目标一律按**边界持久 seq** 绑定：同轮号的重试边界不会误伤规范边界。
         isTargetLoaded: () => _turnAnchors.any((a) => a.seq == anchor.seq),
-        isTargetBuilt: () => _turnKeysBySeq[anchor.seq]?.currentContext != null,
+        isTargetBuilt: () =>
+            _turnKeysBySeq[anchor.seq]?.currentContext != null,
         isTargetInView: () => _turnKeyInViewport(_turnKeysBySeq[anchor.seq]),
         reveal: () => _revealTurnKey(_turnKeysBySeq[anchor.seq]),
         measure: _measureTurnBoundaries,
@@ -1698,23 +1707,19 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return; // 让分析器认得 context 守卫（current() 已含 mounted）
       final message = switch (outcome.failure) {
         TurnLocateFailure.notInWindow => L10n.t(
-          '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
-          'Could not locate turn ${anchor.turn}: it is outside the loaded range',
-        ),
+            '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
+            'Could not locate turn ${anchor.turn}: it is outside the loaded range',
+          ),
         _ => L10n.t(
-          '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
-          'Could not locate turn ${anchor.turn}: still out of view after several attempts',
-        ),
+            '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
+            'Could not locate turn ${anchor.turn}: still out of view after several attempts',
+          ),
       };
       showToast(context, message);
     } finally {
       if (current()) setState(() => _busyTurn = null);
     }
   }
-
-  /// 阅读线相对视口顶部的偏移（`_updateActiveTurn` 与定位落点复核共用同一公式）。
-  double _readingLineOffset(RenderBox viewport) =>
-      math.min(96.0, viewport.size.height * 0.2);
 
   /// 精调：把已构建的目标边界带进视口（不负责判定成功）。
   Future<void> _revealTurnKey(GlobalKey? key) async {
@@ -2056,6 +2061,12 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.store.refreshSessionConfig();
       // issue #25 二期：会话打开后拉一次轮次大纲（能力缺失/读取失败都退回一期行为）。
       unawaited(_refreshTurnOutline());
+      // issue #90：只有当前时间线里出现 slash 消息时才需要目录（避免普通会话多两次请求）；
+      // 输入 `/` 时也会触发。失败静默，下次输入/加载重试。
+      if (_items.any((m) =>
+          m.kind == _MsgKind.user && slashTextTokens(m.text).isNotEmpty)) {
+        unawaited(_ensureSlashCatalog(id));
+      }
     } catch (e) {
       if (!mounted || generation != _loadGeneration || id != _mySessionId) {
         return;
@@ -2161,8 +2172,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // 到顶（exhausted）不是失败：如实回报"没有更早历史"，由跳转结果统一说明**不可达**。
     // 但请求失败或没有取得任何进展（仍在加载）必须**显式失败**——否则跳转循环会
     // 对着不变的 earliestSeq 一直空转到页数上限（最坏 32 次 × 等待）。
-    if (outcome == _PrependOutcome.failed ||
-        outcome == _PrependOutcome.skipped) {
+    if (outcome == _PrependOutcome.failed || outcome == _PrependOutcome.skipped) {
       throw StateError(L10n.t('未能继续加载更早历史', 'Could not load earlier history'));
     }
     return TurnPageLoad(earliestSeq: _earliestSeq, hasMore: !_noMoreHistory);
@@ -2282,11 +2292,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 合并前先看**最新能力声明**：能力被撤销（换宿主 / 宿主降级）时旧大纲必须立刻失效，
   /// 不能继续把上次连接拿到的大纲当成本机能力（issue #25 评审 P2）。
   List<TurnTick> get _turnTicks => mergeTurnTicks(
-    loaded: _turnAnchors,
-    outline: _api.turnOutlineCapabilities.supported
-        ? _turnOutline.turns
-        : const [],
-  );
+        loaded: _turnAnchors,
+        outline: _api.turnOutlineCapabilities.supported
+            ? _turnOutline.turns
+            : const [],
+      );
 
   /// 选中某一轮：已加载的直接定位（一期）；未加载的先跨页加载再定位（二期）。
   ///
@@ -2351,7 +2361,10 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       if (mounted && _turnNavCurrent(token)) {
-        showToast(context, '${L10n.t('跳转失败：', 'Jump failed: ')}$e');
+        showToast(
+          context,
+          '${L10n.t('跳转失败：', 'Jump failed: ')}$e',
+        );
       }
     } finally {
       // 只有仍是当前操作才清 busy：旧操作的 finally 不得清掉新操作的脉冲。
@@ -4246,12 +4259,23 @@ class _ChatScreenState extends State<ChatScreen> {
   /// （`GET /api/commands`）并缓存——目录在会话生命周期内基本不变，没必要每条命令消息都多一次往返。
   /// 服务未提供时得到空目录（等同于"所有名字都未注册"，照常按普通消息发送，不阻塞）。
   Future<List<Map<String, dynamic>>> _commandCatalogFor(String id) async {
+    // issue #90：与斜杠菜单共用目录缓存，避免同一会话重复 GET /commands。
+    if (_slashCatalogSessionId == id && _slashCommands != null) {
+      if (_slashCommandsUnavailable) {
+        throw ApiException('commands catalog unavailable', code: 'session-not-found');
+      }
+      _commandCatalog = _slashCommands;
+      _commandCatalogSessionId = id;
+      return _slashCommands!;
+    }
     final cached = _commandCatalog;
     if (cached != null && _commandCatalogSessionId == id) return cached;
     final (cmds, unavailable) = await _api.commands(id);
     final list = unavailable ? <Map<String, dynamic>>[] : cmds;
     _commandCatalog = list;
     _commandCatalogSessionId = id;
+    _slashCommands = list;
+    _slashCatalogSessionId = id;
     return list;
   }
 
@@ -4793,6 +4817,12 @@ class _ChatScreenState extends State<ChatScreen> {
       await _executeCommandLine(id, line, draft: line);
       return true;
     }
+    // issue #90：同名命令优先；未命中命令但命中技能 → 按普通消息发送（宿主注入），
+    // 不误报「未知命令」。技能目录不可用/加载失败则维持原未知命令兜底。
+    try {
+      final skills = await _skillCatalogFor(id);
+      if (skills != null && skills.any((s) => s['name'] == name)) return false;
+    } catch (_) {}
     if (!mounted) return true; // 页面已销毁：不提示，也不能落回普通发送路径去碰 context
     // 名字未注册 → **不阻塞**（刻意与 issue #25 原文的"提示 + 保留草稿"不同）：拦截会让 `/tmp`
     // 这类合法普通消息永远发不出去（单段文本在语法上与命令名无法区分，见 [isCommandLine]），
@@ -4936,6 +4966,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _sending = true;
       if (!queued) _items.insert(0, _MsgItem.user(text)); // 最新在前：插入头部（视觉底部）
     });
+    if (slashTextTokens(text).isNotEmpty) {
+      unawaited(_ensureSlashCatalog(id));
+    }
     _inputCtrl.clear();
     _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
     try {
@@ -5441,12 +5474,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    showSessionToolsSheet(
-      context,
-      widget.store,
-      sid,
-      onTitleChanged: widget.onTitleChanged,
-    );
+    showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
   }
 
   void _openSessionToolsFromActionRail() {
@@ -5821,6 +5849,7 @@ class _ChatScreenState extends State<ChatScreen> {
       nearBottom: _scrollFollow.nearBottom,
       turnCount: turnTicks.length,
     );
+    // issue #80：轨道可见性与列表右 padding 同帧（历史浏览视图不显示轨道，保持 16dp）。
     _turnRailVisible = !_inHistory && showTurnRail;
     // 阶梯被截断 / 读取失败 / 能力缺失 / 该会话无大纲：在用户**能看到刻度轨**时
     // 各说明一次（四态文案互不相同，见 `turnOutlineNotice`），绝不静默。
@@ -5943,6 +5972,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 // issue #24：轮次导航刻度轨。放在消息流之上、右下角圆钮之下；
                 // 只占右侧约 28px，空白区域不吸收命中，消息流照常滚动。
                 if (!_inHistory && showTurnRail)
+                  // issue #80：轨道宽 28 + 右侧 8dp gutter；gutter 不命中（Align 只
+                  // 命中真实子节点）。底部预留 62dp，保证轨道下界与「回到底部」圆钮
+                  // 至少 12dp 避让；轨道自身仍受 420dp 轨框 + 可用高度约束。
                   Positioned(
                     top: 0,
                     left: 0,
@@ -5959,8 +5991,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           busyTurn: _busyTurn,
                           width: turnRailWidth,
                           maxHeight: 420,
-                          onNavigate: (anchor) =>
-                              unawaited(_navigateToTurn(anchor)),
+                          onNavigate: (anchor) => unawaited(_navigateToTurn(anchor)),
                         ),
                       ),
                     ),
@@ -6731,6 +6762,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// v3.0.0 图像链路：待发送图片缩略图 rail（composer 上方，可移除；PC 端 AttachmentRail 同理念）。
+  /// issue #85：点击待上传图片打开全屏预览（本地文件，不经过服务端）。
+  void _openPendingImagePreview(int index) {
+    if (_pendingImages.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PendingImagePreviewScreen(
+          paths: _pendingImages.map((file) => file.path).toList(),
+          initialIndex: index,
+        ),
+      ),
+    );
+  }
+
   Widget _buildImageRail() {
     if (_pendingImages.isEmpty) return const SizedBox.shrink();
     final line = DshColors.line(context);
@@ -6747,24 +6791,27 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: const EdgeInsets.only(right: 8),
                 child: Stack(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.file(
-                        File(_pendingImages[i].path),
-                        width: 76,
-                        height: 76,
-                        fit: BoxFit.cover,
-                        // v3.1.6（app-audit ①4）：按显示尺寸解码（2x 供 HiDPI）——
-                        // 不给 cacheWidth 时 Flutter 按**原始分辨率**解码，一次选 10-20 张
-                        // 12MP 原图（≈48MB/张）直接顶爆内存（低端机闪退）。
-                        cacheWidth: 160,
-                        errorBuilder: (_, _, _) => Container(
+                    GestureDetector(
+                      onTap: () => _openPendingImagePreview(i),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.file(
+                          File(_pendingImages[i].path),
                           width: 76,
                           height: 76,
-                          color: line,
-                          child: const Icon(
-                            Icons.image_outlined,
-                            color: Colors.white54,
+                          fit: BoxFit.cover,
+                          // v3.1.6（app-audit ①4）：按显示尺寸解码（2x 供 HiDPI）——
+                          // 不给 cacheWidth 时 Flutter 按**原始分辨率**解码，一次选 10-20 张
+                          // 12MP 原图（≈48MB/张）直接顶爆内存（低端机闪退）。
+                          cacheWidth: 160,
+                          errorBuilder: (_, _, _) => Container(
+                            width: 76,
+                            height: 76,
+                            color: line,
+                            child: const Icon(
+                              Icons.image_outlined,
+                              color: Colors.white54,
+                            ),
                           ),
                         ),
                       ),
@@ -8175,7 +8222,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadChangedSummary(String sessionId, int turn) async {
     final generation = _tailLoadGeneration;
-    bool stillCurrent() =>
+    final stillCurrent = () =>
         mounted && generation == _tailLoadGeneration && sessionId == _tailSessionId;
     try {
       for (var attempt = 0; attempt < 2; attempt += 1) {
@@ -8556,10 +8603,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             if (item.files.isNotEmpty)
               userBubble(_FileResults(files: item.files)),
-            if (text.isNotEmpty)
-              userBubble(
-                Text(text, style: const TextStyle(fontSize: 15, height: 1.5)),
-              ),
+            if (text.isNotEmpty) userBubble(_buildUserMessageText(text)),
             // v3.1.5（issue #15）：用户消息此前没有任何复制入口（只有助手消息有操作栏）——
             // 这里右对齐补一个「复制」，复用 _runMessageAction('copy')：复制正文 + 「已复制」提示，
             // 与助手消息行为一致。整段选择另由 SelectionArea 承担（长按选词）。

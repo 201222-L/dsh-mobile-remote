@@ -468,9 +468,13 @@ function graphProvider({
 	graph = null,
 	refNames = [],
 	refsHangOnCall = 0,
+	refsOidOnCall = 0,
+	refsChangedOid = null,
 	resolveHang = false,
 	graphHangOnCall = 0,
 	graphByCall = null,
+	graphErrorOnCall = 0,
+	graphError = null,
 } = {}) {
 	const oid = "a".repeat(40);
 	const state = { refsCalls: 0, resolveCalls: 0, resolveGraphCalls: 0 };
@@ -488,6 +492,7 @@ function graphProvider({
 		graph: async (root, options) => {
 			void root;
 			state.resolveGraphCalls += 1;
+			if (graphError && state.resolveGraphCalls === graphErrorOnCall) throw graphError;
 			if (state.resolveGraphCalls === graphHangOnCall) return new Promise(() => {});
 			if (graphByCall && graphByCall[state.resolveGraphCalls - 1]) {
 				return graphByCall[state.resolveGraphCalls - 1](options);
@@ -503,17 +508,20 @@ function graphProvider({
 			if (refsHangOnCall > 0 && state.refsCalls === refsHangOnCall) {
 				return new Promise(() => {});
 			}
+			const refOid = refsOidOnCall > 0 && state.refsCalls === refsOidOnCall
+				? (refsChangedOid ?? "b".repeat(40))
+				: oid;
 			return [
-				{ name: "HEAD", commitOid: oid },
-				{ name: "refs/heads/main", commitOid: oid },
-				...refNames.map((name) => ({ name, commitOid: oid })),
+				{ name: "HEAD", commitOid: refOid },
+				{ name: "refs/heads/main", commitOid: refOid },
+				...refNames.map((name) => ({ name, commitOid: refOid })),
 			];
 		};
 	}
 	return { provider, state, oid };
 }
 
-function serviceWithProvider(provider, { graphDeadlineMs } = {}) {
+function serviceWithProvider(provider, { graphDeadlineMs, onSnapshotDisposed } = {}) {
 	const root = mkdtempSync(`${tmpdir()}/git-graph-provider-`);
 	fixture(root);
 	const session = { id: "session-1", header: { cwd: root } };
@@ -523,7 +531,10 @@ function serviceWithProvider(provider, { graphDeadlineMs } = {}) {
 		if (name === "gitReadProvider") return provider;
 		throw new Error(`missing ${name}`);
 	} };
-	return { root, service: createGitReadService(ctx, { graphDeadlineMs }) };
+	return {
+		root,
+		service: createGitReadService(ctx, { graphDeadlineMs, onSnapshotDisposed }),
+	};
 }
 
 test("task-28: 128 POST tips resolve via one provider.refs batch (no per-tip resolveTip)", async () => {
@@ -607,8 +618,8 @@ test("re-review P1-2: 25s absolute deadline 覆盖 refs/resolveTip/readRefRecord
     );
   } finally { rmSync(b.root, { recursive: true, force: true }); }
 
-  // 最后 readRefRecords/装饰阶段挂起（第 3 次 refs 调用）。
-  const hangRecords = graphProvider({ refsHangOnCall: 3 });
+  // 装饰 readRefRecords 阶段挂起：refs 顺序 resolve#1 → pre#2 → post#3 → 装饰#4。
+  const hangRecords = graphProvider({ refsHangOnCall: 4 });
   const c = serviceWithProvider(hangRecords.provider, { graphDeadlineMs: 80 });
   try {
     const { repositoryId } = await c.service.repositoryForSession("session-1");

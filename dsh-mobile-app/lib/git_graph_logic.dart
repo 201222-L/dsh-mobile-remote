@@ -1,7 +1,10 @@
 import 'git_models.dart';
 
+/// 调色板槽位数（issue #86：16 色；超过 16 个已选分支按槽位循环复用）。
+const maxGraphColorSlots = 16;
+
 /// The renderer shows at most this many selected-tip colors in a commit node.
-const maxNodeColorSegments = maxSelectedGraphBranches;
+const maxNodeColorSegments = maxGraphColorSlots;
 
 class GraphContinuation {
   final int from;
@@ -73,8 +76,10 @@ List<int> selectedTipColorSlots(
   GitCommitSummary commit,
   List<GitBranch> selected,
 ) => <int>[
-  for (var i = 0; i < selected.length && i < maxNodeColorSegments; i++)
-    if (selected[i].oid == commit.oid) i,
+  // issue #86 P2-4：槽位按选择顺序 i % 16 循环；同一 tip 的多个已选分支各占一个
+  // 槽位（与既有渲染一致），但不产生超过 16 的额外槽位。
+  for (var i = 0; i < selected.length; i++)
+    if (selected[i].oid == commit.oid) i % maxNodeColorSegments,
 ];
 
 /// Lays out commits ordered child-before-parent.
@@ -88,8 +93,8 @@ GraphLayout layoutGraph(
   GraphLayoutState? state,
 }) {
   final selectedSlots = <String, int>{};
-  for (var i = 0; i < selected.length && i < maxNodeColorSegments; i++) {
-    selectedSlots.putIfAbsent(selected[i].oid, () => i);
+  for (var i = 0; i < selected.length; i++) {
+    selectedSlots.putIfAbsent(selected[i].oid, () => i % maxNodeColorSegments);
   }
   final incomingEdges = state == null
       ? <String>{}
