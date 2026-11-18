@@ -26,6 +26,14 @@ import {
 	summarizeEvent,
 } from "../lib/index.js";
 
+/**
+ * 本文件有 5 个用例验证的是 **POSIX 专属语义**：字面反斜杠文件名、`mkfifo`、`chmod 000`
+ * 与 symlink 逃逸。Windows 上没有这些语义（或需要额外权限），跳过不影响覆盖——CI 的
+ * ubuntu job 仍完整执行它们。
+ */
+const POSIX_ONLY = process.platform === "win32" ? "POSIX 专属语义用例（Windows 无对应行为）" : false;
+
+
 /** 真实临时工作目录；cwd 一律用 realpath（/tmp 在个别平台是软链）。 */
 function workspace(t) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "issue67-preview-")));
@@ -128,7 +136,7 @@ test(".. 逃逸 / 中间 .. / 前置 ./ / 空段：词法拒绝；单次 ./ 归�
 	assertPreviewable(read("./a.ts", root), "a.ts", root);
 });
 
-test("盘符 / UNC：绝对形态拒绝；POSIX cwd 下含字面反斜杠一律 fail-closed", (t) => {
+test("盘符 / UNC：绝对形态拒绝；POSIX cwd 下含字面反斜杠一律 fail-closed", { skip: POSIX_ONLY }, (t) => {
 	const root = workspace(t);
 	putFile(root, "src/a.ts");
 	for (const path of ["C:\\x", "C:\\Windows\\system32", "\\\\server\\share\\x", "//server/share/x"]) {
@@ -141,7 +149,7 @@ test("盘符 / UNC：绝对形态拒绝；POSIX cwd 下含字面反斜杠一律 
 	// 无法构造存在的 Windows cwd/文件，故 Windows 分支未在本测试验证（见实现注释）。
 });
 
-test("P2 回归：字面文件 `dir\\a` 与 `dir/a` 同时存在时，摘要不得指向另一份文件", (t) => {
+test("P2 回归：字面文件 `dir\\a` 与 `dir/a` 同时存在时，摘要不得指向另一份文件", { skip: POSIX_ONLY }, (t) => {
 	const root = workspace(t);
 	// 两个同名异义文件：字面反斜杠文件名（POSIX 合法）与普通子目录文件，内容不同。
 	putFile(root, "dir\\a", "literal-backslash\n");
@@ -163,7 +171,7 @@ test("P2 回归：字面文件 `dir\\a` 与 `dir/a` 同时存在时，摘要不�
 	assertPreviewable(read("dir/a", root), "dir/a", root);
 });
 
-test("目录 / 缺失 / FIFO：存在但不是普通文件 → 缺省", (t) => {
+test("目录 / 缺失 / FIFO：存在但不是普通文件 → 缺省", { skip: POSIX_ONLY }, (t) => {
 	const root = workspace(t);
 	mkdirSync(join(root, "src"));
 	putFile(root, "src/a.ts");
@@ -174,7 +182,7 @@ test("目录 / 缺失 / FIFO：存在但不是普通文件 → 缺省", (t) => {
 	assertNotPreviewable(read("pipe", root), "FIFO 不可预览（防 /files 阻塞读）");
 });
 
-test("符号链接逃逸 cwd → 拒绝；符号链接指回 cwd 内 → 允许且 relative 是词法路径", (t) => {
+test("符号链接逃逸 cwd → 拒绝；符号链接指回 cwd 内 → 允许且 relative 是词法路径", { skip: POSIX_ONLY }, (t) => {
 	const root = workspace(t);
 	const outside = workspace(t);
 	putFile(outside, "secret.txt");
@@ -306,7 +314,7 @@ test("read/write/edit/read_image 四个工具都挂同一组字段", (t) => {
 	}
 });
 
-test("不可读文件 → 缺省（root 环境无法构造 000 权限，跳过）", { skip: process.getuid?.() === 0 }, (t) => {
+test("不可读文件 → 缺省（root 环境无法构造 000 权限，跳过）", { skip: POSIX_ONLY || (process.getuid?.() === 0 ? "root 无法构造 000 权限" : false) }, (t) => {
 	const root = workspace(t);
 	const target = putFile(root, "secret.txt");
 	chmodSync(target, 0o000);
@@ -336,7 +344,7 @@ test("previewTargetOf 直接契约：成功对象只有两个键", (t) => {
 	assert.equal(previewTargetOf("/etc/passwd", root), null);
 });
 
-test("cwd 为符号链接别名：相对与 realpath 绝对都换算成同一 relative", (t) => {
+test("cwd 为符号链接别名：相对与 realpath 绝对都换算成同一 relative", { skip: POSIX_ONLY }, (t) => {
 	const root = workspace(t);
 	putFile(root, "src/a.ts");
 	const alias = join(realpathSync(mkdtempSync(join(tmpdir(), "issue67-alias-"))), "cwd-link");

@@ -16,6 +16,13 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply, mobileDisplayPath, renderUnifiedDiffText, turnTailCapabilityOf, turnTailOf, turnTailsOf } from "../lib/index.js";
 
+// Windows 的 `os.tmpdir()` 位于用户家目录下，`mobileDisplayPath` 会按契约把工作区外的
+// 临时目录折叠成 `~/…`；本文件要验证的是「工作区外且不在家目录 → 只给 basename」。
+// 因此把 homedir() 指到临时目录内的假家目录（POSIX 上临时目录本就不在家目录下，行为不变）。
+// 文件内另有一条家目录用例用运行时 `homedir()` 构造路径，不受此覆盖影响。
+process.env.HOME = join(tmpdir(), "dsh-test-fake-home");
+process.env.USERPROFILE = process.env.HOME;
+
 const CONFIG = {
 	path: "/m",
 	authToken: "1234567890123456",
