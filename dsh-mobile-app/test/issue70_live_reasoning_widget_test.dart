@@ -374,12 +374,13 @@ void main() {
     await _inject(tester, store, _f70Live()[1]);
     expect(find.text('run tests first'), findsOneWidget);
 
-    // seq8：运行中工具到达 → 活动条只显示工具行，不显示思考文本。
+    // seq8：运行中工具到达 → 过程块已展示工具行，活动条不再重复。
     await _inject(tester, store, _f70Live()[2]);
-    expect(find.byKey(_activityBarKey), findsOneWidget);
+    expect(find.byKey(_activityBarKey), findsNothing);
     expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.byKey(_activityBarToolsKey), findsOneWidget);
-    expect(find.text('正在调用 shell…'), findsOneWidget);
+    expect(find.byKey(_activityBarToolsKey), findsNothing);
+    expect(find.text('正在调用 shell…'), findsNothing);
+    expect(find.text('shell'), findsWidgets, reason: '运行中工具由过程行承载');
     expect(find.text('思考中…'), findsOneWidget);
 
     // 顺序：step1 落定思考 → step1 工具 → step2 思考(provisional) → step2 工具。
@@ -547,7 +548,10 @@ void main() {
         tester.getTopLeft(find.byKey(_provisionalRowKey(1, 1))).dy;
     expect(provisionalY, lessThan(toolY), reason: '思考先到 → 工具到达后仍在其前');
     expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.text('正在调用 shell…'), findsOneWidget);
+    expect(find.byKey(_activityBarKey), findsNothing,
+        reason: '过程块已承载运行中工具，活动条不重复');
+    expect(find.text('正在调用 shell…'), findsNothing);
+    expect(find.text('shell'), findsWidgets);
     await _flushAppTimers(tester);
   });
 
@@ -597,7 +601,10 @@ void main() {
     expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
     expect(find.text('思考中…'), findsNothing);
     expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.text('正在调用 shell…'), findsOneWidget);
+    expect(find.byKey(_activityBarKey), findsNothing,
+        reason: '过程块已承载运行中工具，活动条不重复');
+    expect(find.text('正在调用 shell…'), findsNothing);
+    expect(find.text('shell'), findsWidgets);
 
     // 迟到的 step1 chunk：tombstone 生效，不复活。
     await _inject(tester, store, {
@@ -716,7 +723,7 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-  testWidgets('活动条三态：无锚点显示思考 / 有块有工具只显示工具 / 有块无工具整条隐藏', (
+  testWidgets('活动条三态：无锚点显示思考 / 有块有工具由过程行承载 / 有块无工具整条隐藏', (
     tester,
   ) async {
     final store = await _pumpChat(
@@ -747,7 +754,7 @@ void main() {
     expect(find.text('思考中…'), findsNothing);
     expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
 
-    // 工具到达：活动条只显示工具；同源快照进入过程块。
+    // 工具到达：过程行展示运行中工具，活动条不再重复。
     await _inject(tester, store, {
       'seq': 11,
       'type': 'tool/call',
@@ -760,9 +767,11 @@ void main() {
       },
       'time': 1300,
     });
-    expect(find.byKey(_activityBarToolsKey), findsOneWidget);
+    expect(find.byKey(_activityBarKey), findsNothing);
+    expect(find.byKey(_activityBarToolsKey), findsNothing);
     expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.text('正在调用 shell…'), findsOneWidget);
+    expect(find.text('正在调用 shell…'), findsNothing);
+    expect(find.text('shell'), findsWidgets);
     expect(find.byKey(_provisionalRowKey(1, 1)), findsOneWidget);
     expect(find.text('思考中…'), findsOneWidget);
 
