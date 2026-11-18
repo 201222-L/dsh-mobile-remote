@@ -536,6 +536,10 @@ class ChatEvent {
   /// 详情正文长度提示（服务端 `detail.textChars`，仅 assistant/message 提供）：
   /// 与摘要同 `blocksToText` 口径的**未截断**正文长度，供“是否真有正文增量”判定。
   final int? detailTextChars;
+
+  /// 事件时间戳（Unix 毫秒，服务端摘要顶层 `time`，issue #52 / ADR 0027 §2）。
+  /// 旧插件不下发时为 null——**不得**用本地接收时间推算耗时。
+  final int? time;
   ChatEvent({
     this.seq,
     required this.type,
@@ -543,6 +547,7 @@ class ChatEvent {
     this.sessionId,
     this.detailAvailable = false,
     this.detailTextChars,
+    this.time,
   });
   factory ChatEvent.fromJson(Map<String, dynamic> j) {
     final detail = j['detail'];
@@ -555,6 +560,7 @@ class ChatEvent {
           : null,
       detailAvailable: d['available'] == true,
       detailTextChars: (d['textChars'] as num?)?.toInt(),
+      time: (j['time'] as num?)?.toInt(),
     );
   }
 }
