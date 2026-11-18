@@ -446,12 +446,40 @@ class _ChatScreenState extends State<ChatScreen> {
   // 下方留大片空白）；内容增长不算「上翻」（只有用户拖动才停止跟随）。
   double _liveBottomGap = 0;
   bool _liveGapMeasureScheduled = false;
+  // issue #89：活动条显隐/视口高度变化后必须重测底部占位；记录可见态与上次实测高度。
+  bool _activityBarShown = false;
+  double _lastGapViewportHeight = 0;
   int _lastContentCount = 0;
   bool _userDragActive = false;
   bool _followBottomScheduled = false;
   bool _suppressOlderPaging = false; // 占位调整帧内：位置修正不得触发「上翻加载更早」
   // issue #81：本帧消息列右 padding；宽度变化必须让依赖宽度的尺寸/内容偏移缓存失效。
   double _lastLiveRightPadding = -1;
+  // issue #89：右 padding 同帧变化会导致正文重排/max 收缩；帧后 clamp 越界。
+  int _paddingReconcileAttempts = 0;
+
+  /// issue #89：padding 38/36/16 同帧切换后，宽度变化会清高度缓存并重排；
+  /// 帧后把滚动位置 clamp 到新范围，重测底部占位，必要时有限帧收敛。
+  /// 拖拽中只 clamp，不抢手势；松手（ScrollEnd）再触发一次收敛。
+  void _reconcileAfterPaddingChange() {
+    if (!mounted || _inHistory || !_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    if (!pos.hasContentDimensions) return;
+    final clamped = pos.pixels.clamp(pos.minScrollExtent, pos.maxScrollExtent);
+    if ((clamped - pos.pixels).abs() > 0.5) {
+      _scrollCtrl.jumpTo(clamped);
+    }
+    // padding 38/36/16 只影响正文宽度与 extent；这里仅把越界的 pixels 夹回新范围。
+    // 不重测底部占位、不回底，避免与用户滚动/手势抢方向（issue #81 契约）。
+    if (_userDragActive && _paddingReconcileAttempts < 4) {
+      _paddingReconcileAttempts++;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _reconcileAfterPaddingChange();
+      });
+    } else {
+      _paddingReconcileAttempts = 0;
+    }
+  }
 
   /// issue #77：分帧收敛到底部（懒构建 extent 修正后按新 max 再跳，最多 [remaining] 帧）。
   void _settleToBottom(int remaining) {
@@ -678,7 +706,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pinnedToBottom = nearBottom;
     }
     if (!nearBottom != _showJumpToLatest) {
-      setState(() => _showJumpToLatest = !nearBottom);
+        setState(() => _showJumpToLatest = !nearBottom);
     }
     // issue #24：持续滚动也要校准当前轮。跨 160px 阈值只覆盖显隐切换，
     // 一直停留在"离开底部"时页面不会重建，高亮就会停在旧值。
@@ -730,18 +758,32 @@ class _ChatScreenState extends State<ChatScreen> {
           _olderItems.isNotEmpty ||
           _draft.isNotEmpty;
       final contentExtent = hasContent ? geometry.scrollExtent + 6 : 0.0;
+      // issue #77：分页加载过更早消息后不做短内容底部占位（会与位置修正互相拉扯）。
+      final paged = _olderItems.isNotEmpty;
       final desired = hasContent
           ? math.max(0.0, viewport.size.height - contentExtent)
           : 0.0;
+      final viewportHeight = viewport.size.height;
+      final viewportChanged =
+          (viewportHeight - _lastGapViewportHeight).abs() > 0.5;
+      _lastGapViewportHeight = viewportHeight;
       // 收敛策略（避免每个 delta 都重建）：内容增长时保留旧占位（内容仍贴底，多出的
       // 空白在视口上方、用户不可见）；内容超过视口时清零；内容明显变短时再补足。
       // 只在「明显短于视口」（还会留下 >80px 空白）时启用底部占位：接近一屏的
       // 内容保持既有顶部对齐，避免与过程行位置/懒构建估算互相干扰。
-      final shortEnough = contentExtent < viewport.size.height - 80;
+      final shortEnough =
+          !paged && contentExtent < viewport.size.height - 80;
+      // issue #89：占位与内容之和不得超过视口（否则会制造可滚动空白 + 回底按钮）；
+      // 视口高度变化（活动条显隐/键盘）必须立即按新高度收敛，不能沿用旧占位。
+      final overflowBlank =
+          hasContent && contentExtent + _liveBottomGap > viewportHeight + 0.5;
       double next = _liveBottomGap;
       if (!shortEnough || desired <= 0.5) {
         next = 0;
-      } else if (_liveBottomGap <= 0.5 || desired > _liveBottomGap + 24) {
+      } else if (_liveBottomGap <= 0.5 ||
+          desired > _liveBottomGap + 24 ||
+          viewportChanged ||
+          overflowBlank) {
         next = desired;
       }
       if ((next - _liveBottomGap).abs() > 0.5) {
@@ -754,7 +796,10 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       // issue #77：短内容模式下若用户展开块/卡片导致内容变高，钉住底部时继续跟随
       //（展开不是新事件、不会走 _scrollToBottom；否则内容会伸到视口下方）。
-      if (_pinnedToBottom && !_userDragActive && _scrollCtrl.hasClients) {
+      if (_pinnedToBottom &&
+          !_userDragActive &&
+          !_showJumpToLatest &&
+          _scrollCtrl.hasClients) {
         final pos = _scrollCtrl.position;
         if (pos.hasContentDimensions && pos.extentAfter > 1) {
           _scheduleFollowBottom();
@@ -2031,6 +2076,12 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLiveRightPadding = rightPadding;
       // 正文可用宽度变化 → 已测高度失效（issue #81：38/36/16 切换）。
       _itemHeights.clear();
+      // issue #89（B/C 折中）：保持 padding 同帧契约，但帧后把 pixels clamp 到新
+      // [min,max]、重测短内容占位；钉住且非拖拽时才有限帧收敛到底部。
+      _paddingReconcileAttempts = 0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _reconcileAfterPaddingChange();
+      });
     }
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
@@ -4591,6 +4642,17 @@ class _ChatScreenState extends State<ChatScreen> {
             _isProcessToolRowInViewport(entry.key)))
           entry.value,
     ];
+    final shown = reasoning.isNotEmpty || tools.isNotEmpty;
+    if (shown != _activityBarShown) {
+      _activityBarShown = shown;
+      // 活动条显隐会改变消息视口高度；本帧由子 ListenableBuilder 重建，父 build 不会
+      // 再跑，必须帧后补一次底部占位实测，否则短内容会留下大块空白（issue #89）。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scheduleLiveBottomGapMeasure();
+        if (_pinnedToBottom) _scheduleFollowBottom();
+      });
+    }
     if (reasoning.isEmpty && tools.isEmpty) return const SizedBox.shrink();
     return _ActivityBar(
       reasoning: reasoning,
