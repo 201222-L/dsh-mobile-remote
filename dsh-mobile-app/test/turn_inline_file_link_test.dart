@@ -19,11 +19,11 @@ void main() {
         ChangedFile(seq: 4, index: 1, display: 'lib/use.py', name: 'use.py', added: 1, deleted: 0),
       ],
     );
-    InlineCodeTap codeTap = (code) {
+    VoidCallback? codeTap(String code) {
       final coordinate = resolver.resolve(code);
       if (coordinate == null) return null;
       return () => tapped.add(code);
-    };
+    }
 
     await tester.pumpWidget(
       MaterialApp(

@@ -6,8 +6,6 @@
 //
 // 返回用普通 pop：本页不持有会话滚动/折叠状态，ChatScreen 在下面保持原状。
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 

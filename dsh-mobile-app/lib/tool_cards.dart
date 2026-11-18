@@ -374,10 +374,7 @@ String? toolFoldText(ToolCallSummary summary) {
       if (pattern == null) return null;
       final scope = summary.path;
       final include = summary.include;
-      final suffix = [
-        if (scope != null) scope,
-        if (include != null) include,
-      ].join(' · ');
+      final suffix = [?scope, ?include].join(' · ');
       return suffix.isEmpty ? pattern : '$pattern · $suffix';
     case ToolCardKind.web:
       return summary.url ?? summary.query;
