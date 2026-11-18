@@ -392,10 +392,14 @@ class TurnProcess {
   final int turn;
 
   /// 该轮 `turn/start` 的持久序号（渲染锚点，也是轮次导航的边界键）。
+  /// [partial] 为真时该值是**该轮最早可观察事件**的合成锚点（历史窗口缺 turn/start）。
   final int startSeq;
 
   /// 该轮 `turn/end` 的持久序号；历史截断/仍在运行时为 null。
   final int? endSeq;
+
+  /// issue #60 R04：部分轮次（初次 50 条窗口只含中后段事件、缺 `turn/start`）。
+  final bool partial;
 
   final bool ended;
 
@@ -415,6 +419,7 @@ class TurnProcess {
     required this.turn,
     required this.startSeq,
     this.endSeq,
+    this.partial = false,
     this.ended = false,
     this.endReasonKind,
     this.startedAtMs,
@@ -763,6 +768,8 @@ class TurnProcessTracker {
   // issue #91：所有 user/message 的 seq（含 agent-message 等非真人提示词）——
   // 只用于识别「本轮第一条 user 事件（提示词）」，不能把首个真人间插话误当提示词。
   final List<int> _allUserSeqs = [];
+  // issue #92：只有 tool/result 回放、没有 turn/start 的孤儿 turn 的合成锚点。
+  final Map<int, int> _orphanAnchors = {};
   final Set<int> _allUserSeqSet = {};
   final Set<int> _humanUserSeqSet = {};
   int _order = 0;
@@ -779,6 +786,7 @@ class TurnProcessTracker {
     _humanUserSeqs.clear();
     _allUserSeqs.clear();
     _allUserSeqSet.clear();
+    _orphanAnchors.clear();
     _humanUserSeqSet.clear();
     _order = 0;
   }
@@ -990,7 +998,28 @@ class TurnProcessTracker {
   int? turnOfEndSeq(int seq) => _turnOfEndSeq[seq];
 
   /// 该轮的首个起点序号（重试边界会有多个 turn/start，过程块只在首个上渲染一次）。
-  int? startSeqOfTurn(int turn) => _turns[turn]?.startSeq;
+  ///
+  /// issue #60 R04：历史窗口缺 `turn/start` 的**部分轮次**没有真实起点；这里返回该轮
+  /// 最早可观察事件的序号作为合成锚点，让过程块/页脚/M2 两卡仍能定位与渲染。
+  int? startSeqOfTurn(int turn) =>
+      _anchorOf(_turns[turn]) ?? _orphanAnchors[turn];
+
+  /// 该轮的渲染锚点：真实 startSeq 优先；否则取已知的最早事件序号。
+  int? _anchorOf(_MutableTurn? turn) {
+    if (turn == null) return null;
+    if (turn.startSeq != null) return turn.startSeq;
+    int? anchor = turn.endSeq;
+    for (final row in turn.rows) {
+      if (anchor == null || row.seq < anchor) anchor = row.seq;
+    }
+    for (final tool in _tools.values) {
+      if (tool.turn != turn.turn) continue;
+      final seq = tool.reportedSeq;
+      if (seq == null) continue;
+      if (anchor == null || seq < anchor) anchor = seq;
+    }
+    return anchor;
+  }
 
   /// 该轮的末个结束序号（同一轮多次 turn/end 时页脚只渲染一次）。
   int? endSeqOfTurn(int turn) => _turns[turn]?.endSeq;
@@ -1030,8 +1059,10 @@ class TurnProcessTracker {
   /// 折叠成按 `turn/start` 顺序排列的轮次过程列表。
   List<TurnProcess> build() {
     final result = <TurnProcess>[];
-    final turns = _turns.values.where((t) => t.startSeq != null).toList()
-      ..sort((a, b) => a.startSeq!.compareTo(b.startSeq!));
+    // issue #60 R04：缺 turn/start 的部分轮次不能整轮丢弃——保留轮次身份（合成锚点），
+    // 否则最新长轮次的页脚、M2 两卡与折叠策略要等用户上翻取回开头才生效。
+    final turns = _turns.values.where((t) => _anchorOf(t) != null).toList()
+      ..sort((a, b) => _anchorOf(a)!.compareTo(_anchorOf(b)!));
     for (final t in turns) {
       // issue #70：同一 (turn, 非空 step) 的带 reasoning 消息只保留 **seq 最大** 的一条
       // （真实内核每 step 一条；此规则只在异常重放/多条 message 时生效，顺序无关）。
@@ -1052,6 +1083,7 @@ class TurnProcessTracker {
         }
       }
       reasoningRows.addAll(reasoningByStep.values);
+      final anchor = t.startSeq ?? _anchorOf(t)!;
       final rows = <ProcessRow>[
         for (final row in reasoningRows)
           ProcessRow.reasoning(
@@ -1087,7 +1119,7 @@ class TurnProcessTracker {
       // 少切一段、host 前移。历史倒序时也能靠 allInRange 的最小 seq 正确识别。
       final allInRange = <int>[
         for (final seq in _allUserSeqs)
-          if (seq > t.startSeq! && (t.endSeq == null || seq < t.endSeq!)) seq,
+          if (seq > anchor && (t.endSeq == null || seq < t.endSeq!)) seq,
       ]..sort();
       final promptSeq = allInRange.isEmpty ? null : allInRange.first;
       final human = <int>[
@@ -1099,7 +1131,8 @@ class TurnProcessTracker {
       ]..sort();
       result.add(TurnProcess(
         turn: t.turn,
-        startSeq: t.startSeq!,
+        startSeq: anchor,
+        partial: t.startSeq == null,
         endSeq: t.endSeq,
         ended: t.ended,
         endReasonKind: t.endReasonKind,
@@ -1107,6 +1140,53 @@ class TurnProcessTracker {
         endedAtMs: t.endedAtMs,
         groups: _groupRows(rows),
         humanUserSeqs: human,
+      ));
+    }
+    // issue #92：compaction 会重新落盘旧 turn 的 tool/result（seq 变新、turn/step 保留），
+    // 但加载窗口里没有该 turn 的 turn/start / turn/end。旧逻辑不生成 TurnProcess →
+    // 工具 item 无法进入过程块，只能回退成“旧版独立卡片”。这里为**只有工具行、
+    // 无轮次锚点**的孤儿 turn 生成 partial 过程组，让它们像过程行一样可折叠，
+    // 而不是伪装成独立工具卡（plan 仍按 host 位置渲染）。
+    final knownTurns = _turns.keys.toSet();
+    // 只有「时间线已有轮次锚点」时才把孤儿工具并入历史过程组；#61 旧卡片兜底
+    // （整段只有 result、没有任何 turn/start）必须保留独立卡与可读摘要。
+    final hasAnchoredTurns = knownTurns.isNotEmpty;
+    final orphanTurns = <int>{
+      if (hasAnchoredTurns)
+        for (final tool in _tools.values)
+          if (tool.turn != null &&
+              !knownTurns.contains(tool.turn) &&
+              tool.reportedSeq != null)
+            tool.turn!,
+    };
+    for (final turn in orphanTurns) {
+      final rows = <ProcessRow>[];
+      for (final tool in _tools.values) {
+        if (tool.turn != turn) continue;
+        final seq = tool.reportedSeq;
+        if (seq == null) continue;
+        rows.add(ProcessRow.tool(
+          seq: seq,
+          step: tool.step,
+          callId: tool.callId,
+          toolName: tool.name,
+          status: tool.settled
+              ? (tool.isError ? 'failed' : 'success')
+              : 'running',
+          isError: tool.isError,
+        ));
+      }
+      if (rows.isEmpty) continue;
+      rows.sort((a, b) => a.seq.compareTo(b.seq));
+      _orphanAnchors[turn] = rows.first.seq;
+      result.add(TurnProcess(
+        turn: turn,
+        startSeq: rows.first.seq,
+        partial: true,
+        ended: true,
+        endReasonKind: 'completed',
+        groups: _groupRows(rows),
+        humanUserSeqs: const [],
       ));
     }
     return result;

@@ -6430,10 +6430,29 @@ class _ChatScreenState extends State<ChatScreen> {
     final policy = _foldPolicy;
     final process = plan.process;
     if (plan.segment.isEmpty) return const SizedBox.shrink();
+    // issue #92：compaction 回放的旧 turn 只有工具行、没有轮次锚点/用户上下文；
+    // 明确标注为历史工具结果 fallback（仍可随该过程块折叠），不伪装成当前过程行。
+    final toolOnlyReplay = process.partial &&
+        process.humanUserSeqs.isEmpty &&
+        process.groups.isNotEmpty &&
+        process.groups.every((g) => g.rows.every((row) => row.isTool));
     // 强制展开（未结束 / 有插话 / 异常结束）时摘要不可点——点了也收不起来，
     // 与其给一个无效点按，不如禁用并保留箭头缺失的静态态。
     final forced = process.forceExpanded;
     final children = <Widget>[];
+    if (toolOnlyReplay) {
+      children.add(Padding(
+        key: Key('historical-tool-results-${process.turn}'),
+        padding: const EdgeInsets.only(bottom: 4, left: 2),
+        child: Text(
+          L10n.t(
+            '历史工具结果（无过程上下文）',
+            'Historical tool results (no process context)',
+          ),
+          style: TextStyle(fontSize: 10.5, color: DshColors.ink3(context)),
+        ),
+      ));
+    }
     // issue #61：摘要行只作折叠态的「展开入口」；展开后组抬头/过程行已经表达了同一信息，
     // 再挂整轮摘要会造成层级重复（alpha.7 真机截图问题 1）。
     if (!plan.expanded) {

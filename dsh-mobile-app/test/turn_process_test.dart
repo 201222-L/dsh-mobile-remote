@@ -676,4 +676,67 @@ void main() {
       expect(segmentsOf(turn).length, 2);
     });
   });
+
+  group('R04 部分轮次（历史窗口缺 turn/start）', () {
+    test('缺 turn/start 仍保留轮次身份与合成锚点，页脚可用且不猜用时', () {
+      final events = <ChatEvent>[
+        for (var i = 0; i < 6; i += 1)
+          ev(100 + i * 2, 'tool/call', {
+            'turn': 1,
+            'step': 1,
+            'callId': 'c$i',
+            'name': 'bash',
+          }),
+        ev(120, 'assistant/message', {
+          'turn': 1,
+          'step': 1,
+          'messageId': 'a1',
+          'text': 'done',
+        }),
+        ev(121, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }),
+      ];
+      final tracker = TurnProcessTracker();
+      for (final event in events) {
+        tracker.observe(event);
+      }
+      final turns = tracker.build();
+      expect(turns, hasLength(1), reason: '缺 start 的部分轮次不得整轮丢弃');
+      final turn = turns.single;
+      expect(turn.partial, isTrue);
+      expect(turn.startSeq, 100, reason: '合成锚点取该轮最早可观察事件 seq');
+      expect(turn.toolCount, 6);
+      expect(turn.ended, isTrue);
+      expect(turnFooterText(turn), '已完成', reason: '缺 time 时按既有规则不显示用时');
+    });
+  });
+
+  group('issue #92：压缩回放孤儿工具结果', () {
+    test('有已锚定轮次时，缺 turn/start 的旧 turn tool/result 生成 partial 过程组', () {
+      final turns = trackerOf([
+        ev(1, 'turn/start', {'turn': 220}),
+        ev(2, 'user/message', {'text': '开始', 'sourceKind': 'user'}),
+        ev(3, 'tool/call', {'turn': 220, 'step': 1, 'callId': 'c-now', 'name': 'bash'}),
+        ev(4, 'tool/result', {'turn': 220, 'step': 1, 'callId': 'c-now', 'name': 'bash', 'text': 'ok'}),
+        // 压缩回放：新 seq、旧 turn，窗口里没有 148 的 turn/start。
+        ev(5, 'tool/result', {'turn': 148, 'step': 1, 'callId': 'c-old', 'name': 'bash', 'text': 'note 2312'}),
+      ]).build();
+      expect(turns.map((t) => t.turn), containsAll([148, 220]));
+      final orphan = turns.singleWhere((t) => t.turn == 148);
+      expect(orphan.partial, isTrue);
+      expect(orphan.ended, isTrue);
+      expect(orphan.rows.single.callId, 'c-old');
+      expect(orphan.groups.single.toolCount, 1);
+    });
+
+    test('没有已锚定轮次时（典型 #61 旧卡片场景）不生成孤儿过程组', () {
+      final turns = trackerOf([
+        ev(1, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'call-orphan', 'text': 'SUMMARY'}),
+      ]).build();
+      expect(turns, isEmpty, reason: '无 turn/start 的 fallback 仍走独立工具卡');
+    });
+  });
+
 }
