@@ -60,8 +60,20 @@ bool isFenceClose(String line, int openCount) {
   return t.substring(n).trim().isEmpty;
 }
 
+/// 行内代码 → 点击回调（issue #53 行内文件链接）。
+///
+/// 返回 null 表示该代码不链接（未记录在本轮产出物里 / 有歧义 / 普通代码片段）。
+/// 由调用方（ChatScreen）按本轮记录构造，md.dart 不感知轮末产物模型。
+typedef InlineCodeTap = VoidCallback? Function(String code);
+
 /// 渲染完整 Markdown 文本 → 块级 Widget 列表（放置于 Column 中）。
-List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
+///
+/// [codeTap] 可选：行内代码命中本轮记录内路径时渲染成可点击项（issue #53 §6）。
+List<Widget> renderMarkdownBlocks(
+  String text,
+  BuildContext context, {
+  InlineCodeTap? codeTap,
+}) {
   final ink = DshColors.ink(context);
   final ink2 = DshColors.ink2(context);
   final line = DshColors.line(context);
@@ -82,7 +94,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
     if (para.isEmpty) return;
     blocks.add(Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink)),
+      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap),
     ));
     para = [];
   }
@@ -107,7 +119,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
                       style: TextStyle(fontSize: 14, color: ink2, height: 1.6),
                     ),
                   ),
-                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink))),
+                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap)),
                 ],
               ),
             ),
@@ -119,7 +131,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
 
   void flushTable() {
     if (tableBuf.isEmpty) return;
-    blocks.add(_buildTable(tableBuf, context, line, ink));
+    blocks.add(_buildTable(tableBuf, context, line, ink, codeTap: codeTap));
     tableBuf = [];
   }
 
@@ -244,7 +256,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
       final size = [18.0, 16.5, 15.5, 15.0][level - 1];
       blocks.add(Padding(
         padding: const EdgeInsets.only(top: 10, bottom: 6),
-        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink)),
+        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink), codeTap: codeTap),
       ));
       i++;
       continue;
@@ -290,7 +302,7 @@ List<Widget> renderMarkdownBlocks(String text, BuildContext context) {
             children: [
               Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
               Expanded(
-                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2)),
+                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2), codeTap: codeTap),
               ),
             ],
           ),
@@ -340,7 +352,13 @@ String _plainTextOfSpans(List<InlineSpan> spans) {
 ///
 /// 列宽 = 内容自然宽、不换行、不设上限；整表超宽时仍横向滚动（行为与网页端 `.md-table`
 /// 的 nowrap 一致）。
-Widget _buildTable(List<String> rows, BuildContext context, Color line, Color ink) {
+Widget _buildTable(
+  List<String> rows,
+  BuildContext context,
+  Color line,
+  Color ink, {
+  InlineCodeTap? codeTap,
+}) {
   List<String> parseRow(String l) =>
       l.trim().replaceAll(RegExp(r'^\||\|$'), '').split('|').map((s) => s.trim()).toList();
   final head = parseRow(rows[0]);
@@ -373,7 +391,7 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
   final ambient = DefaultTextStyle.of(context).style;
   double measure(String text, {required bool header}) {
     final style = ambient.merge(cellStyle(header: header));
-    final spans = _inlineSpans(text, context);
+    final spans = _inlineSpans(text, context, codeTap: codeTap);
     // 链接在 _inlineSpans 中是 WidgetSpan，而 WidgetSpan 无法在裸 TextPainter 里布局
     // （需要 placeholder dimensions，否则断言 'dimensions != null' / 空指针 → 整条消息
     // 渲染失败）。此时退化为「按 spans 还原的纯文本」测量：链接 child 只改颜色与下划线、
@@ -418,7 +436,7 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
         ),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: _InlineText(text, style: cellStyle(header: header)),
+          child: _InlineText(text, style: cellStyle(header: header), codeTap: codeTap),
         ),
       );
 
@@ -471,12 +489,13 @@ Widget _buildTable(List<String> rows, BuildContext context, Color line, Color in
 class _InlineText extends StatelessWidget {
   final String text;
   final TextStyle style;
-  const _InlineText(this.text, {required this.style});
+  final InlineCodeTap? codeTap;
+  const _InlineText(this.text, {required this.style, this.codeTap});
 
   @override
   Widget build(BuildContext context) {
     // v2.9.0 review(M3)：行内解析带 context——深色模式下链接用品牌深色（原静态浅色对比度差）
-    final spans = _inlineSpans(text, context);
+    final spans = _inlineSpans(text, context, codeTap: codeTap);
     // 用普通 Text 渲染（SelectableText 在部分 Android 设备上长文本换行/重叠渲染异常）
     return Text.rich(
       TextSpan(children: spans, style: style),
@@ -486,7 +505,13 @@ class _InlineText extends StatelessWidget {
 }
 
 /// 行内解析：**加粗** / *斜体* / `代码` / [文字](链接)
-List<InlineSpan> _inlineSpans(String text, BuildContext context) {
+///
+/// [codeTap] 非空时，命中的行内代码渲染成与链接同构的可点击 WidgetSpan（issue #53）。
+List<InlineSpan> _inlineSpans(
+  String text,
+  BuildContext context, {
+  InlineCodeTap? codeTap,
+}) {
   final spans = <InlineSpan>[];
   var last = 0;
   for (final m in _inlineRe.allMatches(text)) {
@@ -495,14 +520,34 @@ List<InlineSpan> _inlineSpans(String text, BuildContext context) {
     if (tok.startsWith('**')) {
       spans.add(TextSpan(text: tok.substring(2, tok.length - 2), style: const TextStyle(fontWeight: FontWeight.w700)));
     } else if (tok.startsWith('`')) {
-      spans.add(TextSpan(
-        text: tok.substring(1, tok.length - 1),
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 13,
-          backgroundColor: DshTheme.line.withValues(alpha: 0.6),
-        ),
-      ));
+      final code = tok.substring(1, tok.length - 1);
+      final tap = codeTap?.call(code);
+      final codeStyle = TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 13,
+        backgroundColor: DshTheme.line.withValues(alpha: 0.6),
+      );
+      if (tap == null) {
+        spans.add(TextSpan(text: code, style: codeStyle));
+      } else {
+        // 与链接同一 WidgetSpan 方案（TextSpan.recognizer 需要生命周期管理，
+        // 本组件每次 build 重建 spans，用 GestureDetector 避免 recognizer 泄漏）。
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: tap,
+            child: Text(
+              code,
+              style: codeStyle.copyWith(
+                color: DshColors.brand(context),
+                decoration: TextDecoration.underline,
+                decorationColor: DshColors.brand(context),
+              ),
+            ),
+          ),
+        ));
+      }
     } else if (tok.startsWith('[')) {
       final mm = RegExp(r'^\[([^\]]*)\]\(([^)]*)\)$').firstMatch(tok);
       if (mm != null) {
