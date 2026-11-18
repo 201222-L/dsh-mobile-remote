@@ -760,6 +760,10 @@ class TurnProcessTracker {
   // 只读查询 [hasSettledReasoning]；用于挡住 reset/reload 后已落定 step 的迟到 chunk。
   final Set<String> _settledAssistantKeys = {};
   final List<int> _humanUserSeqs = [];
+  // issue #91：所有 user/message 的 seq（含 agent-message 等非真人提示词）——
+  // 只用于识别「本轮第一条 user 事件（提示词）」，不能把首个真人间插话误当提示词。
+  final List<int> _allUserSeqs = [];
+  final Set<int> _allUserSeqSet = {};
   final Set<int> _humanUserSeqSet = {};
   int _order = 0;
 
@@ -773,6 +777,8 @@ class TurnProcessTracker {
     _reasoningStarts.clear();
     _settledAssistantKeys.clear();
     _humanUserSeqs.clear();
+    _allUserSeqs.clear();
+    _allUserSeqSet.clear();
     _humanUserSeqSet.clear();
     _order = 0;
   }
@@ -853,6 +859,7 @@ class TurnProcessTracker {
         return;
       case 'user/message':
         if (seq == null) return;
+        if (_allUserSeqSet.add(seq)) _allUserSeqs.add(seq);
         final sourceKind = data['sourceKind'];
         final human = sourceKind == null || sourceKind == 'user';
         final text = data['text'] is String ? data['text'] as String : '';
@@ -1074,17 +1081,22 @@ class TurnProcessTracker {
         if (bySeq != 0) return bySeq;
         return 0;
       });
-      // 「轮内有插话」只算**额外的**真人发言：事件序是 turn/start → 提示词 user/message
-      // → 过程 → 回答，所以该轮**第一条**真人 user 消息是提示词（不算插话），其余才是插话。
-      // 历史分页缺提示词时也按同一规则（不拿「首个过程行之前的 user」去猜——那会把
-      // 早到的 steer 误判成提示词，导致本应强制展开的轮被收起）。
-      final inRange = <int>[
-        for (final seq in _humanUserSeqs)
+      // issue #91：提示词 = 本轮第一条 user/message（**任意 sourceKind**，含
+      // agent-message）；然后才是真人插话。旧实现默认「首条真人 user 就是提示词」，
+      // 当 prompt 是 agent-message/非真人时会错误吞掉第一个真人间插话，导致过程段
+      // 少切一段、host 前移。历史倒序时也能靠 allInRange 的最小 seq 正确识别。
+      final allInRange = <int>[
+        for (final seq in _allUserSeqs)
           if (seq > t.startSeq! && (t.endSeq == null || seq < t.endSeq!)) seq,
       ]..sort();
-      final human = inRange.isEmpty
-          ? const <int>[]
-          : inRange.sublist(1);
+      final promptSeq = allInRange.isEmpty ? null : allInRange.first;
+      final human = <int>[
+        for (final seq in _humanUserSeqs)
+          if (seq > t.startSeq! &&
+              seq != promptSeq &&
+              (t.endSeq == null || seq < t.endSeq!))
+            seq,
+      ]..sort();
       result.add(TurnProcess(
         turn: t.turn,
         startSeq: t.startSeq!,

@@ -636,4 +636,44 @@ void main() {
       expect(tracker.build(), isEmpty);
     });
   });
+  group('issue #91：同 turn 内插话的段边界（提示词可为 agent-message）', () {
+    test('首条 user 是 agent-message 时，后续真人 user 都是插话而不是提示词', () {
+      final turn = trackerOf([
+        ev(1, 'turn/start', {'turn': 1}),
+        // 提示词不是真人（agent-message/team message）；旧实现会把它当"首条真人"，
+        // 错误吞掉真正的第一个插话。
+        ev(2, 'user/message', {'text': 'team message', 'sourceKind': 'agent-message'}),
+        ev(3, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
+        ev(4, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'c1', 'text': 'ok'}),
+        ev(5, 'user/message', {'text': '另外', 'sourceKind': 'user'}),
+        ev(6, 'tool/call', {'turn': 1, 'step': 2, 'callId': 'c2', 'name': 'shell'}),
+        ev(7, 'tool/result', {'turn': 1, 'step': 2, 'callId': 'c2', 'text': 'ok'}),
+        ev(8, 'user/message', {'text': '你没有子代理吗', 'sourceKind': 'user'}),
+        ev(9, 'tool/call', {'turn': 1, 'step': 3, 'callId': 'c3', 'name': 'shell'}),
+        ev(10, 'tool/result', {'turn': 1, 'step': 3, 'callId': 'c3', 'text': 'ok'}),
+        ev(11, 'assistant/message', {'turn': 1, 'step': 3, 'text': '回答'}),
+        ev(12, 'turn/end', {'turn': 1, 'reason': {'kind': 'completed'}}),
+      ]).build().single;
+      expect(turn.humanUserSeqs, [5, 8], reason: '两条真人发言都是插话，提示词是 agent-message');
+      expect(turn.hasInterjection, isTrue);
+      final segments = segmentsOf(turn);
+      expect(segments.length, 3, reason: '按两条插话切成 3 段，不能吞掉第一段之后的边界');
+      expect(segments.map((s) => s.rows.length), [1, 1, 1]);
+    });
+
+    test('首条 user 是真人提示词时，仍只把后续真人消息算插话（旧行为不回归）', () {
+      final turn = trackerOf([
+        ev(1, 'turn/start', {'turn': 1}),
+        ev(2, 'user/message', {'text': '提示词', 'sourceKind': 'user'}),
+        ev(3, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
+        ev(4, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'c1', 'text': 'ok'}),
+        ev(5, 'user/message', {'text': '插话', 'sourceKind': 'user'}),
+        ev(6, 'tool/call', {'turn': 1, 'step': 2, 'callId': 'c2', 'name': 'shell'}),
+        ev(7, 'tool/result', {'turn': 1, 'step': 2, 'callId': 'c2', 'text': 'ok'}),
+        ev(8, 'turn/end', {'turn': 1, 'reason': {'kind': 'completed'}}),
+      ]).build().single;
+      expect(turn.humanUserSeqs, [5], reason: '提示词不算插话');
+      expect(segmentsOf(turn).length, 2);
+    });
+  });
 }
