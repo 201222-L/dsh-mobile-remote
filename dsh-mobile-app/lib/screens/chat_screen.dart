@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
@@ -19,6 +20,7 @@ import '../download_error.dart';
 import '../download_foreground.dart';
 import '../resumable_download.dart';
 import 'download_resume_picker.dart';
+import '../scroll_follow.dart';
 import '../logger.dart';
 import '../l10n.dart';
 import '../models.dart';
@@ -438,28 +440,182 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _configDegraded = false; // 休眠会话配置已回退默认（服务端 configDegraded）：持续提示
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
-  bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮
+  bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮（派生展示，不反写意图）
   bool _turnRailVisible = false; // 本帧轨道可见性（列表 padding 与轨道共用 gate）
-  bool _pinnedToBottom = true; // 用户是否停留在最新（底部）：流式输出时据此决定是否自动跟随
+  // ── issue #114（§5.2）：跟随意图/拖拽/世代/待执行校正的唯一 owner ──────────
+  // 生产只负责把 ScrollMetrics/用户手势/布局版本喂给它，并执行它给出的有界校正；
+  // 意图判定、合并、预算、执行时守卫都在 ScrollFollowCoordinator 内（可单测）。
+  late final ScrollFollowCoordinator _scrollFollow;
+  bool _scrollFollowFrameBooked = false;
   // ── issue #77：活跃会话滚动贴底 ────────────────────────────────────
   // 内容短于视口时用顶部占位把消息列表底部对齐视口底部（否则 center 布局会顶对齐、
   // 下方留大片空白）；内容增长不算「上翻」（只有用户拖动才停止跟随）。
   double _liveBottomGap = 0;
   bool _liveGapMeasureScheduled = false;
-  // issue #103：展开/收起触发的统一内容高度变化处理 + 多帧贴底收敛。
-  bool _settledFollowScheduled = false;
   double _lastGapContentExtent = 0;
   // issue #89：活动条显隐/视口高度变化后必须重测底部占位；记录可见态与上次实测高度。
   bool _activityBarShown = false;
   double _lastGapViewportHeight = 0;
-  int _lastContentCount = 0;
-  bool _userDragActive = false;
-  bool _followBottomScheduled = false;
   bool _suppressOlderPaging = false; // 占位调整帧内：位置修正不得触发「上翻加载更早」
   // issue #81：本帧消息列右 padding；宽度变化必须让依赖宽度的尺寸/内容偏移缓存失效。
   double _lastLiveRightPadding = -1;
   // issue #89：右 padding 同帧变化会导致正文重排/max 收缩；帧后 clamp 越界。
   int _paddingReconcileAttempts = 0;
+
+  // ── issue #114：A1 测量层（保持只读；状态已收口到 ScrollFollowCoordinator） ──
+  @visibleForTesting
+  bool get debugPinnedToBottom => _scrollFollow.isFollowing;
+
+  @visibleForTesting
+  bool get debugUserDragActive => _scrollFollow.isDragging;
+
+  @visibleForTesting
+  bool get debugFollowBottomScheduled => _scrollFollow.hasPendingCorrection;
+
+  @visibleForTesting
+  bool get debugSettledFollowScheduled => _scrollFollow.hasPendingCorrection;
+
+  @visibleForTesting
+  double get debugLiveBottomGap => _liveBottomGap;
+
+  /// 派生展示：回底按钮/刻度轨是否可见（只读探针，供需求用例断言）。
+  @visibleForTesting
+  bool get debugShowJumpToLatest => _showJumpToLatest;
+
+  /// 调度契约探针：owner 的 ensureFrame → 生产实现必须自己调度一帧
+  /// （post-frame 回调本身不调度帧，必须 ensureVisualUpdate）。
+  @visibleForTesting
+  void debugEnsureScrollFollowFrame() => _ensureScrollFollowFrame();
+
+  /// 实际执行过的程序性校正次数与最后一次目标（issue §6.2「校正次数」）。
+  @visibleForTesting
+  int debugFollowJumps = 0;
+
+  @visibleForTesting
+  double? debugLastFollowTarget;
+
+  @visibleForTesting
+  int debugScrollToBottomCallbacks = 0;
+
+  ScrollGeometry _geometryOfMetrics(ScrollMetrics metrics) => ScrollGeometry(
+        pixels: metrics.pixels,
+        minExtent: metrics.minScrollExtent,
+        maxExtent: metrics.maxScrollExtent,
+        viewportDimension: metrics.viewportDimension,
+      );
+
+  ScrollGeometry _geometryOfPosition(ScrollPosition position) => ScrollGeometry(
+        pixels: position.pixels,
+        minExtent: position.minScrollExtent,
+        maxExtent: position.maxScrollExtent,
+        viewportDimension: position.viewportDimension,
+      );
+
+  /// owner 的唯一帧调度出口：注册帧后执行器，并**确保下一帧被调度**。
+  /// `addPostFrameCallback` 本身不调度帧——这正是 #114 A2 实测到的校正饿死根因。
+  void _ensureScrollFollowFrame() {
+    if (_scrollFollowFrameBooked) return;
+    _scrollFollowFrameBooked = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollFollowFrameBooked = false;
+      if (!mounted || _inHistory || !_scrollCtrl.hasClients) {
+        _scrollFollow.cancelPending();
+        return;
+      }
+      final position = _scrollCtrl.position;
+      if (!position.hasContentDimensions) {
+        _scrollFollow.cancelPending();
+        return;
+      }
+      final correction = _scrollFollow.takeCorrection(
+        _geometryOfPosition(position),
+      );
+      if (correction == null) return;
+      _applyScrollCorrection(correction);
+    });
+    // 帧后相位（postFrameCallbacks）里注册的回调不会自动带来新帧；这里显式补一帧。
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// 执行 owner 给出的一次有界校正（帧后测量或显式回底的同步路径共用）。
+  void _applyScrollCorrection(ScrollCorrection correction) {
+    if (!mounted || _inHistory || !_scrollCtrl.hasClients) return;
+    final position = _scrollCtrl.position;
+    debugScrollToBottomCallbacks += 1;
+    debugLastFollowTarget = correction.targetPixels;
+    if (!_scrolledLogged) {
+      _scrolledLogged = true;
+      AppLog.instance.log(
+        'Chat: 跟随校正(${correction.reason.name}) '
+        'pixels=${position.pixels.toStringAsFixed(0)} '
+        'target=${correction.targetPixels.toStringAsFixed(0)} '
+        'attempt=${correction.attempt + 1}/${correction.budget}',
+      );
+    }
+    debugFollowJumps += 1;
+    _scrollFollow.beginProgrammaticScroll();
+    try {
+      position.jumpTo(correction.targetPixels);
+    } finally {
+      _scrollFollow.endProgrammaticScroll();
+    }
+    _scrollFollow.noteCorrectionApplied(correction);
+    _syncScrollFollowDisplay();
+  }
+
+  /// 显式回底：取一次即时校正并同步执行，保证「点按钮→下一帧 padding/按钮同帧变化」
+  /// 的既有契约（帧后路径会晚一帧）。仍走 owner 的同一决策 seam。
+  void _applyScrollCorrectionImmediately() {
+    if (!mounted || _inHistory || !_scrollCtrl.hasClients) return;
+    final position = _scrollCtrl.position;
+    if (!position.hasContentDimensions) return;
+    final correction = _scrollFollow.takeCorrection(
+      _geometryOfPosition(position),
+    );
+    if (correction != null) _applyScrollCorrection(correction);
+  }
+
+  /// 把 owner 的派生展示同步到 build 需要的字段（只有变化时才 setState）。
+  void _syncScrollFollowDisplay() {
+    if (!mounted) return;
+    final show = _scrollFollow.showJumpToLatest;
+    if (show != _showJumpToLatest) {
+      setState(() => _showJumpToLatest = show);
+    }
+  }
+
+  /// 统一请求入口：内容/布局变化跟随；[forced] 用于初始打开/回 live/发送/显式回底。
+  void _requestScrollFollow({
+    bool forced = false,
+    CorrectionReason reason = CorrectionReason.contentLayout,
+    int? budget,
+  }) {
+    if (!mounted) return;
+    final geometry = _scrollCtrl.hasClients &&
+            _scrollCtrl.position.hasContentDimensions
+        ? _geometryOfPosition(_scrollCtrl.position)
+        : null;
+    if (forced) {
+      _scrollFollow.requestForcedFollow(
+        reason: reason,
+        budget: budget,
+        geometry: geometry,
+      );
+    } else {
+      _scrollFollow.requestFollowOnLayout(geometry);
+    }
+    _syncScrollFollowDisplay();
+  }
+
+  /// 程序性滚动统一包一层：它们的 ScrollEnd 不得被当成用户手势结束。
+  void _runProgrammaticScroll(void Function() action) {
+    _scrollFollow.beginProgrammaticScroll();
+    try {
+      action();
+    } finally {
+      _scrollFollow.endProgrammaticScroll();
+    }
+  }
 
   /// issue #89：padding 38/36/16 同帧切换后，宽度变化会清高度缓存并重排；
   /// 帧后把滚动位置 clamp 到新范围，重测底部占位，必要时有限帧收敛。
@@ -470,11 +626,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!pos.hasContentDimensions) return;
     final clamped = pos.pixels.clamp(pos.minScrollExtent, pos.maxScrollExtent);
     if ((clamped - pos.pixels).abs() > 0.5) {
-      _scrollCtrl.jumpTo(clamped);
+      _runProgrammaticScroll(() => _scrollCtrl.jumpTo(clamped));
     }
     // padding 38/36/16 只影响正文宽度与 extent；这里仅把越界的 pixels 夹回新范围。
     // 不重测底部占位、不回底，避免与用户滚动/手势抢方向（issue #81 契约）。
-    if (_userDragActive && _paddingReconcileAttempts < 4) {
+    if (_scrollFollow.isDragging && _paddingReconcileAttempts < 4) {
       _paddingReconcileAttempts++;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _reconcileAfterPaddingChange();
@@ -482,21 +638,6 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       _paddingReconcileAttempts = 0;
     }
-  }
-
-  /// issue #77：分帧收敛到底部（懒构建 extent 修正后按新 max 再跳，最多 [remaining] 帧）。
-  void _settleToBottom(int remaining) {
-    if (remaining <= 0) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollCtrl.hasClients) return;
-      final pos = _scrollCtrl.position;
-      if (!pos.hasContentDimensions) return;
-      final target = pos.maxScrollExtent;
-      if ((pos.pixels - target).abs() > 0.5) {
-        pos.jumpTo(target);
-        _settleToBottom(remaining - 1);
-      }
-    });
   }
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
@@ -613,6 +754,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _lastTurnFoldTiming = widget.store.turnFoldTiming;
     widget.store.addListener(_onStoreChanged);
     _scrollCtrl.addListener(_onScrollTick);
+    // issue #114：滚动跟随意图/校正的唯一 owner（生产与测试共用同一 seam）。
+    _scrollFollow = ScrollFollowCoordinator(ensureFrame: _ensureScrollFollowFrame);
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
     final sid = _mySessionId;
@@ -674,11 +817,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _liveReasoningRevision.dispose(); // issue #70：行级通知器随页面释放
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
+    _scrollFollow.dispose();
     super.dispose();
   }
 
-  /// 滚动监听：上翻超过阈值显示"回到底部"浮钮，回到最新位置时隐藏。
-  /// v2.8.0：live 视图统一普通（非 reverse）列表，"最新"恒在 maxScrollExtent。
+  /// 滚动监听：几何只喂给 owner 更新派生展示（回底按钮/刻度轨），**不改意图**。
+  /// 是否跟随由 ScrollFollowCoordinator 依「用户动作 + 世代」决定（§5.2）。
   void _onScrollTick() {
     if (!mounted || _inHistory) return;
     // re-review P2：滚动后行几何/可见性变化，允许活动条重新做几何判定。
@@ -687,30 +831,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _activityGeometryRefreshFrames = 0;
     final pos = _scrollCtrl.position;
     if (!pos.hasContentDimensions) return;
-    // issue #77：内容高度增长（流式/工具插入）不是「用户上翻」——长度变化本身
-    // 不得把钉住状态判成 false（旧实现只看 max-pixels，增长瞬间会被误判上翻）。
-    final max = pos.maxScrollExtent;
-    // 只有「条目数变化」才是真的内容增长；滚动过程中 SliverList 对未构建子项的
-    // extent 估算也会变化（例如 jumpTo(0) 触发懒构建），那不是新内容，不能据此
-    // 把「已上翻」误判成「仍贴底」。
-    final count = _items.length +
-        _olderItems.length +
-        ((_draft.isNotEmpty || _streaming) ? 1 : 0);
-    final contentGrew = count != _lastContentCount;
-    _lastContentCount = count;
-    final nearBottomRaw = max - pos.pixels <= 160;
-    final nearBottom = (contentGrew && _pinnedToBottom && !_userDragActive)
-        ? true
-        : nearBottomRaw;
-    // 注意：这里**不**调度贴底。extent 对懒构建子项是估算值，滚动中会持续修正；
-    // 在 tick 里跟随会让“估算变化 → jump → 再变”自激成无限帧。贴底由事件处理方
-    //（草稿刷新 / 新事件 / 显式回底）负责，tick 只维护钉住状态。
-    if (nearBottom != _pinnedToBottom) {
-      _pinnedToBottom = nearBottom;
-    }
-    if (!nearBottom != _showJumpToLatest) {
-        setState(() => _showJumpToLatest = !nearBottom);
-    }
+    _scrollFollow.onMetrics(_geometryOfPosition(pos));
+    _syncScrollFollowDisplay();
     // issue #24：持续滚动也要校准当前轮。跨 160px 阈值只覆盖显隐切换，
     // 一直停留在"离开底部"时页面不会重建，高亮就会停在旧值。
     _scheduleActiveTurnCalibration();
@@ -726,40 +848,18 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// issue #77：合并调度一次「贴底跟随」（post-frame 执行，避免布局期滚动）。
-  void _scheduleFollowBottom() {
-    if (_followBottomScheduled) return;
-    _followBottomScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _followBottomScheduled = false;
-      if (mounted) _scrollToBottom();
-    });
-  }
-
-  /// issue #103：展开/收起（卡/组/轮/显示更多）后统一通知滚动层。
+  /// issue #103/#114：展开/收起（卡/组/轮/显示更多）后统一通知滚动层。
   ///
-  /// 旧 `_liveBottomGap` 是按更短内容算出的，必须立即失效；帧后重新实测，
-  /// 若仍 pinned 则多帧收敛到底部（单次 jump 会被 lazy extent 修正甩开）。
+  /// 旧 `_liveBottomGap` 是按更短内容算出的，必须立即失效；跟随意图下由 owner
+  /// 合并排一次有界收敛（单次 jump 会被 lazy extent 修正甩开）。阅读态/拖拽中
+  /// owner 不会排队，因此用户位置不被抢走。
   void _onContentLayoutChanged() {
     if (!mounted || _inHistory) return;
     if (_liveBottomGap > 0) {
       setState(() => _liveBottomGap = 0);
     }
     _scheduleLiveBottomGapMeasure();
-    if (_pinnedToBottom && !_userDragActive) {
-      _scheduleSettledFollowBottom();
-    }
-  }
-
-  void _scheduleSettledFollowBottom() {
-    if (_settledFollowScheduled) return;
-    _settledFollowScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _settledFollowScheduled = false;
-      if (!mounted || _inHistory) return;
-      _scrollToBottom(settle: true);
-      _scheduleLiveBottomGapMeasure();
-    });
+    _requestScrollFollow();
   }
 
   /// issue #77：按 live 面板实测高度维护「顶部占位」——内容短于视口时让列表底部
@@ -838,36 +938,33 @@ class _ChatScreenState extends State<ChatScreen> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _suppressOlderPaging = false;
         });
-        if (_pinnedToBottom) _scheduleFollowBottom();
+        // 占位变化本身会改变 extent；跟随意图下交给 owner 合并排一次收敛。
+        _requestScrollFollow();
       }
-      // issue #77/#103：内容高度增长后，若仍钉在底部则多帧收敛；展开/收起走
-      // `_onContentLayoutChanged` 的显式路径（这里只兜底 lazy 估算变化）。
-      if (_pinnedToBottom &&
-          !_userDragActive &&
-          !_showJumpToLatest &&
-          _scrollCtrl.hasClients) {
-        final pos = _scrollCtrl.position;
-        if (pos.hasContentDimensions && pos.extentAfter > 1) {
-          _scheduleFollowBottom();
-        }
-      }
+      // 注意：这里**不**无条件请求跟随。#114 A3 实测：每次 build 都排队会让
+      // 程序性定位（例如测试/导航/用户手势把视口放在 160px 内）被下一帧拉回底部，
+      // 违反「位置移动来自用户动作才恢复/保持跟随」；内容/布局变化由事件入口
+      // (`_handleEvent` / `_onContentLayoutChanged` / 活动条显隐) 显式请求。
     });
   }
 
-  /// 一键回到最新消息：近距平滑滚动，远距直接跳（避免超长距离动画卡顿）。
+  /// 一键回到最新消息：显式进入跟随，由 owner 做有界收敛。
+  ///
+  /// 不做“近距平滑/远距直接跳”的分支：lazy SliverList 的 max 是估值，动画/单跳到
+  /// 估值上都会被后续布局修正甩开（#77/#103 教训）；统一走帧后校正 + 有界复核。
   void _jumpToLatest() {
     if (!_scrollCtrl.hasClients) return;
     final pos = _scrollCtrl.position;
-    final target = pos.maxScrollExtent;
     AppLog.instance.log(
-      'Chat: 回到底部 pixels=${pos.pixels.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}',
+      'Chat: 回到底部(显式) pixels=${pos.pixels.toStringAsFixed(0)} '
+      'max=${pos.maxScrollExtent.toStringAsFixed(0)}',
     );
-    _pinnedToBottom = true;
-    // issue #77：SliverList 对未构建子项的 extent 是估算值，长会话里一次 jump/动画的
-    // 目标可能在下一帧就被修正（真机表现为“看起来到底了、其实还差一截”）。
-    // 直接跳到当前 max，并在随后几帧按修正后的 max 收敛（帧数有界，不会自激）。
-    _scrollCtrl.jumpTo(target);
-    _settleToBottom(4);
+    _requestScrollFollow(
+      forced: true,
+      reason: CorrectionReason.explicitBackToBottom,
+    );
+    // 既有同帧契约：点按钮后本帧就完成跳转（后续帧仍由 owner 复核收敛）。
+    _applyScrollCorrectionImmediately();
   }
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
@@ -962,7 +1059,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final anchors = _turnAnchors;
     int? next;
     if (anchors.isNotEmpty) {
-      if (_pinnedToBottom) {
+      if (_scrollFollow.isFollowing) {
         next = anchors.last.turn;
       } else {
         final viewport =
@@ -1270,7 +1367,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final locator = TurnLocator(
         scrollTo: (offset) {
           // 世代失效后一律不得再滚动：这是"旧操作抢落点"的最后一道闸。
-          if (current() && _scrollCtrl.hasClients) _scrollCtrl.jumpTo(offset);
+          if (current() && _scrollCtrl.hasClients) {
+            _runProgrammaticScroll(() => _scrollCtrl.jumpTo(offset));
+          }
         },
         minScrollExtent: () =>
             _scrollCtrl.hasClients ? _scrollCtrl.position.minScrollExtent : 0,
@@ -1329,12 +1428,17 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _revealTurnKey(GlobalKey? key) async {
     final ctx = key?.currentContext;
     if (ctx == null) return;
-    await Scrollable.ensureVisible(
-      ctx,
-      alignment: 0.1,
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOutCubic,
-    );
+    _scrollFollow.beginProgrammaticScroll();
+    try {
+      await Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.1,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+      );
+    } finally {
+      _scrollFollow.endProgrammaticScroll();
+    }
   }
 
   /// issue #81：定位成功后把目标轮起始边界对齐到阅读线附近（仅在落在阅读线下方时），
@@ -1463,33 +1567,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
-  /// 历史浏览视图不跟随滚动。
-  void _scrollToBottom({bool force = false, bool settle = false}) {
-    if (_inHistory) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollCtrl.hasClients) return;
-      final pos = _scrollCtrl.position;
-      final target = pos.maxScrollExtent;
-      if (force || !_scrolledLogged) {
-        _scrolledLogged = true;
-        AppLog.instance.log(
-          'Chat: 滚动${force ? "(force)" : ""} pixels=${pos.pixels.toStringAsFixed(0)} max=${pos.maxScrollExtent.toStringAsFixed(0)} target=${target.toStringAsFixed(0)}',
-        );
-      }
-      // force（加载完成/发送/回到底部）；或用户停留在底部（钉住）——流式输出期间
-      // 持续跟随到最新。按「钉住」状态判断而非与新 maxScrollExtent 比距离，
-      // 避免大段 chunk 单帧推高内容后 220px 判定失效、输出掉出屏幕。
-      if (force || _pinnedToBottom) {
-        _pinnedToBottom = true;
-        _scrollCtrl.jumpTo(target);
-        // issue #103：lazy SliverList 的 max 会随子项布局修正；展开/初始化/回底
-        // 必须多帧 settle，单次 jump 可能落在真实内容外（整屏空白）。
-        if (settle) _settleToBottom(4);
-      }
-    });
-  }
-
   /// 流式草稿节流：chunk 到达只累加文本，定时（~80ms）合并刷新一次。
   void _scheduleDraftFlush() {
     _streaming = true;
@@ -1498,7 +1575,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // issue #77：草稿增长会改变内容高度；先撤销短内容占位，下一帧重测。
       if (_liveBottomGap > 0) _liveBottomGap = 0;
       if (mounted) setState(() {});
-      _scrollToBottom();
+      _requestScrollFollow();
     });
   }
 
@@ -1681,7 +1758,8 @@ class _ChatScreenState extends State<ChatScreen> {
       AppLog.instance.log(
         'Chat: 已入列 ${_items.length} 条（历史 ${events.length} 条）lastSeq=$_lastSeq firstSeq=$_earliestSeq',
       );
-      _scrollToBottom(force: true); // 初始定位到最新消息
+      // issue #114：强制定位统一走 owner 的有界收敛（跳到 lazy 估值后必须布局后再校）。
+      _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
       _refreshUsage();
       widget.store.refreshSessionConfig();
       // issue #25 二期：会话打开后拉一次轮次大纲（能力缺失/读取失败都退回一期行为）。
@@ -1804,28 +1882,36 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 的 drag 路径；单独监听 ScrollMetricsNotification，避免 pinned/回底按钮 stale。
   bool _onLiveScrollMetrics(ScrollMetricsNotification n) {
     if (!mounted || _inHistory) return false;
-    final metrics = n.metrics;
-    final nearBottom = metrics.maxScrollExtent - metrics.pixels <= 160;
-    // 只更新 pinned/按钮状态；跟随由显式 `_onContentLayoutChanged` 或
-    // ScrollNotification 路径负责，避免 metrics→settle→metrics 自激。
-    if (!_userDragActive) {
-      if (nearBottom && !_pinnedToBottom) _pinnedToBottom = true;
-      if (!nearBottom != _showJumpToLatest) {
-        setState(() => _showJumpToLatest = !nearBottom);
-      }
-    }
+    // issue #114 task-11：只接受**外层**消息列表的 metrics。工具卡/注入块等内层
+    // SingleChildScrollView 的 metrics 冒泡上来（depth>0）时不得污染 owner 几何快照。
+    if (n.depth != 0) return false;
+    // 几何只作为事实喂给 owner：更新派生展示（回底按钮/刻度轨），不改意图。
+    _scrollFollow.onMetrics(_geometryOfMetrics(n.metrics));
+    _syncScrollFollowDisplay();
     return false;
   }
 
   bool _onLiveScroll(ScrollNotification n) {
-    // issue #77：只有用户拖动才停止贴底；程序性 jump/animate 不算（ScrollEnd 一律清）。
+    // issue #114 task-11：内层滚动（工具卡详情/注入块里的 SingleChildScrollView）
+    // 的通知会冒泡到这里；depth>0 一律忽略——否则用户只是滚内层内容，主对话就
+    // 被当成“用户手势结束”改写意图（违反“拉到最底部就钉住”）。
+    if (n.depth != 0) return false;
+    // issue #77/#114：只有带 dragDetails 的真实手势才改变拖拽意图；程序性
+    // jump/animate 的 ScrollStart/End 一律不参与（避免“僵尸守卫”与误判上翻）。
+    // 用户手势（含松手后的惯性）结束由 owner 按最终几何恢复/保持意图；只有
+    // 当前确实处于用户拖拽状态时才把 ScrollEnd 当成用户手势结束。
     if (n is ScrollStartNotification && n.dragDetails != null) {
-      _userDragActive = true;
+      _scrollFollow.onUserScrollStart(_geometryOfMetrics(n.metrics));
     } else if (n is ScrollUpdateNotification && n.dragDetails != null) {
-      _userDragActive = true;
-    } else if (n is ScrollEndNotification) {
-      _userDragActive = false;
+      _scrollFollow.onUserScrollUpdate(_geometryOfMetrics(n.metrics));
+    } else if (n is ScrollEndNotification && _scrollFollow.isDragging) {
+      // 只有「当前确实处于用户拖拽/惯性」时的滚动结束才允许改写意图：
+      // - 程序性 jump/ensureVisible 的 ScrollEnd：isDragging 为 false（begin 时已清）；
+      // - 校正后的异步 ballistic（如下标越界回弹）也没有用户拖拽态；
+      // 两者都不会把阅读/跟随意图改错。用户拖拽的惯性结束仍由 owner 按最终几何判定。
+      _scrollFollow.onUserScrollEnd(_geometryOfMetrics(n.metrics));
     }
+    _syncScrollFollowDisplay();
     // issue #25 二期：跨页跳转进行中，用户主动滚动 = 取消本次跳转（故事 18）——
     // 只有带 dragDetails 的通知才是用户手势，自动滚动不受影响。
     // 同时作废导航世代：旧的落点/提示/清理一律不得再动（第二轮评审 P2）。
@@ -1838,7 +1924,14 @@ class _ChatScreenState extends State<ChatScreen> {
     // issue #77：短内容底部占位的调整会改变 extent，由此产生的位置修正
     // （dragDetails=null 的 ScrollUpdate）不得被当成用户上翻去拉更早历史——
     // 该帧内直接跳过；真实手势不受影响。
+    // issue #114：程序性校正后的回弹（dragDetails=null 的位移）不是「用户上翻」，
+    // 不得触发更早历史分页（否则短内容首屏校正会把同一页重复 prepend）。
+    final programmaticUpdate =
+        n is ScrollUpdateNotification && n.dragDetails == null;
+    final suppressForCorrection =
+        programmaticUpdate && _scrollFollow.hasPendingCorrection;
     if (!_suppressOlderPaging &&
+        !suppressForCorrection &&
         shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
     }
@@ -1910,9 +2003,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _navigateToTurn(TurnAnchor anchor) async {
     final token = ++_turnNavGeneration;
     _turnJumpCancelled = false;
-    final loaded = _turnAnchors.any(
-      (a) => a.turn == anchor.turn && a.seq == anchor.seq,
-    );
+    // issue #114：显式轮次定位暂停自动跟随并作废旧校正（§5.1 导航优先级）。
+    _scrollFollow.onNavigationStarted();
+    final loaded =
+        _turnAnchors.any((a) => a.turn == anchor.turn && a.seq == anchor.seq);
     if (loaded) {
       // 一条路径到底：已加载轮次也走同一个世代守卫（#24 修复后 `_jumpToTurn` 支持 token），
       // 连续点选时旧定位不得再把视口搬走。
@@ -2115,7 +2209,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scrollToTopOfHistory() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtrl.hasClients) return;
-      _scrollCtrl.jumpTo(0);
+      _runProgrammaticScroll(() => _scrollCtrl.jumpTo(0));
     });
   }
 
@@ -2125,7 +2219,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _inHistory = false;
       _pendingNew = false;
     });
-    _scrollToBottom(force: true);
+    _scrollFollow.bumpGeneration(intent: FollowIntent.followLatest);
+    _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
   }
 
   /// live 视图：普通列表（非 reverse，最旧在顶、最新在底、草稿末尾），
@@ -2561,6 +2656,9 @@ class _ChatScreenState extends State<ChatScreen> {
             if (structural) {
               _invalidateProcessPlan();
               setState(() {});
+              // issue #114：结构性思考行出现/切换 = 真实内容布局变化；跟随态下
+              // 必须由 owner 排队一次有界收敛（不依赖“下一帧恰好事先有帧”）。
+              _requestScrollFollow();
             }
           }
         }
@@ -2574,6 +2672,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // （与正文草稿 _scheduleDraftFlush 同口径），避免每个 delta 触发一次全量 setState。
         _appendEvent(ev);
         _scheduleActivityFlush();
+        _requestScrollFollow();
       }
       return;
     }
@@ -2626,7 +2725,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // v3.1.4（issue #13 排查建议 3）：轮次结束但本轮渲染不出任何回复条目 → 兜底补拉一次。
     // 触发场景：事件被任何一层（过滤/竞态/脏 seq）静默吞掉时，避免"只剩一条轮次结束分隔条"。
     if (ev.type == 'turn/end') _maybeResyncAfterTurn();
-    _scrollToBottom();
+    // 跟随态才收敛；阅读态/拖拽中 owner 不排队（§5.1/§5.2）。
+    _requestScrollFollow();
   }
 
   /// v3.1.4（issue #13）：会话表面被内核重写（`/compact` 的 surfaceOp=replace）后，
@@ -3904,7 +4004,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!queued) _items.insert(0, _MsgItem.user(text)); // 最新在前：插入头部（视觉底部）
     });
     _inputCtrl.clear();
-    _scrollToBottom(force: true);
+    _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
     try {
       final (mid, note, configDegraded) = await _api.send(
         id,
@@ -4704,7 +4804,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     // 只有「活动条当前可能有重复候选」时才需要几何重建；没有运行中工具不影响活动条。
     final hasGeometryCandidate = plan != null &&
-        _pinnedToBottom &&
+        _scrollFollow.nearBottom &&
         _activeTools.keys.any(plan.visibleToolCallIds.contains);
     if (!_activityGeometryResolved &&
         !_activityGeometryRefreshScheduled &&
@@ -4722,7 +4822,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final tools = [
       for (final entry in _activeTools.entries)
         if (!(plan != null &&
-            _pinnedToBottom &&
+            _scrollFollow.nearBottom &&
             plan.visibleToolCallIds.contains(entry.key) &&
             _isProcessToolRowInViewport(entry.key)))
           entry.value,
@@ -4735,7 +4835,7 @@ class _ChatScreenState extends State<ChatScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _scheduleLiveBottomGapMeasure();
-        if (_pinnedToBottom) _scheduleFollowBottom();
+        _requestScrollFollow();
       });
     }
     if (reasoning.isEmpty && tools.isEmpty) return const SizedBox.shrink();
@@ -4781,7 +4881,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!tick.loaded) tick.turn,
     };
     final showTurnRail = shouldShowTurnRail(
-      nearBottom: _pinnedToBottom,
+      nearBottom: _scrollFollow.nearBottom,
       turnCount: turnTicks.length,
     );
     _turnRailVisible = !_inHistory && showTurnRail;
@@ -5650,7 +5750,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       setState(() => _pendingImages.addAll(files.take(room)));
-      _scrollToBottom();
+      _requestScrollFollow();
     } catch (e) {
       if (mounted) {
         showToast(context, '${L10n.t('无法打开', 'Could not open: ')}$e');
@@ -6156,6 +6256,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       }
+      // issue #114：异步详情回填 = 同一条目内部的高度变化，跟随态下收口到 owner。
+      _requestScrollFollow();
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       _failureDetailRequests.remove(requestKey); // 允许用户点「重试」重新请求
@@ -6175,6 +6277,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ? current.copyAssistant(detailErrorCode: code, detailLoading: false)
           : current.copyEvent(detailErrorCode: code, detailLoading: false);
       setState(() => _replaceTimelineItem(item, fallback));
+      _requestScrollFollow();
     }
   }
 
