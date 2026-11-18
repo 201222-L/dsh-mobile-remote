@@ -806,22 +806,27 @@ void main() {
       );
       await _injectF70To(tester, store, 8);
 
-      expect(
-        find.byKey(_provisionalRowKey(1, 2)),
-        findsOneWidget,
-        reason: '${mode.name}: provisional 行四档均可见',
-      );
-      expect(find.text('思考中…'), findsOneWidget, reason: mode.name);
-      expect(find.text('run tests first'), findsOneWidget,
-          reason: '${mode.name}: 运行中预览不受 settledReasoningPreview 影响');
+      // issue #104：简洁档运行中整组折叠成一行，provisional/工具卡都不铺开；
+      // 其他三档运行中仍展开，provisional 可见。
+      expect(find.byKey(_provisionalRowKey(1, 2)),
+          mode == WorkStepDisplayMode.concise
+              ? findsNothing
+              : findsOneWidget,
+          reason: '${mode.name}: concise 运行中不铺过程行');
+      expect(find.textContaining('思考中…'), findsOneWidget, reason: mode.name);
+      expect(find.text('run tests first'),
+          mode == WorkStepDisplayMode.concise ? findsNothing : findsOneWidget,
+          reason: '${mode.name}: concise 运行中不显示过程预览');
 
       switch (mode) {
         case WorkStepDisplayMode.concise:
-          expect(find.text('正在调用工具…'), findsOneWidget);
+          expect(find.byKey(const ValueKey<String>('activity-bar')), findsOneWidget,
+              reason: '简洁运行中当前状态由活动条表达');
+          expect(find.text('正在调用 shell…'), findsOneWidget,
+              reason: '活动条 toolLabel 仍表达当前工具');
           expect(find.textContaining('（shell）'), findsNothing);
-          // 简洁档 settledReasoningPreview=false：落定行不显示首行预览（运行中不受影响）。
           expect(find.text('check layout'), findsNothing);
-          expect(find.text('思维链 12 字'), findsOneWidget);
+          expect(find.text('思维链 12 字'), findsNothing);
         case WorkStepDisplayMode.standard:
           expect(find.text('正在调用工具…（shell）'), findsOneWidget);
           expect(find.text('check layout'), findsOneWidget);

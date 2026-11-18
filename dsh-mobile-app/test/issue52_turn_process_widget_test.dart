@@ -488,7 +488,7 @@ void main() {
     expect(find.text('shell'), findsOneWidget); // 组强制展开 → 工具行可见
   });
 
-  testWidgets('简洁档运行中：行仍在，抬头只给通用文案（无工具名）', (tester) async {
+  testWidgets('简洁档运行中：整组折叠一行，工具卡不铺开（#104）', (tester) async {
     final events = oneTurn()
       ..removeWhere(
         (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
@@ -498,9 +498,9 @@ void main() {
       _Backend(events: events),
       mode: WorkStepDisplayMode.concise,
     );
-    expect(find.text('正在调用工具…'), findsOneWidget);
+    expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
     expect(find.textContaining('（shell）'), findsNothing);
-    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('shell'), findsNothing, reason: '运行中不得铺开工具卡');
   });
 
   testWidgets('手动展开只存内存：本会话内重建保持，重新进入会话按策略重算', (tester) async {
