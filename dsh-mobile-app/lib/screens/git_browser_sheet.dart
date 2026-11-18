@@ -69,6 +69,9 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
   String _previewPath = '';
   String? _previewOid;
   bool _choosingBranches = false;
+  // issue #86/#126：触顶三档内联选择（筛选面板本身是 sheet，禁止再叠一层 sheet）。
+  bool _showInlineLimit = false;
+  GitBranch? _pendingCapBranch;
   String _graphQuery = '';
   bool _legacyLimitNoticeDone = false;
   String? _openingOid;
@@ -1129,6 +1132,118 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
 
   /// issue #86：三档快捷 sheet（设置页同款底部弹层）——改档保留选择；
   /// 降档由 controller 裁剪前 N 并 toast，升档 toast 档位。
+  Future<void> _applyInlineLimit(GitGraphBranchLimit choice) async {
+    final controller = widget.controller;
+    if (choice == controller.branchLimit) {
+      setState(() => _showInlineLimit = false);
+      return;
+    }
+    final removed = controller.setBranchLimit(choice);
+    unawaited(_persistLimit(choice));
+    final pending = _pendingCapBranch;
+    _pendingCapBranch = null;
+    setState(() => _showInlineLimit = false);
+    if (!mounted) return;
+    if (removed > 0) {
+      _toast(
+        L10n.t(
+          '已按新上限保留前 ${controller.state.selectedBranches.length} 个分支',
+          'Kept the first ${controller.state.selectedBranches.length} branches under the new limit',
+        ),
+      );
+    }
+    if (pending == null) return;
+    final newMax = controller.branchLimit.max;
+    final count = controller.state.selectedBranches.length;
+    if (newMax != null && count >= newMax) return;
+    if (count >= controller.effectiveSelectionCap) return;
+    final query = _graphQuery.trim().toLowerCase();
+    if (query.isNotEmpty &&
+        !pending.displayName.toLowerCase().contains(query)) {
+      return;
+    }
+    unawaited(controller.toggleGraphBranch(pending));
+  }
+
+  Widget _inlineLimitOptions() {
+    final supportsPost =
+        widget.controller.state.capabilities?.supportsGraphPost ?? true;
+    final current = widget.controller.branchLimit;
+    return Container(
+      key: const Key('git-graph-limit-inline'),
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        border: Border.all(color: DshColors.line(context)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final limit in GitGraphBranchLimit.values)
+            InkWell(
+              key: Key('git-graph-limit-${limit.storageValue}'),
+              onTap: !supportsPost && limit != GitGraphBranchLimit.five
+                  ? null
+                  : () => unawaited(_applyInlineLimit(limit)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        limit == current
+                            ? '${_limitLabel(limit)}  ${L10n.t('当前', 'Current')}'
+                            : _limitLabel(limit),
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: limit == current
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: supportsPost ||
+                                  limit == GitGraphBranchLimit.five
+                              ? DshColors.ink(context)
+                              : DshColors.ink3(context),
+                        ),
+                      ),
+                    ),
+                    if (!supportsPost && limit != GitGraphBranchLimit.five)
+                      Flexible(
+                        child: Text(
+                          L10n.t(
+                            '当前电脑端版本不支持',
+                            'Unsupported by this desktop version',
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 10, color: DshColors.ink3(context)),
+                        ),
+                      ),
+                    if (limit == current)
+                      Icon(Icons.check, size: 16, color: DshColors.brand(context)),
+                  ],
+                ),
+              ),
+            ),
+          InkWell(
+            key: const Key('git-graph-limit-cancel'),
+            onTap: () => setState(() {
+              _showInlineLimit = false;
+              _pendingCapBranch = null;
+            }),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                L10n.t('取消', 'Cancel'),
+                style: TextStyle(fontSize: 14, color: DshColors.ink2(context)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<bool> _showGraphLimitSheet({bool capReached = false}) async {
     final current = widget.controller.branchLimit;
     final selectedCount = widget.controller.state.selectedBranches.length;
@@ -1203,20 +1318,12 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       }
       final max = controller.branchLimit.max;
       if (max != null && selected.length >= max) {
-        final changed = await _showGraphLimitSheet(capReached: true);
-        if (!mounted || !changed) return;
-        // 升档（或改到不限）后，若触发项仍属于当前搜索结果则自动补选；
-        // 降档已被裁剪到新上限，不再补选。
-        final newMax = controller.branchLimit.max;
-        final count = controller.state.selectedBranches.length;
-        if (newMax != null && count >= newMax) return;
-        final query = _graphQuery.trim().toLowerCase();
-        if (query.isNotEmpty &&
-            !branch.displayName.toLowerCase().contains(query)) {
-          return;
-        }
-        // 补选无需等待 graph 网络：controller 先同步更新选择再异步加载。
-        unawaited(controller.toggleGraphBranch(branch));
+        // issue #126：筛选面板本身已是 sheet，改为当前 sheet 内联三档；
+        // 记录触发项，改档成功后在同一流程补选（保持原行为）。
+        setState(() {
+          _showInlineLimit = true;
+          _pendingCapBranch = branch;
+        });
         return;
       }
     }
@@ -1395,7 +1502,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
       label: L10n.t('已达上限，点按改上限', 'Limit reached; tap to change'),
       child: InkWell(
         key: const Key('git-graph-limit-reached'),
-        onTap: () => _showGraphLimitSheet(capReached: true),
+        onTap: () => setState(() => _showInlineLimit = true),
         borderRadius: BorderRadius.circular(6),
         child: Container(
           height: 24,
@@ -1755,6 +1862,7 @@ class _GitBrowserSheetState extends State<GitBrowserSheet>
             ],
           ),
         ),
+        if (!allMode && _showInlineLimit) _inlineLimitOptions(),
         // issue #95：all 模式向上加载（更新页）超时——顶部单侧重试，保留已加载页。
         if (allMode && state.graphPageTimedOut && state.graphPageTimedOutNewer)
           Container(
