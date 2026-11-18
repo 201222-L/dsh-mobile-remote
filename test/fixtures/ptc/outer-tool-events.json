@@ -1,0 +1,75 @@
+{
+  "fixture": "ptc-outer-tool-events",
+  "fixtureVersion": 1,
+  "description": "Captured native tool events for the outer run_code call that owns the PTC sub-calls in dispatch-events.json. Context only: these are tool/call and tool/result, not PTC projection inputs.",
+  "capture": {
+    "origin": "captured",
+    "capturedAt": "2026-11-10T04:57:27.889000Z",
+    "dshVersion": "0.2.2-rc.1",
+    "nodeVersion": "v24.19.0",
+    "profile": "headless (shipped template, isolated throwaway DSH_HOME; see README for exact paths and commands)",
+    "profilePatch": "test overlay enabling @deepseek-ai/dsh-tool-executor-ptc and disabling @deepseek-ai/dsh-tool-executor-native",
+    "model": {
+      "provider": "deepseek-official",
+      "model": "deepseek-flash"
+    },
+    "sessionId": "session-c6811deb-71d8-47b2-bb82-43ae56450e36",
+    "outerCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+    "rawSessionArtifactSha256": "758ef02acb59f8e3230c262d32a6ef1a5e4e0b94ad415a6e6a2a7c88536e8ae6",
+    "decodedSessionSha256": "6d3906cc3f11f45eeb69bbf5886b1a9bd64a94c2f1238ba480104fad6f4be30b",
+    "decodedSessionEventCount": 35
+  },
+  "sanitization": {
+    "replacements": [
+      {
+        "from": "<captured absolute workspace path>",
+        "to": "<workspace>",
+        "occurrences": 1
+      }
+    ],
+    "notes": "Same replacement rule as dispatch-events.json."
+  },
+  "events": [
+    {
+      "type": "tool/call",
+      "seq": 18,
+      "time": 1794286650090,
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "callId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "name": "run_code",
+        "arguments": "{\"description\": \"Read README, echo marker, catch missing-file error\", \"code\": \"const summary = { readOk: false, bashOk: false, errorMessage: null };\\n\\ntry {\\n  const r = await tools.read({ file_path: \\\"README.md\\\", limit: 3 });\\n  summary.readOk = Array.isArray(r.lines) && r.lines.length > 0;\\n} catch (e) {\\n  summary.readOk = false;\\n}\\n\\ntry {\\n  const b = await tools.bash({ command: \\\"echo ptc-fixture-ok\\\", description: \\\"Print the fixture marker\\\" });\\n  summary.bashOk = b.kind === \\\"foreground\\\" && b.exitCode === 0 && String(b.stdout.text).includes(\\\"ptc-fixture-ok\\\");\\n} catch (e) {\\n  summary.bashOk = false;\\n}\\n\\ntry {\\n  await tools.read({ file_path: \\\"ptc-missing-file.txt\\\", limit: 3 });\\n} catch (e) {\\n  summary.errorMessage = String((e && e.message) || e);\\n}\\n\\nreturn summary;\"}"
+      }
+    },
+    {
+      "type": "tool/result",
+      "seq": 27,
+      "time": 1794286650280,
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "role": "tool",
+          "source": {
+            "kind": "tool",
+            "callId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010"
+          },
+          "toolCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+          "content": [
+            {
+              "type": "text",
+              "text": "{\n  \"readOk\": true,\n  \"bashOk\": true,\n  \"errorMessage\": \"cannot read \\\"<workspace>/ptc-missing-file.txt\\\": not found\"\n}"
+            }
+          ],
+          "isError": false,
+          "id": "7c9cb9a3-fc65-45ef-ad32-6275032d1ec0"
+        }
+      },
+      "sourceEventSeqs": [
+        18
+      ],
+      "surfaceOp": "append"
+    }
+  ]
+}

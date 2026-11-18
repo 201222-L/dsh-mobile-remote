@@ -1,0 +1,207 @@
+{
+  "fixture": "ptc-dispatch-events",
+  "fixtureVersion": 1,
+  "description": "Real session events emitted by @deepseek-ai/dsh-tool-executor-ptc for three PTC sub-calls: read (success), bash (success), read (isError).",
+  "capture": {
+    "origin": "captured",
+    "capturedAt": "2026-11-10T04:57:27.889000Z",
+    "dshVersion": "0.2.2-rc.1",
+    "nodeVersion": "v24.19.0",
+    "profile": "headless (shipped template, isolated throwaway DSH_HOME; see README for exact paths and commands)",
+    "profilePatch": "test overlay enabling @deepseek-ai/dsh-tool-executor-ptc and disabling @deepseek-ai/dsh-tool-executor-native",
+    "model": {
+      "provider": "deepseek-official",
+      "model": "deepseek-flash"
+    },
+    "sessionId": "session-c6811deb-71d8-47b2-bb82-43ae56450e36",
+    "outerCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+    "rawSessionArtifactSha256": "758ef02acb59f8e3230c262d32a6ef1a5e4e0b94ad415a6e6a2a7c88536e8ae6",
+    "decodedSessionSha256": "6d3906cc3f11f45eeb69bbf5886b1a9bd64a94c2f1238ba480104fad6f4be30b",
+    "decodedSessionEventCount": 35
+  },
+  "sanitization": {
+    "replacements": [
+      {
+        "from": "<captured absolute workspace path>",
+        "to": "<workspace>",
+        "occurrences": 4
+      }
+    ],
+    "notes": "Absolute sandbox workspace paths are rewritten to <workspace>; ids, seq, time, content, meta and error are otherwise byte-faithful to the decoded session log. No credentials, home paths or workspace paths are present."
+  },
+  "scenario": {
+    "outer": {
+      "tool": "run_code",
+      "callId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010"
+    },
+    "subCalls": [
+      {
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:1",
+        "name": "read",
+        "status": "success",
+        "arguments": {
+          "file_path": "README.md",
+          "limit": 3
+        }
+      },
+      {
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:2",
+        "name": "bash",
+        "status": "success",
+        "arguments": {
+          "command": "echo ptc-fixture-ok",
+          "description": "Print the fixture marker"
+        }
+      },
+      {
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:3",
+        "name": "read",
+        "status": "failed",
+        "arguments": {
+          "file_path": "ptc-missing-file.txt",
+          "limit": 3
+        }
+      }
+    ]
+  },
+  "events": [
+    {
+      "type": "tool/ptc-dispatch-start",
+      "seq": 19,
+      "time": 1794286650230,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:1",
+        "name": "read",
+        "arguments": {
+          "file_path": "README.md",
+          "limit": 3
+        }
+      }
+    },
+    {
+      "type": "tool/ptc-dispatch",
+      "seq": 20,
+      "time": 1794286650238,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:1",
+        "name": "read",
+        "arguments": {
+          "file_path": "README.md",
+          "limit": 3
+        },
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "<path><workspace>/README.md</path>\n<type>file</type>\n<content>\n1: # PTC fixture workspace\n2: \n3: Line two of the fixture README.\n\n(Showing lines 1-3 of 5. Use offset=4 to continue.)\n</content>"
+          }
+        ],
+        "meta": {
+          "path": "<workspace>/README.md",
+          "offset": 1,
+          "lines": [
+            {
+              "number": 1,
+              "text": "# PTC fixture workspace"
+            },
+            {
+              "number": 2,
+              "text": ""
+            },
+            {
+              "number": 3,
+              "text": "Line two of the fixture README."
+            }
+          ],
+          "totalLines": 5,
+          "lang": "md"
+        }
+      }
+    },
+    {
+      "type": "tool/ptc-dispatch-start",
+      "seq": 21,
+      "time": 1794286650239,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:2",
+        "name": "bash",
+        "arguments": {
+          "command": "echo ptc-fixture-ok",
+          "description": "Print the fixture marker"
+        }
+      }
+    },
+    {
+      "type": "tool/ptc-dispatch",
+      "seq": 24,
+      "time": 1794286650256,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:2",
+        "name": "bash",
+        "arguments": {
+          "command": "echo ptc-fixture-ok",
+          "description": "Print the fixture marker"
+        },
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "ptc-fixture-ok\n"
+          }
+        ],
+        "meta": {
+          "cwd": "<workspace>"
+        }
+      }
+    },
+    {
+      "type": "tool/ptc-dispatch-start",
+      "seq": 25,
+      "time": 1794286650257,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:3",
+        "name": "read",
+        "arguments": {
+          "file_path": "ptc-missing-file.txt",
+          "limit": 3
+        }
+      }
+    },
+    {
+      "type": "tool/ptc-dispatch",
+      "seq": 26,
+      "time": 1794286650260,
+      "data": {
+        "rootCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "parentCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010",
+        "subCallId": "call_00_ET_F0UF9gYXReFLq88FyAFg8010:ptc:3",
+        "name": "read",
+        "arguments": {
+          "file_path": "ptc-missing-file.txt",
+          "limit": 3
+        },
+        "isError": true,
+        "error": {
+          "name": "FsError",
+          "code": "FS_NOT_FOUND"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Error: cannot read \"<workspace>/ptc-missing-file.txt\": not found"
+          }
+        ]
+      }
+    }
+  ]
+}

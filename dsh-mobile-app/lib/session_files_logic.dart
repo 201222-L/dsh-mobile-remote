@@ -364,6 +364,70 @@ bool isWithinRoot(String root, String child) {
   return cc.startsWith(prefix);
 }
 
+/// 会话 cwd 相对路径的长度上限（与服务端 `TOOL_CARD_PREVIEW_PATH_MAX` 同口径；
+/// `String.length` 即 UTF-16 code unit，与 JS `string.length` 一致）。
+const int kSessionRelativePathMax = 300;
+
+/// 校验并**原样返回**「cwd 相对 POSIX 路径」；任何不安全/非规范输入返回 null。
+///
+/// 只校验、不改写：App 拼路径用的就是这里返回的那个字符串。规则与服务端
+/// `previewTargetOf` 的词法分支逐条对齐（issue #67 契约 §2.2）：
+/// - 必须是 String、非空、无首尾空白、无 NUL；
+/// - 只用 POSIX 分隔符：含 `\` 一律拒绝（不做反斜杠归一，避免宿主差异）；
+/// - 不以 `/` 开头、不以盘符 `^[A-Za-z]:` 开头；
+/// - 段级拒绝：空段 / `.` / `..` / 含 `:`；
+/// - 长度 ≤ [kSessionRelativePathMax]（UTF-16 长度）。
+///
+/// `~`、空格、Unicode 都作为普通段名放行（它们不会逃逸 cwd）。
+String? normalizeSessionRelativePath(Object? value) {
+  if (value is! String) return null;
+  if (value.isEmpty) return null;
+  if (value.trim() != value) return null;
+  if (value.contains('\u0000')) return null;
+  if (value.contains('\\')) return null;
+  if (value.length > kSessionRelativePathMax) return null;
+  if (value.startsWith('/')) return null;
+  if (RegExp(r'^[A-Za-z]:').hasMatch(value)) return null;
+  for (final segment in value.split('/')) {
+    if (segment.isEmpty ||
+        segment == '.' ||
+        segment == '..' ||
+        segment.contains(':')) {
+      return null;
+    }
+  }
+  return value;
+}
+
+/// 把 `root` + 校验后的相对段拼成绝对路径；任一环节失败返回 null。
+///
+/// 这是 App 侧**唯一的路径拼接点**（服务端只下发 `relative`；页面/卡片都不拼路径）。
+/// 先做词法校验，再用 [isWithinRoot] 兜底夹取；服务端返回的 root 已是规范化形式，
+/// 所以这里不做 realpath——真正的 realpath 夹取在服务端（候选验证与读取侧）。
+String? resolveSessionRelativePath(
+  String root,
+  String relative, {
+  String sep = '/',
+}) {
+  final rel = normalizeSessionRelativePath(relative);
+  if (rel == null) return null;
+  if (root.isEmpty) return null;
+  var base = root;
+  // 保留 `C:\` 这类盘符根（去掉尾分隔符会变成 `C:`，那是一个"盘符相对"路径）。
+  final driveRoot = RegExp(r'^[A-Za-z]:[\\/]$').hasMatch(base);
+  if (!driveRoot) {
+    while (base.length > 1 && base.endsWith(sep)) {
+      base = base.substring(0, base.length - sep.length);
+    }
+  }
+  final segments = rel.split('/');
+  final joined = base.endsWith(sep)
+      ? '$base${segments.join(sep)}'
+      : '$base$sep${segments.join(sep)}';
+  if (!isWithinRoot(root, joined)) return null;
+  return joined;
+}
+
 /// 路径归一：`\` → `/`，折叠重复分隔符。只用于比较，不用于拼路径。
 String normalizeBrowsePath(String path) {
   var s = path.replaceAll('\\', '/');

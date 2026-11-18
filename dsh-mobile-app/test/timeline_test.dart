@@ -130,11 +130,14 @@ void main() {
     expect(debug.items.single.visibleIn(TimelineMode.debug), isTrue);
   });
 
-  test('durable 审批事件普通模式可见且有可读标题（历史回放）', () {
+  test('durable 审批事件归调试可见且有可读标题（issue #61，历史回放）', () {
     final reducer = TimelineReducer();
     reducer.apply(ev(1, 'approval/asked', {'toolName': 'shell', 'reason': '需要授权'}));
     final item = reducer.items.single;
-    expect(item.visibleIn(TimelineMode.ordinary), isTrue);
+    // issue #61：审批/问询/后台任务属于协议生命周期事件——普通模式由弹卡/工具行呈现，
+    // 历史回放不重复渲染裸协议卡；调试模式仍可审阅。
+    expect(item.visibleIn(TimelineMode.ordinary), isFalse);
+    expect(item.visibleIn(TimelineMode.debug), isTrue);
     expect(item.title, isNot('approval/asked'));
   });
 

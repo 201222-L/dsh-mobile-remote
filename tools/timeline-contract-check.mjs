@@ -1,6 +1,9 @@
 // Issue #1：可见事件协议的无损指针/未知事件/工具关联回归。
 // 需要 DSH_MOBILE_PLUGIN 指向可加载的插件模块；与现有 hotfix07-unit-check 同一导入策略。
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 const configuredPath = process.env.DSH_MOBILE_PLUGIN;
 const selectedPath = configuredPath ?? fileURLToPath(new URL("../lib/index.js", import.meta.url));
@@ -40,6 +43,29 @@ check("token chunk 不进入历史时间线", mod.isTimelineRecord({ seq: 8, typ
 check("token chunk 仍进入实时流", mod.isLiveTimelineRecord({ seq: 8, type: "assistant/chunk", data: {} }) === true);
 check("内部事件不进入实时 session/event", mod.isLiveTimelineRecord({ seq: 8, type: "request/header", data: {} }) === false);
 check("compaction 控制事件进入实时但不进历史", mod.isLiveTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === true && mod.isTimelineRecord({ seq: 8, type: "compaction/end", data: {} }) === false);
+
+// issue #52（ADR 0027 §2/§6.20）：事件摘要顶层 `time`（Unix 毫秒，取自 SessionEvent.time）——
+// 只增不改；旧宿主不下发时字段缺省，App 不得用本地接收时间推算耗时。
+const timedMessage = mod.summarizeEvent({
+  seq: 40,
+  type: "user/message",
+  time: 1730000000123,
+  data: { id: "m-time", content: [{ type: "text", text: "hi" }] },
+});
+check("摘要下发顶层 time（Unix 毫秒）", timedMessage.time === 1730000000123, JSON.stringify(timedMessage.time));
+check("time 只加在顶层，不污染 data", timedMessage.data?.time === undefined, JSON.stringify(timedMessage.data));
+check("time 不改变既有摘要字段", timedMessage.type === "user/message" && timedMessage.seq === 40 && timedMessage.data?.text === "hi" && timedMessage.data?.messageId === "m-time");
+check("缺 time 的旧宿主不下发该字段", mod.summarizeEvent({ seq: 41, type: "user/message", data: { id: "m2", content: [] } }).time === undefined);
+check("非法 time（负数/非整数/字符串/NaN）不下发", [
+  -1,
+  1.5,
+  "1730000000123",
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.MAX_SAFE_INTEGER + 2,
+].every((time) => mod.summarizeEvent({ seq: 42, type: "tool/call", time, data: { callId: "c", name: "shell" } }).time === undefined));
+check("未知可见事件同样带顶层 time", mod.summarizeEvent({ seq: 43, type: "future/visible", time: 1730000000999, data: { secretLike: "raw-value" } }).time === 1730000000999);
+check("内部事件仍被过滤（time 不改变过滤判据）", mod.isTimelineRecord({ seq: 44, type: "request/header", time: 1730000000123, data: {} }) === false && mod.isLiveTimelineRecord({ seq: 44, type: "step/start", time: 1730000000123, data: {} }) === false);
 
 // PR #24 复核（阻断级泄露）：LLM 请求快照含 system prompt / messages 正文，按命名约定拦截。
 const llmRequestTypes = ["session/title-llm-request", "web/deepseek-search-llm-request", "web/future-provider-llm-request", "future/llm-request"];
@@ -162,6 +188,443 @@ const userWithFile = mod.summarizeEvent({
 });
 check("user/message 仍下发附件元数据", userWithFile.data?.files?.length === 1 && userWithFile.data.files[0].name === "a.md", JSON.stringify(userWithFile.data?.files));
 
+// issue #53（§6.20）：轮末产出物投影——只下发 name/display/description，绝不泄露主机路径。
+// HOME 在 verify 的隔离环境里会被改写，因此家目录用例必须用运行时的 homedir() 构造。
+const contractHome = homedir();
+const presentedSummary = mod.summarizeEvent({
+  seq: 40,
+  time: 1_700_000_000_000,
+  type: "deliverables/presented",
+  data: { turn: 2, callId: "call-x", files: [
+    { path: "/home/mark/proj/src/a.ts", description: "最终交付" },
+    { path: `${contractHome}/.config/secret.json` },
+    { path: "/opt/elsewhere/report.pdf" },
+    { path: "rel/z.ts" },
+  ] },
+}, { cwd: "/home/mark/proj" });
+const presentedFiles = presentedSummary.data?.files ?? [];
+check(
+  "deliverables/presented 只下发 name/display/description（无 path/绝对路径）",
+  presentedFiles.length === 4
+    && presentedFiles.every((file) => Object.keys(file).every((key) => ["id", "name", "display", "description"].includes(key)))
+    && presentedFiles.every((file) => typeof file.id === "string" && /^[0-9a-f]{16}$/.test(file.id))
+    && !JSON.stringify(presentedSummary.data).includes("/home/mark")
+    && !JSON.stringify(presentedSummary.data).includes("/opt/"),
+  JSON.stringify(presentedSummary.data),
+);
+check(
+  "deliverables/presented display 派生：工作目录相对 / 家目录 ~ / 其余 basename",
+  presentedFiles[0]?.display === "src/a.ts"
+    && presentedFiles[1]?.display === "~/.config/secret.json"
+    && presentedFiles[2]?.display === "report.pdf"
+    && presentedFiles[3]?.display === "rel/z.ts",
+  JSON.stringify(presentedFiles.map((file) => file.display)),
+);
+check(
+  "deliverables/presented 保留 name/description/turn/callId",
+  presentedFiles[0]?.name === "a.ts"
+    && presentedFiles[0]?.description === "最终交付"
+    && presentedSummary.data?.turn === 2
+    && presentedSummary.data?.callId === "call-x",
+  JSON.stringify({ data: presentedSummary.data }),
+);
+const workspaceChangesSummary = mod.summarizeEvent({ seq: 41, type: "workspace/changes", data: { turn: 2 } });
+check(
+  "workspace/changes 摘要保留 type/seq 但不含 data",
+  workspaceChangesSummary.type === "workspace/changes" && workspaceChangesSummary.seq === 41 && workspaceChangesSummary.data === undefined,
+  JSON.stringify(workspaceChangesSummary),
+);
+check(
+  "workspace/changes 移出移动时间线（history/live/detail 同一判据）",
+  mod.isTimelineRecord({ seq: 41, type: "workspace/changes", data: { turn: 2 } }) === false
+    && mod.isLiveTimelineRecord({ seq: 41, type: "workspace/changes", data: { turn: 2 } }) === false
+    && mod.isDetailVisibleType("workspace/changes") === false,
+);
+check(
+  "recordFileId 为不可逆 16 位 hex，presented 与 changes/summary 同源",
+  typeof mod.recordFileId === "function"
+    && /^[0-9a-f]{16}$/.test(mod.recordFileId("/a/b/c.ts"))
+    && mod.recordFileId("/a/b/c.ts") === mod.recordFileId("/a/b/c.ts")
+    && mod.recordFileId("/a/b/c.ts") !== mod.recordFileId("/a/b/d.ts"),
+  String(mod.recordFileId?.("/a/b/c.ts")),
+);
+const tailSignals = mod.turnTailsOf([
+  { type: "workspace/changes", data: { turn: 2 } },
+  { type: "deliverables/presented", data: { turn: 2, files: [{ path: "/tmp/a" }] } },
+  { type: "workspace/changes", data: { turn: 3 } },
+]);
+check(
+  "turnTails 单次遍历、只含有产出物的轮次且形状一致",
+  JSON.stringify(tailSignals) === JSON.stringify({ "2": { changes: true, presented: true }, "3": { changes: true, presented: false } })
+    && JSON.stringify(mod.turnTailOf([{ type: "workspace/changes", data: { turn: 5 } }], 5)) === JSON.stringify({ changes: true, presented: false }),
+  JSON.stringify(tailSignals),
+);
+
+// issue #54（M3 Batch 1）+ issue #66（M3 Batch 2-A）：工具卡结构化投影。
+const toolCardsCaps = mod.toolCardsCapabilityOf();
+check(
+  "toolCards 能力位声明本插件实际投影的 13 个工具",
+  toolCardsCaps?.version === 1
+    && JSON.stringify(toolCardsCaps?.tools) === JSON.stringify([
+      "bash", "pwsh", "read", "write", "edit", "grep", "glob", "web_fetch", "web_search", "read_image",
+      "todo_write", "ask_user_question", "skill",
+    ]),
+  JSON.stringify(toolCardsCaps),
+);
+// issue #68（M3 Batch 2-C）：PTC 子调用投影（真实夹具）+ 50 上限 + 安全白名单。
+const ptcFixture = JSON.parse(readFileSync(new URL("../test/fixtures/ptc/dispatch-events.json", import.meta.url), "utf8"));
+const PTC_TEST_CWD = "/home/mark/proj";
+const ptcOuterCallId = ptcFixture.capture.outerCallId;
+const ptcSummarize = (event, options = {}) => mod.summarizeEvent(event, { cwd: PTC_TEST_CWD, ...options });
+const ptcStartEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch-start");
+const ptcSuccessEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch" && event.data.isError === false);
+const ptcFailedEvent = ptcFixture.events.find((event) => event.type === "tool/ptc-dispatch" && event.data.isError === true);
+check(
+  "toolCards 能力位含 ptc:{version:1}，存量 version/tools 不变且 ptc 在 tools 之后（键序兼容既有断言）",
+  JSON.stringify(toolCardsCaps.ptc) === JSON.stringify({ version: 1 })
+    && JSON.stringify(toolCardsCaps).indexOf('"ptc"') > JSON.stringify(toolCardsCaps).indexOf('"tools"')
+    && toolCardsCaps.version === 1,
+  JSON.stringify(toolCardsCaps),
+);
+const ptcStartSummary = ptcSummarize(ptcStartEvent);
+check(
+  "PTC start 投影：subCallId→callId、status=running、summary 安全摘要，无 text/isError/error/arguments/meta",
+  ptcStartSummary.data?.callId === `${ptcOuterCallId}:ptc:1`
+    && ptcStartSummary.data?.status === "running"
+    && ptcStartSummary.data?.summary?.kind === "file"
+    && ptcStartSummary.data?.summary?.filePath === "README.md"
+    && ptcStartSummary.data?.text === undefined
+    && ptcStartSummary.data?.isError === undefined
+    && ptcStartSummary.data?.error === undefined
+    && ptcStartSummary.data?.arguments === undefined
+    && ptcStartSummary.data?.meta === undefined
+    && ptcStartSummary.data?.content === undefined,
+  JSON.stringify(ptcStartSummary),
+);
+const ptcSuccessSummary = ptcSummarize(ptcSuccessEvent);
+check(
+  "PTC result 成功：status=success、isError=false，无 text/error/meta/content",
+  ptcSuccessSummary.data?.status === "success"
+    && ptcSuccessSummary.data?.isError === false
+    && ptcSuccessSummary.data?.text === undefined
+    && ptcSuccessSummary.data?.error === undefined
+    && ptcSuccessSummary.data?.meta === undefined
+    && ptcSuccessSummary.data?.content === undefined,
+  JSON.stringify(ptcSuccessSummary),
+);
+const ptcFailedSummary = ptcSummarize(ptcFailedEvent);
+const ptcFailedJson = JSON.stringify(ptcFailedSummary);
+check(
+  "PTC result 失败（L1）：text 仅安全错误码 FS_NOT_FOUND、error 仅 name/code、无 content 原文/路径/reason",
+  ptcFailedSummary.data?.status === "failed"
+    && ptcFailedSummary.data?.text === "FS_NOT_FOUND"
+    && JSON.stringify(ptcFailedSummary.data?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" })
+    && !ptcFailedJson.includes("cannot read")
+    && !ptcFailedJson.includes(PTC_TEST_CWD)
+    && !ptcFailedJson.includes("content")
+    && !ptcFailedJson.includes("reason"),
+  ptcFailedJson,
+);
+check(
+  "PTC payload 无 cwd 绝对路径、无 arguments/meta/content/images 原文",
+  !JSON.stringify(ptcFixture.events.map((event) => ptcSummarize(event))).includes(PTC_TEST_CWD)
+    && ptcFixture.events.every((event) => {
+      const data = ptcSummarize(event).data;
+      return data !== undefined
+        && data.arguments === undefined
+        && data.meta === undefined
+        && data.content === undefined
+        && data.images === undefined;
+    }),
+  JSON.stringify(ptcFixture.events.map((event) => ptcSummarize(event).data)),
+);
+check(
+  "PTC 事件仍 debug-only 可回放、无详情指针（不加入详情 allow-list）",
+  mod.isTimelineRecord({ seq: 1, type: "tool/ptc-dispatch" }) === true
+    && mod.isTimelineRecord({ seq: 1, type: "tool/ptc-dispatch-start" }) === true
+    && mod.isLiveTimelineRecord({ seq: 1, type: "tool/ptc-dispatch" }) === true
+    && mod.isDetailVisibleType("tool/ptc-dispatch") === false
+    && mod.summarizeEvent({ seq: 1, type: "tool/ptc-dispatch", data: { subCallId: "c", parentCallId: "p" } }).detail === undefined,
+);
+const ptcBudget = mod.createPtcBudget();
+const ptcGate = (callId) => mod.ptcGateOf(ptcBudget, { rootCallId: "root-budget", subCallId: callId });
+for (let index = 1; index <= 50; index++) ptcGate(`call-${index}`);
+check(
+  "PTC 50 上限：前 50 full、第 51 条 notice、其后 drop、重复 callId 不占名额",
+  ptcGate("call-1") === "full" && ptcGate("call-51") === "notice" && ptcGate("call-52") === "drop" && ptcGate("call-51") === "drop",
+  JSON.stringify([ptcGate("call-1"), ptcGate("call-51"), ptcGate("call-52")]),
+);
+const noticeBudget = mod.createPtcBudget();
+for (let index = 1; index <= 50; index++) mod.ptcGateOf(noticeBudget, { rootCallId: "root-notice", subCallId: `notice-${index}` });
+const ptcNotice = ptcSummarize({ seq: 99, type: "tool/ptc-dispatch-start", data: { rootCallId: "root-notice", parentCallId: "root-notice", subCallId: "call-notice", name: "read", arguments: { file_path: "x" } } }, { ptcBudget: noticeBudget });
+check(
+  "PTC 超限 notice 是最小 truncated data（无 summary/text/isError/error/turn/step）",
+  ptcNotice.data?.truncated === true
+    && ptcNotice.data?.callId === "call-notice"
+    && ptcNotice.data?.status === "running"
+    && ptcNotice.data?.summary === undefined
+    && ptcNotice.data?.text === undefined
+    && ptcNotice.data?.isError === undefined
+    && ptcNotice.data?.error === undefined
+    && ptcNotice.data?.turn === undefined
+    && ptcNotice.data?.step === undefined,
+  JSON.stringify(ptcNotice),
+);
+// L2（lead 裁定，服务端独立复审 BLOCKING）：summary 脱敏 / 安全码语法 / notice / drop。
+const ptcScrubStart = (argumentsJson) => mod.summarizeEvent({
+  seq: 98,
+  type: "tool/ptc-dispatch-start",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "call-l2", name: "bash", arguments: argumentsJson },
+}, { cwd: PTC_TEST_CWD }).data?.summary;
+check(
+  "L2-1/L2-7/L2-9 summary 路径脱敏（cwd/homedir/引号空格/转义空格/path:/--flag=/file:/URL 边界）",
+  ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })?.command === "cat …/secret.txt"
+    && ptcScrubStart({ command: `cat ${PTC_TEST_CWD}/src/a.ts` })?.command === "cat ./src/a.ts"
+    && ptcScrubStart({ command: 'cat "/home/other user/private/secret.txt"' })?.command === 'cat "…/secret.txt"'
+    && ptcScrubStart({ command: "cat /home/a\\ b/c" })?.command === "cat …/c"
+    && ptcScrubStart({ command: "echo path:/home/other/private/secret.txt" })?.command === "echo path:…/secret.txt"
+    && ptcScrubStart({ command: "ls --out=/home/a/b.log" })?.command === "ls --out=…/b.log"
+    && ptcScrubStart({ command: "cat file:/home/a/b.txt" })?.command === "cat file:…/b.txt"
+    && ptcScrubStart({ command: "cat C:\\Users\\a\\b.txt" })?.command === "cat …/b.txt"
+    && ptcScrubStart({ command: "curl https://example.com/a/b?x=1 && cat /etc/passwd" })?.command === "curl https://example.com/a/b?x=1 && cat …/passwd"
+    && !JSON.stringify(ptcScrubStart({ command: "cat /home/other-user/private/secret.txt" })).includes("/home/"),
+  JSON.stringify([
+    ptcScrubStart({ command: 'cat "/home/other user/private/secret.txt"' }),
+    ptcScrubStart({ command: "echo path:/home/other/private/secret.txt" }),
+    ptcScrubStart({ command: "ls --out=/home/a/b.log" }),
+  ]),
+);
+const ptcSafeCodeResult = (error) => mod.summarizeEvent({
+  seq: 99,
+  type: "tool/ptc-dispatch",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "call-l2", name: "read", isError: true, error },
+}, { cwd: PTC_TEST_CWD }).data;
+const ptcEvil = ptcSafeCodeResult({ name: "Evil<script>", code: "/home/x/secret" });
+const ptcGood = ptcSafeCodeResult({ name: "FsError", code: "FS_NOT_FOUND" });
+check(
+  "L2-2 text/error 只接受安全码语法：非法 name/code → 无 text/error；合法码正常",
+  ptcEvil?.text === undefined
+    && ptcEvil?.error === undefined
+    && !JSON.stringify(ptcEvil).includes("/home/")
+    && ptcGood?.text === "FS_NOT_FOUND"
+    && JSON.stringify(ptcGood?.error) === JSON.stringify({ name: "FsError", code: "FS_NOT_FOUND" })
+    && ptcSafeCodeResult({ code: "\nFS_NOT_FOUND\n" })?.text === undefined
+    && ptcSafeCodeResult({ code: "FS_NOT_FOUND " })?.text === undefined,
+  JSON.stringify([ptcEvil, ptcGood, ptcSafeCodeResult({ code: "\nFS_NOT_FOUND\n" })]),
+);
+const l2NoticeBudget = mod.createPtcBudget();
+for (let index = 1; index <= 50; index++) mod.ptcGateOf(l2NoticeBudget, { rootCallId: "root-l2", subCallId: `l2-${index}` });
+const l2Notice = mod.summarizeEvent({
+  seq: 400,
+  type: "tool/ptc-dispatch-start",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "l2-51", name: "read" },
+}, { cwd: PTC_TEST_CWD, turn: 3, step: 2, ptcBudget: l2NoticeBudget });
+const l2Drop = mod.summarizeEvent({
+  seq: 401,
+  time: 1794286650123,
+  type: "tool/ptc-dispatch",
+  data: { rootCallId: "root-l2", parentCallId: "root-l2", subCallId: "l2-51", name: "read", isError: false },
+}, { cwd: PTC_TEST_CWD, turn: 3, step: 2, ptcBudget: l2NoticeBudget });
+check(
+  "L2-3/L2-4 notice 不带 turn/step；drop 无 data 但保留顶层 time",
+  l2Notice.data?.truncated === true
+    && l2Notice.data?.turn === undefined
+    && l2Notice.data?.step === undefined
+    && l2Notice.data?.summary === undefined
+    && l2Notice.data?.text === undefined
+    && l2Drop.data === undefined
+    && l2Drop.seq === 401
+    && l2Drop.type === "tool/ptc-dispatch"
+    && l2Drop.time === 1794286650123,
+  JSON.stringify([l2Notice, l2Drop]),
+);
+const toolCallProjection = (name, args) => mod.summarizeEvent({
+  seq: 50,
+  type: "tool/call",
+  data: { turn: 1, step: 1, callId: "call-x", name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
+}, { cwd: "/home/mark/proj" }).data?.summary;
+const bashProjection = toolCallProjection("bash", { command: "ls\n-la", workdir: "/home/mark/proj/src", run_in_background: true, description: "List\nfiles" });
+check(
+  "tool/call bash 投影：command 压平/workdir display/background/description",
+  bashProjection?.kind === "command"
+    && bashProjection.command === "ls -la"
+    && bashProjection.workdir === "src"
+    && bashProjection.background === true
+    && bashProjection.description === "List files",
+  JSON.stringify(bashProjection),
+);
+const writeProjection = toolCallProjection("write", { file_path: "/home/mark/proj/src/a.ts", content: "one\ntwo\n" });
+check(
+  "tool/call write 投影：display 路径 + NKB + 全新增 diff，且无绝对路径",
+  writeProjection?.filePath === "src/a.ts"
+    && writeProjection.sizeKb === 1
+    && writeProjection.diff === "--- /dev/null\n+++ b/src/a.ts\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+    && !JSON.stringify(writeProjection).includes("/home/mark/proj"),
+  JSON.stringify(writeProjection),
+);
+const editProjection = toolCallProjection("edit", { file_path: "src/a.ts", old_string: "a\nb", new_string: "c" });
+check(
+  "tool/call edit 投影：added/deleted 行数 + 统一 diff",
+  editProjection?.added === 1 && editProjection.deleted === 2 && editProjection.diff?.startsWith("--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,1 @@"),
+  JSON.stringify(editProjection),
+);
+const searchProjection = toolCallProjection("grep", { pattern: "foo", path: "/home/mark/proj/lib", include: "*.ts" });
+check(
+  "tool/call search 投影：pattern/path display/include",
+  searchProjection?.kind === "search" && searchProjection.pattern === "foo" && searchProjection.path === "lib" && searchProjection.include === "*.ts",
+  JSON.stringify(searchProjection),
+);
+check(
+  "tool/call web/image 投影：url/query/filePath",
+  toolCallProjection("web_fetch", { url: "https://example.test/x" })?.url === "https://example.test/x"
+    && toolCallProjection("web_search", { queries: ["q1"] })?.query === "q1"
+    && toolCallProjection("read_image", { file_path: "/home/mark/proj/p.png" })?.filePath === "p.png",
+  JSON.stringify([
+    toolCallProjection("web_fetch", { url: "https://example.test/x" }),
+    toolCallProjection("web_search", { queries: ["q1"] }),
+    toolCallProjection("read_image", { file_path: "/home/mark/proj/p.png" }),
+  ]),
+);
+check(
+  "tool/call 非法 JSON/未知工具 fail-open 到通用卡",
+  toolCallProjection("bash", "{not json")?.kind === "command"
+    && toolCallProjection("bash", "{not json")?.command === undefined
+    && toolCallProjection("mystery", "{}") === undefined,
+  JSON.stringify([toolCallProjection("bash", "{not json"), toolCallProjection("mystery", "{}")]),
+);
+const toolResultProjection = (text, meta, name) => mod.summarizeEvent({
+  seq: 51,
+  type: "tool/result",
+  data: { ...(name === undefined ? {} : { name }), message: { content: [{ type: "text", text }] }, ...(meta === undefined ? {} : { meta }) },
+}).data?.summary;
+check(
+  "tool/result 从原始文本标记解析 exitCode/signal（长输出不被 2000 字 clamp 截掉）",
+  toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`, undefined, "bash")?.exitCode === 7
+    && toolResultProjection("[killed by signal: SIGTERM]", undefined, "bash")?.signal === "SIGTERM",
+  JSON.stringify([toolResultProjection(`${"x".repeat(3000)}\n[exit code: 7]`, undefined, "bash"), toolResultProjection("[killed by signal: SIGTERM]", undefined, "bash")]),
+);
+check(
+  "tool/result grep/glob 匹配总数：meta 优先、文本兜底、解析不到缺省",
+  toolResultProjection("Found 3 matches", { shape: "matches", total: 9 })?.resultCount === 9
+    && toolResultProjection("Found 3 matches")?.resultCount === 3
+    && toolResultProjection("No matches found")?.resultCount === 0
+    && toolResultProjection("(Showing 20 of 87 paths")?.resultCount === 87,
+  JSON.stringify([
+    toolResultProjection("Found 3 matches", { shape: "matches", total: 9 }),
+    toolResultProjection("Found 3 matches"),
+    toolResultProjection("No matches found"),
+    toolResultProjection("(Showing 20 of 87 paths"),
+  ]),
+);
+
+// issue #66（M3 Batch 2-A）：todo_write / ask_user_question / skill 的 tool/call 投影。
+const todoProjection = toolCallProjection("todo_write", {
+  todos: [
+    { content: "写测试\n并跑通", status: "completed" },
+    { content: "修复 bug", status: "in_progress" },
+    { content: "未知状态", status: "done" },
+  ],
+});
+check(
+  "tool/call todo 投影：items 单行化/status 归一/counts 三键（和 = items.length）",
+  todoProjection?.kind === "todo"
+    && JSON.stringify(todoProjection.items) === JSON.stringify([
+      { content: "写测试 并跑通", status: "completed" },
+      { content: "修复 bug", status: "in_progress" },
+      { content: "未知状态", status: "pending" },
+    ])
+    && JSON.stringify(todoProjection.counts) === JSON.stringify({ pending: 1, inProgress: 1, completed: 1 }),
+  JSON.stringify(todoProjection),
+);
+check(
+  "tool/call todo 投影：空数组合法、非数组 fail-open 到 kind/tool",
+  JSON.stringify(toolCallProjection("todo_write", { todos: [] }))
+      === JSON.stringify({ kind: "todo", tool: "todo_write", items: [], counts: { pending: 0, inProgress: 0, completed: 0 } })
+    && JSON.stringify(toolCallProjection("todo_write", { todos: "nope" })) === JSON.stringify({ kind: "todo", tool: "todo_write" }),
+  JSON.stringify([toolCallProjection("todo_write", { todos: [] }), toolCallProjection("todo_write", { todos: "nope" })]),
+);
+check(
+  "tool/call todo 投影：跳过非法元素（非对象/content 非 string），counts 只统计保留项",
+  JSON.stringify(toolCallProjection("todo_write", { todos: [42, "x", { content: "ok", status: "completed" }, { content: 7 }] }))
+    === JSON.stringify({ kind: "todo", tool: "todo_write", items: [{ content: "ok", status: "completed" }], counts: { pending: 0, inProgress: 0, completed: 1 } }),
+  JSON.stringify(toolCallProjection("todo_write", { todos: [42, "x", { content: "ok", status: "completed" }, { content: 7 }] })),
+);
+const todoValidFirstProjection = toolCallProjection("todo_write", {
+  todos: [42, "x", { content: 7 }, ...Array.from({ length: 60 }, (_, i) => ({ content: `v${i}`, status: "pending" }))],
+});
+check(
+  "tool/call todo 投影：valid-first（无效项不占 ≤50 配额，保留连续合法项 v0..v49）",
+  todoValidFirstProjection?.items?.length === 50
+    && todoValidFirstProjection.items[0]?.content === "v0"
+    && todoValidFirstProjection.items[49]?.content === "v49"
+    && JSON.stringify(todoValidFirstProjection.counts) === JSON.stringify({ pending: 50, inProgress: 0, completed: 0 }),
+  JSON.stringify(todoValidFirstProjection),
+);
+const questionProjection = toolCallProjection("ask_user_question", {
+  questions: [
+    { id: "q1", header: "确认", question: "选哪个？", options: [{ label: "A", description: "快" }, { label: "B" }], multi_select: true },
+    { header: "缺 question 整题丢弃" },
+    { id: "q2", question: "两种形状", multiSelect: true },
+  ],
+});
+check(
+  "tool/call question 投影：题目映射/无效题丢弃/multi_select→multiSelect",
+  questionProjection?.kind === "question"
+    && questionProjection.questions?.length === 2
+    && questionProjection.questions[0]?.id === "q1"
+    && questionProjection.questions[0]?.header === "确认"
+    && questionProjection.questions[0]?.multiSelect === true
+    && questionProjection.questions[0]?.options?.length === 2
+    && questionProjection.questions[0]?.options?.[0]?.description === "快"
+    && questionProjection.questions[1]?.id === "q2"
+    && questionProjection.questions[1]?.multiSelect === true,
+  JSON.stringify(questionProjection),
+);
+check(
+  "tool/call question 投影：≤10 题、questions 非数组只回 kind/tool",
+  toolCallProjection("ask_user_question", { questions: Array.from({ length: 12 }, (_, i) => ({ id: `q${i}`, question: `q ${i}` })) })?.questions?.length === 10
+    && JSON.stringify(toolCallProjection("ask_user_question", { questions: "nope" })) === JSON.stringify({ kind: "question", tool: "ask_user_question" }),
+  JSON.stringify(toolCallProjection("ask_user_question", { questions: "nope" })),
+);
+const skillProjection = toolCallProjection("skill", {
+  name: "guizang-ppt-skill",
+  provider: "builtin",
+  resourceBase: { kind: "directory", path: "/home/mark/proj/.skills" },
+});
+check(
+  "tool/call skill 投影：只下发 name，不带 provider/resourceBase/主机路径",
+  skillProjection?.kind === "skill"
+    && skillProjection.name === "guizang-ppt-skill"
+    && skillProjection.provider === undefined
+    && skillProjection.resourceBase === undefined
+    && !JSON.stringify(skillProjection).includes("/home/mark/proj"),
+  JSON.stringify(skillProjection),
+);
+
+// issue #66（M3 Batch 2-A）：ask_user_question 的 tool/result answers 只读回放。
+check(
+  "tool/result ask_user_question 回放 answers（selected+custom 合并；空 selected 保留）",
+  JSON.stringify(toolResultProjection(JSON.stringify({ answers: [
+    { id: "q1", selected: ["A", "B"], custom: "自定义" },
+    { id: "q2", selected: [] },
+  ] }), undefined, "ask_user_question")) === JSON.stringify({ answers: [
+    { questionId: "q1", values: ["A", "B", "自定义"] },
+    { questionId: "q2", values: [] },
+  ] }),
+  JSON.stringify(toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"], custom: "自定义" }] }), undefined, "ask_user_question")),
+);
+check(
+  "tool/result answers fail-open：pending/坏 JSON/无工具名缺省（不得从内容猜）",
+  toolResultProjection(JSON.stringify({ pending: true, callId: "c", message: "m" }), undefined, "ask_user_question") === undefined
+    && toolResultProjection("not json", undefined, "ask_user_question") === undefined
+    && toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined) === undefined
+    && toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined, "todo_write") === undefined,
+  JSON.stringify([
+    toolResultProjection(JSON.stringify({ pending: true, callId: "c", message: "m" }), undefined, "ask_user_question"),
+    toolResultProjection(JSON.stringify({ answers: [{ id: "q1", selected: ["A"] }] }), undefined),
+  ]),
+);
+
 // 最小真实路由 harness：验证 bootstrap/history/event-detail 走同一鉴权/路由入口，
 // 同时覆盖 active session 与 session-query 的 dormant fallback。
 if (typeof mod.apply === "function" && typeof mod.Config === "function") {
@@ -191,7 +654,27 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
   const huge = { id: "session-huge", header: { createdAt: 1, cwd: "/tmp" }, events: [{ seq: 1, type: "tool/result", data: { callId: "call-huge", text: hugeText } }], snapshotEvents() { return this.events; } };
   const active = { id: "session-1", header: { createdAt: 1, cwd: "/tmp" }, events, snapshotEvents() { return this.events; } };
   const activeReadError = { id: "session-active-read-error", header: { createdAt: 1, cwd: "/tmp" }, events: [], snapshotEvents() { return this.events; } };
-  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge]]);
+  // issue #53：轮末产出物夹具（工作目录里有真实文件，供 /turn-file 读字节）。
+  const turnTailCwd = mkdtempSync(join(tmpdir(), "contract-tail-"));
+  writeFileSync(join(turnTailCwd, "a.txt"), "TURN-FILE-BYTES\n");
+  const turnTailEvents = [
+    { seq: 1, type: "turn/start", data: { turn: 2 } },
+    { seq: 2, type: "workspace/changes", data: { turn: 2 } },
+    { seq: 3, type: "deliverables/presented", data: { turn: 2, callId: "call-tail", files: [{ path: join(turnTailCwd, "a.txt"), description: "交付" }] } },
+    { seq: 4, type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } },
+  ];
+  const tailSession = { id: "session-tail", header: { createdAt: 1, cwd: turnTailCwd }, events: turnTailEvents, snapshotEvents() { return this.events; } };
+  // issue #68：PTC 子调用历史投影夹具（真实捕获事件 + 外层 run_code tool/call/result）；
+  // turn/step 必须从原始 turn/start + step/start 派生（PTC data 本身不带位置）。
+  const ptcHistoryEvents = [
+    { seq: 1, type: "turn/start", data: { turn: 3 } },
+    { seq: 2, type: "step/start", data: { step: 2 } },
+    { seq: 3, type: "tool/call", data: { turn: 3, step: 2, callId: ptcOuterCallId, name: "run_code", arguments: JSON.stringify({ code: "await tools.read({ file_path: \"README.md\" })" }) } },
+    ...ptcFixture.events,
+    { seq: 27, type: "tool/result", data: { turn: 3, step: 2, message: { content: [{ type: "text", text: "done" }], toolCallId: ptcOuterCallId } } },
+  ];
+  const ptcSession = { id: "session-ptc", header: { createdAt: 1, cwd: PTC_TEST_CWD }, events: ptcHistoryEvents, snapshotEvents() { return this.events; } };
+  const sessions = new Map([[active.id, active], [activeReadError.id, activeReadError], [huge.id, huge], [tailSession.id, tailSession], [ptcSession.id, ptcSession]]);
   const dormant = [{ seq: 8, type: "tool/result", data: { dormant: true, callId: "call-dormant", text: "dormant raw result" } }];
   const dormantUnlisted = [{ seq: 8, type: "future/dormant-unlisted", data: { secret: "DORMANT-SECRET" } }];
   const seededSurface = [{ seq: 8, type: "tool/result", data: { recovered: true, callId: "call-surface", text: "surface raw result" } }];
@@ -273,6 +756,26 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         throw new Error("outline unavailable");
       },
     },
+    workspaceChanges: {
+      summary(sessionId, seq) {
+        if (sessionId !== tailSession.id || seq !== 2) return undefined;
+        return {
+          turn: 2,
+          cwd: turnTailCwd,
+          files: [{ path: "a.txt", display: "a.txt", added: 3, deleted: 1 }],
+          total: 1,
+          added: 3,
+          deleted: 1,
+        };
+      },
+      async diff(sessionId, seq, index) {
+        if (sessionId !== tailSession.id || seq !== 2 || index !== 0) return undefined;
+        return {
+          kind: "text", path: "a.txt", display: "a.txt", before: true, after: true, coarse: false,
+          hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] }],
+        };
+      },
+    },
   };
   const ctx = {
     logger: { info() {}, warn(...args) { wireWarnings.push(args.join(' ')); }, error() {}, debug() {} },
@@ -287,10 +790,10 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
   try {
     mod.apply(ctx, mod.Config({ path: "/m", authToken: "secret-secret-secret-1234", pushUrls: [], lanBridge: { enabled: false } }));
     const route = routes.find((r) => r.path === "/m/api");
-    const request = (url, { token = "secret-secret-secret-1234", host = "127.0.0.1:3080", remoteAddress = "127.0.0.1", method = "GET" } = {}) => ({
+    const request = (url, { token = "secret-secret-secret-1234", host = "127.0.0.1:3080", remoteAddress = "127.0.0.1", method = "GET", headers = {} } = {}) => ({
       url,
       method,
-      headers: { host, ...(token === null ? {} : { "x-mobile-token": token }) },
+      headers: { host, ...(token === null ? {} : { "x-mobile-token": token }), ...headers },
       socket: { remoteAddress },
       on() { return this; },
       pause() {},
@@ -308,6 +811,10 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
         end(chunk) { if (chunk !== undefined) chunks.push(String(chunk)); this.ended = true; },
         destroy() { this.ended = true; },
         on() { return this; },
+        once() { return this; },
+        emit() { return true; },
+        removeListener() { return this; },
+        removeAllListeners() { return this; },
         get text() { return chunks.join(""); },
         get json() { try { return JSON.parse(chunks.join("")); } catch { return null; } },
       };
@@ -356,6 +863,91 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
       "bootstrap registry 存在但零单元 → supported=false",
       bootstrapNoUnit.json?.capabilities?.turnOutline?.supported === false,
       JSON.stringify(bootstrapNoUnit.json?.capabilities?.turnOutline),
+    );
+
+    // issue #53：能力位 / turnTails / 三个端点走同一真实路由入口。
+    check(
+      "bootstrap 按 workspaceChanges 服务声明 turnTail 能力位",
+      bootstrap.json?.capabilities?.turnTail?.presented === true
+        && bootstrap.json?.capabilities?.turnTail?.changed === true
+        && bootstrap.json?.capabilities?.turnTail?.changesDiff === true,
+      JSON.stringify(bootstrap.json?.capabilities?.turnTail),
+    );
+    check(
+      "bootstrap 声明 toolCards 能力位（version/tools/ptc 与纯函数同形）",
+      bootstrap.json?.capabilities?.toolCards?.version === 1
+        && JSON.stringify(bootstrap.json?.capabilities?.toolCards?.tools) === JSON.stringify(toolCardsCaps.tools)
+        && bootstrap.json?.capabilities?.toolCards?.ptc?.version === 1,
+      JSON.stringify(bootstrap.json?.capabilities?.toolCards),
+    );
+    const tailHistory = await call("/m/api/history?sessionId=session-tail&limit=100");
+    check(
+      "history turnTails 只含有产出物的轮次且 workspace/changes 不进时间线",
+      JSON.stringify(tailHistory.json?.turnTails) === JSON.stringify({ "2": { changes: true, presented: true } })
+        && tailHistory.json?.events?.every((event) => event.type !== "workspace/changes"),
+      JSON.stringify({ turnTails: tailHistory.json?.turnTails, types: tailHistory.json?.events?.map((event) => event.type) }),
+    );
+    check(
+      "history 的 presented 摘要不含主机绝对路径",
+      !tailHistory.text.includes(turnTailCwd) && !JSON.stringify(tailHistory.json?.events).includes(turnTailCwd),
+      tailHistory.text.slice(0, 500),
+    );
+    // issue #68：/history 与 SSE 共用同一 summarizeEvent 分支；PTC start/result 可还原，
+    // turn/step 从原始事件派生，payload 不含 arguments/meta/content 原文与 cwd 绝对路径。
+    const ptcHistory = await call("/m/api/history?sessionId=session-ptc&limit=100");
+    const ptcHistoryEvents = (ptcHistory.json?.events ?? []).filter((event) => event.type === "tool/ptc-dispatch-start" || event.type === "tool/ptc-dispatch");
+    check(
+      "history 投影 PTC 子调用：start/result 字段与 turn/step 派生（同一 summarizeEvent 分支）",
+      ptcHistoryEvents.length === 6
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch-start" && event.data?.callId === `${ptcOuterCallId}:ptc:1` && event.data?.status === "running" && event.data?.turn === 3 && event.data?.step === 2)
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch" && event.data?.callId === `${ptcOuterCallId}:ptc:2` && event.data?.status === "success" && event.data?.isError === false)
+        && ptcHistoryEvents.some((event) => event.type === "tool/ptc-dispatch" && event.data?.status === "failed" && event.data?.text === "FS_NOT_FOUND"),
+      JSON.stringify(ptcHistoryEvents.slice(0, 2)),
+    );
+    check(
+      "history PTC payload 无 arguments/meta/content 原文、无 cwd 绝对路径、无 detail 指针",
+      !ptcHistory.text.includes(PTC_TEST_CWD)
+        && ptcHistoryEvents.every((event) => event.data !== undefined
+          && event.data.arguments === undefined
+          && event.data.meta === undefined
+          && event.data.content === undefined
+          && event.data.images === undefined
+          && event.detail === undefined),
+      JSON.stringify(ptcHistoryEvents.map((event) => event.data)),
+    );
+    const tailSummary = await call("/m/api/changes/summary?sessionId=session-tail&turn=2");
+    check(
+      "changes/summary 可用态映射坐标且不泄露 path/cwd",
+      tailSummary.json?.state === "available"
+        && tailSummary.json?.files?.[0]?.seq === 2
+        && tailSummary.json?.files?.[0]?.index === 0
+        && tailSummary.json?.files?.[0]?.name === "a.txt"
+        && typeof tailSummary.json?.files?.[0]?.id === "string"
+        && /^[0-9a-f]{16}$/.test(tailSummary.json?.files?.[0]?.id ?? "")
+        && !JSON.stringify(tailSummary.json).includes(turnTailCwd)
+        && !("cwd" in (tailSummary.json ?? {})),
+      JSON.stringify(tailSummary.json),
+    );
+    const tailDiff = await call("/m/api/changes/diff?sessionId=session-tail&turn=2&index=0");
+    check(
+      "changes/diff 由 hunks 渲染统一 diff 文本",
+      tailDiff.json?.diff?.kind === "text"
+        && tailDiff.json?.diff?.diff?.startsWith("--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@")
+        && tailDiff.json?.diff?.diff?.includes("-old")
+        && tailDiff.json?.diff?.diff?.includes("+new"),
+      JSON.stringify(tailDiff.json),
+    );
+    const tailFile = await call("/m/api/turn-file?sessionId=session-tail&kind=presented&seq=3&index=0");
+    check(
+      "turn-file 按记录坐标返回字节（不接受客户端路径）",
+      tailFile.statusCode === 200 && tailFile.text === "TURN-FILE-BYTES\n",
+      `${tailFile.statusCode} ${JSON.stringify(tailFile.text).slice(0, 120)}`,
+    );
+    const tailFileRange = await call("/m/api/turn-file?sessionId=session-tail&kind=presented&seq=3&index=0", { headers: { range: "bytes=0-3" } });
+    check(
+      "turn-file 支持 Range（与 /files 同一实现）",
+      tailFileRange.statusCode === 206 && tailFileRange.text === "TURN",
+      `${tailFileRange.statusCode} ${JSON.stringify(tailFileRange.text)}`,
     );
     services.sessionProjections = { registrations: new Map([["turnOutline", {}]]) };
     const savedObserve = services.sessionQuery.observeSession;
@@ -938,12 +1530,25 @@ if (typeof mod.apply === "function" && typeof mod.Config === "function") {
     const sse = response();
     route?.handler(request("/m/api/events"), sse);
     await new Promise((resolve) => setTimeout(resolve, 15));
-    check("SSE hello 宣布 eventTimeline capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true'), sse.text.slice(0, 300));
+    check("SSE hello 宣布 eventTimeline / turnTail / toolCards capability", sse.text.includes('"eventTimeline"') && sse.text.includes('"detail":true') && sse.text.includes('"turnTail":{"version":1,"presented":true,"changed":true,"changesDiff":true}') && sse.text.includes('"toolCards":{"version":1,"tools":') && sse.text.includes('"ptc":{"version":1}'), sse.text.slice(0, 500));
     const sessionEvent = hooks.get("session/event");
     sessionEvent?.(active, { seq: 30, type: "future/live", data: { visible: true } });
     sessionEvent?.(active, { seq: 31, type: "request/header", data: { systemPrompt: "SECRET" } });
     await new Promise((resolve) => setTimeout(resolve, 5));
     check("live/history 同步过滤内部但保留未知", sse.text.includes('"future/live"') && !sse.text.includes('"systemPrompt":"SECRET"'), sse.text.slice(-800));
+    // issue #68：SSE 实时 PTC 也必须走同一投影（与 /history 同字段），且不下发原文/路径。
+    sessionEvent?.(active, ptcStartEvent);
+    sessionEvent?.(active, ptcSuccessEvent);
+    sessionEvent?.(active, ptcFailedEvent);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    check(
+      "SSE 实时 PTC 与 /history 同构：start/result 投影、失败安全错误码、无原文/路径",
+      sse.text.includes(`"callId":"${ptcOuterCallId}:ptc:1"`)
+        && sse.text.includes('"status":"running"')
+        && sse.text.includes('"text":"FS_NOT_FOUND"')
+        && !sse.text.includes(PTC_TEST_CWD),
+      sse.text.slice(-1200),
+    );
   } catch (error) {
     check("wire harness 可启动真实路由", false, error?.stack ?? String(error));
   }

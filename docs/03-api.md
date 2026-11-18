@@ -258,6 +258,8 @@
 | `assistant/chunk` / `assistant/live-chunk` | `{ text: string }` 文本/reasoning delta；工具参数 delta 的 canonical `chunk.id` 归一为摘要 `callId`（仅实时过程，历史过滤） |
 | `tool/call` | `{ turn, step, callId, name, arguments }`；长参数可通过详情端点获取 |
 | `tool/result` | `{ callId, name, isError, text, images? }`；长结果可通过详情端点获取；**不再下发 `files`**（issue #1 需求变更：工具产出文件不上时间线；图片仍带 `images`） |
+| `tool/ptc-dispatch-start` | PTC 子调用开始（v3.4，issue #68）：`{ turn?, step?, rootCallId?, parentCallId, callId, name?, status: "running", summary? }`；`callId` 即内核对 `subCallId`，**不下发** `arguments` 原文 / `meta`；仍属 debug-only（见 §6.24.1） |
+| `tool/ptc-dispatch` | PTC 子调用落定（v3.4，issue #68）：同上 + `{ status: "success" \| "failed", isError, text?, error? }`；`text` 仅失败时下发且只含安全错误码（`error.code` 优先、缺省 `error.name`，≤500），`error` 仅 `{ name, code }`；超 50 子调用时下发最小 `truncated: true` 通知（见 §6.24.1） |
 | `turn/start` | `{ turn: number }` |
 | `turn/end` | `{ turn: number, reason: object }` |
 | 其他 | 保留 `type`、`seq` 和详情指针；调试模式展开无损数据 |
