@@ -787,6 +787,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _lastTurnFoldTiming = store.turnFoldTiming;
     _invalidateProcessPlan();
     if (mounted) setState(() {});
+    // issue #118：档位/收起时机变化会折叠或展开过程段（高度可能变化数百 px），
+    // 与手动展开/收同一口径：清底部占位、重测并请求有界跟随。
+    _onContentLayoutChanged();
   }
 
   /// v2.7：输入变化 → 按会话保存草稿（返回/重进后恢复；清空即移除）。
@@ -2482,11 +2485,65 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ── 事件处理（对齐网页端 handleEvent） ──
+  //
+  // issue #118：SSE 事件的**统一跟随出口**。
+  //
+  // 旧实现把 `_requestScrollFollow()` 写在每个分支（或忘记写）——#114 只覆盖到过程行/
+  // 工具增量/异步详情/活动条，`session/jobs`（顶部 JobCard 显隐改变消息区视口高度）
+  // 就漏了：内容被裁到视口下方 35px，且之后不再自动校正。这里把「处理事件」与
+  // 「布局变化后跟随」拆开：`_handleEventInner` 返回本次处理**是否改变了消息区布局/
+  // 视口高度**，统一出口只在为真时重测短内容占位并请求有界收敛。新增事件类型必须
+  // 显式声明，避免再次漏挂（也覆盖 question/approval 卡片、队列 dock、turn/end 自动折叠）。
   void _handleEvent(ChatEvent ev) {
     if (!mounted) return;
+    if (!_handleEventInner(ev)) return;
+    _onEventLayoutChanged();
+  }
+
+  /// 事件处理导致消息区布局/视口高度变化后的统一收口（与渲染层同一 owner 口径）：
+  /// 先重测短内容底部占位，再请求有界收敛（阅读态/拖拽中由 owner 拒绝，不抢位置）。
+  void _onEventLayoutChanged() {
+    if (!mounted) return;
+    _scheduleLiveBottomGapMeasure();
+    _requestScrollFollow();
+    _clampOverscrollAfterShrink();
+  }
+
+  /// issue #118：内容因**布局变化**变短后，把越界的滚动位置拉回合法范围。
+  ///
+  /// 复现（详细档 + paged 会话，实测 `tailResidual=+526`、`max=0`、`px=-40`）：
+  /// 用户上翻加载过更早历史后 `paged=true`，#77 短内容底部占位被
+  /// `shortEnough = !paged && ...` 永久停用；随后本轮 `turn/end` 自动折叠把
+  /// live 内容从 1018dp 压到 100dp，`maxScrollExtent` 变成 0，而 `pixels`
+  /// 仍停在旧值 → 内容顶边被推到视口上方、下方留出大段空白，且阅读态恒显回底按钮。
+  ///
+  /// 这里**不启用底部占位**（维护者决定，避免重现 issue #76 的「占位与位置修正
+  /// 互相拉扯」），只把**越界**的 pixels 拉回 `[0, max]`。内容变短是布局变化导致、
+  /// 不是用户滚动，因此不违反「不抢用户位置」：用户看到的仍是同一段内容。
+  void _clampOverscrollAfterShrink() {
+    if (!mounted || _inHistory) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_scrollCtrl.hasClients) return;
+      final position = _scrollCtrl.position;
+      if (!position.hasContentDimensions) return;
+      final max = position.maxScrollExtent;
+      final pixels = position.pixels;
+      // 只在「不可滚动 + 越界」这一确定异常态纠正；可滚动时的越界由
+      // BallisticScrollActivity 自行回弹，不在这里抢。
+      if (max > 0.5 || pixels >= -0.5) return;
+      _runProgrammaticScroll(() {
+        _scrollCtrl.jumpTo(0);
+      });
+      _syncScrollFollowDisplay();
+    });
+  }
+
+  /// 返回 `true` = 本次处理改变了消息区布局或视口高度（需要 [_onEventLayoutChanged]）。
+  bool _handleEventInner(ChatEvent ev) {
     // bridge 事件兼容旧 store：若 sessionId 只存在 data 中也必须按页面绑定过滤。
     final eventSessionId = ev.sessionId ?? ev.data?['sessionId']?.toString();
-    if (eventSessionId != null && eventSessionId != _mySessionId) return;
+    if (eventSessionId != null && eventSessionId != _mySessionId) return false;
     if (ev.type == 'git/changed') {
       final controller = _gitController;
       if (controller != null) {
@@ -2500,21 +2557,21 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
       }
-      return;
+      return false; // 只标记 Git 数据过期，不改变消息区布局。
     }
     // 所有带 durable seq 的事件先去重，再更新任何投影（todo/jobs/tool card）。
     // 否则 SSE 重复帧与 catch-up 会各自追加一张 timeline card。
     if (ev.seq != null) {
-      if (ev.seq! <= _lastSeq) return;
+      if (ev.seq! <= _lastSeq) return false;
       _lastSeq = ev.seq!;
     }
     if (ev.type == 'compaction/end') {
-      _resyncAfterCompaction();
-      return;
+      _resyncAfterCompaction(); // 重载会话（forced 定位自行收口）
+      return false;
     }
     if (hiddenTimelineTypes.contains(ev.type)) {
       // Consume its cursor without retaining sensitive payloads.
-      return;
+      return false; // 永不渲染，零高度。
     }
     if (ev.type == '_capabilities') {
       // Bootstrap/SSE hello can arrive after history; rebuild detail affordances.
@@ -2522,59 +2579,71 @@ class _ChatScreenState extends State<ChatScreen> {
       // issue #25 评审 P2：能力是**后到**的（首连/重连时序不定）。能力声明到达后补拉一次
       // 大纲，否则"历史先完成、supported 稍后才变 true"就永远只有本地刻度。
       unawaited(_refreshTurnOutline());
-      return;
+      return false; // 只刷新能力位/大纲（详情按钮的显隐不改变已渲染高度）。
     }
     if (ev.type == '_catchup') {
-      _catchup();
+      _catchup(); // 补拉本身在追加事件后统一请求跟随（见 _catchup 末尾）
       _refreshTodos(); // v3.1.4：重连/唤醒后任务清单也对齐一次
-      return;
+      return false;
     }
     if (ev.type == 'agent/status') {
       setState(() {});
-      return;
+      return false; // 只更新状态点/按钮，不改变消息区视口高度。
     }
     // 内核问询/审批弹窗帧（store 已按 sessionId 分发，这里只认当前会话）
     if (ev.type == 'question/requested') {
       final q = widget.store.questionForSession(_mySessionId);
+      var changed = false;
       if (q != null && q.sessionId == _mySessionId) {
         final key = 'question:${q.rpcId}:requested';
         setState(() {
           _question = q;
+          changed = true; // 底部问询卡出现 → 消息视口变矮。
           if (_transientFrameKeys.add(key)) _appendEvent(ev);
         });
       }
-      return;
+      return changed;
     }
     if (ev.type == 'question/resolved') {
       final rid = ev.data?['rpcId'];
-      if (eventSessionId != _mySessionId) return;
+      if (eventSessionId != _mySessionId) return false;
       final key = 'question:${rid ?? 'unknown'}:resolved';
+      var changed = false;
       setState(() {
-        if (rid != null && _question?.rpcId == rid) _question = null;
+        if (rid != null && _question?.rpcId == rid) {
+          _question = null;
+          changed = true; // 底部问询卡收起 → 消息视口变高。
+        }
         if (_transientFrameKeys.add(key)) _appendEvent(ev);
       });
-      return;
+      return changed;
     }
     if (ev.type == 'approval/requested') {
       final a = widget.store.approvalForSession(_mySessionId);
+      var changed = false;
       if (a != null && a.sessionId == _mySessionId) {
         final key = 'approval:${a.approvalId}:requested';
         setState(() {
           _approval = a;
+          changed = true; // 底部审批卡出现 → 消息视口变矮。
           if (_transientFrameKeys.add(key)) _appendEvent(ev);
         });
       }
-      return;
+      return changed;
     }
     if (ev.type == 'approval/resolved') {
       final aid = ev.data?['approvalId'];
-      if (eventSessionId != _mySessionId) return;
+      if (eventSessionId != _mySessionId) return false;
       final key = 'approval:${aid ?? 'unknown'}:resolved';
+      var changed = false;
       setState(() {
-        if (aid != null && _approval?.approvalId == aid) _approval = null;
+        if (aid != null && _approval?.approvalId == aid) {
+          _approval = null;
+          changed = true; // 底部审批卡收起 → 消息视口变高。
+        }
         if (_transientFrameKeys.add(key)) _appendEvent(ev);
       });
-      return;
+      return changed;
     }
     // 上下文窗口实时帧：更新圆环数据（无需重进会话）
     if (ev.type == 'session/context') {
@@ -2584,14 +2653,18 @@ class _ChatScreenState extends State<ChatScreen> {
         _usage['contextWindow'] = window;
         setState(() {});
       }
-      return;
+      return false; // 只更新用量圆环/文字，不改变消息区视口高度。
     }
     // v2.7：会话任务视图更新（后台任务卡片/工具弹层刷新）
     if (ev.type == 'session/jobs') {
       // jobs is a non-durable projection rendered by the top JobCard; do not
       // turn every reconnect snapshot into another timeline event.
+      //
+      // issue #118：JobCard 位于消息区上方，显隐会改变消息视口高度；本帧无法预知
+      // 下一帧是否真的换行，因此如实声明为「可能改变布局」——已收敛时 owner 的
+      // takeCorrection 会判 converged/no-op，不会产生空闲自激。
       if (mounted) setState(() {});
-      return;
+      return true;
     }
     // v3.1.4（issue #12 姊妹需求）：任务清单实时折叠——与内核 dsh-tool-todo 的会话投影
     // 完全同语义（最新 todo/write 覆盖整份、turn/start 清空）。
@@ -2616,13 +2689,15 @@ class _ChatScreenState extends State<ChatScreen> {
     // v3.0.0：队列快照帧（认领/删除/编辑即时反映）→ 本页 dock 即时同步
     if (ev.type == 'mobile/queue') {
       final sid = ev.data?['sessionId'] as String?;
+      var changed = false;
       if (sid != null && sid == _mySessionId) {
         setState(() {
           _queue = widget.store.queueOf(sid);
           if (_queue.isEmpty) _queueCollapsed = true;
+          changed = true; // 队列 dock 在 composer 上方，显隐改变消息视口高度。
         });
       }
-      return;
+      return changed;
     }
     // 关键事件日志（排除高频 chunk，便于排障）
     if (ev.type != 'assistant/chunk' &&
@@ -2634,8 +2709,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') {
       final text = ev.data?['text'] as String? ?? '';
       final reasoning = ev.data?['reasoning'] == true;
+      var layoutChanged = false;
       if (text.isNotEmpty && !reasoning) {
         _draft += text;
+        // 草稿增长由 80ms 节流统一重建并请求跟随（见 _scheduleDraftFlush）。
         _scheduleDraftFlush();
       } else if (text.isNotEmpty && reasoning) {
         // issue #70：流式思考按 (turn, step) 进缓冲（活动条与 provisional 行同源）。
@@ -2663,9 +2740,9 @@ class _ChatScreenState extends State<ChatScreen> {
             if (structural) {
               _invalidateProcessPlan();
               setState(() {});
-              // issue #114：结构性思考行出现/切换 = 真实内容布局变化；跟随态下
-              // 必须由 owner 排队一次有界收敛（不依赖“下一帧恰好事先有帧”）。
-              _requestScrollFollow();
+              // issue #114：结构性思考行出现/切换 = 真实内容布局变化；由统一出口
+              // 排队有界收敛（不依赖“下一帧恰好事先有帧”）。
+              layoutChanged = true;
             }
           }
         }
@@ -2679,9 +2756,9 @@ class _ChatScreenState extends State<ChatScreen> {
         // （与正文草稿 _scheduleDraftFlush 同口径），避免每个 delta 触发一次全量 setState。
         _appendEvent(ev);
         _scheduleActivityFlush();
-        _requestScrollFollow();
+        layoutChanged = true;
       }
-      return;
+      return layoutChanged;
     }
     if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
       _draftTimer?.cancel();
@@ -2732,8 +2809,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // v3.1.4（issue #13 排查建议 3）：轮次结束但本轮渲染不出任何回复条目 → 兜底补拉一次。
     // 触发场景：事件被任何一层（过滤/竞态/脏 seq）静默吞掉时，避免"只剩一条轮次结束分隔条"。
     if (ev.type == 'turn/end') _maybeResyncAfterTurn();
-    // 跟随态才收敛；阅读态/拖拽中 owner 不排队（§5.1/§5.2）。
-    _requestScrollFollow();
+    // 跟随态才收敛；阅读态/拖拽中由 owner 拒绝（§5.1/§5.2）。
+    // 注意：turn/end 还会触发下一帧的「过程段自动收起」，同样算布局变化。
+    return true;
   }
 
   /// v3.1.4（issue #13）：会话表面被内核重写（`/compact` 的 surfaceOp=replace）后，
@@ -2783,6 +2861,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       setState(() => _todos = list);
+      // issue #118：任务面板在 composer 上方，高度变化会改变消息视口。
+      _onEventLayoutChanged();
     } catch (e) {
       AppLog.instance.log('Chat: 任务清单拉取失败 $id → $e');
     }
@@ -2799,6 +2879,7 @@ class _ChatScreenState extends State<ChatScreen> {
       var cursor = _lastSeq;
       var pageNo = 0;
       var truncated = false;
+      var appended = false;
       while (pageNo < _catchupMaxPages) {
         pageNo++;
         final page = await _api.historyPage(id, after: cursor, limit: 100);
@@ -2835,9 +2916,13 @@ class _ChatScreenState extends State<ChatScreen> {
             _appendEvent(ev);
           }
         });
+        appended = appended || fresh.isNotEmpty;
         if (!page.hasMore) break;
         truncated = pageNo >= _catchupMaxPages;
       }
+      // issue #118：补拉追加了新事件 = 消息区布局变化；统一出口请求跟随，
+      // 避免重连补拉后视口停在旧末端（阅读态由 owner 拒绝，不抢位置）。
+      if (appended && mounted) _onEventLayoutChanged();
       if (truncated) {
         AppLog.instance.log(
           'Chat: catch-up 截断于 $_catchupMaxPages 页（cursor=$cursor），剩余由下次补拉收敛',
