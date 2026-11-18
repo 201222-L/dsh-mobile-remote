@@ -1,16 +1,55 @@
 # Changelog
 
-## 未发布（develop，继续处理剩余 issue）
+## 3.2.4（2026-11-18，build 35）— 会话界面改版（#71–#87）+ 门禁修复
 
-- 文件历史从会话浏览深链进入后，使用宿主返回的仓库相对路径打开 diff（PR #67）。
-- 会话文件浏览新增持久化的隐藏文件开关；目录列表支持 `includeHidden=1`，`.git` 不出现在列表中（PR #66）。
-- 文件下载保留私有断点，暂停或中断后可从下载入口恢复；以 ETag / If-Range 防止拼接不同版本，校验续传区间与最终长度，保存失败可重试保存。
-- Android 下载期间增加独立 dataSync 前台服务与进度/暂停通知，结束即退出；系统超时暂停并保留断点，服务不可用时明确使用前台下载。修复 Windows 路径分隔符使恢复列表遗漏记录。
-- npm 更新保留已安装的 scoped 依赖名，避免另装无 scope 副本后旧插件仍生效；隔离 registry 的真实 npm 检查/下载/离线安装通过。沿用已由 polaris-l 维护的 @polaris-l/dsh-mobile-remote；拟用载体 @polaris-l/dsh-mobile-remote-app 尚未创建或配置 OIDC，不发布。
-- DSH v0.2.2-rc.1 核查：修正 peer prerelease 范围，使 npm 可解析 0.2.1/0.2.2 RC 与 alpha；API 源码核对结果和仍保留的 issue #20 seeded 限制见 docs/20-dsh-022-compatibility-2026-11-05.md。
-- 上游 peer 范围修复由最新 47 项宿主兼容测试及 npm dry-run 解析 20 项 RC 依赖覆盖；Node 最低版本取决于 DSH 宿主（v0.2.2-rc.1 要求 >=24.9），不提升仍支持旧宿主的插件全局 engine 下限。
-- 首页和桌面宠物共用资源，移除重复动画，资源总量由约 8.3 MiB 降到约 6.2 MiB；保留桌面宠物和既有通知职责。
-- 补充文件接口的全路径信任边界，以及当前上游 seeded 会话的独立复现工具。继续暂停发布，未替换 alpha.3+34 验收产物。
+> 版本：插件 `3.2.4` / App `3.2.4+35`。main 自 2026-11-06（`fbe8375`）起冻结 12 天，
+> 本次一次性并入 marktrue-ahu 的 17 个 stacked PR（#71–#87，52 commits / +26052 −893），
+> 并修复让 CI 从 #77 起全红的 4 类阻断。合并清单见 issue #88。
+
+### 会话界面（M1–M3）
+
+- **轮末产出物两卡 + 按坐标文件预览**（#77）：`turnTail` 能力位；新增
+  `GET /changes/summary`、`GET /changes/diff`、`GET|HEAD /turn-file`。交付/改动文件只下发
+  `name/display/description`，`display` 在工作目录内给相对路径、家目录下给 `~/…`、其余只给
+  basename，绝不下发主机绝对路径。
+- **工具卡结构化投影**（#78）+ **todo/question/skill 专用行**（#82）+ **路径可点预览**（#83）+
+  **PTC 子调用树**（#84）：`capabilities.toolCards` 声明本插件实际投影的 13 个工具；摘要
+  只含安全白名单字段，路径预览走「词法校验 → cwd realpath → 候选 realpath 包含」判定。
+- **轮次过程折叠**（#76）：四档展示模式（简洁/标准/详细/完全展开）、两档收起时机、整轮→过程组
+  →单卡三层折叠；运行中与 `aborted`/`interrupted`/`error` 轮强制展开。
+- **实时思维链**（#79）、**插话轮结束后可折叠**（#80）、**幽灵抬头/仅思考组修复**（#81）、
+  **视觉方案 C「章节列表」+ 左侧导轨**（#87）。
+- **附图图库**（#85）：多图全屏、页码、尺寸/文件名/类型、保存与分享；**折叠层图片入口**（#86）。
+- **轮次导航 gutter**（#74）、**活跃会话滚动贴底**（#75）、**diff 预览整块横滑 + 固定行号列**（#71）。
+- **`/m/api/attachment` 按新 schema 传完整引用**（#72）：修复附图、`read_image` 工具图、历史会话
+  图片全部「加载失败」（gateway 400 input-invalid）。
+- **普通模式隐藏 `plugin:*` 协议事件**（#73），调试模式仍可见。
+
+### 修复与门禁
+
+- 补 `lib/index.js` 缺失的 5 个 import（`realpathSync`/`accessSync`/`constants`/`isAbsolute`/`relative`）。
+  此前 `/history`（含产出物）、`/changes/summary`、`/changes/diff`、`/turn-file` 运行期
+  `ReferenceError` → 统一 500，SSE 侧还会抛未捕获异常。
+- 补 PTC 捕获夹具 `test/fixtures/ptc/`（取自贡献者 fork `617447b`，DSH 0.2.2-rc.1 采集）：
+  `npm run check` 不再 ENOENT 崩溃。
+- `flutter analyze` 清零（5 条 info：null-aware elements、多余 import、闭包改具名函数）。
+- Windows 平台：6 个 POSIX 专属用例（字面反斜杠文件名 / `mkfifo` / `chmod 000` / symlink）
+  加平台跳过；显示路径用例固定假家目录，避免 `os.tmpdir()` 位于家目录下时命中 `~/…` 分支。
+- **轮次导航落点复核阅读线**：修 #74 留白变窄后「点第 N 轮，高亮停在 N−1」。
+
+### 此前 main 未发布内容（随本版一并发布）
+
+- 文件历史深链、会话文件浏览的隐藏文件开关（PR #66 / #67）。
+- 下载断点续传 + Android dataSync 前台服务与进度通知。
+- npm 更新保留已安装的 scoped 依赖名、稳定错误码、OIDC workflow（不发布，`OFFICIAL_NPM_SCOPE` 仍为空）。
+- DSH v0.2.2-rc.1 peer 范围修正（见 `docs/20-dsh-022-compatibility-2026-11-05.md`）。
+- 首页与桌面宠物共享资源，8.3 MiB → 6.2 MiB。
+
+### 验证
+
+- `npm test`：373 用例 / 0 失败 / 12 跳过；`npm run check`：179 + 15 + 19 全过。
+- `flutter analyze`：0 issue；`flutter test`：1047 全过。
+- Windows 本地与 CI（node ubuntu / node windows / flutter）三绿。
 
 ## 3.2.4-alpha.3（升级验收修复，App build 34）
 
