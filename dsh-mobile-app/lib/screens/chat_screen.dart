@@ -2543,7 +2543,21 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _handleEventInner(ChatEvent ev) {
     // bridge 事件兼容旧 store：若 sessionId 只存在 data 中也必须按页面绑定过滤。
     final eventSessionId = ev.sessionId ?? ev.data?['sessionId']?.toString();
-    if (eventSessionId != null && eventSessionId != _mySessionId) return false;
+    if (eventSessionId != null && eventSessionId != _mySessionId) {
+      // issue #120：问询/审批帧被页面 session 过滤时也必须留痕——真机日志据此判断
+      // 是「帧归属错」还是「页面绑定错」。
+      if (ev.type == 'question/requested' ||
+          ev.type == 'question/resolved' ||
+          ev.type == 'approval/requested' ||
+          ev.type == 'approval/resolved') {
+        AppLog.instance.log(
+          '[120-debug] ${ev.type} dropped by page filter: '
+          'frameSessionId=$eventSessionId mySessionId=${_mySessionId ?? ''} '
+          'storeSessionId=${widget.store.sessionId ?? ''} rpcId=${ev.data?['rpcId'] ?? ''}',
+        );
+      }
+      return false;
+    }
     if (ev.type == 'git/changed') {
       final controller = _gitController;
       if (controller != null) {
@@ -2602,6 +2616,15 @@ class _ChatScreenState extends State<ChatScreen> {
           if (_transientFrameKeys.add(key)) _appendEvent(ev);
         });
       }
+      // issue #120：真机定位日志（只观测，不改变行为）。回答三件事：
+      // 帧挂到哪个 session、本页绑定哪个 session、两者是否一致（matched）。
+      AppLog.instance.log(
+        '[120-debug] question frame: '
+        'frameSessionId=${eventSessionId ?? ''} '
+        'mySessionId=${_mySessionId ?? ''} '
+        'storeSessionId=${widget.store.sessionId ?? ''} '
+        'rpcId=${ev.data?['rpcId'] ?? ''} matched=$changed',
+      );
       return changed;
     }
     if (ev.type == 'question/resolved') {
@@ -2616,6 +2639,14 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         if (_transientFrameKeys.add(key)) _appendEvent(ev);
       });
+      // issue #120：结算路径同样留痕（#120 要求覆盖 resolved 分支）。
+      AppLog.instance.log(
+        '[120-debug] question resolved: '
+        'frameSessionId=${eventSessionId ?? ''} '
+        'mySessionId=${_mySessionId ?? ''} '
+        'storeSessionId=${widget.store.sessionId ?? ''} '
+        'rpcId=${rid ?? ''} matched=$changed',
+      );
       return changed;
     }
     if (ev.type == 'approval/requested') {

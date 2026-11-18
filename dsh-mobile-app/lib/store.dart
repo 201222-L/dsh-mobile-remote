@@ -1429,6 +1429,15 @@ class AppStore extends ChangeNotifier {
         );
         _pendingQuestionsBySession[request.sessionId] = request;
         pendingQuestion = request; // legacy single-pending compatibility
+        // issue #120：真机定位日志（只观测）——记录问询实际挂到哪个 session、
+        // 帧自身携带的 sessionId、以及 store 当前会话，便于与 ChatScreen 的日志对账。
+        AppLog.instance.log(
+          '[120-debug] question pending stored: '
+          'sessionId=${request.sessionId} '
+          'frameSessionId=${f['sessionId'] ?? ''} '
+          'storeSessionId=${sessionId ?? ''} '
+          'rpcId=${request.rpcId}',
+        );
         notifyListeners();
         _emitChatEvent(
           ChatEvent(
