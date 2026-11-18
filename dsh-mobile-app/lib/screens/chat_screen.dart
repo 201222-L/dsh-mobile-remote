@@ -30,6 +30,7 @@ import '../theme.dart';
 import '../turn_navigation.dart';
 import '../turn_process.dart';
 import '../inline_path.dart';
+import '../slash_input.dart';
 import '../turn_outline.dart';
 import '../turn_tail.dart';
 import '../turn_file_actions.dart';
@@ -381,6 +382,18 @@ class _ChatScreenState extends State<ChatScreen> {
   double? _bodyMaxHeight;
   final _bottomControlsKey = GlobalKey();
   final _slashScroll = ScrollController();
+  // issue #90/#97：斜杠菜单/高亮共用目录（命令沿用 /commands，技能新增 /api/skills）。
+  List<Map<String, dynamic>>? _slashCommands;
+  List<Map<String, dynamic>>? _slashSkills;
+  String? _slashCatalogSessionId;
+  bool _slashCatalogLoading = false;
+  bool _slashSkillsUnavailable = false;
+  DateTime? _slashSkillsUnavailableUntil;
+  Future<void>? _slashCatalogInFlight;
+  String? _slashCatalogInFlightId;
+  int _slashCatalogGeneration = 0;
+  bool _slashCommandsUnavailable = false;
+  SlashToken? _slashToken;
   int _slashRemaining = 0;
   bool _slashOverflow = false;
   bool _slashAtBottom = true;

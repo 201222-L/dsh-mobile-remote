@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../api.dart';
 import '../fmt.dart';
+import '../git_models.dart';
 import '../l10n.dart';
 import '../models.dart';
 import '../store.dart';

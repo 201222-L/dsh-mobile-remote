@@ -1,5 +1,27 @@
 import 'dart:collection';
 
+/// issue #86：Git 分支图选中上限三档（全局本地偏好）。
+enum GitGraphBranchLimit {
+  five(5, '5'),
+  ten(10, '10'),
+  unlimited(null, 'unlimited');
+
+  const GitGraphBranchLimit(this.max, this.storageValue);
+
+  final int? max;
+  final String storageValue;
+
+  bool get isUnlimited => max == null;
+
+  static GitGraphBranchLimit fromStorage(Object? value) => switch (value) {
+    '10' => GitGraphBranchLimit.ten,
+    'unlimited' => GitGraphBranchLimit.unlimited,
+    _ => GitGraphBranchLimit.five,
+  };
+
+  static const GitGraphBranchLimit fallback = GitGraphBranchLimit.five;
+}
+
 const maxSelectedGraphBranches = 5;
 
 List<String> _strings(Object? value) => (value as List? ?? const [])

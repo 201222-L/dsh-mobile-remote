@@ -33,7 +33,8 @@ class ApiException implements Exception {
   /// 命令通路要靠它区分 `commands-execute-failed` 的两种含义：504 = 服务端 AbortSignal 中止
   /// （结果未知，不能断言失败）vs 400 = 命令自己抛错（确定失败）。
   final int? status;
-  ApiException(this.message, {this.code, this.status});
+  final Map<String, dynamic>? body;
+  ApiException(this.message, {this.code, this.status, this.body});
   @override
   String toString() => message;
 }
@@ -67,6 +68,7 @@ abstract interface class GitReadApi {
     String? snapshotId,
     String? cursor,
     int limit,
+    Duration timeout,
   });
   Future<GitCommitDetails> commitDetails(
     String sessionId,
@@ -175,6 +177,8 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
 
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
+  /// App 版本透传（旧基线无 update 模块时保持空）。
+  String appVersion = '';
 
   /// 对话时间线能力由服务端显式声明，不能只按 package version 猜测。
   TimelineCapabilities timelineCapabilities = const TimelineCapabilities();
@@ -1205,6 +1209,17 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
   /// issue #25：提交时（`_send` 判定为命令行且名字在命令目录里）与 ⊕ 菜单里的裸命令都走这里。
   /// 服务端把整条命令的上限放宽到 180s（`/compact` 要等内核跑完一次完整 LLM 摘要），客户端
   /// 必须比它更晚放弃（200s）——否则会在服务端收敛前先本地超时，把"已提交、结果未知"误报成失败。
+  /// issue #90：技能目录（GET /api/skills）。
+  Future<(List<Map<String, dynamic>>, bool)> skills(String sessionId) async {
+    final data = await getJson(
+      '/api/skills?sessionId=${Uri.encodeQueryComponent(sessionId)}',
+    );
+    return (
+      (data['skills'] as List? ?? []).cast<Map<String, dynamic>>(),
+      data['unavailable'] == true,
+    );
+  }
+
   Future<Map<String, dynamic>?> runCommand(
     String sessionId,
     String line, {
@@ -1658,6 +1673,7 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     String? snapshotId,
     String? cursor,
     int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
   }) async => GitGraphPage.fromJson(
     await getJson(
       _gitQuery('/api/git/graph', {
@@ -1668,6 +1684,7 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
         'cursor': ?cursor,
         'limit': '$limit',
       }),
+      timeout: timeout,
     ),
   );
 
