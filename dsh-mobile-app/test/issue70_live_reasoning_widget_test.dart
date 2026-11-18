@@ -280,7 +280,8 @@ List<Map<String, dynamic>> _f70Live() => [
 Future<AppStore> _pumpChat(
   WidgetTester tester,
   _Backend backend, {
-  WorkStepDisplayMode mode = WorkStepDisplayMode.standard,
+  // issue #108：多数用例验证「过程行可见」的详细档；四档矩阵另测。
+  WorkStepDisplayMode mode = WorkStepDisplayMode.detailed,
   TurnFoldTiming timing = TurnFoldTiming.afterAnswer,
   String keySuffix = '',
 }) async {
@@ -415,10 +416,10 @@ void main() {
     expect(find.text('All tests pass.'), findsOneWidget);
     expect(find.textContaining('思维链 29 字'), findsNothing);
 
-    // seq13 turn/end：折叠摘要只计持久行（12+29=41，绝不含 provisional 的 29×2）。
+    // seq13 turn/end：v4 详细档完成轮段展开、组抬头折叠（不再整轮一行）。
     await _inject(tester, store, _f70Live()[7]);
-    expect(find.textContaining('思考 41 字 · 2 组 · 2 次工具调用'), findsOneWidget);
-    expect(find.textContaining('思考 70 字'), findsNothing);
+    expect(find.text('1 次工具调用'), findsWidgets);
+    expect(find.textContaining('思考 41 字 · 2 组 · 2 次工具调用'), findsNothing);
     expect(find.textContaining('已完成 · 用时 4.0 秒'), findsOneWidget);
     expect(find.text('思考中…'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -806,40 +807,51 @@ void main() {
       );
       await _injectF70To(tester, store, 8);
 
-      // issue #104：简洁档运行中整组折叠成一行，provisional/工具卡都不铺开；
-      // 其他三档运行中仍展开，provisional 可见。
+      // issue #108 v4：简洁/标准运行中不铺过程行；详细/完全展开行可见。
       expect(find.byKey(_provisionalRowKey(1, 2)),
-          mode == WorkStepDisplayMode.concise
-              ? findsNothing
-              : findsOneWidget,
-          reason: '${mode.name}: concise 运行中不铺过程行');
-      expect(find.textContaining('思考中…'), findsOneWidget, reason: mode.name);
+          mode == WorkStepDisplayMode.detailed ||
+                  mode == WorkStepDisplayMode.expanded
+              ? findsOneWidget
+              : findsNothing,
+          reason: '${mode.name}: provisional 可见性按档位');
       expect(find.text('run tests first'),
-          mode == WorkStepDisplayMode.concise ? findsNothing : findsOneWidget,
-          reason: '${mode.name}: concise 运行中不显示过程预览');
+          mode == WorkStepDisplayMode.detailed ? findsOneWidget : findsNothing,
+          reason: '${mode.name}: 详细档折叠预览；完全展开正文已展开');
+      expect(find.text('check layout'),
+          mode == WorkStepDisplayMode.detailed ||
+                  mode == WorkStepDisplayMode.expanded
+              ? findsOneWidget
+              : findsNothing);
 
       switch (mode) {
         case WorkStepDisplayMode.concise:
-          expect(find.byKey(const ValueKey<String>('activity-bar')), findsOneWidget,
-              reason: '简洁运行中当前状态由活动条表达');
-          expect(find.text('正在调用 shell…'), findsOneWidget,
-              reason: '活动条 toolLabel 仍表达当前工具');
-          expect(find.textContaining('（shell）'), findsNothing);
-          expect(find.text('check layout'), findsNothing);
-          expect(find.text('思维链 12 字'), findsNothing);
+          expect(find.byKey(_activityBarKey), findsNothing,
+              reason: '简洁运行中活动条隐藏');
+          expect(find.textContaining('组'), findsWidgets,
+              reason: '简洁运行中只有过程段摘要');
         case WorkStepDisplayMode.standard:
-          expect(find.text('正在调用工具…（shell）'), findsOneWidget);
-          expect(find.text('check layout'), findsOneWidget);
+          expect(find.byKey(_activityBarKey), findsOneWidget,
+              reason: '标准运行中行不可见，活动条常显');
+          expect(find.textContaining('次工具调用 · 进行中'), findsWidgets,
+              reason: '标准组抬头显示组数/状态');
+          expect(find.text('shell'), findsNothing,
+              reason: '标准运行中不铺组内行');
         case WorkStepDisplayMode.detailed:
+          expect(find.textContaining('正在调用工具…（shell）'), findsOneWidget);
+          expect(find.text('shell'), findsNWidgets(2));
         case WorkStepDisplayMode.expanded:
           expect(find.textContaining('正在调用工具…'), findsNothing,
-              reason: '${mode.name}: 运行中不分组，不出现组抬头');
+              reason: '完全展开不分组');
           expect(find.text('shell'), findsNWidgets(2));
+          expect(find.text('参数'), findsWidgets,
+              reason: '完全展开当前轮详情自动展开');
       }
       // 运行中组强制展开：provisional 与落定行都真实构建出来。
-      expect(find.text('check layout'), mode == WorkStepDisplayMode.concise
-          ? findsNothing
-          : findsOneWidget);
+      expect(find.text('check layout'),
+          mode == WorkStepDisplayMode.detailed ||
+                  mode == WorkStepDisplayMode.expanded
+              ? findsOneWidget
+              : findsNothing);
       expect(tester.takeException(), isNull, reason: mode.name);
     }
     await _flushAppTimers(tester);
@@ -1006,8 +1018,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byKey(_activityBarKey), findsNothing);
     expect(find.textContaining('思考中'), findsNothing);
-    expect(find.textContaining('思考 12 字 · 1 组 · 1 次工具调用'), findsOneWidget,
-        reason: '历史回放外观不变（旧轮已落定摘要仍在）');
+    expect(find.textContaining('次工具调用'), findsWidgets,
+        reason: '历史回放外观按 v4 详细档：段展开、组抬头');
     expect(find.text('check layout'), findsNothing);
 
     // 旧轮（turn1 已结束）迟到 chunk：tombstone 生效，不复活 provisional。
@@ -1438,14 +1450,13 @@ void main() {
       _Backend(events: _f70History(withTurnEnd: true)),
       keySuffix: 'hist-done',
     );
-    expect(find.textContaining('思考 12 字 · 1 组 · 1 次工具调用'), findsOneWidget);
+    // v4 详细档完成轮：段展开、组抬头折叠（不再整轮一行摘要）。
+    expect(find.textContaining('思考 12 字 · 1 组 · 1 次工具调用'), findsNothing);
+    expect(find.text('1 次工具调用'), findsOneWidget);
     expect(find.textContaining('已完成 · 用时 4.0 秒'), findsOneWidget);
     expect(find.text('思考中…'), findsNothing);
     expect(find.byKey(_activityBarKey), findsNothing);
-    await tester.tap(find.textContaining('思考 12 字 · 1 组 · 1 次工具调用'));
-    await tester.pumpAndSettle();
-    expect(find.text('1 次工具调用'), findsOneWidget);
-    // 完成态过程组默认折叠：再展开组才构建落定思考行（issue52 既有规则）。
+    expect(find.text('check layout'), findsNothing);
     await tester.tap(find.text('1 次工具调用'));
     await tester.pumpAndSettle();
     expect(find.text('check layout'), findsOneWidget);

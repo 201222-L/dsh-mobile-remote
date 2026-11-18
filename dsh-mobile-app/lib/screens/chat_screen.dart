@@ -4679,6 +4679,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildActivityBar() {
+    final policy = _foldPolicy;
+    // issue #108 v4：简洁运行中隐藏活动条（摘要承载状态）；其他档保留。
+    if (!policy.liveActivityBarVisible) return const SizedBox.shrink();
     final live = _liveReasoning.current;
     final plan = _livePlanCache;
     final inBlock =
@@ -4740,7 +4743,8 @@ class _ChatScreenState extends State<ChatScreen> {
       reasoning: reasoning,
       expanded: _reasoningExpanded,
       textStreaming: _streaming,
-      showContent: widget.store.showReasoning,
+      // issue #108：隐藏「思考内容」设置后，活动条只显示状态，不显示思考正文。
+      showContent: false,
       tools: tools,
       onToggleReasoning: () =>
           setState(() => _reasoningExpanded = !_reasoningExpanded),
@@ -6333,29 +6337,26 @@ class _ChatScreenState extends State<ChatScreen> {
       if (start == null) continue; // 历史截断：没有 turn/start，不构造过程块
       anchoredTurns.add(turn);
       final segments = segmentsOf(process);
-      final conciseLive =
-          policy.mode == WorkStepDisplayMode.concise && !process.ended;
-      final expandedByDefault = !turnAutoCollapsed(
-        process,
-        policy: policy,
-        humanUserSeqs: humanUserSeqs,
-      ) && !conciseLive;
+      final liveNow = !process.ended;
+      // issue #108：运行中插话强制段展开（简洁档也一样）；异常结束同样强制。
+      final forcedLive = liveNow && process.hasInterjection;
+      final segmentExpandedByDefault = liveNow
+          ? (policy.liveSegment == LiveSegmentMode.expanded || forcedLive)
+          : (process.forceExpanded ||
+              !turnAutoCollapsed(
+                process,
+                policy: policy,
+                humanUserSeqs: humanUserSeqs,
+              ));
       final limit = _processRowLimits[turn] ?? processBatchSize;
-      final running = !process.ended;
-      // 单轮过程行 >50 行分批：分批规则走纯函数 batchProcessRows（唯一实现）。
       final batchWindow = batchProcessRows(process.rows, limit);
       final visibleSeqSet = <int>{
         for (final row in batchWindow.visible) row.seq,
       };
       final hiddenTotal = batchWindow.hidden;
-      final forceLiveExpanded = process.forceExpanded && !conciseLive;
       for (var si = 0; si < segments.length; si++) {
         final segment = segments[si];
         // 宿主：该段第一条过程行所在的（或其后最近的）条目——过程块渲染在它之前。
-        // issue #91/#95：插话 user 只做段边界，不能把块前移到该 user 之前；但若该段
-        // 只有思考行、段末之后的下一条就是 user，则允许这个**段末行之后**的 user
-        // 作为宿主（块仍在它之前，不会跨用户消息前移），避免纯思考段丢失/落到下一条
-        // 插话之后。
         var lastRowSeq = segment.startSeq - 1;
         for (final row in segment.rows) {
           if (row.seq > lastRowSeq) lastRowSeq = row.seq;
@@ -6370,41 +6371,32 @@ class _ChatScreenState extends State<ChatScreen> {
         if (host == null || host.seq == null) continue;
         final key = '$turn:$si';
         final manual = _turnExpansions[key];
-        // issue #104：简洁运行中整组默认折叠成一行，只有手动展开才铺开；
-        // 其他档运行中仍强制展开。
-        final occupied = forceLiveExpanded
-            ? true
-            : (manual ?? expandedByDefault);
-        final grouping = running
-            ? policy.stepGrouping == StepGrouping.collapsed
-            : policy.stepGrouping != StepGrouping.none;
+        final occupied = manual ?? segmentExpandedByDefault;
+        final groupStyle = liveNow ? policy.liveGroups : policy.completedGroups;
+        final flat = groupStyle == LiveGroupMode.flat ||
+            groupStyle == CompletedGroupMode.flat;
+        final grouping = occupied && !flat && policy.mode != WorkStepDisplayMode.expanded;
         final visibleRows = <int>{};
         if (occupied) {
           for (final row in segment.rows) {
             if (visibleSeqSet.contains(row.seq)) visibleRows.add(row.seq);
           }
         }
-        // issue #70：组展开态与渲染同口径（运行中强制展开；用户手动收起优先）。
         List<bool>? groupExpandedFlags;
         if (grouping) {
-          // issue #104 P2：简洁运行中用户手动展开整段后，组默认展开（一次点击
-          // 就能看到内容）；用户手动收起组仍优先。
-          final manualSegmentExpanded = conciseLive && manual == true;
+          final defaultGroupExpanded = liveNow
+              ? switch (policy.liveGroups) {
+                  LiveGroupMode.expanded => true,
+                  LiveGroupMode.hidden => true, // 简洁手动展开段后组默认展开
+                  LiveGroupMode.collapsed || LiveGroupMode.flat => false,
+                }
+              : false; // 已完成详细：组抬头折叠
           groupExpandedFlags = [
             for (final group in segment.groups)
               _groupExpansions['$key:${group.step ?? 'x'}'] ??
-                  (manualSegmentExpanded
-                      ? true
-                      : !groupAutoCollapsed(
-                          group,
-                          policy: policy,
-                          turnRunning: running &&
-                              policy.mode != WorkStepDisplayMode.concise,
-                        )),
+                  defaultGroupExpanded,
           ];
         }
-        // issue #84：活动条去重只认「真正可见」的工具行——segment 展开（occupied）、
-        // 组展开（分组模式）、且 seq 在分批后的 visibleRowSeqs 内。
         if (occupied) {
           if (grouping) {
             for (var gi = 0; gi < segment.groups.length; gi++) {
@@ -6423,7 +6415,6 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           }
         }
-        // provisional 可见条件：该轮最后一段、块可见；若该 step 已有组则组也必须展开。
         _ProvisionalSlot? slot;
         if (live != null &&
             turn == live.turn &&
@@ -6443,7 +6434,6 @@ class _ChatScreenState extends State<ChatScreen> {
             provisionalRendered = true;
           }
         }
-        // 该轮可见过程块内是否已有 reasoning 行（provisional 或落定）——活动条据此去重。
         if (live != null && turn == live.turn && occupied) {
           var hasReasoning = slot != null;
           if (!hasReasoning && grouping) {
@@ -6531,10 +6521,18 @@ class _ChatScreenState extends State<ChatScreen> {
         process.groups.every((g) => g.rows.every((row) => row.isTool));
     // 强制展开（未结束 / 有插话 / 异常结束）时摘要不可点——点了也收不起来，
     // 与其给一个无效点按，不如禁用并保留箭头缺失的静态态。
-    // issue #104：简洁运行中不强制展开（一行摘要+活动条），摘要可点。
-    final conciseLive =
-        policy.mode == WorkStepDisplayMode.concise && !process.ended;
-    final forced = process.forceExpanded && !conciseLive;
+    final liveNow = !process.ended;
+    // issue #108 v4：完全展开只自动展开当前运行轮的详情；完成/历史不自动。
+    // 完全展开：当前运行轮自动展开详情；运行中插话/异常不自动展开。
+    final autoDetail =
+        policy.liveDetailsAutoExpanded && liveNow && !process.hasInterjection;
+    // 强制展开（运行中/插话/异常）保持不可收起；简洁正常运行中的摘要仍可手动展开。
+    final forcedLive = liveNow && process.hasInterjection;
+    final forced =
+        process.forceExpanded &&
+        !(policy.mode == WorkStepDisplayMode.concise &&
+            liveNow &&
+            !forcedLive);
     final children = <Widget>[];
     if (toolOnlyReplay) {
       children.add(Padding(
@@ -6603,19 +6601,15 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!hasVisibleRow) continue;
           final groupKey = '${plan.intervalKey}:${group.step ?? 'x'}';
           final manual = _groupExpansions[groupKey];
-          // issue #104 P2：简洁运行中手动展开整段后，组默认展开（一次点击见内容）；
-          // 手动收起组仍优先。标准/详细运行中保持强制展开。
-          final conciseLiveDefaultExpanded =
-              conciseLive && plan.expanded;
-          final groupExpanded = manual ??
-              (conciseLiveDefaultExpanded
-                  ? true
-                  : !groupAutoCollapsed(
-                      group,
-                      policy: policy,
-                      turnRunning: !process.ended &&
-                          policy.mode != WorkStepDisplayMode.concise,
-                    ));
+          // issue #108 v4：运行中简洁/详细组默认展开、标准折叠；已完成统一折叠。
+          final defaultGroupExpanded = liveNow
+              ? switch (policy.liveGroups) {
+                  LiveGroupMode.expanded => true,
+                  LiveGroupMode.hidden => true, // 简洁手动展开段后一次见内容
+                  LiveGroupMode.collapsed || LiveGroupMode.flat => false,
+                }
+              : false;
+          final groupExpanded = manual ?? defaultGroupExpanded;
           // issue #61（note 1791）：抬头只信真实运行态——组内还有未 settled 的工具行，
           // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
           // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
@@ -6664,7 +6658,7 @@ class _ChatScreenState extends State<ChatScreen> {
             var inserted = false;
             for (final row in group.rows) {
               if (!inserted && row.seq > slot.orderSeq) {
-                groupRowWidgets.add(_buildProvisionalReasoningRow(slot));
+                groupRowWidgets.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
                 inserted = true;
               }
               if (!plan.visibleRowSeqs.contains(row.seq)) continue;
@@ -6678,7 +6672,7 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             }
             if (!inserted) {
-              groupRowWidgets.add(_buildProvisionalReasoningRow(slot));
+              groupRowWidgets.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
             }
             slotPlaced = true;
           } else {
@@ -6699,13 +6693,13 @@ class _ChatScreenState extends State<ChatScreen> {
           children.add(_buildGroupRail(groupRowWidgets));
         }
         if (slot != null && !slotPlaced) {
-          children.add(_buildProvisionalReasoningRow(slot));
+          children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
         }
       } else {
         var inserted = false;
         for (final row in plan.segment.rows) {
           if (slot != null && !inserted && row.seq > slot.orderSeq) {
-            children.add(_buildProvisionalReasoningRow(slot));
+            children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
             inserted = true;
           }
           if (!plan.visibleRowSeqs.contains(row.seq)) continue;
@@ -6719,7 +6713,7 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         }
         if (slot != null && !inserted) {
-          children.add(_buildProvisionalReasoningRow(slot));
+          children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
         }
       }
       if (plan.hiddenTotalInTurn > 0) {
@@ -6781,7 +6775,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       // issue #61：展开后摘要行不在，收起的入口改为过程块末尾的行内控件
-      // （非卡片底色、chevron 向上）。强制展开时保持不可收起语义。
+      // （非卡片底色、chevron 向上）。issue #108：非强制段手动收起优先于档位默认。
       if (!forced) {
         children.add(
           _CollapseProcessRow(
@@ -6812,10 +6806,12 @@ class _ChatScreenState extends State<ChatScreen> {
     required bool historyView,
     required TurnFoldPolicy policy,
   }) {
+    final autoDetail = policy.liveDetailsAutoExpanded &&
+        !process.ended &&
+        !process.hasInterjection;
     if (row.isReasoning) {
       final key = '${process.turn}:${row.seq}';
-      final expanded = _reasoningRowExpansions[key] ??
-          widget.store.reasoningDefaultExpanded;
+      final expanded = _reasoningRowExpansions[key] ?? autoDetail;
       return _ReasoningProcessRow(
         rowKey: ValueKey<String>('reasoning-row:${process.turn}:${row.seq}'),
         text: row.reasoning,
@@ -6852,7 +6848,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       // 单张工具卡在所有档位默认收起（note 1700 / 桌面 useDisclosure 默认关闭）。
       // issue #76：过程区内用平铺变体（无逐卡边框）。
-      child = _buildToolCard(item, flat: true);
+      child = _buildToolCard(item, flat: true, autoExpanded: autoDetail);
     }
     if (callId == null) return child;
     final rowKey = _processToolRowKeys.putIfAbsent(
@@ -6867,7 +6863,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 行内容由 `_liveReasoningRevision` 行级通知驱动（读同一份 [LiveReasoning] 快照），
   /// 计划里只有排序键、没有文本 → delta 增长不会重建整轮计划；展开态由用户动作控制，
   /// 收起态恒定一行（最近非空行预览），delta 不改变行高（issue「不得明显跳动」）。
-  Widget _buildProvisionalReasoningRow(_ProvisionalSlot slot) {
+  Widget _buildProvisionalReasoningRow(_ProvisionalSlot slot, {bool autoExpanded = false}) {
     final stepKey = slot.step ?? 'null';
     final stateKey = '${slot.turn}:$stepKey';
     return ValueListenableBuilder<int>(
@@ -6879,7 +6875,7 @@ class _ChatScreenState extends State<ChatScreen> {
           // 落定/清理后计划会在同帧重建；退化为空占位，不渲染陈旧行。
           return const SizedBox.shrink();
         }
-        final expanded = _provisionalExpansions[stateKey] ?? false;
+        final expanded = _provisionalExpansions[stateKey] ?? autoExpanded;
         return _ReasoningProcessRow(
           rowKey: ValueKey<String>(
             'provisional-reasoning-row:${slot.turn}:$stepKey',
@@ -6985,7 +6981,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildToolCard(_MsgItem item, {bool flat = false}) {
+  Widget _buildToolCard(_MsgItem item, {bool flat = false, bool autoExpanded = false}) {
     final toolKey = 'tool:${item.toolCallId ?? item.seq}';
     return _ToolActivityCard(
       key: ValueKey<String>(
@@ -7003,6 +6999,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ? null
           : () => _openImagesGallery(collectToolImages([item.images])),
       item: item,
+      autoExpanded: autoExpanded,
       debug: widget.store.timelineDebug,
       sessionId: _mySessionId ?? '',
       api: _api,
@@ -7449,7 +7446,8 @@ class _ChatScreenState extends State<ChatScreen> {
               sessionId: _mySessionId ?? '',
               streaming: false,
               reasoning: inProcess ? null : item.reasoning,
-              defaultExpanded: widget.store.reasoningDefaultExpanded,
+              // issue #108：隐藏「思维链默认展开」；旧 key 不读取，默认折叠。
+              defaultExpanded: false,
               expandedOverride: inProcess
                   ? null
                   : widget.store.reasoningOverrideOf(_mySessionId ?? '', rk),
@@ -8275,6 +8273,9 @@ class _ToolActivityCard extends StatefulWidget {
 
   /// issue #76：过程区平铺变体（透明、无逐卡边框/圆角/阴影；详情才用轻底）。
   final bool flat;
+
+  /// issue #108：档位默认展开（仅完全展开的当前轮）；手动 override 优先。
+  final bool autoExpanded;
   const _ToolActivityCard({
     super.key,
     required this.item,
@@ -8292,6 +8293,7 @@ class _ToolActivityCard extends StatefulWidget {
     this.onAutoLoadDetail,
     this.onOpenImages,
     this.flat = false,
+    this.autoExpanded = false,
   });
 
   @override
@@ -8331,7 +8333,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   @override
   void initState() {
     super.initState();
-    expanded = widget.expandedOverride ?? _defaultExpanded;
+    expanded = widget.expandedOverride ?? (widget.autoExpanded || _defaultExpanded);
     userOverride = widget.expandedOverride != null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _requestDetailIfNeeded();
@@ -8343,8 +8345,11 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     super.didUpdateWidget(oldWidget);
     final override = widget.expandedOverride;
     userOverride = override != null;
-    if (!userOverride && (_failed || oldWidget.debug != widget.debug)) {
-      expanded = _defaultExpanded;
+    if (!userOverride &&
+        (_failed ||
+            oldWidget.debug != widget.debug ||
+            oldWidget.autoExpanded != widget.autoExpanded)) {
+      expanded = widget.autoExpanded || _defaultExpanded;
     }
     if (override != null && override != expanded) expanded = override;
     if (oldWidget.item.toolCallId != widget.item.toolCallId ||

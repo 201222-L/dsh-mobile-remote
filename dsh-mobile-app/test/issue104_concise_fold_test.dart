@@ -241,15 +241,24 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('标准/详细/完全展开运行中不回归（工具卡可见）', (tester) async {
+  testWidgets('v4：标准运行中组折叠不铺卡；详细/完全展开可见', (tester) async {
+    // 标准：组抬头折叠，不显示工具卡（活动条承载当前状态）。
+    await _pump(
+      tester,
+      _Backend(events: _runningFixture()),
+      mode: WorkStepDisplayMode.standard,
+    );
+    expect(_toolCard('c1'), findsNothing);
+    expect(find.textContaining('1 次工具调用 · 进行中'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+
     for (final mode in [
-      WorkStepDisplayMode.standard,
       WorkStepDisplayMode.detailed,
       WorkStepDisplayMode.expanded,
     ]) {
       final backend = _Backend(events: _runningFixture());
       await _pump(tester, backend, mode: mode);
-      expect(_toolCard('c1'), findsOneWidget, reason: '$mode 运行中应展开工具卡');
+      expect(_toolCard('c1'), findsOneWidget, reason: '$mode 运行中应显示行摘要');
       await tester.pumpWidget(const SizedBox());
     }
   });

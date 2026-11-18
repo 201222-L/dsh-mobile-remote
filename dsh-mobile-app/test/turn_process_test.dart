@@ -129,7 +129,7 @@ void main() {
         ev(2, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
       ]).build().single;
       expect(running.groups.single.running, isTrue);
-      expect(processGroupHeader(running.groups.single, running: true), '正在调用工具…');
+      expect(processGroupHeader(running.groups.single, running: true), '1 次工具调用 · 进行中');
       final done = trackerOf(oneTurn()).build().single;
       expect(done.groups.first.running, isFalse);
       expect(processGroupHeader(done.groups.first, running: false), '1 次工具调用');
@@ -254,17 +254,23 @@ void main() {
           policy: policy,
           turnRunning: false,
         );
-        expect(
-          collapsed,
-          policy.groupsCollapsedByDefault,
-          reason: '${mode.name}：组默认折叠只由展示模式决定',
-        );
+        expect(collapsed, isTrue,
+            reason: '${mode.name}：已完成轮组默认折叠');
       }
-      // 运行中组仍强制展开。
+      // v4：标准运行中折叠、详细运行中展开。
       expect(
         groupAutoCollapsed(
           turn.groups.first,
           policy: const TurnFoldPolicy(),
+          turnRunning: true,
+        ),
+        isTrue,
+        reason: '标准运行中组抬头折叠',
+      );
+      expect(
+        groupAutoCollapsed(
+          turn.groups.first,
+          policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           turnRunning: true,
         ),
         isFalse,
@@ -300,21 +306,26 @@ void main() {
   });
 
   group('展示模式四档策略表（issue #52 note 1700 / 桌面 presentation-policy）', () {
-    const cases = <WorkStepDisplayMode, (bool, StepGrouping, bool, bool)>{
-      // mode: (foldCompletedTurns, stepGrouping, liveProcessDetail,
-      //        settledReasoningPreview)
-      WorkStepDisplayMode.concise: (true, StepGrouping.collapsed, false, false),
-      WorkStepDisplayMode.standard: (true, StepGrouping.collapsed, true, true),
-      WorkStepDisplayMode.detailed: (true, StepGrouping.history, true, true),
-      WorkStepDisplayMode.expanded: (false, StepGrouping.none, false, true),
+    const cases = <WorkStepDisplayMode, (bool, LiveSegmentMode, LiveGroupMode,
+        bool) >{
+      // mode: (foldCompletedTurns, liveSegment, liveGroups,
+      //        liveDetailsAutoExpanded)
+      WorkStepDisplayMode.concise:
+          (true, LiveSegmentMode.summary, LiveGroupMode.hidden, false),
+      WorkStepDisplayMode.standard:
+          (true, LiveSegmentMode.expanded, LiveGroupMode.collapsed, false),
+      WorkStepDisplayMode.detailed:
+          (false, LiveSegmentMode.expanded, LiveGroupMode.expanded, false),
+      WorkStepDisplayMode.expanded:
+          (false, LiveSegmentMode.expanded, LiveGroupMode.flat, true),
     };
     for (final entry in cases.entries) {
       test('${entry.key.name} 档策略', () {
         final policy = TurnFoldPolicy(mode: entry.key);
         expect(policy.foldCompletedTurns, entry.value.$1);
-        expect(policy.stepGrouping, entry.value.$2);
-        expect(policy.liveProcessDetail, entry.value.$3);
-        expect(policy.settledReasoningPreview, entry.value.$4);
+        expect(policy.liveSegment, entry.value.$2);
+        expect(policy.liveGroups, entry.value.$3);
+        expect(policy.liveDetailsAutoExpanded, entry.value.$4);
       });
     }
 
@@ -324,12 +335,11 @@ void main() {
       expect(policy.timing, TurnFoldTiming.afterAnswer);
     });
 
-    test('单张工具卡在所有档位都默认收起（完全展开不自动展开工具卡）', () {
-      // 策略里不再有「单卡默认展开」字段：完全展开只影响整轮/过程组。
+    test('完全展开只自动展开运行中当前轮详情；已完成不自动', () {
       for (final mode in WorkStepDisplayMode.values) {
         final policy = TurnFoldPolicy(mode: mode);
-        expect(policy.groupsCollapsedByDefault,
-            mode != WorkStepDisplayMode.expanded,
+        expect(policy.liveDetailsAutoExpanded,
+            mode == WorkStepDisplayMode.expanded,
             reason: mode.name);
       }
     });
@@ -370,14 +380,15 @@ void main() {
       );
     });
 
-    test('详细档仍自动收起已完成轮（foldCompletedTurns=true）', () {
+    test('详细档不再整轮折叠（foldCompletedTurns=false）', () {
       expect(
         turnAutoCollapsed(
           turn,
           policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           humanUserSeqs: const [20],
         ),
-        isTrue,
+        isFalse,
+        reason: '详细档不整轮折叠',
       );
       expect(
         turnAutoCollapsed(
@@ -385,7 +396,7 @@ void main() {
           policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           humanUserSeqs: const [],
         ),
-        isTrue,
+        isFalse,
       );
     });
 
@@ -404,8 +415,17 @@ void main() {
             policy: const TurnFoldPolicy(),
             turnRunning: true,
           ),
+          isTrue,
+          reason: 'v4 标准运行中组抬头折叠（$i）',
+        );
+        expect(
+          groupAutoCollapsed(
+            running.groups[i],
+            policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
+            turnRunning: true,
+          ),
           isFalse,
-          reason: '运行中的组强制展开（$i）',
+          reason: 'v4 详细运行中组展开（$i）',
         );
       }
       final done = trackerOf(oneTurn()).build().single;
@@ -545,7 +565,7 @@ void main() {
       expect(long.reasoningPreview(max: 20), '${'x' * 20}…');
     });
 
-    test('liveProcessDetail：标准/详细档抬头附带当前工具名，简洁/完全展开只给通用文案', () {
+    test('liveProcessDetail：详细档运行中抬头附当前工具名；标准折叠抬头给计数/状态', () {
       final group = ProcessGroup(step: 1, rows: [
         ProcessRow.tool(
           seq: 1,
@@ -555,7 +575,7 @@ void main() {
           status: 'running',
         ),
       ]);
-      expect(processGroupHeader(group, running: true), '正在调用工具…');
+      expect(processGroupHeader(group, running: true), '1 次工具调用 · 进行中');
       expect(
         processGroupHeader(group, running: true, showDetail: true),
         '正在调用工具…（shell）',

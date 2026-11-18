@@ -308,10 +308,9 @@ class AppStore extends ChangeNotifier {
     skin = DshSkin.fromId(prefs.getString(_kSkin));
     appIcon = prefs.getString(_kAppIcon) ?? 'default';
     iconMigrationTipShown = prefs.getBool(_kIconMigrationTip) ?? false;
-    showReasoning = prefs.getBool(_kReasoning) ?? false;
+    // issue #108：旧「思考内容 / 思维链默认展开」key 保留在 prefs 但不读取，
+    // 不迁移、不改变行为（字段仅为旧代码兼容保留，默认 false）。
     showHiddenFiles = prefs.getBool(_kShowHiddenFiles) ?? true;
-    reasoningDefaultExpanded =
-        prefs.getBool(_kReasoningDefaultExpanded) ?? false;
     timelineDebug = prefs.getBool(_kTimelineDebug) ?? false;
     stepDisplayMode = WorkStepDisplayMode.values.firstWhere(
       (mode) => mode.name == prefs.getString(_kStepDisplayMode),

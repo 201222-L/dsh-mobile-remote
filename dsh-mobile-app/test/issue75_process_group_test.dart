@@ -273,10 +273,22 @@ Future<AppStore> _pumpChat(
   return store;
 }
 
-/// 展开整轮（标准档默认折叠成一行摘要）。
+/// 展开整轮（简洁/标准默认折叠成一行摘要；详细/完全展开已展开，无摘要）。
 Future<void> _expandTurn(WidgetTester tester) async {
-  await tester.tap(find.textContaining('组 · '));
-  await tester.pumpAndSettle();
+  final summary = find.textContaining('组 · ');
+  if (summary.evaluate().isNotEmpty) {
+    await tester.tap(summary.first);
+    await tester.pumpAndSettle();
+  }
+}
+
+/// 展开组内「思维链 N 字」行（v4 思考行默认折叠；手动优先）。
+Future<void> _expandReasoningRow(WidgetTester tester) async {
+  final row = find.textContaining('思维链 ');
+  if (row.evaluate().isNotEmpty) {
+    await tester.tap(row.last);
+    await tester.pumpAndSettle();
+  }
 }
 
 void main() {
@@ -314,6 +326,7 @@ void main() {
     expect(find.textContaining('FINAL-REASONING'), findsNothing);
     await tester.tap(reasoningHeader);
     await tester.pumpAndSettle();
+    await _expandReasoningRow(tester);
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
 
     // 再点收起：思考正文消失（chevron 回落）。
@@ -362,6 +375,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining('思考 14 字'));
     await tester.pumpAndSettle();
+    await _expandReasoningRow(tester);
     expect(find.textContaining('TAIL-REASONING'), findsOneWidget);
   });
 
@@ -400,6 +414,7 @@ void main() {
     // 纯思考组可展开看到思考全文（真机里正是它的「0 次工具调用」幽灵行）。
     await tester.tap(find.textContaining('思考 ').last);
     await tester.pumpAndSettle();
+    await _expandReasoningRow(tester);
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
   });
 
@@ -415,26 +430,24 @@ void main() {
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
   });
 
-  testWidgets('标准档运行中：按组强制展开，reasoning-only 组抬头语义正确且可收起', (tester) async {
+  testWidgets('标准档运行中：组抬头折叠+状态，手动展开后可看思考', (tester) async {
     await _pumpChat(
       tester,
       _Backend(events: reasoningOnlyTurn(ended: false)),
       mode: WorkStepDisplayMode.standard,
     );
 
-    // 运行中组强制展开：思考正文已在；
-    expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
+    // v4 标准运行中：组抬头折叠，不铺行；活动条承载当前状态。
+    expect(find.textContaining('FINAL-REASONING'), findsNothing);
     expect(find.text('0 次工具调用'), findsNothing);
     expect(find.textContaining('思考 '), findsWidgets);
 
-    // 手动收起该组 → 思考正文消失，chevron 呈现收起态且仍可点。
+    // 手动展开组 → 思考行出现；若仍折叠再点行看全文。
     final header = find.textContaining('思考 ').last;
     expect(chevronCountInHeader(tester, (tester.widget<Text>(header)).data!), 1);
     await tester.tap(header);
     await tester.pumpAndSettle();
-    expect(find.textContaining('FINAL-REASONING'), findsNothing);
-    await tester.tap(header);
-    await tester.pumpAndSettle();
+    await _expandReasoningRow(tester);
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
   });
 
@@ -468,16 +481,15 @@ void main() {
         findsOneWidget,
         reason: '${mode.name}：可见组抬头必须有 chevron',
       );
-      // 展开组：标准/详细档折叠态仍保留思考首行预览；简洁档只给「思维链 N 字」标签。
+      // v4 完成态组折叠；手动展开组后思考行仍折叠，点行看全文。
       await tester.tap(reasoningHeader);
       await tester.pumpAndSettle();
-      final rowLabel = mode == WorkStepDisplayMode.concise
-          ? find.textContaining('思维链 ')
-          : find.textContaining('FINAL-REASONING');
-      expect(rowLabel, findsWidgets, reason: '${mode.name}：展开组后应出现思考行');
-      // 点思考行才看到全文（简洁档无预览）。
-      await tester.tap(rowLabel.last);
-      await tester.pumpAndSettle();
+      if (find.textContaining('FINAL-REASONING').evaluate().isEmpty) {
+        final rowLabel = find.textContaining('思维链 ');
+        expect(rowLabel, findsWidgets, reason: '${mode.name}：展开组后应出现思考行');
+        await tester.tap(rowLabel.last);
+        await tester.pumpAndSettle();
+      }
       expect(find.textContaining('FINAL-REASONING'), findsOneWidget, reason: mode.name);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();

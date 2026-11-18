@@ -189,7 +189,8 @@ List<Map<String, dynamic>> _endedEvents({
 Future<AppStore> _pumpChat(
   WidgetTester tester,
   List<Map<String, dynamic>> events, {
-  WorkStepDisplayMode mode = WorkStepDisplayMode.standard,
+  // issue #108：视觉用例验证过程行/详情，默认用运行中组展开的详细档。
+  WorkStepDisplayMode mode = WorkStepDisplayMode.detailed,
   TurnFoldTiming timing = TurnFoldTiming.afterAnswer,
   String keySuffix = '',
 }) async {
@@ -316,10 +317,8 @@ void main() {
 
   testWidgets('组收起：不留导轨；展开后重新出现', (tester) async {
     await _pumpChat(tester, _endedEvents());
-    // 整轮摘要默认折叠 → 点摘要展开过程块（组默认收起）。
-    expect(_summaryRows, findsOneWidget);
-    await tester.tap(_summaryRows);
-    await tester.pump(const Duration(milliseconds: 200));
+    // v4 详细档完成轮段已展开、组默认收起。
+    expect(_summaryRows, findsNothing);
     expect(_groupHeaders, findsOneWidget);
     expect(_rails, findsNothing, reason: '收起组不留导轨/空白');
     await tester.tap(_groupHeaders);
@@ -479,7 +478,6 @@ void main() {
 
   testWidgets('收起过程：右对齐 48dp、12/ink2、上方 1dp 分线', (tester) async {
     await _pumpChat(tester, _endedEvents());
-    await tester.tap(_summaryRows);
     await tester.pump(const Duration(milliseconds: 200));
     final ctx = tester.element(find.text('收起过程'));
     final text = tester.widget<Text>(find.text('收起过程'));
@@ -517,8 +515,6 @@ void main() {
     addTearDown(tester.view.reset);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     await _pumpChat(tester, _endedEvents(tools: 2, failures: 2));
-    await tester.tap(find.textContaining('次工具调用').first);
-    await tester.pump(const Duration(milliseconds: 200));
     expect(_groupHeaders, findsOneWidget);
     final ctx = tester.element(_groupHeaders);
     final titleRect = tester.getRect(

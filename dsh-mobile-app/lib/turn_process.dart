@@ -481,6 +481,27 @@ enum StepGrouping {
   none,
 }
 
+/// issue #108 v4：运行中过程段呈现方式。
+enum LiveSegmentMode { summary, expanded }
+
+/// issue #108 v4：运行中过程组呈现方式。
+enum LiveGroupMode {
+  /// 不显示组（简洁：仅手动展开段后出现，默认展开）。
+  hidden,
+
+  /// 显示组抬头但默认折叠（标准）。
+  collapsed,
+
+  /// 显示组抬头且默认展开（详细）。
+  expanded,
+
+  /// 不分组、过程行平铺（完全展开）。
+  flat,
+}
+
+/// issue #108 v4：已完成轮的过程组。
+enum CompletedGroupMode { hidden, collapsed, flat }
+
 /// 展示模式 → 折叠策略的映射表（issue #52 note 1700 / 桌面
 /// `presentation-policy.js` 的 `foldCompletedTurns / stepGrouping /
 /// liveProcessDetail / settledReasoningPreview` 四字段）。
@@ -496,28 +517,59 @@ class TurnFoldPolicy {
     this.timing = TurnFoldTiming.afterAnswer,
   });
 
-  /// 已完成整轮是否自动收起：简洁/标准/详细收起，只有完全展开不收起。
-  bool get foldCompletedTurns => mode != WorkStepDisplayMode.expanded;
+  /// 已完成整轮是否自动收起：只有简洁/标准收起；详细/完全展开保留段展开。
+  bool get foldCompletedTurns =>
+      mode == WorkStepDisplayMode.concise ||
+      mode == WorkStepDisplayMode.standard;
 
-  /// 过程组折叠方式：简洁/标准总是按组；详细仅已完成轮按组；完全展开从不分组。
+  /// 运行中过程段：简洁一行摘要；其余展开。
+  LiveSegmentMode get liveSegment => mode == WorkStepDisplayMode.concise
+      ? LiveSegmentMode.summary
+      : LiveSegmentMode.expanded;
+
+  /// 运行中过程组（v4）：简洁隐藏（手动展开段后默认展开）、标准折叠、
+  /// 详细展开、完全展开平铺。
+  LiveGroupMode get liveGroups => switch (mode) {
+        WorkStepDisplayMode.concise => LiveGroupMode.hidden,
+        WorkStepDisplayMode.standard => LiveGroupMode.collapsed,
+        WorkStepDisplayMode.detailed => LiveGroupMode.expanded,
+        WorkStepDisplayMode.expanded => LiveGroupMode.flat,
+      };
+
+  /// 运行中详情是否自动展开：仅完全展开的**当前轮**；完成/历史不自动。
+  bool get liveDetailsAutoExpanded => mode == WorkStepDisplayMode.expanded;
+
+  /// 活动条：简洁隐藏；标准常显；详细/完全展开按可见行去重。
+  bool get liveActivityBarVisible => mode != WorkStepDisplayMode.concise;
+
+  /// 已完成过程组：详细显示折叠抬头；完全展开平铺；简洁/标准不显示。
+  CompletedGroupMode get completedGroups => switch (mode) {
+        WorkStepDisplayMode.concise ||
+        WorkStepDisplayMode.standard =>
+          CompletedGroupMode.hidden,
+        WorkStepDisplayMode.detailed => CompletedGroupMode.collapsed,
+        WorkStepDisplayMode.expanded => CompletedGroupMode.flat,
+      };
+
+  /// 详细/完全展开的思考行折叠预览；简洁/标准不显示预览。
+  bool get settledReasoningPreview =>
+      mode == WorkStepDisplayMode.detailed ||
+      mode == WorkStepDisplayMode.expanded;
+
+  /// 运行中组抬头是否附当前工具名（标准不要，避免和活动条重复；详细保留）。
+  bool get liveProcessDetail => mode == WorkStepDisplayMode.detailed;
+
+  /// 兼容旧判定：已完成是否按组（详细 collapsed；其余 none/flat）。
   StepGrouping get stepGrouping => switch (mode) {
         WorkStepDisplayMode.concise ||
         WorkStepDisplayMode.standard =>
-          StepGrouping.collapsed,
-        WorkStepDisplayMode.detailed => StepGrouping.history,
+          StepGrouping.none,
+        WorkStepDisplayMode.detailed => StepGrouping.collapsed,
         WorkStepDisplayMode.expanded => StepGrouping.none,
       };
 
-  /// 运行中的轮次是否展示过程细节（简洁/完全展开档只给一行摘要）。
-  bool get liveProcessDetail =>
-      mode == WorkStepDisplayMode.standard ||
-      mode == WorkStepDisplayMode.detailed;
-
-  /// 折叠态是否保留思维链首行预览（简洁档不留）。
-  bool get settledReasoningPreview => mode != WorkStepDisplayMode.concise;
-
-  /// 已完成的轮里，过程组是否以抬头（默认折叠）呈现。
-  bool get groupsCollapsedByDefault => stepGrouping != StepGrouping.none;
+  /// 旧兼容：已完成组是否以抬头呈现。
+  bool get groupsCollapsedByDefault => mode == WorkStepDisplayMode.detailed;
 }
 
 /// 「下次有新消息」档的收起触发：该轮结束后出现了新的真人 user 消息。
@@ -546,17 +598,24 @@ bool turnAutoCollapsed(
   }
 }
 
-/// 已展开整轮内，过程组是否默认收起。
-///
-/// - 运行中的轮（只有「标准」档在运行中按组）：组**强制展开**（含底部最新组延后收起）。
-/// - 已完成的轮：分组存在即默认折叠成抬头（简洁/标准/详细一致；完全展开不分组）。
+/// 旧兼容入口：过程组是否默认收起（issue #108 v4 的渲染改用
+/// [TurnFoldPolicy.liveGroups]/[TurnFoldPolicy.completedGroups] 与手动覆盖）。
 bool groupAutoCollapsed(
   ProcessGroup group, {
   required TurnFoldPolicy policy,
   bool turnRunning = false,
 }) {
-  if (turnRunning) return false;
-  return policy.groupsCollapsedByDefault;
+  if (turnRunning) {
+    return switch (policy.liveGroups) {
+      LiveGroupMode.expanded => false,
+      LiveGroupMode.collapsed || LiveGroupMode.hidden => true,
+      LiveGroupMode.flat => true,
+    };
+  }
+  return switch (policy.completedGroups) {
+    CompletedGroupMode.collapsed => true,
+    CompletedGroupMode.hidden || CompletedGroupMode.flat => true,
+  };
 }
 
 /// 过程段：轮内被真人插话切开的一段过程行。
@@ -686,7 +745,7 @@ String processGroupHeader(
 }) {
   if (running) {
     if (showDetail) {
-      // 优先当前仍在跑的工具；都已结束但轮次未结束时，用最后一个工具名做细节提示。
+      // 详细档：优先当前仍在跑的工具名下细节。
       String? name;
       for (final row in group.rows) {
         if (row.isTool && row.running) {
@@ -703,7 +762,20 @@ String processGroupHeader(
       }
       if (name != null && name.isNotEmpty) return '正在调用工具…（$name）';
     }
-    return '正在调用工具…';
+    // issue #108：标准档组抬头折叠，必须仍表达该 step 的组数/状态。
+    if (group.toolCount > 0) {
+      return L10n.t(
+        '${group.toolCount} 次工具调用 · 进行中',
+        '${group.toolCount} tool calls · running',
+      );
+    }
+    if (group.reasoningChars > 0) {
+      return L10n.t(
+        '思考 ${group.reasoningChars} 字 · 进行中',
+        '${group.reasoningChars} chars of thinking · running',
+      );
+    }
+    return L10n.t('正在调用工具…', 'Calling tool…');
   }
   // issue #75：只有思考、没有工具调用的组不能显示「0 次工具调用」——
   // 那是没有信息量的幽灵抬头，也不符合「组抬头说明该组做了什么」的语义。

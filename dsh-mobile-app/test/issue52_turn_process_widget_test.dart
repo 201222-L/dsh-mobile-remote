@@ -294,19 +294,22 @@ void main() {
       _Backend(events: running),
       mode: WorkStepDisplayMode.detailed,
     );
-    expect(find.text('1 次工具调用'), findsNothing, reason: '运行中不出现过程组抬头');
-    expect(find.text('shell'), findsOneWidget, reason: '过程行平铺可见');
+    expect(find.text('1 次工具调用'), findsOneWidget, reason: 'v4 详细运行中组抬头展开');
+    expect(find.text('shell'), findsOneWidget, reason: '过程行摘要可见');
+    expect(find.text('参数'), findsNothing, reason: '详情默认收起');
 
-    // 已完成：详细档仍自动折叠整轮；手动展开后按组呈现（组抬头出现）。
+    // 已完成：详细档段展开、组抬头折叠（不再整轮折叠）。
     await _pumpChat(
       tester,
       _Backend(events: oneTurn()),
       mode: WorkStepDisplayMode.detailed,
     );
-    expect(find.text('1 次工具调用'), findsNothing);
-    await tester.tap(find.textContaining('1 组 · 1 次工具调用'));
-    await tester.pumpAndSettle();
     expect(find.text('1 次工具调用'), findsOneWidget);
+    expect(find.text('shell'), findsNothing);
+    await tester.tap(find.text('1 次工具调用'));
+    await tester.pumpAndSettle();
+    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('参数'), findsNothing);
   });
 
   testWidgets('过程块内工具卡加载详情后即时刷新（计划不缓存旧条目）', (tester) async {
@@ -401,7 +404,7 @@ void main() {
       _Backend(events: oneTurn()),
       timing: TurnFoldTiming.onNewMessage,
     );
-    // 展开态仍保留「收起」入口（整轮摘要行），但过程组抬头已经出现。
+    // 标准档完成轮在「下次新消息」前保持段展开，组抬头折叠。
     expect(find.text('1 次工具调用'), findsOneWidget);
   });
 
@@ -429,21 +432,19 @@ void main() {
     expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
   });
 
-  testWidgets('详细档：已完成轮仍被折叠（foldCompletedTurns=true）', (tester) async {
+  testWidgets('详细档：已完成轮段展开、组抬头折叠', (tester) async {
     await _pumpChat(
       tester,
       _Backend(events: oneTurn()),
       mode: WorkStepDisplayMode.detailed,
     );
-    // 整轮默认收起 → 只有一行摘要，过程组抬头不出现。
-    expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
-    expect(find.text('1 次工具调用'), findsNothing);
-
-    // 手动展开后按组呈现，过程组默认折叠（组抬头出现）。
-    await tester.tap(find.textContaining('1 组 · 1 次工具调用'));
-    await tester.pumpAndSettle();
+    expect(find.textContaining('1 组 · 1 次工具调用'), findsNothing);
     expect(find.text('1 次工具调用'), findsOneWidget);
     expect(find.text('shell'), findsNothing);
+    await tester.tap(find.text('1 次工具调用'));
+    await tester.pumpAndSettle();
+    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('参数'), findsNothing);
   });
 
   testWidgets('完全展开档：已完成轮不折叠且工具卡仍默认收起', (tester) async {
@@ -477,15 +478,19 @@ void main() {
     expect(find.text('shell'), findsOneWidget);
   });
 
-  testWidgets('标准档运行中：按组且组强制展开，抬头附带当前工具名', (tester) async {
-    // issue #61：抬头只信真实运行态——必须留一条未回结果的工具调用（只有 call 无 result）。
+  testWidgets('标准档运行中：组抬头折叠、不铺行、活动条显示当前状态', (tester) async {
     final events = oneTurn()
       ..removeWhere(
-        (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
+        (e) =>
+            e['type'] == 'turn/end' ||
+            e['type'] == 'tool/result' ||
+            e['type'] == 'assistant/message',
       );
     await _pumpChat(tester, _Backend(events: events));
-    expect(find.text('正在调用工具…（shell）'), findsOneWidget);
-    expect(find.text('shell'), findsOneWidget); // 组强制展开 → 工具行可见
+    expect(find.text('1 次工具调用 · 进行中'), findsOneWidget);
+    expect(find.text('shell'), findsNothing, reason: '标准运行中不铺组内行');
+    expect(find.textContaining('正在调用 shell'), findsOneWidget,
+        reason: '活动条常显当前工具');
   });
 
   testWidgets('简洁档运行中：整组折叠一行，工具卡不铺开（#104）', (tester) async {

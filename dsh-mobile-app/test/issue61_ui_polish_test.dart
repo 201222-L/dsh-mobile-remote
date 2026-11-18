@@ -197,14 +197,15 @@ void main() {
       expect(find.text('1 次工具调用'), findsNothing);
     });
 
-    testWidgets('强制展开（运行中）：无摘要行、无收起控件，过程直接可见', (tester) async {
+    testWidgets('强制展开（运行中）：无摘要行/收起控件；标准组抬头折叠不铺行', (tester) async {
       final events = _oneTurn()..removeWhere((e) => e['type'] == 'turn/end');
       await _pumpChat(tester, _Backend(events: events));
 
       expect(find.textContaining('组 · 1 次工具调用'), findsNothing);
       expect(find.text('收起过程'), findsNothing, reason: '强制展开不提供收起语义');
-      expect(find.text('1 次工具调用'), findsOneWidget);
-      expect(find.text('shell'), findsOneWidget);
+      expect(find.text('1 次工具调用'), findsOneWidget,
+          reason: 'v4 标准运行中组抬头折叠');
+      expect(find.text('shell'), findsNothing, reason: '组折叠不铺行');
     });
 
     testWidgets('强制展开（异常结束 error）：同样无摘要行与收起控件', (tester) async {
@@ -499,9 +500,11 @@ void main() {
       ];
       await _pumpChat(tester, _Backend(events: events));
 
-      expect(find.text('正在调用工具…（read_file）'), findsOneWidget);
+      expect(find.text('1 次工具调用 · 进行中'), findsOneWidget);
       expect(find.text('1 次工具调用'), findsOneWidget,
           reason: '已完成组仍显示计数');
+      expect(find.text('shell'), findsNothing);
+      expect(find.text('read_file'), findsNothing);
     });
 
     testWidgets('工具结果到达（同一轮内）：抬头立即切回计数态', (tester) async {

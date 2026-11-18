@@ -11,6 +11,7 @@ import 'package:dsh_mobile_app/api.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/screens/chat_screen.dart';
 import 'package:dsh_mobile_app/store.dart';
+import 'package:dsh_mobile_app/turn_process.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -175,7 +176,9 @@ Future<AppStore> _pumpChat(WidgetTester tester, _Backend backend) async {
     ..sessionId = _session
     ..sessions = [
       Session(id: _session, title: 'S', cwd: null, createdAt: 1),
-    ];
+    ]
+    // issue #108：活动条与可见行去重按「详细运行中组展开」验证。
+    ..stepDisplayMode = WorkStepDisplayMode.detailed;
   await tester.pumpWidget(MaterialApp(
     home: ChatScreen(
       key: const ValueKey('issue84-chat'),
