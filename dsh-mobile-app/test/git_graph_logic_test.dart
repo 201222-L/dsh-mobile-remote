@@ -327,9 +327,9 @@ void main() {
   );
 
   test(
-    'only five selected tips influence node segments and initial anchors',
+    'up to sixteen selected tips influence node segments and initial anchors',
     () {
-      expect(maxNodeColorSegments, 5);
+      expect(maxNodeColorSegments, 16);
       const selected = [
         GitBranch(kind: 'local', name: 'a', displayName: 'a', oid: 'a'),
         GitBranch(kind: 'local', name: 'b', displayName: 'b', oid: 'b'),
@@ -358,7 +358,7 @@ void main() {
         commit('f'),
       ], selected);
 
-      expect(shared.rows.single.tipColorSlots, [0, 1, 2, 3, 4]);
+      expect(shared.rows.single.tipColorSlots, [0, 1, 2, 3, 4, 5]);
       expect(separate.rows.take(5).map((row) => row.colorSlot), [
         0,
         1,

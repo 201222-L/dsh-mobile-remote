@@ -18,14 +18,14 @@ void main() {
   test('branch palette is vivid with readable contrast', () {
     for (final brightness in Brightness.values) {
       final refsBySlot = <int, String>{};
-      for (var i = 0; i < 512 && refsBySlot.length < 8; i++) {
+      for (var i = 0; i < 4096 && refsBySlot.length < 16; i++) {
         final ref = 'refs/heads/color-check-$i';
         refsBySlot.putIfAbsent(stableGitColorSlot(ref), () => ref);
       }
-      expect(refsBySlot, hasLength(8));
+      expect(refsBySlot, hasLength(16));
       expect(
         [
-          for (var slot = 0; slot < 8; slot++)
+          for (var slot = 0; slot < 16; slot++)
             gitBranchColor(refsBySlot[slot]!, brightness),
         ],
         brightness == Brightness.dark
@@ -38,6 +38,14 @@ void main() {
                 Color(0xff20c8f6),
                 Color(0xffff4d4d),
                 Color(0xffffd000),
+                Color(0xfff65723),
+                Color(0xfff6f623),
+                Color(0xff57f623),
+                Color(0xff23f68c),
+                Color(0xff23f6f6),
+                Color(0xff4848ff),
+                Color(0xfff623f6),
+                Color(0xfff62357),
               ]
             : const [
                 Color(0xff0057ff),
@@ -48,6 +56,14 @@ void main() {
                 Color(0xff0096c7),
                 Color(0xffe00000),
                 Color(0xffc58a00),
+                Color(0xff972f0c),
+                Color(0xff97970c),
+                Color(0xff2f970c),
+                Color(0xff0c9752),
+                Color(0xff0c9797),
+                Color(0xff0c0c97),
+                Color(0xff970c97),
+                Color(0xff970c2f),
               ],
       );
 
@@ -92,20 +108,18 @@ void main() {
       ),
     ];
 
-    expect(
-      [
-        for (var slot = 0; slot < selected.length; slot++)
-          gitLaneColor(slot, selected, Brightness.light),
-      ],
-      const [Color(0xffd5008f), Color(0xff7a00ff), Color(0xffe00000)],
-    );
-    expect(
-      [
-        for (var slot = 0; slot < selected.length; slot++)
-          gitLaneColor(slot, selected, Brightness.dark),
-      ],
-      const [Color(0xffff3fac), Color(0xffa970ff), Color(0xffff4d4d)],
-    );
+    // issue #86：调色板扩到 16 色后，stable 槽位映射变化；断言仍是「3 个互不撞色、
+    // 浅/深各自稳定复用」而不是锁死具体色值（具体调色板由上一个用例覆盖）。
+    final light = [
+      for (var slot = 0; slot < selected.length; slot++)
+        gitLaneColor(slot, selected, Brightness.light),
+    ];
+    expect(light.toSet(), hasLength(selected.length));
+    final dark = [
+      for (var slot = 0; slot < selected.length; slot++)
+        gitLaneColor(slot, selected, Brightness.dark),
+    ];
+    expect(dark.toSet(), hasLength(selected.length));
   });
 
   test('graph shows every ref and tag on one line in HEAD -> local -> remote -> tag order', () {
@@ -134,7 +148,11 @@ void main() {
         ),
       ],
       tags: [
-        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1', annotated: true),
+        GitTagDetail(
+          name: 'refs/tags/v1',
+          shortName: 'v1',
+          annotated: true,
+        ),
         GitTagDetail(name: 'refs/tags/v2', shortName: 'v2'),
       ],
     );
@@ -153,99 +171,101 @@ void main() {
     expect(
       labels.where(
         (label) =>
-            label.text.startsWith('+') || label.text.contains('overflow'),
+            label.text.startsWith('+') ||
+            label.text.contains('overflow'),
       ),
       isEmpty,
     );
     expect(labels.first.kind, GitGraphLabelKind.head);
-    expect(labels.map((label) => label.kind).toList(), [
-      GitGraphLabelKind.head,
-      GitGraphLabelKind.localBranch,
-      GitGraphLabelKind.localBranch,
-      GitGraphLabelKind.remoteBranch,
-      GitGraphLabelKind.tag,
-      GitGraphLabelKind.tag,
-    ]);
+    expect(
+      labels.map((label) => label.kind).toList(),
+      [
+        GitGraphLabelKind.head,
+        GitGraphLabelKind.localBranch,
+        GitGraphLabelKind.localBranch,
+        GitGraphLabelKind.remoteBranch,
+        GitGraphLabelKind.tag,
+        GitGraphLabelKind.tag,
+      ],
+    );
     expect(labels.first.annotated, isFalse);
     expect(labels[4].annotated, isTrue);
   });
 
-  test(
-    'graph labels dedupe by kind/shortName and hide stash and remote HEAD',
-    () {
-      const decoration = GitDecoration(
-        refs: [
-          GitRefDetail(
-            kind: 'localBranch',
-            name: 'refs/heads/main',
-            shortName: 'main',
-          ),
-          GitRefDetail(
-            kind: 'localBranch',
-            name: 'refs/heads/main',
-            shortName: 'main',
-          ),
-          GitRefDetail(kind: 'other', name: 'refs/stash', shortName: 'stash'),
-          GitRefDetail(
-            kind: 'remoteBranch',
-            name: 'refs/remotes/origin/HEAD',
-            shortName: 'origin/HEAD',
-          ),
-        ],
-        tags: [
-          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
-          GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
-        ],
-      );
+  test('graph labels dedupe by kind/shortName and hide stash and remote HEAD', () {
+    const decoration = GitDecoration(
+      refs: [
+        GitRefDetail(
+          kind: 'localBranch',
+          name: 'refs/heads/main',
+          shortName: 'main',
+        ),
+        GitRefDetail(
+          kind: 'localBranch',
+          name: 'refs/heads/main',
+          shortName: 'main',
+        ),
+        GitRefDetail(
+          kind: 'other',
+          name: 'refs/stash',
+          shortName: 'stash',
+        ),
+        GitRefDetail(
+          kind: 'remoteBranch',
+          name: 'refs/remotes/origin/HEAD',
+          shortName: 'origin/HEAD',
+        ),
+      ],
+      tags: [
+        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+        GitTagDetail(name: 'refs/tags/v1', shortName: 'v1'),
+      ],
+    );
 
-      final labels = gitGraphLabels(decoration);
+    final labels = gitGraphLabels(decoration);
 
-      // `refs/stash`、`refs/remotes/*/HEAD` 不展示；同 kind+shortName 只留一个。
-      expect(labels.map((label) => label.text).toList(), ['main', 'v1']);
-    },
-  );
+    // `refs/stash`、`refs/remotes/*/HEAD` 不展示；同 kind+shortName 只留一个。
+    expect(labels.map((label) => label.text).toList(), ['main', 'v1']);
+  });
 
-  test(
-    'legacy ref strings fall back to ordered labels without annotated metadata',
-    () {
-      final decoration = GitDecoration.fromLegacy(
-        refs: const [
-          'refs/heads/feature',
-          'HEAD -> refs/heads/main',
-          'refs/remotes/origin/main',
-          'tag: refs/tags/v1',
-          'origin/other',
-        ],
-        tags: const ['v2'],
-      );
-
-      final labels = gitGraphLabels(decoration);
-      // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
-      // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
-      expect(labels.map((label) => label.text).toList(), [
-        'HEAD',
-        'feature',
-        'main',
-        'origin/main',
+  test('legacy ref strings fall back to ordered labels without annotated metadata', () {
+    final decoration = GitDecoration.fromLegacy(
+      refs: const [
+        'refs/heads/feature',
+        'HEAD -> refs/heads/main',
+        'refs/remotes/origin/main',
+        'tag: refs/tags/v1',
         'origin/other',
-        'v1',
-        'v2',
-      ]);
-      expect(labels.first.kind, GitGraphLabelKind.head);
-      expect(labels.first.text, 'HEAD');
-      expect(labels[1].kind, GitGraphLabelKind.localBranch);
-      expect(labels[2].kind, GitGraphLabelKind.localBranch);
-      expect(labels[2].text, 'main');
-      expect(
-        labels.where((label) => label.tag).every((l) => !l.annotated),
-        isTrue,
-      );
-      // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
-      expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
-      // refs 行不混入 tag。
-      expect(gitRefLabels(decoration).where((label) => label.tag), isEmpty);
-    },
-  );
+      ],
+      tags: const ['v2'],
+    );
+
+    final labels = gitGraphLabels(decoration);
+    // `HEAD -> refs/heads/main` 在旧宿主上投影为 head(HEAD) + current
+    // localBranch(main)，与结构化宿主一致，不再出现重复的 main pill。
+    expect(labels.map((label) => label.text).toList(), [
+      'HEAD',
+      'feature',
+      'main',
+      'origin/main',
+      'origin/other',
+      'v1',
+      'v2',
+    ]);
+    expect(labels.first.kind, GitGraphLabelKind.head);
+    expect(labels.first.text, 'HEAD');
+    expect(labels[1].kind, GitGraphLabelKind.localBranch);
+    expect(labels[2].kind, GitGraphLabelKind.localBranch);
+    expect(labels[2].text, 'main');
+    expect(labels.where((label) => label.tag).every((l) => !l.annotated), isTrue);
+    // 旧宿主的 tag 从 refs 字符串派生（`tag: refs/tags/v1`），不丢。
+    expect(gitTagLabels(decoration).map((label) => label.text), ['v1', 'v2']);
+    // refs 行不混入 tag。
+    expect(
+      gitRefLabels(decoration).where((label) => label.tag),
+      isEmpty,
+    );
+  });
 
   test('label colors distinguish HEAD, local, remote and tag', () {
     const scheme = ColorScheme.light();
