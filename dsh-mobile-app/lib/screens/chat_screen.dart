@@ -446,6 +446,9 @@ class _ChatScreenState extends State<ChatScreen> {
   // 下方留大片空白）；内容增长不算「上翻」（只有用户拖动才停止跟随）。
   double _liveBottomGap = 0;
   bool _liveGapMeasureScheduled = false;
+  // issue #103：展开/收起触发的统一内容高度变化处理 + 多帧贴底收敛。
+  bool _settledFollowScheduled = false;
+  double _lastGapContentExtent = 0;
   // issue #89：活动条显隐/视口高度变化后必须重测底部占位；记录可见态与上次实测高度。
   bool _activityBarShown = false;
   double _lastGapViewportHeight = 0;
@@ -733,6 +736,32 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// issue #103：展开/收起（卡/组/轮/显示更多）后统一通知滚动层。
+  ///
+  /// 旧 `_liveBottomGap` 是按更短内容算出的，必须立即失效；帧后重新实测，
+  /// 若仍 pinned 则多帧收敛到底部（单次 jump 会被 lazy extent 修正甩开）。
+  void _onContentLayoutChanged() {
+    if (!mounted || _inHistory) return;
+    if (_liveBottomGap > 0) {
+      setState(() => _liveBottomGap = 0);
+    }
+    _scheduleLiveBottomGapMeasure();
+    if (_pinnedToBottom && !_userDragActive) {
+      _scheduleSettledFollowBottom();
+    }
+  }
+
+  void _scheduleSettledFollowBottom() {
+    if (_settledFollowScheduled) return;
+    _settledFollowScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _settledFollowScheduled = false;
+      if (!mounted || _inHistory) return;
+      _scrollToBottom(settle: true);
+      _scheduleLiveBottomGapMeasure();
+    });
+  }
+
   /// issue #77：按 live 面板实测高度维护「顶部占位」——内容短于视口时让列表底部
   /// 对齐视口底部（center 布局默认顶对齐会在下方留大片空白）。
   ///
@@ -771,17 +800,34 @@ class _ChatScreenState extends State<ChatScreen> {
       // 空白在视口上方、用户不可见）；内容超过视口时清零；内容明显变短时再补足。
       // 只在「明显短于视口」（还会留下 >80px 空白）时启用底部占位：接近一屏的
       // 内容保持既有顶部对齐，避免与过程行位置/懒构建估算互相干扰。
+      // issue #103：lazy SliverList 的 scrollExtent 会随子项构建/展开大幅修正。
+      // 内容刚增长时旧的正 gap 一定是按更短内容算出的，先局部清零（避免旧占位
+      // 把内容推到视口外/制造空白），再按本帧实测重算。
+      final contentGrew =
+          hasContent && contentExtent > _lastGapContentExtent + 1;
+      _lastGapContentExtent = contentExtent;
+      var currentGap = _liveBottomGap;
+      if (contentGrew && currentGap > 0) {
+        currentGap = 0;
+        _liveBottomGap = 0;
+        setState(() {});
+      }
+      // gap 只在「短内容且真实不可滚动」时启用：maxScrollExtent<=1 说明布局完成后
+      // 内容确实没有超出视口；只看 lazy scrollExtent 会把估算锯齿当成短内容。
+      final actualMax = _scrollCtrl.hasClients
+          ? _scrollCtrl.position.maxScrollExtent
+          : double.infinity;
       final shortEnough =
-          !paged && contentExtent < viewport.size.height - 80;
+          !paged && actualMax <= 1.0 && contentExtent < viewport.size.height - 80;
       // issue #89：占位与内容之和不得超过视口（否则会制造可滚动空白 + 回底按钮）；
       // 视口高度变化（活动条显隐/键盘）必须立即按新高度收敛，不能沿用旧占位。
       final overflowBlank =
-          hasContent && contentExtent + _liveBottomGap > viewportHeight + 0.5;
-      double next = _liveBottomGap;
+          hasContent && contentExtent + currentGap > viewportHeight + 0.5;
+      double next = currentGap;
       if (!shortEnough || desired <= 0.5) {
         next = 0;
-      } else if (_liveBottomGap <= 0.5 ||
-          desired > _liveBottomGap + 24 ||
+      } else if (currentGap <= 0.5 ||
+          desired > currentGap + 24 ||
           viewportChanged ||
           overflowBlank) {
         next = desired;
@@ -794,8 +840,8 @@ class _ChatScreenState extends State<ChatScreen> {
         });
         if (_pinnedToBottom) _scheduleFollowBottom();
       }
-      // issue #77：短内容模式下若用户展开块/卡片导致内容变高，钉住底部时继续跟随
-      //（展开不是新事件、不会走 _scrollToBottom；否则内容会伸到视口下方）。
+      // issue #77/#103：内容高度增长后，若仍钉在底部则多帧收敛；展开/收起走
+      // `_onContentLayoutChanged` 的显式路径（这里只兜底 lazy 估算变化）。
       if (_pinnedToBottom &&
           !_userDragActive &&
           !_showJumpToLatest &&
@@ -821,7 +867,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // 目标可能在下一帧就被修正（真机表现为“看起来到底了、其实还差一截”）。
     // 直接跳到当前 max，并在随后几帧按修正后的 max 收敛（帧数有界，不会自激）。
     _scrollCtrl.jumpTo(target);
-    _settleToBottom(3);
+    _settleToBottom(4);
   }
 
   // ── issue #24：轮次导航（ADR 0018）──────────────────────────────────
@@ -1419,7 +1465,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 滚动到最新消息。live 视图为普通（非 reverse）列表，"最新"在 maxScrollExtent；
   /// 历史浏览视图不跟随滚动。
-  void _scrollToBottom({bool force = false}) {
+  void _scrollToBottom({bool force = false, bool settle = false}) {
     if (_inHistory) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtrl.hasClients) return;
@@ -1437,6 +1483,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (force || _pinnedToBottom) {
         _pinnedToBottom = true;
         _scrollCtrl.jumpTo(target);
+        // issue #103：lazy SliverList 的 max 会随子项布局修正；展开/初始化/回底
+        // 必须多帧 settle，单次 jump 可能落在真实内容外（整屏空白）。
+        if (settle) _settleToBottom(4);
       }
     });
   }
@@ -1751,6 +1800,23 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// 无限模式滚动监测：距视觉顶部 80px 内触发加载更早。
   /// v2.8.0：live 视图统一普通（非 reverse）列表，视觉顶部是 pixels≈0。
+  /// issue #103：内容 extent 变化（展开/收起/懒构建修正）不会经过 ScrollNotification
+  /// 的 drag 路径；单独监听 ScrollMetricsNotification，避免 pinned/回底按钮 stale。
+  bool _onLiveScrollMetrics(ScrollMetricsNotification n) {
+    if (!mounted || _inHistory) return false;
+    final metrics = n.metrics;
+    final nearBottom = metrics.maxScrollExtent - metrics.pixels <= 160;
+    // 只更新 pinned/按钮状态；跟随由显式 `_onContentLayoutChanged` 或
+    // ScrollNotification 路径负责，避免 metrics→settle→metrics 自激。
+    if (!_userDragActive) {
+      if (nearBottom && !_pinnedToBottom) _pinnedToBottom = true;
+      if (!nearBottom != _showJumpToLatest) {
+        setState(() => _showJumpToLatest = !nearBottom);
+      }
+    }
+    return false;
+  }
+
   bool _onLiveScroll(ScrollNotification n) {
     // issue #77：只有用户拖动才停止贴底；程序性 jump/animate 不算（ScrollEnd 一律清）。
     if (n is ScrollStartNotification && n.dragDetails != null) {
@@ -2100,7 +2166,9 @@ class _ChatScreenState extends State<ChatScreen> {
     return SelectionArea(
       child: NotificationListener<ScrollNotification>(
         onNotification: _onLiveScroll,
-        child: CustomScrollView(
+        child: NotificationListener<ScrollMetricsNotification>(
+          onNotification: _onLiveScrollMetrics,
+          child: CustomScrollView(
           key: _liveViewportKey,
           controller: _scrollCtrl,
           center: _liveCenterKey,
@@ -2171,6 +2239,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           ],
+        ),
         ),
       ),
     );
@@ -6504,10 +6573,13 @@ class _ChatScreenState extends State<ChatScreen> {
               : () => _openImagesGallery(summaryImages),
           onTap: forced
               ? null
-              : () => setState(() {
+              : () {
+                  setState(() {
                     _turnExpansions[plan.intervalKey] = true;
                     _invalidateProcessPlan();
-                  }),
+                  });
+                  _onContentLayoutChanged();
+                },
         ),
       );
     } else {
@@ -6578,10 +6650,13 @@ class _ChatScreenState extends State<ChatScreen> {
             onOpenImages: groupImages.isEmpty
                 ? null
                 : () => _openImagesGallery(groupImages),
-            onTap: () => setState(() {
-              _groupExpansions[groupKey] = !groupExpanded;
-              _invalidateProcessPlan();
-            }),
+            onTap: () {
+              setState(() {
+                _groupExpansions[groupKey] = !groupExpanded;
+                _invalidateProcessPlan();
+              });
+              _onContentLayoutChanged();
+            },
           ));
           if (!groupExpanded) continue;
           final groupRowWidgets = <Widget>[];
@@ -6664,10 +6739,13 @@ class _ChatScreenState extends State<ChatScreen> {
           Padding(
             padding: const EdgeInsets.only(left: 14, bottom: 6),
             child: InkWell(
-              onTap: () => setState(() {
-                _processRowLimits[process.turn] = limit + processBatchSize;
-                _invalidateProcessPlan();
-              }),
+              onTap: () {
+                setState(() {
+                  _processRowLimits[process.turn] = limit + processBatchSize;
+                  _invalidateProcessPlan();
+                });
+                _onContentLayoutChanged();
+              },
               borderRadius: BorderRadius.circular(8),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: 48),
@@ -6708,10 +6786,13 @@ class _ChatScreenState extends State<ChatScreen> {
         children.add(
           _CollapseProcessRow(
             key: ValueKey<String>('collapse-process:${plan.intervalKey}'),
-            onTap: () => setState(() {
-              _turnExpansions[plan.intervalKey] = false;
-              _invalidateProcessPlan();
-            }),
+            onTap: () {
+              setState(() {
+                _turnExpansions[plan.intervalKey] = false;
+                _invalidateProcessPlan();
+              });
+              _onContentLayoutChanged();
+            },
           ),
         );
       }
@@ -6742,10 +6823,13 @@ class _ChatScreenState extends State<ChatScreen> {
         // settledReasoningPreview 只作用于已结束思考行的折叠预览。
         preview: policy.settledReasoningPreview ? row.reasoningPreview() : '',
         expanded: expanded,
-        onToggle: () => setState(() {
-          _reasoningRowExpansions[key] = !expanded;
-          _invalidateProcessPlan();
-        }),
+        onToggle: () {
+          setState(() {
+            _reasoningRowExpansions[key] = !expanded;
+            _invalidateProcessPlan();
+          });
+          _onContentLayoutChanged();
+        },
       );
     }
     final item = _currentToolItem(row.callId, historyView: historyView);
@@ -6813,9 +6897,12 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           expanded: expanded,
           cappedBody: true,
-          onToggle: () => setState(() {
-            _provisionalExpansions[stateKey] = !expanded;
-          }),
+          onToggle: () {
+            setState(() {
+              _provisionalExpansions[stateKey] = !expanded;
+            });
+            _onContentLayoutChanged();
+          },
         );
       },
     );
@@ -6905,9 +6992,10 @@ class _ChatScreenState extends State<ChatScreen> {
         'tool:${item.toolCallId ?? item.seq ?? item.text}:${item.seq}',
       ),
       expandedOverride: _failureExpansionOverrides[toolKey],
-      onExpandedOverride: (value) => setState(
-        () => _failureExpansionOverrides[toolKey] = value,
-      ),
+      onExpandedOverride: (value) {
+        setState(() => _failureExpansionOverrides[toolKey] = value);
+        _onContentLayoutChanged();
+      },
       onAutoLoadDetail: () => _autoLoadFailureDetail(item),
       flat: flat,
       // issue #74：折叠行图片入口——点 chip 直接开图库，不展开工具卡。
@@ -7528,11 +7616,14 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             expandedOverride:
                 _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'],
-            onExpandedOverride: (value) => setState(
-              () =>
-                  _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'] =
-                      value,
-            ),
+            onExpandedOverride: (value) {
+              setState(
+                () =>
+                    _failureExpansionOverrides['event:${item.eventType}:${item.seq ?? item.text}'] =
+                        value,
+              );
+              _onContentLayoutChanged();
+            },
             onAutoLoadDetail: () => _autoLoadFailureDetail(item),
             item: item,
             debug: widget.store.timelineDebug,
@@ -8322,42 +8413,112 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     ),
   );
 
-  Widget _code(String label, String value) => Padding(
-    padding: const EdgeInsets.only(top: 8),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: DshColors.ink3(context),
-          ),
-        ),
-        const SizedBox(height: 3),
-        Container(
-          width: double.infinity,
-          constraints: const BoxConstraints(maxHeight: 260),
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: DshColors.surface(context),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: SingleChildScrollView(
-            child: SelectableText(
-              value,
-              style: const TextStyle(
-                fontSize: 11,
-                height: 1.35,
-                fontFamily: 'monospace',
-              ),
+  Widget _code(String label, String value) {
+    final long = value.length > 1200 || '\n'.allMatches(value).length > 14;
+    final text = SelectableText(
+      value,
+      style: const TextStyle(
+        fontSize: 11,
+        height: 1.35,
+        fontFamily: 'monospace',
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: DshColors.ink3(context),
             ),
           ),
+          const SizedBox(height: 3),
+          Container(
+            width: double.infinity,
+            constraints: long ? const BoxConstraints(maxHeight: 260) : null,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: DshColors.surface(context),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            // issue #103：这里不能再嵌 SingleChildScrollView——它会在竖直手势竞技场
+            // 抢走父 CustomScrollView 的上翻；长内容用裁剪 + “查看全文”入口。
+            child: long ? ClipRect(child: text) : text,
+          ),
+          if (long)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: ValueKey('tool-code-full-${label.hashCode}'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  minimumSize: const Size(0, 32),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () => _showFullText(label, value),
+                child: Text(L10n.t('查看全文', 'View full text')),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showFullText(String label, String value) async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(ctx).height * 0.75,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(ctx).maybePop(),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.4,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 
   // ── issue #54（M3 Batch 1）：专用工具卡投影（fail-open 到通用卡） ──────────
 
