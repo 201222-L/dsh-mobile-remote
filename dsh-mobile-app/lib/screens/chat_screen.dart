@@ -377,6 +377,10 @@ class ChatScreen extends StatefulWidget {
 
   /// issue #60 R06：仅测试注入（TTL 行为需要可控时钟/短 TTL）；生产用默认缓存。
   final TurnTailSummaryCache? changedSummaryCache;
+
+  /// 首屏自动补拉历史（默认开）。测试若刻意验证“初次 50 条部分轮次”可关掉。
+  final bool autoFillFirstScreen;
+
   const ChatScreen({
     super.key,
     required this.store,
@@ -386,6 +390,7 @@ class ChatScreen extends StatefulWidget {
     this.gitReadApi,
     this.gitControllerFactory,
     this.changedSummaryCache,
+    this.autoFillFirstScreen = true,
   });
 
   @override
@@ -757,6 +762,10 @@ class _ChatScreenState extends State<ChatScreen> {
   @visibleForTesting
   FollowIntent get debugFollowIntent => _scrollFollow.intent;
 
+  /// 首屏补拉探针：最新一轮是否仍缺 turn/start（方案 2 的验收条件）。
+  @visibleForTesting
+  bool get debugLatestTurnPartial => _latestTurnPartial;
+
   /// 调度契约探针：owner 的 ensureFrame → 生产实现必须自己调度一帧
   /// （post-frame 回调本身不调度帧，必须 ensureVisualUpdate）。
   @visibleForTesting
@@ -1002,6 +1011,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── 分段历史浏览（超长会话的安全阀，仅当无限模式不可用时启用） ──
   static const _liveMax = 50; // 无限模式下不裁剪；分段模式下 live 窗口上限
+  // 首屏填充：打开会话时先只取 50 条，若内容不足一屏且还有更早历史，
+  // 自动补拉 30 条/页（最多 6 页），避免“第一次加载太少 → 顶对齐大留白”。
+  bool _historyHasMore = false;
+  bool _autoFillFirstScreenRunning = false;
   static const _infiniteMode = true; // 微信式无限上翻（配合 Impeller 实验）
   static const _histPageSize = 30; // 历史分段每段条数
   static const _catchupMaxPages = 20; // 断线补拉页数上限（20×100 条），超出由下次补拉收敛
@@ -1906,6 +1919,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final page = await _api.historyPage(id, limit: _liveMax);
       _absorbTurnTails(page.turnTails);
+      _historyHasMore = page.hasMore;
       final events = page.events;
       AppLog.instance.log(
         'Chat: 历史加载成功 ${events.length} 条${reset ? '（重同步）' : ''}',
@@ -2071,6 +2085,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       _refreshUsage();
       widget.store.refreshSessionConfig();
+      if (!reset) _scheduleAutoFillFirstScreen();
       // issue #25 二期：会话打开后拉一次轮次大纲（能力缺失/读取失败都退回一期行为）。
       unawaited(_refreshTurnOutline());
       // issue #90：只有当前时间线里出现 slash 消息时才需要目录（避免普通会话多两次请求）；
@@ -2108,6 +2123,48 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── 无限上翻（微信式） ──
   /// 上翻一页的**共用实现**：页大小由调用方给——滚动上翻用 `_histPageSize`（30），
   /// 轮次跨页跳转用 `kTurnJumpPageSize`（200，issue #25 要求不改动既有 30 条/页）。
+  /// 首屏填充（ADR 0035，方案 2）：初始 50 条可能截断**最新一轮**（缺 turn/start），
+  /// 导致过程块只显示后半段、live 侧不足一屏。这里自动往前补页，直到最新一轮的
+  /// `turn/start` 已加载，或没有更早历史，或达到 5 页上限。
+  ///
+  /// 不做“按视口高度补拉”：前者会为前几轮历史白拉，也可能在首屏后造成跳动。
+  /// 用户一旦上翻/进入阅读态立即停止，不抢位置。
+  void _scheduleAutoFillFirstScreen() {
+    if (!widget.autoFillFirstScreen || _autoFillFirstScreenRunning) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _inHistory || _autoFillFirstScreenRunning) return;
+      unawaited(_autoFillFirstScreen());
+    });
+  }
+
+  bool get _latestTurnPartial {
+    final turns = _ensureProcessTurns();
+    return turns.isNotEmpty && turns.last.partial;
+  }
+
+  Future<void> _autoFillFirstScreen() async {
+    if (_autoFillFirstScreenRunning || !_historyHasMore) return;
+    _autoFillFirstScreenRunning = true;
+    try {
+      for (var page = 0; page < 5; page++) {
+        if (!mounted || _inHistory || !_scrollFollow.isFollowing) return;
+        if (!_latestTurnPartial) return;
+        if (!_historyHasMore) return;
+        final before = _earliestSeq;
+        AppLog.instance.log(
+          'Chat: 首屏补拉 page=${page + 1} before=$before '
+          'latestPartial=$_latestTurnPartial',
+        );
+        final outcome = await _prependOlderPage(limit: _histPageSize);
+        if (outcome != _PrependOutcome.loaded) return;
+        if (!mounted || _inHistory || _earliestSeq == before) return;
+        await WidgetsBinding.instance.endOfFrame;
+      }
+    } finally {
+      _autoFillFirstScreenRunning = false;
+    }
+  }
+
   Future<_PrependOutcome> _prependOlderPage({required int limit}) async {
     final id = _mySessionId ?? widget.store.sessionId;
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) {
@@ -2129,8 +2186,10 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       // v3.1.6（app-audit ②）：降级标记在守卫之后才写——过期响应不得改写横幅状态
       if (page.degraded) _historyDegraded = true;
+      _historyHasMore = page.hasMore;
       if (events.isEmpty) {
         _noMoreHistory = true;
+        _historyHasMore = false;
         return _PrependOutcome.exhausted;
       }
       final pageItems = <_MsgItem>[];

@@ -337,6 +337,7 @@ Future<AppStore> _mount(
             store: store,
             apiClient: backend.api,
             onTitleChanged: () {},
+            autoFillFirstScreen: false,
           ),
         ),
       ),
