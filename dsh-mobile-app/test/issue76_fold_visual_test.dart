@@ -76,12 +76,12 @@ class _Backend {
 }
 
 Map<String, dynamic> _image(String id) => {
-      'attachmentId': id,
-      'width': 12,
-      'height': 8,
-      'mimeType': 'image/png',
-      'name': '$id.png',
-    };
+  'attachmentId': id,
+  'width': 12,
+  'height': 8,
+  'mimeType': 'image/png',
+  'name': '$id.png',
+};
 
 /// 运行中的一轮（无 turn/end：过程块/组强制展开，便于断言展开态视觉）。
 List<Map<String, dynamic>> _runningEvents({
@@ -93,7 +93,12 @@ List<Map<String, dynamic>> _runningEvents({
   String arguments = '{"command":"ls -la"}',
 }) {
   final events = <Map<String, dynamic>>[
-    {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+    {
+      'seq': 1,
+      'type': 'turn/start',
+      'data': {'turn': 1},
+      'time': 1000,
+    },
     {
       'seq': 2,
       'type': 'user/message',
@@ -128,11 +133,7 @@ List<Map<String, dynamic>> _runningEvents({
         'name': toolName,
         'arguments': arguments,
         if (toolName == 'shell')
-          'summary': {
-            'kind': 'command',
-            'tool': toolName,
-            'command': 'ls -la',
-          },
+          'summary': {'kind': 'command', 'tool': toolName, 'command': 'ls -la'},
       },
       'time': 1200 + i * 10,
     });
@@ -196,9 +197,7 @@ Future<AppStore> _pumpChat(
 }) async {
   final store = AppStore()
     ..sessionId = _session
-    ..sessions = [
-      Session(id: _session, title: 'S', cwd: null, createdAt: 1),
-    ]
+    ..sessions = [Session(id: _session, title: 'S', cwd: null, createdAt: 1)]
     ..stepDisplayMode = mode
     ..turnFoldTiming = timing;
   final backend = _Backend(events: events);
@@ -233,42 +232,42 @@ Future<void> _inject(
 }
 
 Finder get _groupHeaders => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_ProcessGroupHeader',
-    );
+  (w) => w.runtimeType.toString() == '_ProcessGroupHeader',
+);
 Finder get _toolCards => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_ToolActivityCard',
-    );
+  (w) => w.runtimeType.toString() == '_ToolActivityCard',
+);
 Finder get _summaryRows => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_ProcessSummaryRow',
-    );
+  (w) => w.runtimeType.toString() == '_ProcessSummaryRow',
+);
 Finder get _imageChips => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_ImageCountChip',
-    );
+  (w) => w.runtimeType.toString() == '_ImageCountChip',
+);
 
 /// 组边界导轨：仅 left 边 2dp、其它边为 0 的 Container（A 方案）。
 Finder get _rails => find.byWidgetPredicate((w) {
-      if (w is! Container) return false;
-      final decoration = w.decoration;
-      if (decoration is! BoxDecoration) return false;
-      final border = decoration.border;
-      if (border is! Border) return false;
-      return border.left.width == 2 &&
-          border.top.width == 0 &&
-          border.right.width == 0 &&
-          border.bottom.width == 0;
-    });
+  if (w is! Container) return false;
+  final decoration = w.decoration;
+  if (decoration is! BoxDecoration) return false;
+  final border = decoration.border;
+  if (border is! Border) return false;
+  return border.left.width == 2 &&
+      border.top.width == 0 &&
+      border.right.width == 0 &&
+      border.bottom.width == 0;
+});
 
 Finder _borderedContainersIn(Finder scope) => find.descendant(
-      of: scope,
-      matching: find.byWidgetPredicate((w) {
-        if (w is! Container) return false;
-        final decoration = w.decoration;
-        if (decoration is! BoxDecoration) return false;
-        final border = decoration.border;
-        if (border is! Border) return false;
-        return border.top.width > 0 && border.left.width > 0;
-      }),
-    );
+  of: scope,
+  matching: find.byWidgetPredicate((w) {
+    if (w is! Container) return false;
+    final decoration = w.decoration;
+    if (decoration is! BoxDecoration) return false;
+    final border = decoration.border;
+    if (border is! Border) return false;
+    return border.top.width > 0 && border.left.width > 0;
+  }),
+);
 
 void main() {
   testWidgets('组头：48dp 整行命中、13/w600/ink、有 chevron', (tester) async {
@@ -287,7 +286,10 @@ void main() {
     expect(style.fontWeight, FontWeight.w600);
     expect(style.color, DshColors.ink(ctx));
     expect(
-      find.descendant(of: header, matching: find.byIcon(Icons.keyboard_arrow_up)),
+      find.descendant(
+        of: header,
+        matching: find.byIcon(Icons.keyboard_arrow_up),
+      ),
       findsOneWidget,
     );
     await tester.pump(const Duration(milliseconds: 900));
@@ -303,8 +305,11 @@ void main() {
         (tester.widget<Container>(_rails).decoration as BoxDecoration).border
             as Border;
     expect(border.left.width, 2, reason: '导轨 2dp');
-    expect(border.left.color, DshColors.line(tester.element(_rails)),
-        reason: '导轨用低对比 line');
+    expect(
+      border.left.color,
+      DshColors.line(tester.element(_rails)),
+      reason: '导轨用低对比 line',
+    );
     expect(
       tester.getTopLeft(_toolCards.first).dx - headerLeft,
       closeTo(14, 0.5),
@@ -321,7 +326,9 @@ void main() {
     expect(_summaryRows, findsNothing);
     expect(_groupHeaders, findsOneWidget);
     expect(_rails, findsNothing, reason: '收起组不留导轨/空白');
-    await tester.tap(_groupHeaders);
+    await tester.tap(
+      find.descendant(of: _groupHeaders, matching: find.byType(InkWell)).first,
+    );
     await tester.pump(const Duration(milliseconds: 200));
     expect(_rails, findsOneWidget, reason: '展开组出现导轨');
     await tester.pump(const Duration(milliseconds: 900));
@@ -358,11 +365,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     final detailContainers = find.descendant(
       of: failedCard,
-      matching: find.byWidgetPredicate((w) =>
-          w is Container &&
-          w.decoration is BoxDecoration &&
-          ((w.decoration as BoxDecoration).borderRadius ==
-              BorderRadius.circular(DshTheme.radiusSm))),
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.decoration is BoxDecoration &&
+            ((w.decoration as BoxDecoration).borderRadius ==
+                BorderRadius.circular(DshTheme.radiusSm)),
+      ),
     );
     expect(detailContainers, findsWidgets, reason: '详情区使用 radius10 轻底');
     final failureBg = tester
@@ -378,7 +387,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('图片 chip 数字 ink + 独立 32 命中；失败聚合 chip danger 底/ink 字', (tester) async {
+  testWidgets('图片 chip 数字 ink + 独立 32 命中；失败聚合 chip danger 底/ink 字', (
+    tester,
+  ) async {
     await _pumpChat(tester, _runningEvents(tools: 2, failures: 2, images: 100));
     final ctx = tester.element(_toolCards.first);
     expect(_imageChips, findsWidgets);
@@ -395,12 +406,14 @@ void main() {
     expect(failStyle.color, DshColors.ink(ctx));
     final failContainer = find.ancestor(
       of: failChip,
-      matching: find.byWidgetPredicate((w) =>
-          w is Container && w.decoration is BoxDecoration),
+      matching: find.byWidgetPredicate(
+        (w) => w is Container && w.decoration is BoxDecoration,
+      ),
     );
-    final bg = (tester.widget<Container>(failContainer.first).decoration
-            as BoxDecoration)
-        .color!;
+    final bg =
+        (tester.widget<Container>(failContainer.first).decoration
+                as BoxDecoration)
+            .color!;
     final danger = DshColors.danger(ctx);
     expect(bg.r, closeTo(danger.r, 0.02), reason: '失败 chip danger 底');
     expect(bg.a, closeTo(0.08, 0.02), reason: 'danger@8%');
@@ -419,11 +432,12 @@ void main() {
     expect(
       find.ancestor(
         of: preview,
-        matching: find.byWidgetPredicate((w) =>
-            w is Container &&
-            w.decoration is BoxDecoration &&
-            (w.decoration as BoxDecoration).color ==
-                DshColors.brandSoft(ctx)),
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is Container &&
+              w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).color == DshColors.brandSoft(ctx),
+        ),
       ),
       findsNothing,
       reason: '落定思考行平铺，不挂轻底卡',
@@ -437,8 +451,7 @@ void main() {
     final bodyStyle = tester.widget<SelectableText>(body).style!;
     expect(bodyStyle.fontSize, 12);
     expect(bodyStyle.height, 1.6);
-    expect(bodyStyle.fontStyle, isNot(FontStyle.italic),
-        reason: '中文小字不用斜体');
+    expect(bodyStyle.fontStyle, isNot(FontStyle.italic), reason: '中文小字不用斜体');
     expect(bodyStyle.color, DshColors.ink2(ctx));
     await tester.pump(const Duration(milliseconds: 900));
   });
@@ -489,20 +502,25 @@ void main() {
     );
     expect(tester.getSize(hit.first).height, greaterThanOrEqualTo(48));
     final rect = tester.getRect(find.text('收起过程'));
-    final screenWidth = tester.view.physicalSize.width / tester.view.devicePixelRatio;
-    expect(rect.right, closeTo(screenWidth - 24, 2),
-        reason: '右对齐脚注（页边距 16 + 内边距 8）');
+    final screenWidth =
+        tester.view.physicalSize.width / tester.view.devicePixelRatio;
     expect(
-      find.byWidgetPredicate((w) =>
-          w is Icon && w.icon == Icons.unfold_less),
+      rect.right,
+      closeTo(screenWidth - jumpToLatestRightPadding - 8, 2),
+      reason: '右对齐脚注（ADR 0035 恒定 gutter 38 + 内边距 8）',
+    );
+    expect(
+      find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.unfold_less),
       findsOneWidget,
     );
     // 上方 1dp 分线：收起行上方存在 1dp 高 line 色 Container。
     expect(
-      find.byWidgetPredicate((w) =>
-          w is Container &&
-          w.constraints?.maxHeight == 1 &&
-          w.color == DshColors.line(ctx)),
+      find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.constraints?.maxHeight == 1 &&
+            w.color == DshColors.line(ctx),
+      ),
       findsWidgets,
     );
     await tester.pump(const Duration(milliseconds: 900));
@@ -518,18 +536,21 @@ void main() {
     expect(_groupHeaders, findsOneWidget);
     final ctx = tester.element(_groupHeaders);
     final titleRect = tester.getRect(
-      find.descendant(
-        of: _groupHeaders,
-        matching: find.textContaining('工具调用'),
-      ),
+      find.descendant(of: _groupHeaders, matching: find.textContaining('工具调用')),
     );
     final chipRect = tester.getRect(
       find.descendant(of: _groupHeaders, matching: find.text('失败 2')),
     );
-    expect(chipRect.top, greaterThan(titleRect.bottom - 1),
-        reason: '窄屏/大字下徽标在文案下一行');
-    expect(find.descendant(of: _groupHeaders, matching: _imageChips), findsWidgets,
-        reason: '窄屏不丢图片入口');
+    expect(
+      chipRect.top,
+      greaterThan(titleRect.bottom - 1),
+      reason: '窄屏/大字下徽标在文案下一行',
+    );
+    expect(
+      find.descendant(of: _groupHeaders, matching: _imageChips),
+      findsWidgets,
+      reason: '窄屏不丢图片入口',
+    );
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(milliseconds: 900));
     // 宽屏（390）下徽标应回到右栏（同一行）。
@@ -537,10 +558,7 @@ void main() {
     tester.platformDispatcher.textScaleFactorTestValue = 1.0;
     await tester.pump(const Duration(milliseconds: 200));
     final wideTitle = tester.getRect(
-      find.descendant(
-        of: _groupHeaders,
-        matching: find.textContaining('工具调用'),
-      ),
+      find.descendant(of: _groupHeaders, matching: find.textContaining('工具调用')),
     );
     final wideChip = tester.getRect(
       find.descendant(of: _groupHeaders, matching: find.text('失败 2')),
@@ -563,32 +581,19 @@ void main() {
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('分批入口：min48 平铺、12/500/ink2、无卡、图片 chip 独立', (tester) async {
-    // 60 行过程块在默认视口下位于 live 列表顶部（懒构建不渲染）；拉高视口让整块可见。
+  testWidgets('取消分批后无「显示更多」入口（图片入口仍在）', (tester) async {
+    // issue #126：取消分批隐藏，不再有「显示更多」行；图片入口仍可达。
     tester.view.physicalSize = const Size(800, 4000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await _pumpChat(tester, _runningEvents(tools: 60, images: 2));
-    final more = find.textContaining('显示更多');
-    expect(more, findsOneWidget);
-    final style = tester.widget<Text>(more).style!;
-    expect(style.fontSize, 12);
-    expect(style.fontWeight, FontWeight.w500);
-    expect(style.color, DshColors.ink2(tester.element(more)));
-    final hit = find.ancestor(of: more, matching: find.byType(InkWell));
-    expect(tester.getSize(hit.first).height, greaterThanOrEqualTo(48));
     expect(
-      find.descendant(
-        of: hit.first,
-        matching: find.byWidgetPredicate((w) =>
-            w is Container &&
-            w.decoration is BoxDecoration &&
-            (w.decoration as BoxDecoration).border is Border),
-      ),
+      find.textContaining('显示更多'),
       findsNothing,
-      reason: '批次入口透明无卡',
+      reason: '取消分批后不再有「显示更多」入口',
     );
-    expect(_imageChips, findsWidgets, reason: '分批隐藏行的图片入口仍可达');
+    // 图片入口仍可达（由组抬头或组内行承载，不依赖分批入口）。
+    expect(_imageChips, findsWidgets, reason: '图片入口仍可达');
     await tester.pump(const Duration(milliseconds: 900));
   });
 
@@ -602,19 +607,32 @@ void main() {
           timing: timing,
           keySuffix: 'matrix',
         );
-        expect(tester.takeException(), isNull,
-            reason: '${mode.name}/${timing.name} 渲染无异常');
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: '${mode.name}/${timing.name} 渲染无异常',
+        );
         if (_summaryRows.evaluate().isNotEmpty) {
           await tester.tap(_summaryRows);
           await tester.pump(const Duration(milliseconds: 200));
         }
         if (_groupHeaders.evaluate().isNotEmpty) {
           final before = _rails.evaluate().length;
-          await tester.tap(_groupHeaders.first);
+          await tester.tap(
+            find
+                .descendant(
+                  of: _groupHeaders.first,
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          );
           await tester.pump(const Duration(milliseconds: 200));
           final after = _rails.evaluate().length;
-          expect(after, isNot(before),
-              reason: '${mode.name}/${timing.name} 组展开/收起切换导轨');
+          expect(
+            after,
+            isNot(before),
+            reason: '${mode.name}/${timing.name} 组展开/收起切换导轨',
+          );
         }
         await tester.pump(const Duration(milliseconds: 900));
       }
@@ -623,7 +641,12 @@ void main() {
 
   testWidgets('仅思考组：显示「思考 N 字」+ chevron，不出现工具语义', (tester) async {
     final events = <Map<String, dynamic>>[
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+      {
+        'seq': 1,
+        'type': 'turn/start',
+        'data': {'turn': 1},
+        'time': 1000,
+      },
       {
         'seq': 2,
         'type': 'user/message',

@@ -471,37 +471,6 @@ void main() {
     await _flush(tester);
   });
 
-  testWidgets('调度：活动条显隐改变视口后，校正必须自己保证帧（不靠测试泵帧）', (tester) async {
-    // 标准档：运行中思考出现时活动条显隐会改变消息视口高度；该变化发生在
-    // 子 ListenableBuilder 的帧后回调里，请求跟随校正时没有任何别的帧源。
-    final store = await _mount(
-      tester,
-      _Backend(_history(tools: 30)),
-      mode: WorkStepDisplayMode.standard,
-    );
-    final probe = _Probe(tester);
-    await _flush(tester);
-    expect(probe.intentFollow, isTrue);
-
-    await _injectReasoning(tester, store);
-    // 只 pump 活动条出现的那一帧；此后不再由测试提供帧源。
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(
-      probe.frameScheduled,
-      isTrue,
-      reason: '活动条帧后的跟随校正必须自己调度下一帧（ensureVisualUpdate）',
-    );
-    expect(probe.pending, isTrue, reason: '校正应已排队等待布局后执行');
-    // 再给一帧：校正执行并收敛到新的真实末端。
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(
-      probe.tailResidual?.abs() ?? 999,
-      lessThanOrEqualTo(2),
-      reason: '活动条显隐后真实末端应在预算内贴合',
-    );
-    await _flush(tester);
-  });
-
   testWidgets('调度契约：owner 的 ensureFrame 在生产实现里必须自己调度一帧', (tester) async {
     await _mount(tester, _Backend(_history()), debug: false);
     final probe = _Probe(tester);

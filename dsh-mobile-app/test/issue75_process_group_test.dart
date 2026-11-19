@@ -51,16 +51,29 @@ class _Backend {
         body = {'ok': true, 'events': <Object>[], 'hasMore': false};
       } else if (params.containsKey('before')) {
         final before = int.tryParse(params['before'] ?? '') ?? 0;
-        final preceding = events.where((e) => (e['seq'] as int) < before).toList();
-        final page =
-            preceding.length > limit ? preceding.sublist(preceding.length - limit) : preceding;
-        body = {'ok': true, 'events': page, 'hasMore': preceding.length > page.length};
+        final preceding = events
+            .where((e) => (e['seq'] as int) < before)
+            .toList();
+        final page = preceding.length > limit
+            ? preceding.sublist(preceding.length - limit)
+            : preceding;
+        body = {
+          'ok': true,
+          'events': page,
+          'hasMore': preceding.length > page.length,
+        };
       } else if (returnAllOnInitial) {
         body = {'ok': true, 'events': events, 'hasMore': false};
       } else {
         // 单轮 fixture 事件量小于 limit 的场景都走全量尾部。
-        final tail = events.length > limit ? events.sublist(events.length - limit) : events;
-        body = {'ok': true, 'events': tail, 'hasMore': events.length > tail.length};
+        final tail = events.length > limit
+            ? events.sublist(events.length - limit)
+            : events;
+        body = {
+          'ok': true,
+          'events': tail,
+          'hasMore': events.length > tail.length,
+        };
       }
     } else if (request.url.path == '/m/api/queue') {
       body = {'ok': true, 'rows': <Object>[]};
@@ -163,7 +176,10 @@ List<Map<String, dynamic>> reasoningOnlyTurn({
     events.add({
       'seq': seq++,
       'type': 'turn/end',
-      'data': {'turn': turn, 'reason': {'kind': 'completed'}},
+      'data': {
+        'turn': turn,
+        'reason': {'kind': 'completed'},
+      },
       if (includeTime) 'time': 2000,
     });
   }
@@ -175,7 +191,12 @@ List<Map<String, dynamic>> reasoningOnlyTurn({
 List<Map<String, dynamic>> batchedWithReasoningTail() {
   final events = <Map<String, dynamic>>[];
   var seq = 1;
-  events.add({'seq': seq++, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000});
+  events.add({
+    'seq': seq++,
+    'type': 'turn/start',
+    'data': {'turn': 1},
+    'time': 1000,
+  });
   events.add({
     'seq': seq++,
     'type': 'user/message',
@@ -223,7 +244,10 @@ List<Map<String, dynamic>> batchedWithReasoningTail() {
   events.add({
     'seq': seq++,
     'type': 'turn/end',
-    'data': {'turn': 1, 'reason': {'kind': 'completed'}},
+    'data': {
+      'turn': 1,
+      'reason': {'kind': 'completed'},
+    },
     'time': 2500,
   });
   return events;
@@ -256,13 +280,17 @@ Future<AppStore> _pumpChat(
 }) async {
   final store = AppStore()
     ..sessionId = 'session-75'
-    ..sessions = [Session(id: 'session-75', title: 'S', cwd: null, createdAt: 1)]
+    ..sessions = [
+      Session(id: 'session-75', title: 'S', cwd: null, createdAt: 1),
+    ]
     ..stepDisplayMode = mode
     ..showReasoning = showReasoning;
   await tester.pumpWidget(
     MaterialApp(
       home: ChatScreen(
-        key: ValueKey('issue75-${mode.name}-$showReasoning-${backend.hashCode}'),
+        key: ValueKey(
+          'issue75-${mode.name}-$showReasoning-${backend.hashCode}',
+        ),
         store: store,
         apiClient: backend.api,
         onTitleChanged: () {},
@@ -307,7 +335,9 @@ void main() {
 
     // 找到 reasoning-only 组抬头并验证 chevron 存在（箭头缺失即本 issue 的核心症状）。
     final reasoningHeader = find.textContaining('思考 ').last;
-    final row = find.ancestor(of: reasoningHeader, matching: find.byType(Row)).first;
+    final row = find
+        .ancestor(of: reasoningHeader, matching: find.byType(Row))
+        .first;
     expect(
       find.descendant(
         of: row,
@@ -330,49 +360,34 @@ void main() {
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
 
     // 再点收起：思考正文消失（chevron 回落）。
-    final headerRow = find.ancestor(
-      of: find.textContaining('思考 ').last,
-      matching: find.byType(Row),
-    ).first;
+    final headerRow = find
+        .ancestor(
+          of: find.textContaining('思考 ').last,
+          matching: find.byType(Row),
+        )
+        .first;
     await tester.tap(headerRow);
     await tester.pumpAndSettle();
     expect(find.textContaining('FINAL-REASONING'), findsNothing);
   });
 
-  testWidgets('分批把整组行挡在窗口外时，该组不渲染幽灵抬头', (tester) async {
-    // 60 个工具行 + 末尾 reasoning-only：batch=50 时末尾组无任何可见行。
-    // 用标准档（有过程组抬头），先把整轮展开。
+  testWidgets('取消分批后所有组都可见（含末尾 reasoning-only 组）', (tester) async {
+    // issue #126：取消分批隐藏，不再有「显示更多」行；所有组的行都参与渲染。
     await _pumpChat(
       tester,
       _Backend(events: batchedWithReasoningTail(), returnAllOnInitial: true),
     );
     await _expandTurn(tester);
 
-    Future<void> scrollUntil(Finder finder) async {
-      for (var i = 0; i < 50 && finder.evaluate().isEmpty; i++) {
-        await tester.drag(find.byType(CustomScrollView), const Offset(0, -600));
-        await tester.pump(const Duration(milliseconds: 120));
-      }
-    }
-
-    await scrollUntil(find.textContaining('显示更多（还有'));
-    // 前面只显示 50 行工具（过程行），末尾「思考」组整体不可见 → 不应出现其抬头。
-    expect(find.text('0 次工具调用'), findsNothing);
-    expect(find.textContaining('思考 14 字'), findsNothing);
-    expect(find.textContaining('显示更多（还有'), findsOneWidget);
-
-    // 显示更多之后，末尾组有了可见行，抬头才出现且可展开。
-    await tester.ensureVisible(find.textContaining('显示更多（还有'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.textContaining('显示更多（还有'));
-    await tester.pumpAndSettle();
+    // 不再出现「显示更多」。
     expect(find.textContaining('显示更多'), findsNothing);
-    expect(find.textContaining('TAIL-REASONING'), findsNothing,
-        reason: '组仍折叠，思考正文不可见');
-    await scrollUntil(find.textContaining('思考 14 字'));
-    expect(find.textContaining('思考 14 字'), findsOneWidget);
+
+    // 末尾 reasoning-only 组的抬头现在就能看到（不再被分批隐藏）。
     await tester.ensureVisible(find.textContaining('思考 14 字'));
     await tester.pumpAndSettle();
+    expect(find.textContaining('思考 14 字'), findsOneWidget);
+
+    // 展开该组后能读到思考正文。
     await tester.tap(find.textContaining('思考 14 字'));
     await tester.pumpAndSettle();
     await _expandReasoningRow(tester);
@@ -396,7 +411,9 @@ void main() {
     expect(find.textContaining('思考 '), findsOneWidget);
     // 每个可见组抬头都有 chevron。
     for (final label in ['1 次工具调用', ...List.filled(1, '思考 ')]) {
-      final finder = label == '思考 ' ? find.textContaining(label).last : find.text(label).first;
+      final finder = label == '思考 '
+          ? find.textContaining(label).last
+          : find.text(label).first;
       final row = find.ancestor(of: finder, matching: find.byType(Row)).first;
       expect(
         find.descendant(
@@ -418,7 +435,9 @@ void main() {
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
   });
 
-  testWidgets('运行中 reasoning-only 组：有 chevron、可展开；不显示「0 次工具调用」', (tester) async {
+  testWidgets('运行中 reasoning-only 组：有 chevron、可展开；不显示「0 次工具调用」', (
+    tester,
+  ) async {
     await _pumpChat(
       tester,
       _Backend(events: reasoningOnlyTurn(ended: false)),
@@ -437,17 +456,24 @@ void main() {
       mode: WorkStepDisplayMode.standard,
     );
 
-    // v4 标准运行中：组抬头折叠，不铺行；活动条承载当前状态。
+    // ADR 0035 标准运行中：组抬头折叠，状态由组抬头承载（不再有活动条）。
     expect(find.textContaining('FINAL-REASONING'), findsNothing);
     expect(find.text('0 次工具调用'), findsNothing);
-    expect(find.textContaining('思考 '), findsWidgets);
+    expect(find.textContaining('思考'), findsWidgets);
 
     // 手动展开组 → 思考行出现；若仍折叠再点行看全文。
-    final header = find.textContaining('思考 ').last;
-    expect(chevronCountInHeader(tester, (tester.widget<Text>(header)).data!), 1);
+    final header = find.textContaining('思考').last;
+    expect(
+      chevronCountInHeader(tester, (tester.widget<Text>(header)).data!),
+      1,
+    );
     await tester.tap(header);
-    await tester.pumpAndSettle();
-    await _expandReasoningRow(tester);
+    await tester.pump(const Duration(milliseconds: 150));
+    final reasoningRow = find.textContaining('思维链 ');
+    if (reasoningRow.evaluate().isNotEmpty) {
+      await tester.tap(reasoningRow.last);
+      await tester.pump(const Duration(milliseconds: 150));
+    }
     expect(find.textContaining('FINAL-REASONING'), findsOneWidget);
   });
 
@@ -467,7 +493,9 @@ void main() {
       final reasoningHeader = find.textContaining('思考 ').last;
       expect(reasoningHeader, findsOneWidget, reason: mode.name);
       // 抬头内必须有 chevron，且点击可展开思考正文。
-      final row = find.ancestor(of: reasoningHeader, matching: find.byType(Row)).first;
+      final row = find
+          .ancestor(of: reasoningHeader, matching: find.byType(Row))
+          .first;
       expect(
         find.descendant(
           of: row,
@@ -490,7 +518,11 @@ void main() {
         await tester.tap(rowLabel.last);
         await tester.pumpAndSettle();
       }
-      expect(find.textContaining('FINAL-REASONING'), findsOneWidget, reason: mode.name);
+      expect(
+        find.textContaining('FINAL-REASONING'),
+        findsOneWidget,
+        reason: mode.name,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
     }
@@ -514,7 +546,11 @@ void main() {
       );
       await _expandTurn(tester);
       expect(find.text('0 次工具调用'), findsNothing);
-      expect(find.textContaining('思考 '), findsWidgets, reason: 'showReasoning=$showReasoning');
+      expect(
+        find.textContaining('思考 '),
+        findsWidgets,
+        reason: 'showReasoning=$showReasoning',
+      );
       // 清理下一个用例：卸载本页状态。
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();

@@ -57,8 +57,9 @@ class _Backend {
       final limit = int.tryParse(params['limit'] ?? '') ?? 50;
       if (params.containsKey('before')) {
         final before = int.tryParse(params['before'] ?? '') ?? 0;
-        final preceding =
-            history.where((e) => (e['seq'] as int) < before).toList();
+        final preceding = history
+            .where((e) => (e['seq'] as int) < before)
+            .toList();
         body = {
           'ok': true,
           'events': preceding.length > limit
@@ -100,11 +101,11 @@ List<Map<String, dynamic>> _runningTurnHistory({int tools = 10}) {
   final events = <Map<String, dynamic>>[];
   var seq = 1;
   void add(String type, Map<String, dynamic> data) => events.add({
-        'seq': seq++,
-        'type': type,
-        'data': data,
-        'time': 1000 + seq * 10,
-      });
+    'seq': seq++,
+    'type': type,
+    'data': data,
+    'time': 1000 + seq * 10,
+  });
   add('turn/start', {'turn': 1});
   add('user/message', {
     'messageId': 'u1',
@@ -169,8 +170,8 @@ class _ReadingAnchor {
 /// 从生产 ChatScreen 与真实 RenderObject 读出的测量层。
 class _Probe {
   _Probe(this.tester)
-      : _state = tester.state(find.byType(ChatScreen)),
-        viewport = tester.renderObject<RenderBox>(find.byType(CustomScrollView));
+    : _state = tester.state(find.byType(ChatScreen)),
+      viewport = tester.renderObject<RenderBox>(find.byType(CustomScrollView));
 
   final WidgetTester tester;
   final dynamic _state;
@@ -180,12 +181,11 @@ class _Probe {
   bool get intentFollow => _state.debugPinnedToBottom as bool;
   bool get userDragActive => _state.debugUserDragActive as bool;
   bool get followBottomScheduled => _state.debugFollowBottomScheduled as bool;
-  bool get settledFollowScheduled =>
-      _state.debugSettledFollowScheduled as bool;
-  double get liveBottomGap => _state.debugLiveBottomGap as double;
+  bool get settledFollowScheduled => _state.debugSettledFollowScheduled as bool;
+  // ADR 0035：底部占位已删除；保留 0 读数用于轨迹日志。
+  double get liveBottomGap => 0.0;
   int get followJumps => _state.debugFollowJumps as int;
-  int get scrollToBottomCallbacks =>
-      _state.debugScrollToBottomCallbacks as int;
+  int get scrollToBottomCallbacks => _state.debugScrollToBottomCallbacks as int;
 
   // —— 真实几何 ——
   ScrollPosition get position => tester
@@ -219,11 +219,12 @@ class _Probe {
   // 注意：Viewport 的 onstage 遍历会跳过 geometry.visible=false 的 sliver
   // （lazy 估值跳跃时 live 列表会整体离屏），测量必须显式 skipOffstage: false。
   RenderSliverMultiBoxAdaptor? get _liveSliver {
-    for (final element in find
-        .byType(SliverList, skipOffstage: false)
-        .evaluate()
-        .toList()
-        .reversed) {
+    for (final element
+        in find
+            .byType(SliverList, skipOffstage: false)
+            .evaluate()
+            .toList()
+            .reversed) {
       final render = element.renderObject;
       if (render is RenderSliverMultiBoxAdaptor) return render;
     }
@@ -231,11 +232,12 @@ class _Probe {
   }
 
   SliverChildBuilderDelegate? get _liveDelegate {
-    for (final element in find
-        .byType(SliverList, skipOffstage: false)
-        .evaluate()
-        .toList()
-        .reversed) {
+    for (final element
+        in find
+            .byType(SliverList, skipOffstage: false)
+            .evaluate()
+            .toList()
+            .reversed) {
       final delegate = (element.widget as SliverList).delegate;
       if (delegate is SliverChildBuilderDelegate) return delegate;
     }
@@ -370,12 +372,7 @@ class _Replay {
     store.injectFrame({
       'type': 'session/event',
       'sessionId': _session,
-      'event': {
-        'seq': _seq++,
-        'type': type,
-        'data': data,
-        'time': _seq * 10,
-      },
+      'event': {'seq': _seq++, 'type': type, 'data': data, 'time': _seq * 10},
     });
   }
 
@@ -414,11 +411,7 @@ class _Replay {
       lessThanOrEqualTo(1),
       reason: '$label $step：滚动位置越界${recent()}',
     );
-    expect(
-      end,
-      isNotNull,
-      reason: '$label $step：取不到投影末端几何，按未到达处理${recent()}',
-    );
+    expect(end, isNotNull, reason: '$label $step：取不到投影末端几何，按未到达处理${recent()}');
     expect(
       end!.isProjectionEnd,
       isTrue,
@@ -505,8 +498,7 @@ Future<void> _finish(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('A1-1 打开长会话：初始 force 定位后真实末端 6 帧内可见（不得停在估值外空白）',
-      (tester) async {
+  testWidgets('A1-1 打开长会话：初始 force 定位后真实末端 6 帧内可见（不得停在估值外空白）', (tester) async {
     try {
       final store = await _mount(
         tester,
@@ -524,8 +516,7 @@ void main() {
     }
   });
 
-  testWidgets('A1-2 详细档思考增量（同一条目内部增高）：跟随意图在，但帧后校正丢失',
-      (tester) async {
+  testWidgets('A1-2 详细档思考增量（同一条目内部增高）：跟随意图在，但帧后校正丢失', (tester) async {
     try {
       final store = await _mount(
         tester,
@@ -552,8 +543,7 @@ void main() {
     }
   });
 
-  testWidgets('A1-3 拖拽中继续流式：已排队的帧后回底不得把用户拉回底部',
-      (tester) async {
+  testWidgets('A1-3 拖拽中继续流式：已排队的帧后回底不得把用户拉回底部', (tester) async {
     try {
       final store = await _mount(
         tester,
@@ -620,7 +610,8 @@ void main() {
       expect(
         probe.position.pixels,
         greaterThanOrEqualTo(readingPixels - 2),
-        reason: '用户拖拽位置被旧回底校正改写（pixels $readingPixels → '
+        reason:
+            '用户拖拽位置被旧回底校正改写（pixels $readingPixels → '
             '${probe.position.pixels}）${replay.recent()}',
       );
       if (anchor != null) {
@@ -656,46 +647,6 @@ void main() {
           'text': '正文第 $i 段，用于逐字/逐批推高内容。\n',
         });
         await replay.expectConvergesWithin('正文增量 $i');
-      }
-    } finally {
-      await _finish(tester);
-    }
-  });
-
-  testWidgets('A1-5 完全展开同一条目 result 增高（条目数不变）：逐批收敛', (tester) async {
-    try {
-      // 完全展开档：当前运行轮的工具卡详情自动展开；result 回来是同一条目内部增高。
-      final store = await _mount(
-        tester,
-        _Backend(_runningTurnHistory(tools: 8)),
-        mode: WorkStepDisplayMode.expanded,
-      );
-      final probe = _Probe(tester);
-      final replay = _Replay(tester, store, probe, '完全展开同条目增高');
-      replay.record('mount');
-      await replay.expectConvergesWithin('初始');
-
-      // 先造一个「已有 call、尚无 result」的过程行：新 call 是新条目。
-      replay.inject('tool/call', {
-        'turn': 1,
-        'step': 40,
-        'callId': 'c-pending',
-        'name': 'shell',
-        'arguments': 'sleep 1 && echo done',
-      });
-      await replay.expectConvergesWithin('新工具 call');
-
-      // result 落回同一条目：外层条目数不变，但自动展开的详情高度增加。
-      replay.inject('tool/result', {
-        'turn': 1,
-        'step': 40,
-        'callId': 'c-pending',
-        'name': 'shell',
-        'text': List.filled(12, '同一条目内部增高的结果行。').join('\n'),
-      });
-      await replay.expectConvergesWithin('同条目 result 增高');
-      for (var i = 0; i < 4; i++) {
-        await replay.expectConvergesWithin('同条目 result 稳定 +$i');
       }
     } finally {
       await _finish(tester);

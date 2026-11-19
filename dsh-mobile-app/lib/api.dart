@@ -105,7 +105,6 @@ abstract interface class GitReadApi {
     String? cursor,
     int limit,
   });
-
 }
 
 /// task-28（#86 方案 B）：支持 POST graph（1–128 tips）的宿主能力（可选接口）。
@@ -737,20 +736,19 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadToFileUri(
-        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
-        target,
-        cancel: cancel,
-        onProgress: onProgress,
-        onMetadata: onMetadata,
-        startOffset: startOffset,
-        expectedEtag: expectedEtag,
-        keepPartialOnCancel: keepPartialOnCancel,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadToFileUri(
+    _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+    target,
+    cancel: cancel,
+    onProgress: onProgress,
+    onMetadata: onMetadata,
+    startOffset: startOffset,
+    expectedEtag: expectedEtag,
+    keepPartialOnCancel: keepPartialOnCancel,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// `/api/files?path=` 的前缀读取入口（保留既有签名/语义）。
   Future<DownloadPrefix> downloadFilePrefix(
@@ -759,14 +757,13 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadPrefixFrom(
-        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
-        maxBytes,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadPrefixFrom(
+    _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+    maxBytes,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// `/turn-file` 坐标 URI：客户端只给记录坐标，不给路径（§6.23）。
   Uri _turnFileUri(TurnFileCoordinate coordinate) => _uri(
@@ -812,14 +809,13 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadPrefixFrom(
-        _turnFileUri(coordinate),
-        maxBytes,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadPrefixFrom(
+    _turnFileUri(coordinate),
+    maxBytes,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// 按轮末记录坐标流式下载到临时文件（⋮ 打开/分享/保存到手机）。
   Future<DownloadResult> turnFileToFile(
@@ -832,18 +828,17 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadToFileUri(
-        _turnFileUri(coordinate),
-        target,
-        cancel: cancel,
-        onProgress: onProgress,
-        onMetadata: onMetadata,
-        startOffset: startOffset,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadToFileUri(
+    _turnFileUri(coordinate),
+    target,
+    cancel: cancel,
+    onProgress: onProgress,
+    onMetadata: onMetadata,
+    startOffset: startOffset,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// 读取 [stream] 的前 [maxBytes] 字节；空闲超过 [idleTimeout] 抛 [TimeoutException]。
   ///
@@ -1166,11 +1161,14 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
       '${consentId == null || consentId.isEmpty ? '' : '&consentId=${Uri.encodeQueryComponent(consentId)}'}',
     );
     final res = await _client
-        .get(uri, headers: {
-          if (token.isNotEmpty) 'x-mobile-token': token,
-          if (appVersion.isNotEmpty) 'x-mobile-app-version': appVersion,
-          'accept': 'image/*',
-        })
+        .get(
+          uri,
+          headers: {
+            if (token.isNotEmpty) 'x-mobile-token': token,
+            if (appVersion.isNotEmpty) 'x-mobile-app-version': appVersion,
+            'accept': 'image/*',
+          },
+        )
         .timeout(timeout);
     if (res.statusCode == 200) {
       return WorkspaceImageData(
@@ -1699,18 +1697,14 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     int limit = 100,
     Duration timeout = const Duration(seconds: 15),
   }) async => GitGraphPage.fromJson(
-    await postJson(
-      '/api/git/graph',
-      {
-        'sessionId': sessionId,
-        'repositoryId': repositoryId,
-        'tips': [for (final tip in tips) tip.toJson()],
-        'limit': limit,
-        'snapshotId': ?snapshotId,
-        'cursor': ?cursor,
-      },
-      timeout: timeout,
-    ),
+    await postJson('/api/git/graph', {
+      'sessionId': sessionId,
+      'repositoryId': repositoryId,
+      'tips': [for (final tip in tips) tip.toJson()],
+      'limit': limit,
+      'snapshotId': ?snapshotId,
+      'cursor': ?cursor,
+    }, timeout: timeout),
   );
 
   /// issue #93：全部分支图（all=true，仅 POST；忽略 tips 选择集）。
@@ -1725,19 +1719,15 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     int limit = 16,
     Duration timeout = const Duration(seconds: 35),
   }) async => GitGraphPage.fromJson(
-    await postJson(
-      '/api/git/graph',
-      {
-        'sessionId': sessionId,
-        'repositoryId': repositoryId,
-        'all': all,
-        'focus': ?focus,
-        'limit': limit,
-        'snapshotId': ?snapshotId,
-        'cursor': ?cursor,
-      },
-      timeout: timeout,
-    ),
+    await postJson('/api/git/graph', {
+      'sessionId': sessionId,
+      'repositoryId': repositoryId,
+      'all': all,
+      'focus': ?focus,
+      'limit': limit,
+      'snapshotId': ?snapshotId,
+      'cursor': ?cursor,
+    }, timeout: timeout),
   );
 
   @override
@@ -1847,6 +1837,22 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
   void Function()? onSseKeepalive;
 
   Stream<Map<String, dynamic>> eventsRaw() {
+    // v3.3.4（issue #126 真机）：SSE 必须用**独立 http.Client**，并在取消/错误/完成时
+    // 关闭它。共享 `_client` 的 keep-alive 连接在 `bodySub.cancel()` 后仍可能留在
+    // 连接池里，服务端看到的 TCP 不关闭；多次重连后 `mobileOnline` 涨到 maxConnections，
+    // 之后所有新连接 503 `too-many-connections`（实测 16/16）。
+    final client = http.Client();
+    var clientClosed = false;
+    void closeClient() {
+      if (clientClosed) return;
+      clientClosed = true;
+      try {
+        client.close();
+      } catch (_) {
+        // 已经关闭
+      }
+    }
+
     // v2.7.2 review(FS3)：onCancel 必须取消底层响应流订阅，否则订阅取消后
     // await-for 消费循环仍读 socket → 每条 SSE 长连接在 App 存活期间永不释放
     StreamSubscription<dynamic>? bodySub;
@@ -1866,6 +1872,7 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
       onCancel: () {
         cancelled = true;
         bodySub?.cancel();
+        closeClient();
       },
     );
     final req = http.Request('GET', _uri('/api/events'));
@@ -1875,20 +1882,26 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
     // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
     final timeoutWatchdog = Timer(const Duration(seconds: 8), () {
       timedOut = true;
+      closeClient();
       if (!controller.isClosed) {
         controller.addError(ApiException('SSE 连接超时'));
         controller.close();
       }
     });
-    _client
+    client
         .send(req)
         .then((res) {
           if (timedOut || cancelled || controller.isClosed) {
             // 晚到的响应/已取消：立即消费并释放，不留半开 socket
             res.stream.listen((_) {}).cancel();
+            closeClient();
             return;
           }
           if (res.statusCode != 200) {
+            // 503/401 等：必须把 body 读完并关闭独立 client，否则服务端连接的 close
+            // 事件可能迟迟不触发；这是 16 条连接泄漏的另一条路径。
+            res.stream.listen((_) {}).cancel();
+            closeClient();
             if (!controller.isClosed) {
               controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
               controller.close();
@@ -1924,15 +1937,18 @@ class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
                 ..write(s);
             },
             onDone: () {
+              closeClient();
               if (!controller.isClosed) controller.close();
             },
             onError: (e) {
+              closeClient();
               if (!controller.isClosed) controller.addError(e);
             },
             cancelOnError: true,
           );
         })
         .catchError((e) {
+          closeClient();
           if (!controller.isClosed) {
             controller.addError(e);
             controller.close();

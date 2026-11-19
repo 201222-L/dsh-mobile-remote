@@ -41,8 +41,9 @@ class _Backend {
       final limit = int.tryParse(params['limit'] ?? '') ?? 50;
       if (params.containsKey('before')) {
         final before = int.tryParse(params['before'] ?? '') ?? 0;
-        final preceding =
-            events.where((e) => (e['seq'] as int) < before).toList();
+        final preceding = events
+            .where((e) => (e['seq'] as int) < before)
+            .toList();
         body = {
           'ok': true,
           'events': preceding.length > limit
@@ -81,70 +82,70 @@ class _Backend {
 }
 
 List<Map<String, dynamic>> _completedTurn() => [
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-      {
-        'seq': 2,
-        'type': 'user/message',
-        'data': {'messageId': 'u1', 'text': '问题', 'sourceKind': 'user'},
-      },
-      {
-        'seq': 3,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'messageId': 'a1',
-          'text': '',
-          'reasoning': 'check layout',
-          'reasoningChars': 12,
-        },
-        'time': 1200,
-      },
-      {
-        'seq': 4,
-        'type': 'tool/call',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'callId': 'c1',
-          'name': 'shell',
-          'arguments': '{"cmd":"ls"}',
-        },
-        'time': 1300,
-      },
-      {
-        'seq': 5,
-        'type': 'tool/result',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'callId': 'c1',
-          'name': 'shell',
-          'text': 'ok',
-        },
-        'time': 1400,
-      },
-      {
-        'seq': 6,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'messageId': 'a2',
-          'text': '最终回答',
-        },
-        'time': 1500,
-      },
-      {
-        'seq': 7,
-        'type': 'turn/end',
-        'data': {
-          'turn': 1,
-          'reason': {'kind': 'completed'},
-        },
-        'time': 4000,
-      },
-    ];
+  {
+    'seq': 1,
+    'type': 'turn/start',
+    'data': {'turn': 1},
+    'time': 1000,
+  },
+  {
+    'seq': 2,
+    'type': 'user/message',
+    'data': {'messageId': 'u1', 'text': '问题', 'sourceKind': 'user'},
+  },
+  {
+    'seq': 3,
+    'type': 'assistant/message',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'messageId': 'a1',
+      'text': '',
+      'reasoning': 'check layout',
+      'reasoningChars': 12,
+    },
+    'time': 1200,
+  },
+  {
+    'seq': 4,
+    'type': 'tool/call',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'callId': 'c1',
+      'name': 'shell',
+      'arguments': '{"cmd":"ls"}',
+    },
+    'time': 1300,
+  },
+  {
+    'seq': 5,
+    'type': 'tool/result',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'callId': 'c1',
+      'name': 'shell',
+      'text': 'ok',
+    },
+    'time': 1400,
+  },
+  {
+    'seq': 6,
+    'type': 'assistant/message',
+    'data': {'turn': 1, 'step': 2, 'messageId': 'a2', 'text': '最终回答'},
+    'time': 1500,
+  },
+  {
+    'seq': 7,
+    'type': 'turn/end',
+    'data': {
+      'turn': 1,
+      'reason': {'kind': 'completed'},
+    },
+    'time': 4000,
+  },
+];
 
 List<Map<String, dynamic>> _runningTurn() => _completedTurn()
     .where((e) => e['type'] != 'turn/end' && e['seq'] != 5 && e['seq'] != 6)
@@ -205,63 +206,65 @@ Future<void> _inject(
 
 Finder _summary() => find.textContaining('组 · ');
 Finder _groupHeader() => find.byWidgetPredicate(
-      (widget) =>
-          widget is Text &&
-          (widget.data?.startsWith('1 次工具调用') ?? false),
-    );
+  (widget) => widget is Text && (widget.data?.startsWith('1 次工具调用') ?? false),
+);
 Finder _activityBar() => find.byKey(const ValueKey<String>('activity-bar'));
 
-
 List<Map<String, dynamic>> _interjectionRunningTurn() => [
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-      {
-        'seq': 2,
-        'type': 'user/message',
-        'data': {'messageId': 'u1', 'text': '问题', 'sourceKind': 'user'},
-      },
-      {
-        'seq': 3,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'messageId': 'a1',
-          'text': '',
-          'reasoning': 'check layout',
-          'reasoningChars': 12,
-        },
-        'time': 1100,
-      },
-      {
-        'seq': 4,
-        'type': 'tool/call',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'callId': 'c1',
-          'name': 'shell',
-          'arguments': '{"cmd":"ls"}',
-        },
-        'time': 1200,
-      },
-      {
-        'seq': 5,
-        'type': 'user/message',
-        'data': {'messageId': 'u2', 'text': '插话', 'sourceKind': 'user'},
-      },
-      {
-        'seq': 6,
-        'type': 'tool/call',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'callId': 'c2',
-          'name': 'read_file',
-          'arguments': '{"path":"a"}',
-        },
-        'time': 1300,
-      },
-    ];
+  {
+    'seq': 1,
+    'type': 'turn/start',
+    'data': {'turn': 1},
+    'time': 1000,
+  },
+  {
+    'seq': 2,
+    'type': 'user/message',
+    'data': {'messageId': 'u1', 'text': '问题', 'sourceKind': 'user'},
+  },
+  {
+    'seq': 3,
+    'type': 'assistant/message',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'messageId': 'a1',
+      'text': '',
+      'reasoning': 'check layout',
+      'reasoningChars': 12,
+    },
+    'time': 1100,
+  },
+  {
+    'seq': 4,
+    'type': 'tool/call',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'callId': 'c1',
+      'name': 'shell',
+      'arguments': '{"cmd":"ls"}',
+    },
+    'time': 1200,
+  },
+  {
+    'seq': 5,
+    'type': 'user/message',
+    'data': {'messageId': 'u2', 'text': '插话', 'sourceKind': 'user'},
+  },
+  {
+    'seq': 6,
+    'type': 'tool/call',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'callId': 'c2',
+      'name': 'read_file',
+      'arguments': '{"path":"a"}',
+    },
+    'time': 1300,
+  },
+];
 
 void main() {
   test('policy：四档运行中/已完成维度', () {
@@ -310,7 +313,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('标准运行中：组抬头折叠+组数/状态；不铺行；活动条常显', (tester) async {
+  testWidgets('标准运行中：组抬头折叠+组数/状态；不铺行；无活动条', (tester) async {
     await _pump(
       tester,
       _Backend(_runningTurn()),
@@ -319,8 +322,12 @@ void main() {
     expect(find.text('1 次工具调用 · 进行中'), findsOneWidget);
     expect(find.text('shell'), findsNothing, reason: '组折叠不得残留行');
     expect(find.textContaining('参数'), findsNothing);
-    expect(_activityBar(), findsOneWidget);
-    expect(find.textContaining('正在调用 shell'), findsOneWidget);
+    expect(_activityBar(), findsNothing, reason: 'ADR 0035：活动条已删除');
+    expect(
+      find.textContaining('正在调用 shell'),
+      findsNothing,
+      reason: '工具状态由过程行/组抬头承载',
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -336,18 +343,20 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('完全展开运行中：不分组+行摘要；当前轮详情自动展开；完成后详情收起', (tester) async {
+  testWidgets('完全展开运行中：不分组+行摘要；详情手动；完成后详情仍收起', (tester) async {
     await _pump(
       tester,
       _Backend(_runningTurn()),
       mode: WorkStepDisplayMode.expanded,
     );
-    expect(find.textContaining('工具调用'), findsNothing,
-        reason: '完全展开不分组/无组抬头');
+    expect(find.textContaining('工具调用'), findsNothing, reason: '完全展开不分组/无组抬头');
     expect(find.text('shell'), findsOneWidget);
-    expect(find.text('参数'), findsOneWidget, reason: '当前运行轮详情自动展开');
+    expect(find.text('参数'), findsNothing, reason: 'ADR 0035：详情不再自动展开');
+    await tester.tap(find.text('shell'));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('参数'), findsOneWidget, reason: '手动展开后可看详情');
 
-    // 段内完成（turn/end 到达）后：不分组、行摘要仍在，详情自动收起。
+    // 段内完成（turn/end 到达）后：不分组、行摘要仍在，详情仍收起。
     await tester.pumpWidget(const SizedBox.shrink());
     await _pump(
       tester,
@@ -399,11 +408,7 @@ void main() {
       'turn': 1,
       'reason': {'kind': 'aborted'},
     };
-    await _pump(
-      tester,
-      _Backend(abnormal),
-      mode: WorkStepDisplayMode.concise,
-    );
+    await _pump(tester, _Backend(abnormal), mode: WorkStepDisplayMode.concise);
     expect(_summary(), findsNothing, reason: '异常结束强制段展开');
     expect(_groupHeader(), findsOneWidget);
     expect(find.text('shell'), findsNothing, reason: '组仍按档位折叠，不自动铺行');
@@ -457,11 +462,15 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 200));
     expect(tester.takeException(), isNull);
+    await tester.tap(find.text('shell'));
+    await tester.pump(const Duration(milliseconds: 150));
     expect(find.text('查看全文'), findsWidgets, reason: '长结果裁剪+查看全文');
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('旧 showReasoning/reasoningDefaultExpanded 即使为 true 也不影响 v4 行为', (tester) async {
+  testWidgets('旧 showReasoning/reasoningDefaultExpanded 即使为 true 也不影响 v4 行为', (
+    tester,
+  ) async {
     // 标准运行中仍组折叠；完全展开当前轮详情仍自动开；不读旧值不报错。
     await _pump(
       tester,
@@ -480,7 +489,11 @@ void main() {
       mode: WorkStepDisplayMode.expanded,
       legacyReasoningPrefs: true,
     );
-    expect(find.text('参数'), findsOneWidget);
+    expect(
+      find.text('参数'),
+      findsNothing,
+      reason: 'ADR 0035：完全展开不再自动详情，旧偏好也不影响',
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -539,11 +552,7 @@ void main() {
       'turn': 1,
       'reason': {'kind': 'aborted'},
     };
-    await _pump(
-      tester,
-      _Backend(aborted),
-      mode: WorkStepDisplayMode.concise,
-    );
+    await _pump(tester, _Backend(aborted), mode: WorkStepDisplayMode.concise);
     expect(_summary(), findsNothing, reason: '异常结束强制段展开');
     expect(_groupHeader(), findsOneWidget);
     expect(find.text('shell'), findsNothing);
@@ -551,11 +560,15 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-
   testWidgets('切轮复位：手动展开 turn1 不影响新 turn2 的默认摘要', (tester) async {
     final events = <Map<String, dynamic>>[
       ..._completedTurn(),
-      {'seq': 8, 'type': 'turn/start', 'data': {'turn': 2}, 'time': 5000},
+      {
+        'seq': 8,
+        'type': 'turn/start',
+        'data': {'turn': 2},
+        'time': 5000,
+      },
       {
         'seq': 9,
         'type': 'user/message',
@@ -584,5 +597,4 @@ void main() {
     expect(find.text('read_file'), findsNothing, reason: 'turn2 未手动展开');
     await tester.pumpWidget(const SizedBox.shrink());
   });
-
 }

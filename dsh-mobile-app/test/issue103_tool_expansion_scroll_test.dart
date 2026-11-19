@@ -48,16 +48,23 @@ class _Backend {
     } else {
       body = {'ok': true};
     }
-    return http.Response(jsonEncode(body), 200,
-        headers: {'content-type': 'application/json; charset=utf-8'});
+    return http.Response(
+      jsonEncode(body),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
   }
 }
 
 List<Map<String, dynamic>> _fixture({int tools = 16}) {
   final events = <Map<String, dynamic>>[];
   var seq = 1;
-  void add(String type, Map<String, dynamic> data, {int? time}) =>
-      events.add({'seq': seq++, 'type': type, 'data': data, 'time': time ?? seq * 10});
+  void add(String type, Map<String, dynamic> data, {int? time}) => events.add({
+    'seq': seq++,
+    'type': type,
+    'data': data,
+    'time': time ?? seq * 10,
+  });
   add('turn/start', {'turn': 103});
   add('user/message', {'messageId': 'u1', 'text': '开始', 'sourceKind': 'user'});
   for (var i = 0; i < 4; i++) {
@@ -84,7 +91,10 @@ List<Map<String, dynamic>> _fixture({int tools = 16}) {
     });
   }
   add('assistant/message', {'turn': 103, 'messageId': 'aend', 'text': '最后回答。'});
-  add('turn/end', {'turn': 103, 'reason': {'kind': 'completed'}});
+  add('turn/end', {
+    'turn': 103,
+    'reason': {'kind': 'completed'},
+  });
   return events;
 }
 
@@ -101,33 +111,39 @@ Future<AppStore> _pump(
   final store = AppStore()
     ..sessionId = _session
     ..sessions = [Session(id: _session, title: 'S', cwd: null, createdAt: 1)];
-  await tester.pumpWidget(MaterialApp(
-    theme: theme,
-    builder: (context, child) => MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaler: textScaler),
-      child: child!,
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: theme,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: child!,
+      ),
+      home: ChatScreen(
+        store: store,
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
     ),
-    home: ChatScreen(
-      store: store,
-      apiClient: backend.api,
-      onTitleChanged: () {},
-    ),
-  ));
+  );
   await tester.pump(const Duration(milliseconds: 350));
   await tester.pumpAndSettle();
   return store;
 }
 
 ScrollPosition _pos(WidgetTester tester) => tester
-    .state<ScrollableState>(find.descendant(
-      of: find.byType(CustomScrollView),
-      matching: find.byType(Scrollable),
-    ).first)
+    .state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    )
     .position;
 
 Finder get _jumpButton => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_JumpToLatestButton',
-    );
+  (w) => w.runtimeType.toString() == '_JumpToLatestButton',
+);
 
 bool _jumpVisible(WidgetTester tester) {
   final f = _jumpButton;
@@ -139,8 +155,11 @@ bool _jumpVisible(WidgetTester tester) {
 
 void _expectPinned(WidgetTester tester, String step) {
   final pos = _pos(tester);
-  expect(pos.extentAfter, lessThanOrEqualTo(1.5),
-      reason: '$step: 展开/内容变化后应仍贴底（extentAfter=${pos.extentAfter}）');
+  expect(
+    pos.extentAfter,
+    lessThanOrEqualTo(1.5),
+    reason: '$step: 展开/内容变化后应仍贴底（extentAfter=${pos.extentAfter}）',
+  );
   expect(_jumpVisible(tester), isFalse, reason: '$step: 贴底时不应出现回底按钮');
 }
 
@@ -173,8 +192,7 @@ void main() {
     for (var i = 0; i < 16; i++) {
       final card = find.byWidgetPredicate((w) {
         final key = w.key;
-        return key is ValueKey<String> &&
-            key.value.startsWith('tool:call-$i:');
+        return key is ValueKey<String> && key.value.startsWith('tool:call-$i:');
       });
       if (card.evaluate().isEmpty) continue;
       await _expand(tester, card.first);
@@ -192,12 +210,15 @@ void main() {
     final view = tester.getRect(find.byType(CustomScrollView));
     final last = find.text('最后回答。');
     expect(last, findsOneWidget);
-    expect(view.bottom - tester.getRect(last).bottom, lessThanOrEqualTo(80),
-        reason: '回底后最后内容应贴底，不得留下大块尾部空白');
+    expect(
+      view.bottom - tester.getRect(last).bottom,
+      lessThanOrEqualTo(80),
+      reason: '回底后最后内容应贴底，不得留下大块尾部空白',
+    );
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('issue #103：代码块不再嵌套滚动，起手拖动能带动父列表', (tester) async {
+  testWidgets('issue #103 / ADR 0035：详情溢出走内层滚动，父列表仍可从组头拖动', (tester) async {
     await _pump(tester);
     await _expand(tester, find.textContaining('次工具调用').first);
     await _expand(tester, find.textContaining('次工具调用').first);
@@ -207,17 +228,21 @@ void main() {
       return key is ValueKey<String> && key.value.startsWith('tool:call-0:');
     });
     await _expand(tester, card.first);
-    expect(find.text('查看全文'), findsWidgets, reason: '长代码块应提供全文入口而非嵌套滚动');
-    // 确保在底部；从代码文本起手向下拖（查看更早）必须移动父列表。
-    final code = find.byType(SelectableText).first;
-    await tester.ensureVisible(code);
+    expect(find.text('查看全文'), findsWidgets, reason: '长代码块仍提供全文入口');
+    // ADR 0035 C 方案：详情体溢出时只在内层滚动，不做边缘交接；
+    // 父列表从组头（非详情体）起手仍必须可滚动。
+    final header = find.textContaining('次工具调用').first;
+    await tester.ensureVisible(header);
     await tester.pumpAndSettle();
     final before = _pos(tester).pixels;
-    await tester.drag(code, const Offset(0, 300));
+    await tester.drag(header, const Offset(0, 300));
     await tester.pump(const Duration(milliseconds: 300));
     final after = _pos(tester).pixels;
-    expect(after, lessThan(before),
-        reason: '代码文本上的手势应由父 CustomScrollView 接收（before=$before after=$after）');
+    expect(
+      after,
+      lessThan(before),
+      reason: '组头上的手势应由父 CustomScrollView 接收（before=$before after=$after）',
+    );
     await tester.pump(const Duration(milliseconds: 900));
   });
 

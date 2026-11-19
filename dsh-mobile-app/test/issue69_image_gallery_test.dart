@@ -597,16 +597,16 @@ void main() {
       );
     });
 
-    test('缩略图回退比例：缺尺寸 4:3，极端比例 clamp 到 80–480', () {
+    test('缩略图回退比例：缺尺寸 4:3，极端比例 clamp 到 80–320', () {
       final fallback = imageThumbBoxSize(_image('a'));
       expect(fallback.width, 236);
       expect(fallback.height, closeTo(177, 0.001));
       // 横向超宽图：比例 clamp 到 3.0 → 高 78.7 → 下限 80。
       final wide = imageThumbBoxSize(_image('a', width: 10000, height: 100));
       expect(wide.height, 80);
-      // 竖向超长图：比例 clamp 到 0.3 → 高 786.7 → 上限 480。
+      // 竖向超长图：比例 clamp 到 0.3 → 高 786.7 → ADR 0035 上限 320。
       final tall = imageThumbBoxSize(_image('a', width: 100, height: 10000));
-      expect(tall.height, 480);
+      expect(tall.height, 320);
     });
 
     test('导出文件名：优先原名、缺省 dsh-image、缺扩展名按 mediaType 补', () {

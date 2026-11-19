@@ -1,9 +1,8 @@
 // issue #81：320 大字下「回到底部」圆钮遮挡尾段正文。
 //
-// 修复口径：圆钮也是右侧 action gutter 的占用者——
-// - 圆钮可见：列表右 padding 38dp，圆钮 right 0 / bottom 12 / 38dp；
-// - 轨道可见（无圆钮）：36dp；都隐藏：16dp；同帧计算；
-// - 轨道底部 62dp 预留保证与圆钮 ≥12dp 不重叠；圆钮动画/点击/语义不变。
+// ADR 0035 修订：正文右 padding 恒定 38dp；圆钮/轨道 overlay，显隐不再 reflow。
+// - 圆钮 right 0 / bottom 12 / 38dp；轨道底部 62dp 预留保证 ≥12dp 不重叠；
+// - 圆钮动画/点击/语义不变；原 36/16 分档已退役。
 
 import 'dart:convert';
 
@@ -106,14 +105,16 @@ Future<AppStore> _pumpChat(
   store.sessions = [
     Session(id: sessionId, title: 'S', cwd: null, createdAt: 1),
   ];
-  await tester.pumpWidget(MaterialApp(
-    home: ChatScreen(
-      key: ValueKey('issue81-$keySuffix'),
-      store: store,
-      apiClient: backend.api,
-      onTitleChanged: () {},
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChatScreen(
+        key: ValueKey('issue81-$keySuffix'),
+        store: store,
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
     ),
-  ));
+  );
   await tester.pump(const Duration(milliseconds: 350));
   return store;
 }
@@ -128,8 +129,8 @@ double _screenWidth(WidgetTester tester) =>
 
 Finder get _rail => find.byType(TurnNavigatorRail);
 Finder get _jumpButton => find.byWidgetPredicate(
-      (w) => w.runtimeType.toString() == '_JumpToLatestButton',
-    );
+  (w) => w.runtimeType.toString() == '_JumpToLatestButton',
+);
 
 bool _jumpVisible(WidgetTester tester) {
   if (_jumpButton.evaluate().isEmpty) return false;
@@ -142,10 +143,12 @@ bool _jumpVisible(WidgetTester tester) {
 
 double _liveRightPadding(WidgetTester tester) {
   final paddings = tester
-      .widgetList<SliverPadding>(find.descendant(
-        of: find.byType(CustomScrollView),
-        matching: find.byType(SliverPadding),
-      ))
+      .widgetList<SliverPadding>(
+        find.descendant(
+          of: find.byType(CustomScrollView),
+          matching: find.byType(SliverPadding),
+        ),
+      )
       .toList();
   return paddings.first.padding.resolve(TextDirection.ltr).right;
 }
@@ -153,16 +156,21 @@ double _liveRightPadding(WidgetTester tester) {
 /// 消息流内所有可见 Text 的最大右缘（不依赖具体哪条消息可见）。
 double? _maxContentTextRight(WidgetTester tester) {
   final screenW = _screenWidth(tester);
-  final screenH = tester.view.physicalSize.height / tester.view.devicePixelRatio;
+  final screenH =
+      tester.view.physicalSize.height / tester.view.devicePixelRatio;
   double? maxRight;
-  for (final element in find
-      .descendant(
-        of: find.byType(CustomScrollView),
-        matching: find.byType(Text),
-      )
-      .evaluate()) {
+  for (final element
+      in find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Text),
+          )
+          .evaluate()) {
     final rect = tester.getRect(find.byWidget(element.widget));
-    if (rect.top >= 0 && rect.bottom <= screenH && rect.left >= 0 && rect.right <= screenW) {
+    if (rect.top >= 0 &&
+        rect.bottom <= screenH &&
+        rect.left >= 0 &&
+        rect.right <= screenW) {
       if (maxRight == null || rect.right > maxRight) maxRight = rect.right;
     }
   }
@@ -175,14 +183,15 @@ double? _visibleUserTextRight(WidgetTester tester) {
   for (final element in find.textContaining('这是一条足够长的用户消息').evaluate()) {
     final rect = tester.getRect(find.byWidget(element.widget));
     if (rect.top >= 0 && rect.bottom <= 1200 && rect.left >= 0) {
-      if (rect.right <= screenW && rect.right > screenW - 140) return rect.right;
+      if (rect.right <= screenW && rect.right > screenW - 140)
+        return rect.right;
     }
   }
   return null;
 }
 
 void main() {
-  test('listRightPaddingFor：四组合（仅圆钮/圆钮+轨道/仅轨道/都隐藏）', () {
+  test('listRightPaddingFor：ADR 0035 恒定 38（控件显隐不改正文宽度）', () {
     expect(
       listRightPaddingFor(jumpVisible: true, railVisible: true),
       38,
@@ -195,13 +204,13 @@ void main() {
     );
     expect(
       listRightPaddingFor(jumpVisible: false, railVisible: true),
-      36,
-      reason: '仅轨道 36',
+      38,
+      reason: '仅轨道也恒定 38',
     );
     expect(
       listRightPaddingFor(jumpVisible: false, railVisible: false),
-      16,
-      reason: '都隐藏 16（默认）',
+      38,
+      reason: '都隐藏也恒定 38',
     );
   });
 
@@ -221,18 +230,21 @@ void main() {
     expect(buttonRect.right, closeTo(320, 0.5), reason: '圆钮 right 0（贴右缘）');
     final textRight = _maxContentTextRight(tester);
     expect(textRight, isNotNull);
-    expect(textRight!, lessThanOrEqualTo(320 - 38 + 0.5),
-        reason: '正文右缘不得进入圆钮占位（≤ 屏宽-38）');
+    expect(
+      textRight!,
+      lessThanOrEqualTo(320 - 38 + 0.5),
+      reason: '正文右缘不得进入圆钮占位（≤ 屏宽-38）',
+    );
     expect(tester.takeException(), isNull, reason: '320+1.3 无 overflow');
 
-    // 点圆钮回底：轨道/圆钮消失、padding 同帧恢复 16，且确实到最新位置。
+    // 点圆钮回底：轨道/圆钮消失，padding 仍恒定 38。
     await tester.tap(_jumpButton);
     for (var i = 0; i < 12; i++) {
       await tester.pump(const Duration(milliseconds: 40));
     }
     expect(_rail, findsNothing, reason: '回底后轨道隐藏');
     expect(_jumpVisible(tester), isFalse, reason: '回底后圆钮隐藏');
-    expect(_liveRightPadding(tester), 16, reason: '都隐藏 → padding 16');
+    expect(_liveRightPadding(tester), 38, reason: '恒定 38');
     await tester.pump(const Duration(milliseconds: 900));
   });
 
@@ -248,8 +260,11 @@ void main() {
     expect(_liveRightPadding(tester), 38);
     final textRight = _maxContentTextRight(tester);
     expect(textRight, isNotNull);
-    expect(textRight!, lessThanOrEqualTo(320 - 38 + 0.5),
-        reason: '320+1.5 正文不得进入圆钮占位');
+    expect(
+      textRight!,
+      lessThanOrEqualTo(320 - 38 + 0.5),
+      reason: '320+1.5 正文不得进入圆钮占位',
+    );
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(milliseconds: 900));
   });
@@ -266,20 +281,23 @@ void main() {
     final railRect = tester.getRect(_rail);
     final buttonRect = tester.getRect(_jumpButton);
     expect(railRect.overlaps(buttonRect), isFalse, reason: '轨道与圆钮不重叠');
-    expect(buttonRect.top - railRect.bottom, greaterThanOrEqualTo(12),
-        reason: '轨道下界与圆钮至少 12dp 避让');
+    expect(
+      buttonRect.top - railRect.bottom,
+      greaterThanOrEqualTo(12),
+      reason: '轨道下界与圆钮至少 12dp 避让',
+    );
     expect(buttonRect.right, closeTo(390, 0.5), reason: '圆钮 right 0');
     expect(railRect.right, closeTo(390 - 8, 0.5), reason: '#80 轨道右留 8 不变');
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('仅圆钮（<2 轮）：padding 38、无轨道；都隐藏时 padding 16', (tester) async {
+  testWidgets('仅圆钮（<2 轮）：padding 恒定 38、无轨道', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await _pumpChat(tester, _TurnBackend(turns: 1));
     // 都隐藏（底部）。
-    expect(_liveRightPadding(tester), 16);
+    expect(_liveRightPadding(tester), 38);
     expect(_rail, findsNothing);
     expect(_jumpVisible(tester), isFalse);
     // 上翻：只有圆钮（轮次不足 → 无轨道）。
@@ -291,25 +309,25 @@ void main() {
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('圆钮显隐与 padding 同帧（上翻一帧即 38；回底一帧即 16）', (tester) async {
+  testWidgets('圆钮显隐不改 padding（恒定 38）', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await _pumpChat(tester, _TurnBackend());
-    expect(_liveRightPadding(tester), 16);
-    // 上翻一次 drag 后只 pump（不 settle），同帧检查圆钮+padding。
+    expect(_liveRightPadding(tester), 38);
+    // 上翻一次 drag 后只 pump（不 settle），padding 仍恒定。
     await tester.drag(find.byType(CustomScrollView), const Offset(0, 600));
     await tester.pump();
     expect(_jumpVisible(tester), isTrue);
     expect(_liveRightPadding(tester), 38);
-    // 点圆钮回底，单帧后 padding 恢复。
+    // 点圆钮回底，padding 仍恒定。
     await tester.tap(_jumpButton, warnIfMissed: false);
     await tester.pump(const Duration(milliseconds: 400));
-    expect(_liveRightPadding(tester), 16, reason: 'padding 与圆钮显隐同帧');
+    expect(_liveRightPadding(tester), 38, reason: 'padding 不随圆钮显隐变化');
     await tester.pump(const Duration(milliseconds: 900));
   });
 
-  testWidgets('切换会话：从 38（上翻）切到新会话底部 → 16', (tester) async {
+  testWidgets('切换会话：padding 始终 38', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -322,7 +340,7 @@ void main() {
       sessionId: 'session-issue81-single',
       keySuffix: 'single',
     );
-    expect(_liveRightPadding(tester), 16);
+    expect(_liveRightPadding(tester), 38);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(milliseconds: 900));
   });
@@ -336,8 +354,11 @@ void main() {
     expect(_liveRightPadding(tester), 38);
     final textRight = _visibleUserTextRight(tester);
     expect(textRight, isNotNull);
-    expect(textRight!, closeTo(390 - 38 - 12, 2),
-        reason: '390 圆钮可见时正文右缘 = 屏宽-38-12');
+    expect(
+      textRight!,
+      closeTo(390 - 38 - 12, 2),
+      reason: '390 圆钮可见时正文右缘 = 屏宽-38-12',
+    );
     await tester.pump(const Duration(milliseconds: 900));
   });
 }

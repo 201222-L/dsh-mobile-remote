@@ -40,15 +40,11 @@ ValueKey<String> _reasoningRowKey(int turn, int seq) =>
 class _Backend {
   _Backend({
     required this.events,
-    this.returnAllOnInitial = false,
     this.olderEvents = const <Map<String, dynamic>>[],
   });
 
   /// 仅 durable 事件；**不得**含 `assistant/chunk`（历史端点不返回 chunk）。
   final List<Map<String, dynamic>> events;
-
-  /// 初始窗口是否忽略 limit 返回全部事件（只用于 50 行分批用例）。
-  final bool returnAllOnInitial;
 
   /// `/history?before=` 返回的更早一页（只给「流式中上翻」用例；默认空）。
   final List<Map<String, dynamic>> olderEvents;
@@ -93,11 +89,10 @@ class _Backend {
         };
       } else if (params.containsKey('after')) {
         body = {'ok': true, 'events': <Object>[], 'hasMore': false};
-      } else if (returnAllOnInitial) {
-        body = {'ok': true, 'events': events, 'hasMore': false};
       } else {
-        final tail =
-            events.length > limit ? events.sublist(events.length - limit) : events;
+        final tail = events.length > limit
+            ? events.sublist(events.length - limit)
+            : events;
         body = {
           'ok': true,
           'events': tail,
@@ -123,159 +118,155 @@ class _Backend {
 
 /// 夹具 F70 历史段（与 ui-spec 附录 A.1 一致）：step1 已落定 + 1 次 shell。
 List<Map<String, dynamic>> _f70History({bool withTurnEnd = false}) => [
-      {
-        'seq': 1,
-        'type': 'turn/start',
-        'data': {'turn': 1},
-        'time': 1000,
+  {
+    'seq': 1,
+    'type': 'turn/start',
+    'data': {'turn': 1},
+    'time': 1000,
+  },
+  {
+    'seq': 2,
+    'type': 'user/message',
+    'data': {'messageId': 'u1', 'text': 'Question 1', 'sourceKind': 'user'},
+    'time': 1100,
+  },
+  {
+    'seq': 3,
+    'type': 'assistant/message',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'messageId': 'a1',
+      'text': 'Let me check the layout.',
+      'reasoning': 'check layout',
+      'reasoningChars': 12,
+    },
+    'time': 1200,
+  },
+  {
+    'seq': 4,
+    'type': 'tool/call',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'callId': 'call-1',
+      'name': 'shell',
+      'arguments': '{"command":"ls"}',
+    },
+    'time': 1300,
+  },
+  {
+    'seq': 5,
+    'type': 'tool/result',
+    'data': {
+      'turn': 1,
+      'step': 1,
+      'callId': 'call-1',
+      'name': 'shell',
+      'text': 'ok',
+    },
+    'time': 1400,
+  },
+  if (withTurnEnd)
+    {
+      'seq': 6,
+      'type': 'turn/end',
+      'data': {
+        'turn': 1,
+        'reason': {'kind': 'completed'},
       },
-      {
-        'seq': 2,
-        'type': 'user/message',
-        'data': {
-          'messageId': 'u1',
-          'text': 'Question 1',
-          'sourceKind': 'user',
-        },
-        'time': 1100,
-      },
-      {
-        'seq': 3,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'messageId': 'a1',
-          'text': 'Let me check the layout.',
-          'reasoning': 'check layout',
-          'reasoningChars': 12,
-        },
-        'time': 1200,
-      },
-      {
-        'seq': 4,
-        'type': 'tool/call',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'callId': 'call-1',
-          'name': 'shell',
-          'arguments': '{"command":"ls"}',
-        },
-        'time': 1300,
-      },
-      {
-        'seq': 5,
-        'type': 'tool/result',
-        'data': {
-          'turn': 1,
-          'step': 1,
-          'callId': 'call-1',
-          'name': 'shell',
-          'text': 'ok',
-        },
-        'time': 1400,
-      },
-      if (withTurnEnd)
-        {
-          'seq': 6,
-          'type': 'turn/end',
-          'data': {
-            'turn': 1,
-            'reason': {'kind': 'completed'},
-          },
-          'time': 5000,
-        },
-    ];
+      'time': 5000,
+    },
+];
 
 /// 夹具 F70 实时段（seq 严格递增，从历史末条之后开始）。
 List<Map<String, dynamic>> _f70Live() => [
-      {
-        'seq': 6,
-        'type': 'assistant/chunk',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'reasoning': true,
-          'text': 'three modules\n',
-        },
-        'time': 1500,
-      },
-      {
-        'seq': 7,
-        'type': 'assistant/chunk',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'reasoning': true,
-          'text': 'run tests first',
-        },
-        'time': 1600,
-      },
-      {
-        'seq': 8,
-        'type': 'tool/call',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'callId': 'call-2',
-          'name': 'shell',
-          'arguments': '{"command":"flutter test"}',
-        },
-        'time': 1700,
-      },
-      {
-        'seq': 9,
-        'type': 'tool/result',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'callId': 'call-2',
-          'name': 'shell',
-          'text': 'ok',
-        },
-        'time': 1800,
-      },
-      {
-        'seq': 10,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'messageId': 'a2',
-          'text': '',
-          'reasoning': 'three modules\nrun tests first',
-          'reasoningChars': 29,
-        },
-        'time': 1900,
-      },
-      {
-        'seq': 11,
-        'type': 'assistant/chunk',
-        'data': {'turn': 1, 'step': 2, 'text': 'All tests pass.'},
-        'time': 2000,
-      },
-      {
-        'seq': 12,
-        'type': 'assistant/message',
-        'data': {
-          'turn': 1,
-          'step': 2,
-          'messageId': 'a3',
-          'text': 'All tests pass.',
-        },
-        'time': 2100,
-      },
-      {
-        'seq': 13,
-        'type': 'turn/end',
-        'data': {
-          'turn': 1,
-          'reason': {'kind': 'completed'},
-        },
-        'time': 5000,
-      },
-    ];
+  {
+    'seq': 6,
+    'type': 'assistant/chunk',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'reasoning': true,
+      'text': 'three modules\n',
+    },
+    'time': 1500,
+  },
+  {
+    'seq': 7,
+    'type': 'assistant/chunk',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'reasoning': true,
+      'text': 'run tests first',
+    },
+    'time': 1600,
+  },
+  {
+    'seq': 8,
+    'type': 'tool/call',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'callId': 'call-2',
+      'name': 'shell',
+      'arguments': '{"command":"flutter test"}',
+    },
+    'time': 1700,
+  },
+  {
+    'seq': 9,
+    'type': 'tool/result',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'callId': 'call-2',
+      'name': 'shell',
+      'text': 'ok',
+    },
+    'time': 1800,
+  },
+  {
+    'seq': 10,
+    'type': 'assistant/message',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'messageId': 'a2',
+      'text': '',
+      'reasoning': 'three modules\nrun tests first',
+      'reasoningChars': 29,
+    },
+    'time': 1900,
+  },
+  {
+    'seq': 11,
+    'type': 'assistant/chunk',
+    'data': {'turn': 1, 'step': 2, 'text': 'All tests pass.'},
+    'time': 2000,
+  },
+  {
+    'seq': 12,
+    'type': 'assistant/message',
+    'data': {
+      'turn': 1,
+      'step': 2,
+      'messageId': 'a3',
+      'text': 'All tests pass.',
+    },
+    'time': 2100,
+  },
+  {
+    'seq': 13,
+    'type': 'turn/end',
+    'data': {
+      'turn': 1,
+      'reason': {'kind': 'completed'},
+    },
+    'time': 5000,
+  },
+];
 
 Future<AppStore> _pumpChat(
   WidgetTester tester,
@@ -287,9 +278,7 @@ Future<AppStore> _pumpChat(
 }) async {
   final store = AppStore()
     ..sessionId = _session
-    ..sessions = [
-      Session(id: _session, title: 'S', cwd: null, createdAt: 1),
-    ]
+    ..sessions = [Session(id: _session, title: 'S', cwd: null, createdAt: 1)]
     ..stepDisplayMode = mode
     ..turnFoldTiming = timing;
   await tester.pumpWidget(
@@ -355,9 +344,7 @@ void main() {
   });
   tearDown(() => L10n.lang = 'zh');
 
-  testWidgets('流式交错：思考→落定→工具→新 step 思考→落定，顺序正确且落定仅一条', (
-    tester,
-  ) async {
+  testWidgets('流式交错：思考→落定→工具→新 step 思考→落定，顺序正确且落定仅一条', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
 
     // seq6：step2 首个 reasoning chunk（该 step 还没有任何持久行 → 追加在块末尾）。
@@ -386,8 +373,9 @@ void main() {
 
     // 顺序：step1 落定思考 → step1 工具 → step2 思考(provisional) → step2 工具。
     final reasoning1Y = tester.getTopLeft(find.text('check layout')).dy;
-    final provisionalY =
-        tester.getTopLeft(find.byKey(_provisionalRowKey(1, 2))).dy;
+    final provisionalY = tester
+        .getTopLeft(find.byKey(_provisionalRowKey(1, 2)))
+        .dy;
     final shellYs = _ysOf(tester, find.text('shell'))..sort();
     expect(shellYs, hasLength(2));
     expect(reasoning1Y, lessThan(shellYs.first));
@@ -426,18 +414,19 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('落定零位移：provisional 与持久行同槽，工具卡 y 不变', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
     await _injectF70To(tester, store, 9);
-    final provisionalY =
-        tester.getTopLeft(find.byKey(_provisionalRowKey(1, 2))).dy;
+    final provisionalY = tester
+        .getTopLeft(find.byKey(_provisionalRowKey(1, 2)))
+        .dy;
     final toolBefore = tester
         .getTopLeft(find.byKey(const ValueKey('tool:call-2:8')))
         .dy;
     expect(provisionalY, lessThan(toolBefore));
-    final provisionalBottom =
-        tester.getBottomLeft(find.byKey(_provisionalRowKey(1, 2))).dy;
+    final provisionalBottom = tester
+        .getBottomLeft(find.byKey(_provisionalRowKey(1, 2)))
+        .dy;
 
     await _inject(tester, store, _f70Live()[4]);
     final settledY = tester.getTopLeft(find.byKey(_reasoningRowKey(1, 6))).dy;
@@ -446,31 +435,40 @@ void main() {
         .dy;
     // issue #76：provisional 行是 brandSoft 轻底卡，落定行是平铺行（视觉规格有意不同），
     // 短内容底部对齐下「落定后行变矮」会让行与后续工具整体等量下移——槽位关系不变。
-    final settledBottom =
-        tester.getBottomLeft(find.byKey(_reasoningRowKey(1, 6))).dy;
+    final settledBottom = tester
+        .getBottomLeft(find.byKey(_reasoningRowKey(1, 6)))
+        .dy;
     // issue #76：provisional 是 brandSoft 轻底卡、落定行是平铺行（视觉规格有意不同），
     // 但同一槽位的**下边界**不变（高度差向上生长），后续工具卡位置也不变。
-    expect(settledBottom, closeTo(provisionalBottom, 0.5),
-        reason: '落定后行下边界（槽位底）不跳动');
-    expect(toolAfter, closeTo(toolBefore, 0.5),
-        reason: '落定后其后的工具卡 y 不变');
+    expect(
+      settledBottom,
+      closeTo(provisionalBottom, 0.5),
+      reason: '落定后行下边界（槽位底）不跳动',
+    );
+    expect(toolAfter, closeTo(toolBefore, 0.5), reason: '落定后其后的工具卡 y 不变');
     expect(settledY, lessThan(toolAfter), reason: '同一 step 的思考行仍在工具行之前');
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('工具先到：provisional 追加在该工具行之后（到达顺序）', (tester) async {
     final store = await _pumpChat(
       tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
+      _Backend(
+        events: [
+          {
+            'seq': 1,
+            'type': 'turn/start',
+            'data': {'turn': 1},
+            'time': 1000,
+          },
+          {
+            'seq': 2,
+            'type': 'user/message',
+            'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+            'time': 1100,
+          },
+        ],
+      ),
     );
     await _inject(tester, store, {
       'seq': 10,
@@ -496,41 +494,44 @@ void main() {
       'time': 1300,
     });
     final toolY = tester.getTopLeft(find.text('shell')).dy;
-    final provisionalY =
-        tester.getTopLeft(find.byKey(_provisionalRowKey(1, 1))).dy;
+    final provisionalY = tester
+        .getTopLeft(find.byKey(_provisionalRowKey(1, 1)))
+        .dy;
     expect(provisionalY, greaterThan(toolY), reason: '工具先到 → provisional 在其后');
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('思考先到、工具后到：provisional 不跳到工具后面', (tester) async {
     final store = await _pumpChat(
       tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
+      _Backend(
+        events: [
+          {
+            'seq': 1,
+            'type': 'turn/start',
+            'data': {'turn': 1},
+            'time': 1000,
+          },
+          {
+            'seq': 2,
+            'type': 'user/message',
+            'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+            'time': 1100,
+          },
+        ],
+      ),
+      mode: WorkStepDisplayMode.detailed,
     );
-    // 无锚点阶段：保留活动条思考，不凭空造过程块。
+    // 尚无持久过程行：用一行 provisional-only 块保留思考反馈（ADR 0035）。
     await _inject(tester, store, {
       'seq': 10,
       'type': 'assistant/chunk',
-      'data': {
-        'turn': 1,
-        'step': 1,
-        'reasoning': true,
-        'text': 'think first',
-      },
+      'data': {'turn': 1, 'step': 1, 'reasoning': true, 'text': 'think first'},
       'time': 1200,
     });
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
-    expect(find.byKey(_activityBarKey), findsOneWidget);
-    expect(find.text('思考中…（11 字）'), findsOneWidget);
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsOneWidget);
+    expect(find.byKey(_activityBarKey), findsNothing);
+    expect(find.text('思考中…（11 字）'), findsNothing);
 
     await _inject(tester, store, {
       'seq': 11,
@@ -545,32 +546,43 @@ void main() {
       'time': 1300,
     });
     final toolY = tester.getTopLeft(find.text('shell')).dy;
-    final provisionalY =
-        tester.getTopLeft(find.byKey(_provisionalRowKey(1, 1))).dy;
+    final provisionalY = tester
+        .getTopLeft(find.byKey(_provisionalRowKey(1, 1)))
+        .dy;
     expect(provisionalY, lessThan(toolY), reason: '思考先到 → 工具到达后仍在其前');
     expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.byKey(_activityBarKey), findsNothing,
-        reason: '过程块已承载运行中工具，活动条不重复');
+    expect(
+      find.byKey(_activityBarKey),
+      findsNothing,
+      reason: '过程块已承载运行中工具，活动条不重复',
+    );
     expect(find.text('正在调用 shell…'), findsNothing);
     expect(find.text('shell'), findsWidgets);
     await _flushAppTimers(tester);
   });
-
 
   testWidgets('工具类事件推进 step：旧 step provisional 关闭，迟到旧 chunk 不复活（审查 P1-2）', (
     tester,
   ) async {
     final store = await _pumpChat(
       tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
+      _Backend(
+        events: [
+          {
+            'seq': 1,
+            'type': 'turn/start',
+            'data': {'turn': 1},
+            'time': 1000,
+          },
+          {
+            'seq': 2,
+            'type': 'user/message',
+            'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+            'time': 1100,
+          },
+        ],
+      ),
+      mode: WorkStepDisplayMode.detailed,
     );
     await _inject(tester, store, {
       'seq': 10,
@@ -583,8 +595,8 @@ void main() {
       },
       'time': 1200,
     });
-    expect(find.byKey(_activityBarKey), findsOneWidget);
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
+    expect(find.byKey(_activityBarKey), findsNothing);
+    expect(find.byKey(_provisionalRowKey(1, 1)), findsOneWidget);
 
     // step2 先到的是 tool/call（没有 step1 的 assistant/message）→ 必须关闭旧 provisional。
     await _inject(tester, store, {
@@ -601,9 +613,11 @@ void main() {
     });
     expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
     expect(find.text('思考中…'), findsNothing);
-    expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.byKey(_activityBarKey), findsNothing,
-        reason: '过程块已承载运行中工具，活动条不重复');
+    expect(
+      find.byKey(_activityBarKey),
+      findsNothing,
+      reason: 'ADR 0035：活动条已删除',
+    );
     expect(find.text('正在调用 shell…'), findsNothing);
     expect(find.text('shell'), findsWidgets);
 
@@ -630,15 +644,22 @@ void main() {
   ) async {
     final store = await _pumpChat(
       tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
+      _Backend(
+        events: [
+          {
+            'seq': 1,
+            'type': 'turn/start',
+            'data': {'turn': 1},
+            'time': 1000,
+          },
+          {
+            'seq': 2,
+            'type': 'user/message',
+            'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+            'time': 1100,
+          },
+        ],
+      ),
     );
     await _inject(tester, store, {
       'seq': 10,
@@ -724,80 +745,7 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-  testWidgets('活动条三态：无锚点显示思考 / 有块有工具由过程行承载 / 有块无工具整条隐藏', (
-    tester,
-  ) async {
-    final store = await _pumpChat(
-      tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
-    );
-    await _inject(tester, store, {
-      'seq': 10,
-      'type': 'assistant/chunk',
-      'data': {
-        'turn': 1,
-        'step': 1,
-        'reasoning': true,
-        'text': 'hello\nworld',
-      },
-      'time': 1200,
-    });
-    expect(find.byKey(_activityBarKey), findsOneWidget);
-    expect(find.text('思考中…（11 字）'), findsOneWidget);
-    expect(find.text('思考中…'), findsNothing);
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
-
-    // 工具到达：过程行展示运行中工具，活动条不再重复。
-    await _inject(tester, store, {
-      'seq': 11,
-      'type': 'tool/call',
-      'data': {
-        'turn': 1,
-        'step': 1,
-        'callId': 'call-1',
-        'name': 'shell',
-        'arguments': '{}',
-      },
-      'time': 1300,
-    });
-    expect(find.byKey(_activityBarKey), findsNothing);
-    expect(find.byKey(_activityBarToolsKey), findsNothing);
-    expect(find.byKey(_activityBarThinkingKey), findsNothing);
-    expect(find.text('正在调用 shell…'), findsNothing);
-    expect(find.text('shell'), findsWidgets);
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsOneWidget);
-    expect(find.text('思考中…'), findsOneWidget);
-
-    // 工具结束、仅剩思考中 → 活动条整条隐藏（思考已在过程行）。
-    await _inject(tester, store, {
-      'seq': 12,
-      'type': 'tool/result',
-      'data': {
-        'turn': 1,
-        'step': 1,
-        'callId': 'call-1',
-        'name': 'shell',
-        'text': 'ok',
-      },
-      'time': 1400,
-    });
-    expect(find.byKey(_activityBarKey), findsNothing);
-    expect(find.text('思考中…'), findsOneWidget);
-    await _flushAppTimers(tester);
-  });
-
-
-  testWidgets('四档模式运行中：provisional 均可见、抬头细节按档位、无组抬头档位不合成', (
-    tester,
-  ) async {
+  testWidgets('四档模式运行中：provisional 均可见、抬头细节按档位、无组抬头档位不合成', (tester) async {
     for (final mode in WorkStepDisplayMode.values) {
       final store = await _pumpChat(
         tester,
@@ -808,138 +756,82 @@ void main() {
       await _injectF70To(tester, store, 8);
 
       // issue #108 v4：简洁/标准运行中不铺过程行；详细/完全展开行可见。
-      expect(find.byKey(_provisionalRowKey(1, 2)),
-          mode == WorkStepDisplayMode.detailed ||
-                  mode == WorkStepDisplayMode.expanded
-              ? findsOneWidget
-              : findsNothing,
-          reason: '${mode.name}: provisional 可见性按档位');
-      expect(find.text('run tests first'),
-          mode == WorkStepDisplayMode.detailed ? findsOneWidget : findsNothing,
-          reason: '${mode.name}: 详细档折叠预览；完全展开正文已展开');
-      expect(find.text('check layout'),
-          mode == WorkStepDisplayMode.detailed ||
-                  mode == WorkStepDisplayMode.expanded
-              ? findsOneWidget
-              : findsNothing);
+      expect(
+        find.byKey(_provisionalRowKey(1, 2)),
+        mode == WorkStepDisplayMode.detailed ||
+                mode == WorkStepDisplayMode.expanded
+            ? findsOneWidget
+            : findsNothing,
+        reason: '${mode.name}: provisional 可见性按档位',
+      );
+      expect(
+        find.text('run tests first'),
+        mode == WorkStepDisplayMode.detailed ||
+                mode == WorkStepDisplayMode.expanded
+            ? findsOneWidget
+            : findsNothing,
+        reason: '${mode.name}: 详细/完全展开以折叠预览呈现，正文手动展开',
+      );
+      expect(
+        find.text('check layout'),
+        mode == WorkStepDisplayMode.detailed ||
+                mode == WorkStepDisplayMode.expanded
+            ? findsOneWidget
+            : findsNothing,
+      );
 
       switch (mode) {
         case WorkStepDisplayMode.concise:
-          expect(find.byKey(_activityBarKey), findsNothing,
-              reason: '简洁运行中活动条隐藏');
-          expect(find.textContaining('组'), findsWidgets,
-              reason: '简洁运行中只有过程段摘要');
+          expect(
+            find.byKey(_activityBarKey),
+            findsNothing,
+            reason: '简洁运行中活动条隐藏',
+          );
+          expect(
+            find.textContaining('组'),
+            findsWidgets,
+            reason: '简洁运行中只有过程段摘要',
+          );
         case WorkStepDisplayMode.standard:
-          expect(find.byKey(_activityBarKey), findsOneWidget,
-              reason: '标准运行中行不可见，活动条常显');
-          expect(find.textContaining('次工具调用 · 进行中'), findsWidgets,
-              reason: '标准组抬头显示组数/状态');
-          expect(find.text('shell'), findsNothing,
-              reason: '标准运行中不铺组内行');
+          expect(
+            find.byKey(_activityBarKey),
+            findsNothing,
+            reason: 'ADR 0035：活动条已删除，状态由组抬头承载',
+          );
+          expect(
+            find.textContaining('次工具调用 · 进行中'),
+            findsWidgets,
+            reason: '标准组抬头显示组数/状态',
+          );
+          expect(find.text('shell'), findsNothing, reason: '标准运行中不铺组内行');
         case WorkStepDisplayMode.detailed:
           expect(find.textContaining('正在调用工具…（shell）'), findsOneWidget);
           expect(find.text('shell'), findsNWidgets(2));
         case WorkStepDisplayMode.expanded:
-          expect(find.textContaining('正在调用工具…'), findsNothing,
-              reason: '完全展开不分组');
+          expect(
+            find.textContaining('正在调用工具…'),
+            findsNothing,
+            reason: '完全展开不分组',
+          );
           expect(find.text('shell'), findsNWidgets(2));
-          expect(find.text('参数'), findsWidgets,
-              reason: '完全展开当前轮详情自动展开');
+          expect(
+            find.text('参数'),
+            findsNothing,
+            reason: 'ADR 0035：完全展开不再自动展开详情',
+          );
       }
       // 运行中组强制展开：provisional 与落定行都真实构建出来。
-      expect(find.text('check layout'),
-          mode == WorkStepDisplayMode.detailed ||
-                  mode == WorkStepDisplayMode.expanded
-              ? findsOneWidget
-              : findsNothing);
+      expect(
+        find.text('check layout'),
+        mode == WorkStepDisplayMode.detailed ||
+                mode == WorkStepDisplayMode.expanded
+            ? findsOneWidget
+            : findsNothing,
+      );
       expect(tester.takeException(), isNull, reason: mode.name);
     }
     await _flushAppTimers(tester);
   });
-
-
-  testWidgets('50 行分批：provisional 不计入，落定后正常计数 +1', (tester) async {
-    final events = <Map<String, dynamic>>[
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-      {
-        'seq': 2,
-        'type': 'user/message',
-        'data': {'messageId': 'u1', 'text': 'run many tools', 'sourceKind': 'user'},
-        'time': 1100,
-      },
-      for (var i = 0; i < 60; i++) ...[
-        {
-          'seq': 10 + i * 2,
-          'type': 'tool/call',
-          'data': {
-            'turn': 1,
-            'step': 1,
-            'callId': 'bulk-$i',
-            'name': 'shell',
-            'arguments': 'echo $i',
-          },
-          'time': 1200 + i,
-        },
-        {
-          'seq': 11 + i * 2,
-          'type': 'tool/result',
-          'data': {
-            'turn': 1,
-            'step': 1,
-            'callId': 'bulk-$i',
-            'name': 'shell',
-            'text': 'ok $i',
-          },
-          'time': 1201 + i,
-        },
-      ],
-    ];
-    final store = await _pumpChat(
-      tester,
-      _Backend(events: events, returnAllOnInitial: true),
-    );
-    await _inject(tester, store, {
-      'seq': 500,
-      'type': 'assistant/chunk',
-      'data': {'turn': 1, 'step': 1, 'reasoning': true, 'text': 'still thinking'},
-      'time': 2000,
-    });
-    // 夹具较大，过程块在视口之外：先滚到块真正构建出来再断言（懒构建）。
-    await tester.dragUntilVisible(
-      find.byKey(_provisionalRowKey(1, 1)),
-      find.byType(CustomScrollView),
-      const Offset(0, 800),
-      maxIteration: 120,
-    );
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsOneWidget);
-    expect(find.textContaining('显示更多（还有 10 行）'), findsOneWidget,
-        reason: 'provisional 不进入 50 行计数');
-
-    await _inject(tester, store, {
-      'seq': 501,
-      'type': 'assistant/message',
-      'data': {
-        'turn': 1,
-        'step': 1,
-        'messageId': 'a1',
-        'text': '',
-        'reasoning': 'still thinking',
-        'reasoningChars': 14,
-      },
-      'time': 2100,
-    });
-    expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
-    await tester.dragUntilVisible(
-      find.textContaining('显示更多（还有 11 行）'),
-      find.byType(CustomScrollView),
-      const Offset(0, 800),
-      maxIteration: 120,
-    );
-    expect(find.textContaining('显示更多（还有 11 行）'), findsOneWidget,
-        reason: '落定后持久行按正常规则计数');
-    await _flushAppTimers(tester);
-  });
-
 
   testWidgets('turn/end completed：provisional 立即消失、页脚有用时、无残留', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
@@ -949,7 +841,10 @@ void main() {
     await _inject(tester, store, {
       'seq': 20,
       'type': 'turn/end',
-      'data': {'turn': 1, 'reason': {'kind': 'completed'}},
+      'data': {
+        'turn': 1,
+        'reason': {'kind': 'completed'},
+      },
       'time': 5000,
     });
     expect(find.byKey(_provisionalRowKey(1, 2)), findsNothing);
@@ -959,14 +854,16 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('turn/end aborted：中断轮不残留 provisional、页脚不显示用时', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
     await _injectF70To(tester, store, 8);
     await _inject(tester, store, {
       'seq': 20,
       'type': 'turn/end',
-      'data': {'turn': 1, 'reason': {'kind': 'aborted'}},
+      'data': {
+        'turn': 1,
+        'reason': {'kind': 'aborted'},
+      },
       'time': 5000,
     });
     expect(find.byKey(_provisionalRowKey(1, 2)), findsNothing);
@@ -976,13 +873,17 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('reset（compaction/end）：缓冲清空，旧轮迟到 chunk 不复活 provisional', (
     tester,
   ) async {
     final history = <Map<String, dynamic>>[
       ..._f70History(withTurnEnd: true),
-      {'seq': 7, 'type': 'turn/start', 'data': {'turn': 2}, 'time': 6000},
+      {
+        'seq': 7,
+        'type': 'turn/start',
+        'data': {'turn': 2},
+        'time': 6000,
+      },
       {
         'seq': 8,
         'type': 'user/message',
@@ -1003,9 +904,16 @@ void main() {
       'time': 7000,
     });
     expect(find.textContaining('正在调用工具…'), findsNothing);
-    expect(find.byKey(_activityBarKey), findsOneWidget,
-        reason: 'turn2 尚无持久过程行 → 无锚点，活动条保留思考');
-    expect(find.text('思考中…（13 字）'), findsOneWidget);
+    expect(
+      find.byKey(_activityBarKey),
+      findsNothing,
+      reason: 'ADR 0035：活动条已删除',
+    );
+    expect(
+      find.textContaining('思考中…'),
+      findsOneWidget,
+      reason: '尚无持久过程行时用一行 provisional/状态承载思考',
+    );
 
     // compaction/end → _load(reset:true)：重建表面、清空流式缓冲与活动条状态。
     await _inject(tester, store, {
@@ -1018,15 +926,23 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byKey(_activityBarKey), findsNothing);
     expect(find.textContaining('思考中'), findsNothing);
-    expect(find.textContaining('次工具调用'), findsWidgets,
-        reason: '历史回放外观按 v4 详细档：段展开、组抬头');
+    expect(
+      find.textContaining('次工具调用'),
+      findsWidgets,
+      reason: '历史回放外观按 v4 详细档：段展开、组抬头',
+    );
     expect(find.text('check layout'), findsNothing);
 
     // 旧轮（turn1 已结束）迟到 chunk：tombstone 生效，不复活 provisional。
     await _inject(tester, store, {
       'seq': 22,
       'type': 'assistant/chunk',
-      'data': {'turn': 1, 'step': 2, 'reasoning': true, 'text': 'late old turn'},
+      'data': {
+        'turn': 1,
+        'step': 2,
+        'reasoning': true,
+        'text': 'late old turn',
+      },
       'time': 7200,
     });
     expect(find.text('思考中…'), findsNothing);
@@ -1035,16 +951,24 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('reset 后仍在运行轮：已落定 step 迟到 chunk 不复活 provisional，新 step 正常', (
     tester,
   ) async {
     final history = <Map<String, dynamic>>[
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+      {
+        'seq': 1,
+        'type': 'turn/start',
+        'data': {'turn': 1},
+        'time': 1000,
+      },
       {
         'seq': 2,
         'type': 'user/message',
-        'data': {'messageId': 'u1', 'text': 'Question live', 'sourceKind': 'user'},
+        'data': {
+          'messageId': 'u1',
+          'text': 'Question live',
+          'sourceKind': 'user',
+        },
         'time': 1100,
       },
       {
@@ -1158,7 +1082,6 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
   testWidgets('assistant/message 无 reasoning 字段：provisional 也清掉且不新增行', (
     tester,
   ) async {
@@ -1181,7 +1104,6 @@ void main() {
     expect(find.byKey(_reasoningRowKey(1, 3)), findsOneWidget);
     await _flushAppTimers(tester);
   });
-
 
   testWidgets('切 step：只保留一条 provisional，预览为新 step 最近行', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
@@ -1229,28 +1151,35 @@ void main() {
       'time': 1500,
     });
     final toolY = tester.getTopLeft(find.text('read_file')).dy;
-    final provisionalY =
-        tester.getTopLeft(find.byKey(_provisionalRowKey(1, 3))).dy;
+    final provisionalY = tester
+        .getTopLeft(find.byKey(_provisionalRowKey(1, 3)))
+        .dy;
     expect(provisionalY, lessThan(toolY), reason: '思考先到 → 新工具行在其后');
     expect(find.text('正在调用工具…（read_file）'), findsOneWidget);
     await _flushAppTimers(tester);
   });
 
-
-  testWidgets('流式中上翻更早历史：durable 回放不得误清/推进 provisional（复审 P1）', (
-    tester,
-  ) async {
+  testWidgets('流式中上翻更早历史：durable 回放不得误清/推进 provisional（复审 P1）', (tester) async {
     tester.view.physicalSize = const Size(390, 500);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
     final backend = _Backend(
       events: [
-        {'seq': 20, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 2000},
+        {
+          'seq': 20,
+          'type': 'turn/start',
+          'data': {'turn': 1},
+          'time': 2000,
+        },
         {
           'seq': 21,
           'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Question live', 'sourceKind': 'user'},
+          'data': {
+            'messageId': 'u1',
+            'text': 'Question live',
+            'sourceKind': 'user',
+          },
           'time': 2100,
         },
         {
@@ -1358,14 +1287,19 @@ void main() {
     expect(backend.beforeRequests, greaterThan(0), reason: '上翻应触发 before 分页');
 
     // 回到实时区（懒构建可能回收了过程块），provisional 必须仍在、文案未变。
-    for (var i = 0;
-        i < 40 && find.byKey(_provisionalRowKey(1, 2)).evaluate().isEmpty;
-        i++) {
+    for (
+      var i = 0;
+      i < 40 && find.byKey(_provisionalRowKey(1, 2)).evaluate().isEmpty;
+      i++
+    ) {
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -600));
       await tester.pump(const Duration(milliseconds: 120));
     }
-    expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget,
-        reason: '历史回放不得关闭流式 provisional');
+    expect(
+      find.byKey(_provisionalRowKey(1, 2)),
+      findsOneWidget,
+      reason: '历史回放不得关闭流式 provisional',
+    );
     expect(find.text('思考中…'), findsOneWidget);
     expect(find.text('run tests first'), findsOneWidget);
 
@@ -1373,17 +1307,15 @@ void main() {
     await _inject(tester, store, {
       'seq': 32,
       'type': 'assistant/chunk',
-      'data': {
-        'turn': 1,
-        'step': 2,
-        'reasoning': true,
-        'text': ' + done',
-      },
+      'data': {'turn': 1, 'step': 2, 'reasoning': true, 'text': ' + done'},
       'time': 3200,
     });
     expect(find.byKey(_provisionalRowKey(1, 2)), findsOneWidget);
-    expect(find.text('run tests first + done'), findsOneWidget,
-        reason: '回放后同 step chunk 仍应继续增长');
+    expect(
+      find.text('run tests first + done'),
+      findsOneWidget,
+      reason: '回放后同 step chunk 仍应继续增长',
+    );
     expect(find.text('思考中…'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await _flushAppTimers(tester);
@@ -1391,11 +1323,20 @@ void main() {
 
   testWidgets('历史无 step 的多条思考行全部保留（审查 P1-1 用户可见回归）', (tester) async {
     final history = <Map<String, dynamic>>[
-      {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+      {
+        'seq': 1,
+        'type': 'turn/start',
+        'data': {'turn': 1},
+        'time': 1000,
+      },
       {
         'seq': 2,
         'type': 'user/message',
-        'data': {'messageId': 'u1', 'text': 'legacy question', 'sourceKind': 'user'},
+        'data': {
+          'messageId': 'u1',
+          'text': 'legacy question',
+          'sourceKind': 'user',
+        },
         'time': 1100,
       },
       {
@@ -1423,7 +1364,11 @@ void main() {
         'time': 1300,
       },
     ];
-    await _pumpChat(tester, _Backend(events: history), keySuffix: 'legacy-nostep');
+    await _pumpChat(
+      tester,
+      _Backend(events: history),
+      keySuffix: 'legacy-nostep',
+    );
     expect(find.byKey(_reasoningRowKey(1, 3)), findsOneWidget);
     expect(find.byKey(_reasoningRowKey(1, 5)), findsOneWidget);
     final y1 = tester.getTopLeft(find.byKey(_reasoningRowKey(1, 3))).dy;
@@ -1437,7 +1382,11 @@ void main() {
 
   testWidgets('历史回放不变：无 chunk 夹具不出现 provisional / 活动条', (tester) async {
     // 运行中的历史轮（无 turn/end）：过程块强制展开、无 provisional。
-    await _pumpChat(tester, _Backend(events: _f70History()), keySuffix: 'hist-run');
+    await _pumpChat(
+      tester,
+      _Backend(events: _f70History()),
+      keySuffix: 'hist-run',
+    );
     expect(find.text('思考中…'), findsNothing);
     expect(find.byKey(_activityBarKey), findsNothing);
     expect(find.byKey(_provisionalRowKey(1, 1)), findsNothing);
@@ -1463,10 +1412,7 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
-  testWidgets('provisional 展开：正文高 ≤200 且内部滚动；收起态行高在 delta 间稳定', (
-    tester,
-  ) async {
+  testWidgets('provisional 展开：正文高 ≤200 且内部滚动；收起态行高在 delta 间稳定', (tester) async {
     final store = await _pumpChat(tester, _Backend(events: _f70History()));
     await _injectF70To(tester, store, 7);
     final collapsedHeight = tester
@@ -1504,7 +1450,10 @@ void main() {
       reason: '展开正文不得撑高消息流',
     );
     expect(
-      find.descendant(of: bodyFinder, matching: find.byType(SingleChildScrollView)),
+      find.descendant(
+        of: bodyFinder,
+        matching: find.byType(SingleChildScrollView),
+      ),
       findsOneWidget,
     );
     // delta 到达不重置用户展开态。
@@ -1519,39 +1468,6 @@ void main() {
     expect(tester.takeException(), isNull);
     await _flushAppTimers(tester);
   });
-
-
-  testWidgets('活动条正文流式：无块时显示「已思考 N 字」，有块时不重复', (tester) async {
-    final store = await _pumpChat(
-      tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-      ]),
-    );
-    await _inject(tester, store, {
-      'seq': 10,
-      'type': 'assistant/chunk',
-      'data': {'turn': 1, 'step': 1, 'reasoning': true, 'text': 'hello world'},
-      'time': 1200,
-    });
-    expect(find.text('思考中…（11 字）'), findsOneWidget);
-    await _inject(tester, store, {
-      'seq': 11,
-      'type': 'assistant/chunk',
-      'data': {'turn': 1, 'step': 1, 'text': 'answer'},
-      'time': 1300,
-    });
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text('已思考 11 字'), findsOneWidget, reason: '无块时保留现状文案');
-    await _flushAppTimers(tester);
-  });
-
 
   testWidgets('320dp 窄屏：provisional 行单行省略、无 overflow', (tester) async {
     tester.view.physicalSize = const Size(320, 640);
@@ -1575,34 +1491,38 @@ void main() {
     await _flushAppTimers(tester);
   });
 
-
-  testWidgets('性能：200 个 delta 分批注入，页面/计划重建有限且正文完整（审查 P2-2）', (
-    tester,
-  ) async {
+  testWidgets('性能：200 个 delta 分批注入，页面/计划重建有限且正文完整（审查 P2-2）', (tester) async {
     // 已有持久工具行（过程块锚点已存在），provisional 尚未出现。
     final store = await _pumpChat(
       tester,
-      _Backend(events: [
-        {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
-        {
-          'seq': 2,
-          'type': 'user/message',
-          'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
-          'time': 1100,
-        },
-        {
-          'seq': 3,
-          'type': 'tool/call',
-          'data': {
-            'turn': 1,
-            'step': 1,
-            'callId': 'call-1',
-            'name': 'shell',
-            'arguments': '{}',
+      _Backend(
+        events: [
+          {
+            'seq': 1,
+            'type': 'turn/start',
+            'data': {'turn': 1},
+            'time': 1000,
           },
-          'time': 1200,
-        },
-      ]),
+          {
+            'seq': 2,
+            'type': 'user/message',
+            'data': {'messageId': 'u1', 'text': 'Q', 'sourceKind': 'user'},
+            'time': 1100,
+          },
+          {
+            'seq': 3,
+            'type': 'tool/call',
+            'data': {
+              'turn': 1,
+              'step': 1,
+              'callId': 'call-1',
+              'name': 'shell',
+              'arguments': '{}',
+            },
+            'time': 1200,
+          },
+        ],
+      ),
     );
     LiveProcessCounters.reset();
 
@@ -1632,15 +1552,24 @@ void main() {
 
     // 钩子必须真实非 0（防假绿），且不随 delta 线性增长。
     expect(LiveProcessCounters.appends, 200);
-    expect(LiveProcessCounters.structuralChanges, 1,
-        reason: '只有首个 delta 引起结构变化（键首次出现），其余只是文本增长');
+    expect(
+      LiveProcessCounters.structuralChanges,
+      1,
+      reason: '只有首个 delta 引起结构变化（键首次出现），其余只是文本增长',
+    );
     expect(LiveProcessCounters.pageBuilds, greaterThan(0), reason: '计数钩子不得恒 0');
     expect(LiveProcessCounters.processPlanBuilds, greaterThan(0));
     expect(LiveProcessCounters.provisionalRowBuilds, greaterThan(0));
-    expect(LiveProcessCounters.pageBuilds, lessThanOrEqualTo(2),
-        reason: '页面重建不得随 delta 增长');
-    expect(LiveProcessCounters.processPlanBuilds, lessThanOrEqualTo(2),
-        reason: '过程计划重建不得随 delta 增长');
+    expect(
+      LiveProcessCounters.pageBuilds,
+      lessThanOrEqualTo(2),
+      reason: '页面重建不得随 delta 增长',
+    );
+    expect(
+      LiveProcessCounters.processPlanBuilds,
+      lessThanOrEqualTo(2),
+      reason: '过程计划重建不得随 delta 增长',
+    );
     expect(
       LiveProcessCounters.provisionalRowBuilds,
       lessThanOrEqualTo(frames + 2),

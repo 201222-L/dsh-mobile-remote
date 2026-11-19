@@ -3,11 +3,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show setEquals, visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderSliver, RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
+    show RenderSliverMultiBoxAdaptor, SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -60,30 +61,39 @@ import 'turn_file_preview_screen.dart';
 // 恢复默认 16dp，两者在**同一帧**由 build 内同一个 gate 决定。
 const double turnRailWidth = 28;
 const double turnRailRightGutter = 8;
-const double turnRailRightPadding = turnRailWidth + turnRailRightGutter; // 36
-const double chatMessageDefaultRightPadding = 16;
 
 /// 轨道区底部预留：圆钮高 38 + bottom 12 + 与圆钮至少 12dp 避让 = 62dp。
 const double turnRailBottomReserve = 62;
 
-// ── issue #81：320+大字下「回到底部」圆钮遮挡尾段 ─────────────────────
-// 圆钮也占用右侧 action gutter：可见时正文右 padding 取 38（≥轨道 36），并把圆钮
-// 移到 right 0（占用最后 38dp）；圆钮隐藏时回到轨道/默认口径。两者同帧计算。
+// ── ADR 0035：高度模型 ────────────────────────────────────────────
+// 折叠行固定单行；展开正文固定上限。上限取窗口高度（不是滚动视口高度），
+// 避免键盘开合改变 cap 造成额外 resize。
+const double transcriptBodyMaxHeight = 320;
+
+double transcriptGroupMaxHeight(BuildContext context) =>
+    math.min(400.0, MediaQuery.sizeOf(context).height * 0.5);
+
+/// 折叠过程行/工具行/思考行的固定单行高度（ADR 0035）。
+double transcriptRowHeight(BuildContext context) =>
+    24 * MediaQuery.textScalerOf(context).scale(1);
+
+double transcriptImageGridMaxHeight(BuildContext context) =>
+    math.min(400.0, MediaQuery.sizeOf(context).height * 0.5);
+
+// ── issue #81 / ADR 0035：320+大字下「回到底部」圆钮遮挡尾段 ────────────
+// 圆钮/轨道改为 overlay 后，正文右 padding 恒定 38dp，不再随控件显隐 reflow。
 const double jumpToLatestSize = 38;
 const double jumpToLatestRightPadding = jumpToLatestSize;
 
-/// 消息列表右 padding 的唯一判定（issue #80/#81 共用，供 widget/单测断言四组合）。
+/// 消息列表右 padding 的唯一判定（ADR 0035）。
 ///
-/// - 圆钮可见（用户上翻出「回到底部」）：38（按钮占用最后 38dp）；
-/// - 否则轨道可见：36（轨道 28 + 右留白 8）；
-/// - 都隐藏：16（默认）。
+/// 回底按钮/刻度轨改为 overlay 后，正文右 padding 恒定 38dp：控件显隐不再改变
+/// 正文宽度、不再触发 reflow。参数保留给既有调用/测试，语义不再分档。
 double listRightPaddingFor({
   required bool jumpVisible,
   required bool railVisible,
 }) {
-  if (jumpVisible) return jumpToLatestRightPadding;
-  if (railVisible) return turnRailRightPadding;
-  return chatMessageDefaultRightPadding;
+  return jumpToLatestRightPadding;
 }
 
 /// v3.0.0(热修 07)：服务端"明确拒绝"的错误码白名单——这些代表消息**未被投递且服务端无回执**，
@@ -134,8 +144,7 @@ final RegExp _commandLinePattern = RegExp(r'^/([a-z][a-z0-9_-]*)(?:\s|$)');
 /// 语法后果（有意，非疏漏）：`/m/api/send 是什么` **不是**命令（`m` 之后是 `/` 而不是空白），
 /// 因此这类路径样式的消息照旧原样发给模型；而 `/tmp` 这类单段文本**是**命令——语法上无法与
 /// 命令名区分，由"目录里查不到该名字 → 提示一次未知命令后照常发送"兜底（见 `_tryRunCommandLine`）。
-bool isCommandLine(String text) =>
-    _commandLinePattern.hasMatch(text.trim());
+bool isCommandLine(String text) => _commandLinePattern.hasMatch(text.trim());
 
 /// issue #25：命令行里的命令名（不是命令行时 null）。入参内部先 trim，与 [isCommandLine] 同口径。
 String? commandLineName(String text) =>
@@ -279,7 +288,9 @@ class _ConversationActionRailState extends State<_ConversationActionRail> {
           elevation: 12,
           color: Theme.of(context).colorScheme.surface,
           // 高度贴合内容后它是一条"浮动短条"，左侧圆角让它与右边缘的贴合看起来是有意的
-          borderRadius: const BorderRadius.horizontal(left: Radius.circular(14)),
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(14),
+          ),
           clipBehavior: Clip.antiAlias,
           child: SizedBox(
             width: 56,
@@ -353,8 +364,7 @@ class _WorkspaceImageConsent {
   final String requestDir;
   final DateTime? expiresAt;
 
-  bool get expired =>
-      expiresAt != null && !DateTime.now().isBefore(expiresAt!);
+  bool get expired => expiresAt != null && !DateTime.now().isBefore(expiresAt!);
 }
 
 class ChatScreen extends StatefulWidget {
@@ -405,12 +415,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // 无限上翻时放在 center 之前的旧消息，按“距 center 近→远”排列（新→旧）。
   // 新分页追加到尾部，已有 child index 不变，CustomScrollView.center 可保持锚点。
   final List<_MsgItem> _olderItems = [];
-  // 活动条状态：执行中的工具（callId -> 工具名）+ 思考累积文本
-  final Map<String, String> _activeTools = {};
   // ── issue #61：工具名兜底映射（session 级 callId → toolName） ───────────
   // 历史分页截断/流式增量缺 `name` 时，用本会话此前事件里学到的工具名补名。
-  // 与 [_activeTools]（活动条瞬时态，结果到达即删）不同：这里保留整会话，
-  // 因为历史重建（_load 重放）可能只剩 result、没有 call。会话切换时清空。
+  // 这里保留整会话，因为历史重建（_load 重放）可能只剩 result、没有 call。
+  // 会话切换时清空。
   final Map<String, String> _toolNamesByCallId = {};
   String? _toolNamesSessionId;
   // Shared pure projection owns seq de-duplication/call correlation for both live and history paths;
@@ -426,35 +434,51 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<int, TurnProcess> _processTurnMap = const {};
   int _processVersion = 0; // 观察到的进化版本
   int _processBuiltVersion = -1; // 已折叠的版本
-  final Map<String, bool> _turnExpansions = {}; // 过程段手动展开/收起（turn:segment）
-  final Map<String, bool> _groupExpansions = {}; // 过程组手动展开（turn:segment:step）
+  // issue #123（方案 D）：**组级**折叠状态移到 `_ProcessGroupHeader` 的 `State`
+  // （对齐 DSH 本体 `useDisclosure(version)`：identity 同 → State 复用；identity 变 →
+  // 新 State 回落默认）。这里只保留一份**外部镜像**，用途仅两个：
+  // 1. 滚动导致列表项回收、State 被销毁后重建时恢复用户选择；
+  // 2. 计划层派生 `visibleToolCallIds` / provisional 放置（活动条去重需要）。
+  // 没有任何迁移/同步/指纹：identity 变化即视为新组（取档位默认）。
+  final Map<String, bool> _groupUserExpanded = {};
+
+  /// 上次执行「存在性过滤」时的 `_processVersion`（避免每次 build 全量扫）。
+  int _groupRetainVersion = -1;
+
+  // **段级**手动折叠状态仍在数据层：段键由 durable 的开段插话 seq 决定，
+  // 只有 partial 窗口补入边界时的 `head → <seq>` 会变，由成员身份迁移处理。
+  final SegmentFoldState _segmentFold = SegmentFoldState();
   final Map<String, bool> _reasoningRowExpansions = {}; // 思考行手动展开（turn:seq）
-  final Map<int, int> _processRowLimits = {}; // 分批展示：turn → 已展示行数
+  // 思考详情：摘要 20k 截断后，用户首次展开时按 durable seq 拉完整正文（ADR 0035）。
+  final Map<int, String> _reasoningDetailTexts = {};
+  final Set<int> _reasoningDetailPending = {};
   // ── issue #53（ADR 0027 §3）：轮末产出物（两卡 + 按坐标预览） ─────────
   final Map<int, TurnTail> _turnTails = {}; // 轮号 → turnTails/tail 信号
   final Map<int, List<DeliverableFile>> _deliverablesByTurn = {};
   late final TurnTailSummaryCache _changedSummaryCache =
       widget.changedSummaryCache ?? TurnTailSummaryCache();
+
   /// 只表示 **in-flight**：完成/失败后移除，TTL 到期可重新拉取（issue #60 R06）。
   final Set<int> _changedSummaryRequested = {};
+
   /// issue #60 recheck-11：reset/重同步会清空门闩与缓存；旧请求完成必须按代际丢弃，
   /// 不得回填缓存或移除新请求的门闩。
   int _tailLoadGeneration = 0;
+
   /// 失败退避：避免完成后立刻被重建无限重试；仅抑制一段时间，不阻止 TTL 恢复。
   final Map<int, DateTime> _changedSummaryRetryAfter = {};
   final Map<int, String> _changedSummaryErrors = {};
-  final Map<int, ({int version, TurnFileLinkResolver resolver})> _linkResolvers = {};
+  final Map<int, ({int version, TurnFileLinkResolver resolver})>
+  _linkResolvers = {};
   int _turnTailVersion = 0;
   // ── issue #70（ADR 0027 §2 实时态）：运行中思考（provisional）──────────
-  // 流式 reasoning 按 (turn, step) 缓冲在纯模型 [LiveReasoningBuffer]，活动条与
-  // 过程块 provisional 行读同一份快照；文本增长只通知 ValueNotifier（行级重建），
+  // 流式 reasoning 按 (turn, step) 缓冲在纯模型 [LiveReasoningBuffer]，过程块
+  // provisional 行读这份快照；文本增长只通知 ValueNotifier（行级重建），
   // 只有结构变化（首现/切换/落定/清理）才重建过程计划。
   final LiveReasoningBuffer _liveReasoning = LiveReasoningBuffer();
   final ValueNotifier<int> _liveReasoningRevision = ValueNotifier<int>(0);
   // provisional 行的展开状态（turn:step，跨 delta 保留；落定/轮末清理）。
   final Map<String, bool> _provisionalExpansions = {};
-  bool _reasoningExpanded = false;
-  Timer? _activityTimer;
   String _draft = '';
   bool _streaming = false;
   int _lastSeq = 0;
@@ -467,10 +491,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
   // issue #94/#95：Markdown 本地图片 loader；缓存/并发/会话隔离由本页 LRU 负责。
-  late final MarkdownImageLoader _markdownImageLoader =
-      (source) => _loadMarkdownImage(source);
-  late final MarkdownImageUserAction _markdownImageUserAction =
-      (source) => _loadMarkdownImage(source, userInitiated: true);
+  late final MarkdownImageLoader _markdownImageLoader = (source) =>
+      _loadMarkdownImage(source);
+  late final MarkdownImageUserAction _markdownImageUserAction = (source) =>
+      _loadMarkdownImage(source, userInitiated: true);
   late final WorkspaceImageCache _workspaceImageCache = WorkspaceImageCache();
   final List<_WorkspaceImageConsent> _imageConsents = [];
   final Map<String, Future<String?>> _imageConsentPrompts = {};
@@ -489,11 +513,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     var consentId = _imageConsentIdFor(source);
     Future<Uint8List> fetch() async {
-      final data = await _api.workspaceImage(
-        id,
-        source,
-        consentId: consentId,
-      );
+      final data = await _api.workspaceImage(id, source, consentId: consentId);
       // 服务端 8MiB + 客户端二次校验（防旧宿主/中间层异常大响应）。
       if (data.bytes.length > 8 * 1024 * 1024) {
         throw ApiException(
@@ -585,7 +605,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _imageDisplayPath(String source) {
     final normalized = source.replaceAll('\\', '/');
-    final segments = normalized.split('/').where((part) => part.isNotEmpty).toList();
+    final segments = normalized
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .toList();
     if (segments.isEmpty) return source;
     if (segments.length == 1) return segments.single;
     return '…/${segments[segments.length - 2]}/${segments.last}';
@@ -629,7 +652,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             FilledButton(
               key: const Key('image-consent-directory'),
-              onPressed: () => Navigator.of(dialogContext).pop('session-directory'),
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop('session-directory'),
               child: Text(L10n.t('本会话允许此目录', 'Allow this directory')),
             ),
           ],
@@ -644,15 +668,19 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         final consentId = (issued['consentId'] ?? '').toString();
         if (consentId.isEmpty) return null;
-        final expiresAt = DateTime.tryParse((issued['expiresAt'] ?? '').toString());
+        final expiresAt = DateTime.tryParse(
+          (issued['expiresAt'] ?? '').toString(),
+        );
         _imageConsentDeclined.remove(_imageConsentKey(id, source));
-        _imageConsents.add(_WorkspaceImageConsent(
-          consentId: consentId,
-          scope: (issued['scope'] ?? choice).toString(),
-          requestPath: source,
-          requestDir: _requestDir(source),
-          expiresAt: expiresAt,
-        ));
+        _imageConsents.add(
+          _WorkspaceImageConsent(
+            consentId: consentId,
+            scope: (issued['scope'] ?? choice).toString(),
+            requestPath: source,
+            requestDir: _requestDir(source),
+            expiresAt: expiresAt,
+          ),
+        );
         if (mounted) setState(() {});
         return consentId;
       } on ApiException catch (error) {
@@ -668,6 +696,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _imageConsentDialogOpen = false;
     }
   }
+
   Api get _api => widget.apiClient ?? api;
   String get _pageAgentStatus =>
       widget.store.agentStatusForSession(_mySessionId);
@@ -696,16 +725,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // 意图判定、合并、预算、执行时守卫都在 ScrollFollowCoordinator 内（可单测）。
   late final ScrollFollowCoordinator _scrollFollow;
   bool _scrollFollowFrameBooked = false;
-  // ── issue #77：活跃会话滚动贴底 ────────────────────────────────────
-  // 内容短于视口时用顶部占位把消息列表底部对齐视口底部（否则 center 布局会顶对齐、
-  // 下方留大片空白）；内容增长不算「上翻」（只有用户拖动才停止跟随）。
-  double _liveBottomGap = 0;
-  bool _liveGapMeasureScheduled = false;
-  double _lastGapContentExtent = 0;
-  // issue #89：活动条显隐/视口高度变化后必须重测底部占位；记录可见态与上次实测高度。
-  bool _activityBarShown = false;
-  double _lastGapViewportHeight = 0;
-  bool _suppressOlderPaging = false; // 占位调整帧内：位置修正不得触发「上翻加载更早」
   // issue #80：本帧轨道是否可见——列表右 padding 与轨道定位共用同一个 gate（同帧生效）。
   bool _turnRailVisible = false;
   // issue #81：本帧消息列右 padding；宽度变化必须让依赖宽度的尺寸/内容偏移缓存失效，
@@ -716,6 +735,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── issue #114：A1 测量层（保持只读；状态已收口到 ScrollFollowCoordinator） ──
   @visibleForTesting
+  /// 测试只读：组选择缓存当前保留的 identity（验证存在性过滤）。
+  Set<String> get debugGroupUserExpandedKeys => _groupUserExpanded.keys.toSet();
+
   bool get debugPinnedToBottom => _scrollFollow.isFollowing;
 
   @visibleForTesting
@@ -726,9 +748,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @visibleForTesting
   bool get debugSettledFollowScheduled => _scrollFollow.hasPendingCorrection;
-
-  @visibleForTesting
-  double get debugLiveBottomGap => _liveBottomGap;
 
   /// 派生展示：回底按钮/刻度轨是否可见（只读探针，供需求用例断言）。
   @visibleForTesting
@@ -754,18 +773,18 @@ class _ChatScreenState extends State<ChatScreen> {
   int debugScrollToBottomCallbacks = 0;
 
   ScrollGeometry _geometryOfMetrics(ScrollMetrics metrics) => ScrollGeometry(
-        pixels: metrics.pixels,
-        minExtent: metrics.minScrollExtent,
-        maxExtent: metrics.maxScrollExtent,
-        viewportDimension: metrics.viewportDimension,
-      );
+    pixels: metrics.pixels,
+    minExtent: metrics.minScrollExtent,
+    maxExtent: metrics.maxScrollExtent,
+    viewportDimension: metrics.viewportDimension,
+  );
 
   ScrollGeometry _geometryOfPosition(ScrollPosition position) => ScrollGeometry(
-        pixels: position.pixels,
-        minExtent: position.minScrollExtent,
-        maxExtent: position.maxScrollExtent,
-        viewportDimension: position.viewportDimension,
-      );
+    pixels: position.pixels,
+    minExtent: position.minScrollExtent,
+    maxExtent: position.maxScrollExtent,
+    viewportDimension: position.viewportDimension,
+  );
 
   /// owner 的唯一帧调度出口：注册帧后执行器，并**确保下一帧被调度**。
   /// `addPostFrameCallback` 本身不调度帧——这正是 #114 A2 实测到的校正饿死根因。
@@ -847,8 +866,8 @@ class _ChatScreenState extends State<ChatScreen> {
     int? budget,
   }) {
     if (!mounted) return;
-    final geometry = _scrollCtrl.hasClients &&
-            _scrollCtrl.position.hasContentDimensions
+    final geometry =
+        _scrollCtrl.hasClients && _scrollCtrl.position.hasContentDimensions
         ? _geometryOfPosition(_scrollCtrl.position)
         : null;
     if (forced) {
@@ -908,6 +927,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // 已构建边界最后一次实测的**内容偏移**（turn → offset）：边界被懒构建回收后，
   // 仍能用它推断阅读线落在哪一轮（长回复场景不再无条件回退到最新轮）。
   final Map<int, double> _turnContentOffset = {};
+
   /// issue #31（方案 B）：**条目尺寸缓存**——已构建子项的实测高度，按稳定 key
   /// （`seq` 优先，工具卡用 `latestSeq`）记录。定位时用它算"索引 → 偏移"的估算，
   /// 这是本体虚拟化列表 `getOffsetForIndex` 的等价物：长跳一步落到目标附近，
@@ -930,14 +950,6 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _turnOutlineNoticeShown = false;
   bool _activeTurnCalibrationScheduled = false; // 滚动期间合并调度几何校准
   final GlobalKey _liveViewportKey = GlobalKey(); // 阅读线基准：消息流视口
-  // re-review P2：过程工具行的真实几何 key（callId → GlobalKey），活动条据此判断
-  // 该行是否真的与视口相交，而不是只看「计划里可见 / 已展开」。
-  final Map<String, GlobalKey> _processToolRowKeys = {};
-  // 首帧几何尚未 layout 完成：安排一次 post-frame 重建，让“行可见→隐藏活动条”生效。
-  bool _activityGeometryResolved = false;
-  bool _activityGeometryRefreshScheduled = false;
-  int _activityGeometryRefreshFrames = 0;
-  String _activityGeometryCandidateKey = '';
   // 两条消息流列表（center 前后）的渲染对象：定位时用来遍历**已构建子项**的
   // 真实索引与几何（长回复会挤掉落点附近的轮次边界，只有子项索引是连续可靠的）。
   final GlobalKey _olderSliverKey = GlobalKey(); // center 之前：_olderItems
@@ -954,6 +966,10 @@ class _ChatScreenState extends State<ChatScreen> {
   int _usageRequest = 0;
   Timer? _draftTimer; // 流式草稿节流刷新（chunk 合并，避免每帧全量重建）
   int _lastLoggedCount = -1; // 排障：itemCount 变化时打日志
+  // ADR 0035 真机排障：布局几何快照（只在布局/滚动结束时打，节流 400ms）。
+  String _geoDiagReason = 'layout';
+  bool _geoDiagScheduled = false;
+  DateTime _lastGeoLogAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _scrolledLogged = false; // 排障：滚动状态打一次日志
   // v2.8.0 review(P2-2)：反馈提交中集合（按 messageId），防快速连点 toggle 竞态
   final Set<String> _feedbackInFlight = {};
@@ -1024,7 +1040,9 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.store.addListener(_onStoreChanged);
     _scrollCtrl.addListener(_onScrollTick);
     // issue #114：滚动跟随意图/校正的唯一 owner（生产与测试共用同一 seam）。
-    _scrollFollow = ScrollFollowCoordinator(ensureFrame: _ensureScrollFollowFrame);
+    _scrollFollow = ScrollFollowCoordinator(
+      ensureFrame: _ensureScrollFollowFrame,
+    );
     _load();
     // v2.7：恢复该会话上次未发送的输入草稿
     final sid = _mySessionId;
@@ -1084,7 +1102,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 输入 / 时并行取命令+技能目录（失败不阻塞输入；下次输入可重试）。
     // issue #97：光标停在消息尾部（不在 slash token 内）时，只要正文含 token 也要加载目录，
     // 否则编辑态已输入的 `/name` 永远无法高亮。
-    final hasSlashText = token != null || slashTextTokens(_inputCtrl.text).isNotEmpty;
+    final hasSlashText =
+        token != null || slashTextTokens(_inputCtrl.text).isNotEmpty;
     if (hasSlashText && sid != null) unawaited(_ensureSlashCatalog(sid));
   }
 
@@ -1102,6 +1121,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (current != null && _mySessionId != null && current != _mySessionId) {
       _mySessionId = current;
       _clearImageConsentState();
+      // issue #123：identity 只含 turn/callId，跨会话可能撞名 → 换会话必须清空
+      // （同一会话内的 reset/compaction 不清，交给存在性过滤）。
+      _groupUserExpanded.clear();
+      _groupRetainVersion = -1;
       // issue #114：会话身份变化丢弃旧世代/旧跟随意图。
       _scrollFollow.onSessionChanged();
     }
@@ -1111,7 +1134,6 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _clearImageConsentState();
     _draftTimer?.cancel();
-    _activityTimer?.cancel();
     _queueRefreshTimer?.cancel();
     _queuePollTimer?.cancel();
     _queueEditCtrl.dispose();
@@ -1137,10 +1159,6 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 是否跟随由 ScrollFollowCoordinator 依「用户动作 + 世代」决定（§5.2）。
   void _onScrollTick() {
     if (!mounted || _inHistory) return;
-    // re-review P2：滚动后行几何/可见性变化，允许活动条重新做几何判定。
-    _activityGeometryResolved = false;
-    _activityGeometryRefreshScheduled = false;
-    _activityGeometryRefreshFrames = 0;
     final pos = _scrollCtrl.position;
     if (!pos.hasContentDimensions) return;
     _scrollFollow.onMetrics(_geometryOfPosition(pos));
@@ -1160,106 +1178,96 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// issue #103/#114：展开/收起（卡/组/轮/显示更多）后统一通知滚动层。
+  /// ADR 0035 真机排障：在布局/滚动结束后记录一次几何快照。
   ///
-  /// 旧 `_liveBottomGap` 是按更短内容算出的，必须立即失效；跟随意图下由 owner
-  /// 合并排一次有界收敛（单次 jump 会被 lazy extent 修正甩开）。阅读态/拖拽中
-  /// owner 不会排队，因此用户位置不被抢走。
-  void _onContentLayoutChanged() {
+  /// 目标：区分“短内容顶对齐的正常留白”和“某个不可见子项/占位造成的假留白”。
+  /// 只写 AppLog（设置页可复制），不参与任何布局/滚动决策；节流 400ms，避免长会话刷屏。
+  void _scheduleGeometryDiagnostic(String reason) {
     if (!mounted || _inHistory) return;
-    if (_liveBottomGap > 0) {
-      setState(() => _liveBottomGap = 0);
-    }
-    _scheduleLiveBottomGapMeasure();
-    _requestScrollFollow();
+    _geoDiagReason = reason;
+    if (_geoDiagScheduled) return;
+    _geoDiagScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _geoDiagScheduled = false;
+      if (!mounted || _inHistory) return;
+      final now = DateTime.now();
+      if (now.difference(_lastGeoLogAt) < const Duration(milliseconds: 400)) {
+        return;
+      }
+      _lastGeoLogAt = now;
+      _logGeometry(_geoDiagReason);
+    });
   }
 
-  /// issue #77：按 live 面板实测高度维护「顶部占位」——内容短于视口时让列表底部
-  /// 对齐视口底部（center 布局默认顶对齐会在下方留大片空白）。
-  ///
-  /// 占位单独作为 center 之后的 SliverToBoxAdapter，不改 `_liveSliverKey` 的子项
-  /// 索引（轮次导航/尺寸缓存不受影响）。
-  void _scheduleLiveBottomGapMeasure() {
-    if (_liveGapMeasureScheduled) return;
-    _liveGapMeasureScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _liveGapMeasureScheduled = false;
-      if (!mounted || _inHistory) return;
-      final viewport =
-          _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
-      final liveSliver = _liveSliverKey.currentContext?.findRenderObject();
-      if (viewport == null || !viewport.hasSize) return;
-      if (liveSliver is! RenderSliver) return;
-      final geometry = liveSliver.geometry;
-      if (geometry == null) return;
-      // SliverList 的 scrollExtent 不含外层 SliverPadding 的 6px 底部内边距。
-      // 没有任何消息/草稿时不加占位：否则「历史还在加载」的首帧会把空列表测成
-      // 满屏占位，内容到达后（下一帧才重测）会被推到视口外——真机首屏与测试都会闪。
-      // issue #76 回归：一旦加载过更早历史页，滚动位置属于历史浏览/懒构建区域，
-      // 短内容底部占位会与位置修正互相拉扯（paged 场景 provisional 行被推出）；
-      // 该场景保持既有顶部对齐，只在「当前只有实时窗口」时启用底部占位。
-      final hasContent = _items.isNotEmpty ||
-          _olderItems.isNotEmpty ||
-          _draft.isNotEmpty;
-      final paged = _olderItems.isNotEmpty;
-      final contentExtent = hasContent ? geometry.scrollExtent + 6 : 0.0;
-      final desired = hasContent
-          ? math.max(0.0, viewport.size.height - contentExtent)
-          : 0.0;
-      final viewportHeight = viewport.size.height;
-      final viewportChanged =
-          (viewportHeight - _lastGapViewportHeight).abs() > 0.5;
-      _lastGapViewportHeight = viewportHeight;
-      // 收敛策略（避免每个 delta 都重建）：内容增长时保留旧占位（内容仍贴底，多出的
-      // 空白在视口上方、用户不可见）；内容超过视口时清零；内容明显变短时再补足。
-      // 只在「明显短于视口」（还会留下 >80px 空白）时启用底部占位：接近一屏的
-      // 内容保持既有顶部对齐，避免与过程行位置/懒构建估算互相干扰。
-      // issue #103：lazy SliverList 的 scrollExtent 会随子项构建/展开大幅修正。
-      // 内容刚增长时旧的正 gap 一定是按更短内容算出的，先局部清零（避免旧占位
-      // 把内容推到视口外/制造空白），再按本帧实测重算。
-      final contentGrew =
-          hasContent && contentExtent > _lastGapContentExtent + 1;
-      _lastGapContentExtent = contentExtent;
-      var currentGap = _liveBottomGap;
-      if (contentGrew && currentGap > 0) {
-        currentGap = 0;
-        _liveBottomGap = 0;
-        setState(() {});
+  void _logGeometry(String reason) {
+    final viewportBox = _liveViewportKey.currentContext?.findRenderObject();
+    final sliver = _liveSliverKey.currentContext?.findRenderObject();
+    if (viewportBox is! RenderBox || !viewportBox.hasSize) return;
+    final vpTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final vpBottom = vpTop + viewportBox.size.height;
+    double? firstTop;
+    double? lastBottom;
+    var built = 0;
+    if (sliver is RenderSliverMultiBoxAdaptor) {
+      var child = sliver.firstChild;
+      while (child != null) {
+        final top = child.localToGlobal(Offset.zero).dy;
+        final bottom = top + child.size.height;
+        firstTop ??= top;
+        lastBottom = bottom;
+        built++;
+        child = sliver.childAfter(child);
       }
-      // gap 只在「短内容且真实不可滚动」时启用：maxScrollExtent<=1 说明布局完成后
-      // 内容确实没有超出视口；只看 lazy scrollExtent 会把估算锯齿当成短内容。
-      final actualMax = _scrollCtrl.hasClients
-          ? _scrollCtrl.position.maxScrollExtent
-          : double.infinity;
-      final shortEnough =
-          !paged && actualMax <= 1.0 && contentExtent < viewport.size.height - 80;
-      // issue #89：占位与内容之和不得超过视口（否则会制造可滚动空白 + 回底按钮）；
-      // 视口高度变化（活动条显隐/键盘）必须立即按新高度收敛，不能沿用旧占位。
-      final overflowBlank =
-          hasContent && contentExtent + currentGap > viewportHeight + 0.5;
-      double next = currentGap;
-      if (!shortEnough || desired <= 0.5) {
-        next = 0;
-      } else if (currentGap <= 0.5 ||
-          desired > currentGap + 24 ||
-          viewportChanged ||
-          overflowBlank) {
-        next = desired;
+    }
+    final pos = _scrollCtrl.hasClients ? _scrollCtrl.position : null;
+    final plan = _livePlanCache;
+    var blocks = 0;
+    var groups = 0;
+    var rows = 0;
+    var expanded = 0;
+    if (plan != null) {
+      for (final plans in plan.hostsBySeq.values) {
+        for (final block in plans) {
+          blocks++;
+          groups += block.segment.groups.length;
+          rows += block.segment.rows.length;
+          if (block.expanded) expanded++;
+        }
       }
-      if ((next - _liveBottomGap).abs() > 0.5) {
-        _suppressOlderPaging = true;
-        setState(() => _liveBottomGap = next);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _suppressOlderPaging = false;
-        });
-        // 占位变化本身会改变 extent；跟随意图下交给 owner 合并排一次收敛。
-        _requestScrollFollow();
-      }
-      // 注意：这里**不**无条件请求跟随。#114 A3 实测：每次 build 都排队会让
-      // 程序性定位（例如测试/导航/用户手势把视口放在 160px 内）被下一帧拉回底部，
-      // 违反「位置移动来自用户动作才恢复/保持跟随」；内容/布局变化由事件入口
-      // (`_handleEvent` / `_onContentLayoutChanged` / 活动条显隐) 显式请求。
-    });
+    }
+    final blank = lastBottom == null ? null : vpBottom - lastBottom;
+    final builtHeight = firstTop == null || lastBottom == null
+        ? null
+        : lastBottom - firstTop;
+    final sid = _mySessionId ?? widget.store.sessionId ?? '';
+    final sidShort = sid.length > 8 ? sid.substring(0, 8) : sid;
+    final scale = MediaQuery.textScalerOf(context).scale(1);
+    final extent = sliver is RenderSliverMultiBoxAdaptor
+        ? sliver.geometry?.scrollExtent
+        : null;
+    AppLog.instance.log(
+      'Chat.geo[$reason] sid=$sidShort mode=${widget.store.stepDisplayMode.name} '
+      'scale=${scale.toStringAsFixed(2)} vp=${viewportBox.size.height.toStringAsFixed(1)} '
+      'pixels=${pos?.pixels.toStringAsFixed(1) ?? 'n/a'} '
+      'min=${pos?.minScrollExtent.toStringAsFixed(1) ?? 'n/a'} '
+      'max=${pos?.maxScrollExtent.toStringAsFixed(1) ?? 'n/a'} '
+      'extent=${extent?.toStringAsFixed(1) ?? 'n/a'} '
+      'built=$built firstTop=${firstTop?.toStringAsFixed(1) ?? 'n/a'} '
+      'lastBottom=${lastBottom?.toStringAsFixed(1) ?? 'n/a'} '
+      'blank=${blank?.toStringAsFixed(1) ?? 'n/a'} '
+      'builtHeight=${builtHeight?.toStringAsFixed(1) ?? 'n/a'} '
+      'items=${_items.length}+${_olderItems.length} draft=${_draft.length} '
+      'blocks=$blocks expandedBlocks=$expanded groups=$groups rows=$rows '
+      'manualGroups=${_groupUserExpanded.values.where((v) => v).length}',
+    );
+  }
+
+  /// issue #103/#114 / ADR 0035：展开/收起（卡/组/轮）后只通知滚动 owner。
+  /// 短内容顶对齐，底部占位（`_liveBottomGap`）已删除，不再按内容高度反推位置。
+  void _onContentLayoutChanged() {
+    if (!mounted || _inHistory) return;
+    _requestScrollFollow();
+    _scheduleGeometryDiagnostic('layout');
   }
 
   /// 一键回到最新消息：显式进入跟随，由 owner 做有界收敛。
@@ -1303,10 +1311,12 @@ class _ChatScreenState extends State<ChatScreen> {
           // 判据复用时间线既有的一份（`_MsgItem.injected` + `timelineIsInjectedNoise`），
           // 不在这里另起一套，也不因普通/调试模式而分叉。
           final human = !item.injected && !timelineIsInjectedNoise(item.text);
-          rows.add(TurnRow(
-            role: human ? TurnRowRole.user : TurnRowRole.other,
-            text: item.text,
-          ));
+          rows.add(
+            TurnRow(
+              role: human ? TurnRowRole.user : TurnRowRole.other,
+              text: item.text,
+            ),
+          );
         case _MsgKind.assistant:
           rows.add(TurnRow(role: TurnRowRole.assistant, text: item.text));
         default:
@@ -1336,19 +1346,18 @@ class _ChatScreenState extends State<ChatScreen> {
         ? null
         : _planFor(history: historyView).hostsBySeq[seq];
     if (blocks == null || blocks.isEmpty) return child;
+    final after = <Widget>[];
+    final before = <Widget>[];
+    for (final plan in blocks) {
+      (plan.afterHost ? after : before).add(_buildProcessBlockPlan(plan));
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final plan in blocks) _buildProcessBlockPlan(plan),
-        child,
-      ],
+      children: [...before, child, ...after],
     );
   }
 
-  Widget _buildItemWithTurnKeyBody(
-    _MsgItem item, {
-    required bool historyView,
-  }) {
+  Widget _buildItemWithTurnKeyBody(_MsgItem item, {required bool historyView}) {
     final seq = item.seq;
     final turn = seq == null ? null : _turnOfStartSeq[seq];
     if (turn == null || seq == null || item.kind != _MsgKind.divider) {
@@ -1380,12 +1389,14 @@ class _ChatScreenState extends State<ChatScreen> {
           final viewportTop = viewport.localToGlobal(Offset.zero).dy;
           final lineOffset = math.min(96.0, viewport.size.height * 0.2);
           final line = viewportTop + lineOffset;
-          final pixels =
-              _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
+          final pixels = _scrollCtrl.hasClients
+              ? _scrollCtrl.position.pixels
+              : 0.0;
           final mountedTurns = <({int turn, double top})>[];
           for (final anchor in anchors) {
-            final box = _turnKeysBySeq[anchor.seq]?.currentContext
-                ?.findRenderObject() as RenderBox?;
+            final box =
+                _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+                    as RenderBox?;
             if (box == null || !box.hasSize) continue;
             final top = box.localToGlobal(Offset.zero).dy;
             mountedTurns.add((turn: anchor.turn, top: top));
@@ -1436,8 +1447,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final pixels = _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0.0;
     final out = <TurnMeasurement>[];
     for (final anchor in _turnAnchors) {
-      final box = _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
-          as RenderBox?;
+      final box =
+          _turnKeysBySeq[anchor.seq]?.currentContext?.findRenderObject()
+              as RenderBox?;
       if (box == null || !box.hasSize) continue;
       final offset = pixels + (box.localToGlobal(Offset.zero).dy - viewTop);
       _turnContentOffset[anchor.turn] = offset;
@@ -1515,9 +1527,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }) {
       final sliver = key.currentContext?.findRenderObject();
       if (sliver is! RenderSliverMultiBoxAdaptor) return;
-      for (var child = sliver.firstChild;
-          child != null;
-          child = sliver.childAfter(child)) {
+      for (
+        var child = sliver.firstChild;
+        child != null;
+        child = sliver.childAfter(child)
+      ) {
         final parentData = child.parentData;
         if (parentData is! SliverMultiBoxAdaptorParentData) continue;
         final local = parentData.index;
@@ -1526,11 +1540,9 @@ class _ChatScreenState extends State<ChatScreen> {
         final offset = pixels + (child.localToGlobal(Offset.zero).dy - viewTop);
         final index = base + contentIndex;
         final height = child.size.height;
-        out.add(BuiltChildMeasurement(
-          index: index,
-          offset: offset,
-          height: height,
-        ));
+        out.add(
+          BuiltChildMeasurement(index: index, offset: offset, height: height),
+        );
         // issue #31（方案 B）：顺手把实测高度回填进尺寸缓存（key 稳定，prepend/
         // 加载条出现都不会错位）。缓存只增不改，超过上限时整体清空重建。
         final stableKey = _itemKeyAtIndex(index);
@@ -1542,14 +1554,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // center 之前：`_olderItems` 最新在前，内容顺序与子项序号相反。
-    collect(_olderSliverKey, 0,
-        count: _olderItems.length, contentOrderReversed: true);
+    collect(
+      _olderSliverKey,
+      0,
+      count: _olderItems.length,
+      contentOrderReversed: true,
+    );
     // center 之后：`SliverMultiBoxAdaptorParentData.index` **已经包含**首项
     // 「更早」按钮 / 加载条，所以基准只加前一条 sliver 的长度，不能再加一次首项偏移——
     // 否则加载条显示期间消息的实测 index 会比目标坐标系大 1，定位器把前一条消息当成目标
     // （第二轮评审 note 1080 的对照复现：同样数据，仅"上翻在途"这一项不同就跳不到）。
-    collect(_liveSliverKey, _olderItems.length,
-        count: _items.length, contentOrderReversed: false);
+    collect(
+      _liveSliverKey,
+      _olderItems.length,
+      count: _items.length,
+      contentOrderReversed: false,
+    );
     return out;
   }
 
@@ -1599,7 +1619,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (count > 0) average = total / count;
     }
     if (average <= 0) {
-      final extent = _scrollCtrl.position.maxScrollExtent -
+      final extent =
+          _scrollCtrl.position.maxScrollExtent -
           _scrollCtrl.position.minScrollExtent;
       if (extent <= 0) return null;
       average = extent / childCount;
@@ -1628,7 +1649,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 内容高度未必同尺度——实测里热跳的首个估算因此偏小近 2 倍，逼出 3–4 步二分。
     // 把"已缓存实测高度 + 未缓存均值"的总权重映射到布局给出的真实 extent，缓存只影响
     // **相对权重**，估算随实际高度分布伸缩而不是随样本均值漂移。
-    final extent = _scrollCtrl.position.maxScrollExtent -
+    final extent =
+        _scrollCtrl.position.maxScrollExtent -
         _scrollCtrl.position.minScrollExtent;
     if (extent <= 0) return null;
     final total = estimateSignedContentOffset(
@@ -1676,13 +1698,11 @@ class _ChatScreenState extends State<ChatScreen> {
             _scrollCtrl.hasClients ? _scrollCtrl.position.maxScrollExtent : 0,
         currentOffset: () =>
             _scrollCtrl.hasClients ? _scrollCtrl.position.pixels : 0,
-        viewportExtent: () => _scrollCtrl.hasClients
-            ? _scrollCtrl.position.viewportDimension
-            : 0,
+        viewportExtent: () =>
+            _scrollCtrl.hasClients ? _scrollCtrl.position.viewportDimension : 0,
         // 目标一律按**边界持久 seq** 绑定：同轮号的重试边界不会误伤规范边界。
         isTargetLoaded: () => _turnAnchors.any((a) => a.seq == anchor.seq),
-        isTargetBuilt: () =>
-            _turnKeysBySeq[anchor.seq]?.currentContext != null,
+        isTargetBuilt: () => _turnKeysBySeq[anchor.seq]?.currentContext != null,
         isTargetInView: () => _turnKeyInViewport(_turnKeysBySeq[anchor.seq]),
         reveal: () => _revealTurnKey(_turnKeysBySeq[anchor.seq]),
         measure: _measureTurnBoundaries,
@@ -1707,13 +1727,13 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return; // 让分析器认得 context 守卫（current() 已含 mounted）
       final message = switch (outcome.failure) {
         TurnLocateFailure.notInWindow => L10n.t(
-            '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
-            'Could not locate turn ${anchor.turn}: it is outside the loaded range',
-          ),
+          '未能定位到第 ${anchor.turn} 轮：它不在当前已加载范围内',
+          'Could not locate turn ${anchor.turn}: it is outside the loaded range',
+        ),
         _ => L10n.t(
-            '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
-            'Could not locate turn ${anchor.turn}: still out of view after several attempts',
-          ),
+          '未能定位到第 ${anchor.turn} 轮：多次尝试后仍未进入视图',
+          'Could not locate turn ${anchor.turn}: still out of view after several attempts',
+        ),
       };
       showToast(context, message);
     } finally {
@@ -1741,7 +1761,8 @@ class _ChatScreenState extends State<ChatScreen> {
   /// issue #81：定位成功后把目标轮起始边界对齐到阅读线附近（仅在落在阅读线下方时），
   /// 让「当前轮高亮」与实际跳转目标一致（不受 action gutter 宽度变化影响）。
   Future<void> _alignTargetToReadingLine(int seq) async {
-    final box = _turnKeysBySeq[seq]?.currentContext?.findRenderObject() as RenderBox?;
+    final box =
+        _turnKeysBySeq[seq]?.currentContext?.findRenderObject() as RenderBox?;
     final viewport =
         _liveViewportKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize || viewport == null || !viewport.hasSize) {
@@ -1869,18 +1890,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _streaming = true;
     _draftTimer ??= Timer(const Duration(milliseconds: 80), () {
       _draftTimer = null;
-      // issue #77：草稿增长会改变内容高度；先撤销短内容占位，下一帧重测。
-      if (_liveBottomGap > 0) _liveBottomGap = 0;
       if (mounted) setState(() {});
       _requestScrollFollow();
-    });
-  }
-
-  /// 活动条节流：思考/工具状态变化定时合并刷新（不滚动）。
-  void _scheduleActivityFlush() {
-    _activityTimer ??= Timer(const Duration(milliseconds: 80), () {
-      _activityTimer = null;
-      if (mounted) setState(() {});
     });
   }
 
@@ -1972,21 +1983,20 @@ class _ChatScreenState extends State<ChatScreen> {
         _processTurnMap = const {};
         _processVersion++;
         _processBuiltVersion = -1;
-        _turnExpansions.clear();
-        _groupExpansions.clear();
+        _segmentFold.clear();
+        // issue #123（照搬 DSH）：**不整表清空**组选择缓存——reset/compaction 后
+        // 由 live 计划重建时的存在性过滤清理（仍存在的 identity 保留用户选择）。
+        _groupRetainVersion = -1; // 强制下一次计划重建做一次存在性过滤
         _reasoningRowExpansions.clear();
-        _processRowLimits.clear();
         _livePlanCache = null;
         _histPlanCache = null;
         _invalidateProcessPlan();
         _transientFrameKeys.clear();
         _debugPreviewCache.clear(); // 重建后 rawData 全变，旧预览缓存无意义
-        _activeTools.clear();
         // issue #70：按新表面重建 = 重新进入会话，流式思考缓冲与 provisional 展开态一并失效。
         _liveReasoning.clear();
         _liveReasoningRevision.value++;
         _provisionalExpansions.clear();
-        _reasoningExpanded = false;
         _draft = '';
         _streaming = false;
         // v3.1.4（issue #12 姊妹需求）：任务清单按**时间正序**折叠一次（最新覆盖、turn/start 清空），
@@ -2007,7 +2017,6 @@ class _ChatScreenState extends State<ChatScreen> {
           if (ev.seq != null && ev.seq! > fetchedLast) continue;
           _appendEvent(ev, history: true, tail: true);
         }
-        _rebuildActiveToolsFromHistory(events);
         // v3.1.4（issue #13）：跟踪字段按**时间正序**重算——历史是倒序入列的，
         // 沿用循环里的赋值会得到"最旧一条"，导致轮次兜底误判。
         // 条件与渲染保持一致：真人 user 消息（含旧内核无 sourceKind 的）+ 非空文本的回复。
@@ -2056,15 +2065,19 @@ class _ChatScreenState extends State<ChatScreen> {
         'Chat: 已入列 ${_items.length} 条（历史 ${events.length} 条）lastSeq=$_lastSeq firstSeq=$_earliestSeq',
       );
       // issue #114：强制定位统一走 owner 的有界收敛（跳到 lazy 估值后必须布局后再校）。
-      _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
+      _requestScrollFollow(
+        forced: true,
+        reason: CorrectionReason.forcedPosition,
+      );
       _refreshUsage();
       widget.store.refreshSessionConfig();
       // issue #25 二期：会话打开后拉一次轮次大纲（能力缺失/读取失败都退回一期行为）。
       unawaited(_refreshTurnOutline());
       // issue #90：只有当前时间线里出现 slash 消息时才需要目录（避免普通会话多两次请求）；
       // 输入 `/` 时也会触发。失败静默，下次输入/加载重试。
-      if (_items.any((m) =>
-          m.kind == _MsgKind.user && slashTextTokens(m.text).isNotEmpty)) {
+      if (_items.any(
+        (m) => m.kind == _MsgKind.user && slashTextTokens(m.text).isNotEmpty,
+      )) {
         unawaited(_ensureSlashCatalog(id));
       }
     } catch (e) {
@@ -2172,7 +2185,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // 到顶（exhausted）不是失败：如实回报"没有更早历史"，由跳转结果统一说明**不可达**。
     // 但请求失败或没有取得任何进展（仍在加载）必须**显式失败**——否则跳转循环会
     // 对着不变的 earliestSeq 一直空转到页数上限（最坏 32 次 × 等待）。
-    if (outcome == _PrependOutcome.failed || outcome == _PrependOutcome.skipped) {
+    if (outcome == _PrependOutcome.failed ||
+        outcome == _PrependOutcome.skipped) {
       throw StateError(L10n.t('未能继续加载更早历史', 'Could not load earlier history'));
     }
     return TurnPageLoad(earliestSeq: _earliestSeq, hasMore: !_noMoreHistory);
@@ -2232,10 +2246,12 @@ class _ChatScreenState extends State<ChatScreen> {
         n is ScrollUpdateNotification && n.dragDetails == null;
     final suppressForCorrection =
         programmaticUpdate && _scrollFollow.hasPendingCorrection;
-    if (!_suppressOlderPaging &&
-        !suppressForCorrection &&
+    if (!suppressForCorrection &&
         shouldLoadOlderFromScroll(n, infiniteMode: _infiniteMode)) {
       _loadMoreInfinite();
+    }
+    if (n is ScrollEndNotification) {
+      _scheduleGeometryDiagnostic('scroll-end');
     }
     return false;
   }
@@ -2292,11 +2308,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 合并前先看**最新能力声明**：能力被撤销（换宿主 / 宿主降级）时旧大纲必须立刻失效，
   /// 不能继续把上次连接拿到的大纲当成本机能力（issue #25 评审 P2）。
   List<TurnTick> get _turnTicks => mergeTurnTicks(
-        loaded: _turnAnchors,
-        outline: _api.turnOutlineCapabilities.supported
-            ? _turnOutline.turns
-            : const [],
-      );
+    loaded: _turnAnchors,
+    outline: _api.turnOutlineCapabilities.supported
+        ? _turnOutline.turns
+        : const [],
+  );
 
   /// 选中某一轮：已加载的直接定位（一期）；未加载的先跨页加载再定位（二期）。
   ///
@@ -2307,8 +2323,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _turnJumpCancelled = false;
     // issue #114：显式轮次定位暂停自动跟随并作废旧校正（§5.1 导航优先级）。
     _scrollFollow.onNavigationStarted();
-    final loaded =
-        _turnAnchors.any((a) => a.turn == anchor.turn && a.seq == anchor.seq);
+    final loaded = _turnAnchors.any(
+      (a) => a.turn == anchor.turn && a.seq == anchor.seq,
+    );
     if (loaded) {
       // 一条路径到底：已加载轮次也走同一个世代守卫（#24 修复后 `_jumpToTurn` 支持 token），
       // 连续点选时旧定位不得再把视口搬走。
@@ -2361,10 +2378,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       if (mounted && _turnNavCurrent(token)) {
-        showToast(
-          context,
-          '${L10n.t('跳转失败：', 'Jump failed: ')}$e',
-        );
+        showToast(context, '${L10n.t('跳转失败：', 'Jump failed: ')}$e');
       }
     } finally {
       // 只有仍是当前操作才清 busy：旧操作的 finally 不得清掉新操作的脉冲。
@@ -2569,79 +2583,74 @@ class _ChatScreenState extends State<ChatScreen> {
         child: NotificationListener<ScrollMetricsNotification>(
           onNotification: _onLiveScrollMetrics,
           child: CustomScrollView(
-          key: _liveViewportKey,
-          controller: _scrollCtrl,
-          center: _liveCenterKey,
-          slivers: [
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(16, 10, rightPadding, 0),
-              sliver: SliverList(
-                key: _olderSliverKey,
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) => _buildItemWithTurnKey(
-                    _olderItems[index],
-                    historyView: false,
+            key: _liveViewportKey,
+            controller: _scrollCtrl,
+            center: _liveCenterKey,
+            slivers: [
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(16, 10, rightPadding, 0),
+                sliver: SliverList(
+                  key: _olderSliverKey,
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) => _buildItemWithTurnKey(
+                      _olderItems[index],
+                      historyView: false,
+                    ),
+                    childCount: _olderItems.length,
                   ),
-                  childCount: _olderItems.length,
                 ),
               ),
-            ),
-            const SliverToBoxAdapter(
-              key: _liveCenterKey,
-              child: SizedBox.shrink(),
-            ),
-            // issue #77：内容短于视口时，顶部占位把消息列表推到底部（贴在输入框上方），
-            // 而不是顶对齐、下方留白。高度由 `_scheduleLiveBottomGapMeasure` 实测维护。
-            if (_liveBottomGap > 0)
-              SliverToBoxAdapter(
-                child: SizedBox(height: _liveBottomGap),
+              const SliverToBoxAdapter(
+                key: _liveCenterKey,
+                child: SizedBox.shrink(),
               ),
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(16, 0, rightPadding, 6),
-              sliver: SliverList(
-                key: _liveSliverKey,
-                delegate: SliverChildBuilderDelegate((context, index) {
-                  // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
-                  if ((topButton || loadingTail) && index == 0) {
-                    if (topButton) {
-                      return _OlderButton(
-                        busy: _loadingMore,
-                        onTap: _openHistory,
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(16, 0, rightPadding, 6),
+                sliver: SliverList(
+                  key: _liveSliverKey,
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
+                    if ((topButton || loadingTail) && index == 0) {
+                      if (topButton) {
+                        return _OlderButton(
+                          busy: _loadingMore,
+                          onTap: _openHistory,
+                        );
+                      }
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: Center(
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
                       );
                     }
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 10),
-                      child: Center(
-                        child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    );
-                  }
-                  final dataIndex = index - (topButton || loadingTail ? 1 : 0);
-                  if (dataIndex < _items.length) {
-                    return _buildItemWithTurnKey(
-                      _items[_items.length - 1 - dataIndex],
-                      historyView: false,
-                    );
-                  }
-                  if (hasDraft) {
-                    return _AssistantBubble(
-                      text: _draft,
-                      streaming: true,
-                      api: _api,
-                      imageLoader: _markdownImageLoader,
-              imageUserAction: _markdownImageUserAction,
-                    );
-                  }
-                  return const SizedBox.shrink();
-                }, childCount: _items.length + currentExtra),
+                    final dataIndex =
+                        index - (topButton || loadingTail ? 1 : 0);
+                    if (dataIndex < _items.length) {
+                      return _buildItemWithTurnKey(
+                        _items[_items.length - 1 - dataIndex],
+                        historyView: false,
+                      );
+                    }
+                    if (hasDraft) {
+                      return _AssistantBubble(
+                        text: _draft,
+                        streaming: true,
+                        api: _api,
+                        imageLoader: _markdownImageLoader,
+                        imageUserAction: _markdownImageUserAction,
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  }, childCount: _items.length + currentExtra),
+                ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
         ),
       ),
     );
@@ -2805,15 +2814,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// 事件处理导致消息区布局/视口高度变化后的统一收口（与渲染层同一 owner 口径）：
-  /// 先重测短内容底部占位，再请求有界收敛（阅读态/拖拽中由 owner 拒绝，不抢位置）。
+  /// 请求有界收敛（阅读态/拖拽中由 owner 拒绝，不抢位置），并夹回越界范围。
   void _onEventLayoutChanged() {
     if (!mounted) return;
-    _scheduleLiveBottomGapMeasure();
     _requestScrollFollow();
     _clampOverscrollAfterShrink();
+    _scheduleGeometryDiagnostic('event');
   }
 
-  /// issue #118：内容因**布局变化**变短后，把越界的滚动位置拉回合法范围。
+  /// issue #118 / #123：内容因**布局变化**变短后，把**真正越界**的滚动位置夹回合法范围。
   ///
   /// 复现（详细档 + paged 会话，实测 `tailResidual=+526`、`max=0`、`px=-40`）：
   /// 用户上翻加载过更早历史后 `paged=true`，#77 短内容底部占位被
@@ -2821,24 +2830,36 @@ class _ChatScreenState extends State<ChatScreen> {
   /// live 内容从 1018dp 压到 100dp，`maxScrollExtent` 变成 0，而 `pixels`
   /// 仍停在旧值 → 内容顶边被推到视口上方、下方留出大段空白，且阅读态恒显回底按钮。
   ///
-  /// 这里**不启用底部占位**（维护者决定，避免重现 issue #76 的「占位与位置修正
-  /// 互相拉扯」），只把**越界**的 pixels 拉回 `[0, max]`。内容变短是布局变化导致、
-  /// 不是用户滚动，因此不违反「不抢用户位置」：用户看到的仍是同一段内容。
+  /// ⚠️ #123 P1（审查发现）：第一版实现只看 `maxScrollExtent`：
+  /// `if (max > 0.5 || pixels >= -0.5) return; jumpTo(0);`
+  /// 漏掉了「center 之前是 `_olderItems`」这个事实——加载过更早历史后
+  /// `pixels` 为负是**合法阅读位置**（实测 `min=-1518, max=0, pixels=-990`）。
+  /// 于是一条新事件（例如 `todo/write`）就把用户正在读的历史抢回 center，
+  /// 而 `intent` 仍是 reading。
+  ///
+  /// 现在的判据与执行方式：
+  /// - 判据用真实 `[minScrollExtent, maxScrollExtent]` 的越界量（[ScrollGeometry.rangeError]），
+  ///   负区间合法，只有真正越界才动作；
+  /// - 校正是**请求 owner**（[ScrollFollowCoordinator.requestRangeClamp]）而不是直接
+  ///   `jumpTo`：拖拽中/世代失效一律作废，目标永远是最接近当前 pixels 的合法位置
+  ///   （不是末端，也不是 center）。
+  /// - 不启用底部占位（维护者决定，避免重现 issue #76 的「占位与位置修正互相拉扯」）。
   void _clampOverscrollAfterShrink() {
     if (!mounted || _inHistory) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!_scrollCtrl.hasClients) return;
+      if (_inHistory || !_scrollCtrl.hasClients) return;
       final position = _scrollCtrl.position;
       if (!position.hasContentDimensions) return;
-      final max = position.maxScrollExtent;
-      final pixels = position.pixels;
-      // 只在「不可滚动 + 越界」这一确定异常态纠正；可滚动时的越界由
-      // BallisticScrollActivity 自行回弹，不在这里抢。
-      if (max > 0.5 || pixels >= -0.5) return;
-      _runProgrammaticScroll(() {
-        _scrollCtrl.jumpTo(0);
-      });
+      final geometry = _geometryOfPosition(position);
+      // 只在**真正越界**时请求 owner 夹回；center 之前的负区间是合法历史阅读位置。
+      if (geometry.rangeError <= 0.5) return;
+      AppLog.instance.log(
+        'Chat: 越界夹回(请求) pixels=${geometry.pixels.toStringAsFixed(0)} '
+        'min=${geometry.minExtent.toStringAsFixed(0)} '
+        'max=${geometry.maxExtent.toStringAsFixed(0)}(#123)',
+      );
+      _scrollFollow.requestRangeClamp(geometry: geometry);
       _syncScrollFollowDisplay();
     });
   }
@@ -3069,8 +3090,12 @@ class _ChatScreenState extends State<ChatScreen> {
             if (_liveReasoning.firstSeqOf(turn, step) == null) {
               AppLog.instance.log('Chat: 思考开始（首个 reasoning chunk）');
             }
-            final structural =
-                _liveReasoning.append(turn, step, text, seq: ev.seq);
+            final structural = _liveReasoning.append(
+              turn,
+              step,
+              text,
+              seq: ev.seq,
+            );
             _liveReasoningRevision.value++;
             if (structural) {
               _invalidateProcessPlan();
@@ -3084,13 +3109,9 @@ class _ChatScreenState extends State<ChatScreen> {
         // 迟到/已结束轮次的 reasoning chunk 一律丢弃、不增长文本。
       }
       if (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null) {
-        final data = ev.data ?? const <String, dynamic>{};
-        _activeTools[_toolActivityKey(data, ev.seq, _items.length)] =
-            ev.data?['toolCall']?.toString() ?? L10n.t('工具', 'Tool');
         // 参数 delta 可达数百上千条：只更新模型，交给 80ms 节流统一重建
         // （与正文草稿 _scheduleDraftFlush 同口径），避免每个 delta 触发一次全量 setState。
         _appendEvent(ev);
-        _scheduleActivityFlush();
         layoutChanged = true;
       }
       return layoutChanged;
@@ -3098,21 +3119,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
       _draftTimer?.cancel();
       _draftTimer = null;
-      _activityTimer?.cancel();
-      _activityTimer = null;
       // issue #70：缓冲的关闭/通知统一在 _buildInto 漏斗里做（覆盖 SSE/catch-up/历史回放）。
       final reasoningChars = _liveReasoning.current?.text.length ?? 0;
       if (ev.type == 'assistant/message') {
-        // 正文到达：工具阶段结束（思考文本由过程行或活动条按同源快照呈现）
-        _activeTools.clear();
-        AppLog.instance.log('Chat: 活动条-正文到达（思考 $reasoningChars 字）');
-      } else {
-        // 轮次结束：清空活动条与思考草稿（provisional 由 _buildInto 的 closeTurn 清理）
-        _activeTools.clear();
-        if (reasoningChars > 0) {
-          AppLog.instance.log('Chat: 活动条-轮次结束清理（思考 $reasoningChars 字）');
-        }
-        _reasoningExpanded = false;
+        AppLog.instance.log('Chat: 正文到达（思考 $reasoningChars 字）');
+      } else if (reasoningChars > 0) {
+        AppLog.instance.log('Chat: 轮次结束清理（思考 $reasoningChars 字）');
       }
     }
     // 每轮完成：用该轮的 usage 样本更新上下文压力（PC 端同口径）与累计用量条
@@ -3648,9 +3660,6 @@ class _ChatScreenState extends State<ChatScreen> {
   /// [tail] 表示“最新一页初始加载”：允许 chunk 进草稿/重置草稿；
   /// 更早的历史页（tail=false）绝不触碰 live 流式草稿。
   void _appendEvent(ChatEvent ev, {bool history = false, bool tail = false}) {
-    // issue #77：内容变化时先撤销短内容底部占位（本帧按真实布局渲染），下一帧再按
-    // 实测高度决定是否补回——避免“占位仍按旧短内容计算、新内容被推到视口外”。
-    if (_liveBottomGap > 0) _liveBottomGap = 0;
     _buildInto(_items, ev, history: history, tail: tail);
     if (!_infiniteMode) {
       // 裁剪：live 列表最多保留 _liveMax 条，超出丢弃最旧（尾部），
@@ -3712,7 +3721,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _advanceLiveReasoningStep(ChatEvent ev) {
     final data = ev.data;
     if (data == null) return;
-    final isToolEvent = ev.type == 'tool/call' ||
+    final isToolEvent =
+        ev.type == 'tool/call' ||
         ev.type == 'tool/result' ||
         ((ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') &&
             (data['toolCall'] != null || data['argumentsDelta'] != null));
@@ -3734,10 +3744,6 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 系统注入的噪声消息判定（PC 端 GUI 也不显示）：
   /// 上下文快照 / 后台任务通知。判据与模型侧共用同一实现。
   bool _isNoiseText(String text) => timelineIsInjectedNoise(text);
-
-  /// 工具关联 id 与模型侧共用同一实现（避免两处规则分叉）。
-  String _toolActivityKey(Map<String, dynamic> data, int? seq, int fallback) =>
-      timelineCallIdOf(data, seq, fallback);
 
   /// issue #61：记录本会话已知的工具名（`tool/call` 与带 toolCall 的流式增量）。
   ///
@@ -3764,27 +3770,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final callId = timelineCallIdOf(data, ev.seq, _toolNamesByCallId.length);
     final name = timelineToolNameOf(data, callId: callId, fallback: '');
     if (name.isNotEmpty) _toolNamesByCallId[callId] = name;
-  }
-
-  void _rebuildActiveToolsFromHistory(List<ChatEvent> events) {
-    _activeTools.clear();
-    for (final ev in events) {
-      final data = ev.data ?? const <String, dynamic>{};
-      if (ev.type == 'tool/call') {
-        final callId = _toolActivityKey(data, ev.seq, _activeTools.length);
-        _activeTools[callId] = timelineToolNameOf(
-          data,
-          callId: callId,
-          fallback: L10n.t('工具', 'Tool'),
-        );
-      } else if (ev.type == 'tool/result') {
-        _activeTools.remove(
-          _toolActivityKey(data, ev.seq, _activeTools.length),
-        );
-      } else if (ev.type == 'assistant/message' || ev.type == 'turn/end') {
-        _activeTools.clear();
-      }
-    }
   }
 
   /// Tool activity 的 Flutter 侧投影：**合并规则由 [TimelineReducer] 单点实现**
@@ -3987,7 +3972,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (ev.type == 'tool/call' ||
           ev.type == 'tool/result' ||
           (ev.type == 'assistant/chunk' || ev.type == 'assistant/live-chunk') &&
-              (ev.data?['toolCall'] != null || ev.data?['argumentsDelta'] != null)) {
+              (ev.data?['toolCall'] != null ||
+                  ev.data?['argumentsDelta'] != null)) {
         _upsertToolItem(out, ev, history: history);
       }
       return;
@@ -4059,6 +4045,8 @@ class _ChatScreenState extends State<ChatScreen> {
               images: _imagesOf(d),
               files: _filesOf(d),
               sourceKind: sourceKind,
+              detailAvailable: ev.detailAvailable,
+              detailTextChars: ev.detailTextChars,
             ),
           );
         } else {
@@ -4071,14 +4059,17 @@ class _ChatScreenState extends State<ChatScreen> {
               images: _imagesOf(d),
               files: _filesOf(d),
               sourceKind: sourceKind,
+              detailAvailable: ev.detailAvailable,
+              detailTextChars: ev.detailTextChars,
             ),
           );
         }
       case 'assistant/message':
         var body = d?['text'] as String? ?? '';
-        // 噪声 assistant 记录保留在模型中，但系统提示词与上下文快照在所有模式均隐藏。
-        // 工具阶段中间产物（正文为空的多步消息）：不渲染空气泡，过程由活动条呈现
-        if (body.trim().isEmpty) {
+        final images = _imagesOf(d);
+        // issue #126（可见内容对齐）：正文为空但带图片的 assistant 仍是可见回复；
+        // DSH 把图片算 reply content，这里不能再整条跳过。
+        if (body.trim().isEmpty && images.isEmpty) {
           if (!history || tail) {
             _draft = '';
             _streaming = false;
@@ -4137,24 +4128,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _upsertToolItem(out, ev, history: history);
         }
       case 'tool/call':
-        final callId = _toolActivityKey(d ?? const <String, dynamic>{}, ev.seq, out.length);
-        final name = timelineToolNameOf(d, callId: callId, fallback: L10n.t('工具', 'Tool'));
-        if (!history && !ev.isSurfaceReplace) {
-          _activeTools[callId] = name;
-          _scheduleActivityFlush();
-        }
         _upsertToolItem(out, ev, history: history);
       case 'tool/result':
-        if (!history && !ev.isSurfaceReplace) {
-          _activeTools.remove(
-            _toolActivityKey(
-              d ?? const <String, dynamic>{},
-              ev.seq,
-              out.length,
-            ),
-          );
-          _scheduleActivityFlush();
-        }
         _upsertToolItem(out, ev, history: history);
       case 'tool/ptc-dispatch-start':
       case 'tool/ptc-dispatch':
@@ -4262,7 +4237,10 @@ class _ChatScreenState extends State<ChatScreen> {
     // issue #90：与斜杠菜单共用目录缓存，避免同一会话重复 GET /commands。
     if (_slashCatalogSessionId == id && _slashCommands != null) {
       if (_slashCommandsUnavailable) {
-        throw ApiException('commands catalog unavailable', code: 'session-not-found');
+        throw ApiException(
+          'commands catalog unavailable',
+          code: 'session-not-found',
+        );
       }
       _commandCatalog = _slashCommands;
       _commandCatalogSessionId = id;
@@ -4290,7 +4268,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final now = DateTime.now();
     // 空列表也可能是 unavailable 的 TTL 缓存；可用仅当「有真实技能列表」或
     // 「unavailable TTL 尚未到期」，到期后必须重试。
-    final skillsUsable = (_slashSkills != null && !_slashSkillsUnavailable) ||
+    final skillsUsable =
+        (_slashSkills != null && !_slashSkillsUnavailable) ||
         (_slashSkillsUnavailable &&
             _slashSkillsUnavailableUntil != null &&
             now.isBefore(_slashSkillsUnavailableUntil!));
@@ -4368,8 +4347,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// issue #90：菜单条目（命令组前、技能组后；命令同名优先）。
-  List<({String name, String? description, String? hint, bool skill, bool userOnly})>
-      _slashMenuEntries() {
+  List<
+    ({
+      String name,
+      String? description,
+      String? hint,
+      bool skill,
+      bool userOnly,
+    })
+  >
+  _slashMenuEntries() {
     final token = _slashToken;
     if (token == null) return const [];
     final commands = token.scope == SlashMenuScope.leading
@@ -4379,10 +4366,21 @@ class _ChatScreenState extends State<ChatScreen> {
       for (final c in commands)
         if (c['name'] is String) c['name'] as String,
     };
-    final entries = <({String name, String? description, String? hint, bool skill, bool userOnly})>[];
+    final entries =
+        <
+          ({
+            String name,
+            String? description,
+            String? hint,
+            bool skill,
+            bool userOnly,
+          })
+        >[];
     for (final c in commands) {
       final name = c['name'];
-      if (name is! String || !slashItemMatches(token.query, name, c['description']?.toString())) continue;
+      if (name is! String ||
+          !slashItemMatches(token.query, name, c['description']?.toString()))
+        continue;
       entries.add((
         name: name,
         description: c['description']?.toString(),
@@ -4394,7 +4392,12 @@ class _ChatScreenState extends State<ChatScreen> {
     for (final skill in _slashSkills ?? const <Map<String, dynamic>>[]) {
       final name = skill['name'];
       if (name is! String || commandNames.contains(name)) continue;
-      if (!slashItemMatches(token.query, name, skill['description']?.toString())) continue;
+      if (!slashItemMatches(
+        token.query,
+        name,
+        skill['description']?.toString(),
+      ))
+        continue;
       entries.add((
         name: name,
         description: skill['description']?.toString(),
@@ -4415,11 +4418,15 @@ class _ChatScreenState extends State<ChatScreen> {
     // 而不是只替换到光标，避免 `/gr|ill-me rest` 变成 `/grill-me ill-me rest`。
     // 若 token 后已紧跟空白，不再额外补空格（避免出现双空格）。
     final tail = token.rightEnd < text.length ? text[token.rightEnd] : '';
-    final replacement = tail.isNotEmpty && tail.trim().isEmpty ? '/$name' : '/$name ';
+    final replacement = tail.isNotEmpty && tail.trim().isEmpty
+        ? '/$name'
+        : '/$name ';
     final updated = text.replaceRange(token.start, token.rightEnd, replacement);
     _inputCtrl.value = TextEditingValue(
       text: updated,
-      selection: TextSelection.collapsed(offset: token.start + replacement.length),
+      selection: TextSelection.collapsed(
+        offset: token.start + replacement.length,
+      ),
     );
     setState(() => _slashToken = null);
   }
@@ -4455,13 +4462,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final media = MediaQuery.of(context);
     // Scaffold 内容区高度（已扣除 AppBar/键盘/安全区）；不能用全屏高度−inset，
     // 否则 320×640 会多算 56px AppBar，菜单把底部 Column 撑溢出。
-    final bodyHeight = _bodyMaxHeight ??
+    final bodyHeight =
+        _bodyMaxHeight ??
         (media.size.height - media.viewInsets.bottom - media.padding.top - 56);
     // 只测量独立 composer 卡片（不能量包含菜单的外层 Padding，否则菜单一出现
     // composer 高度就把它算进去，形成循环并算出负可用空间）。
     final composerBox =
         _composerKey.currentContext?.findRenderObject() as RenderBox?;
-    final composerHeight = (composerBox != null && composerBox.hasSize
+    final composerHeight =
+        (composerBox != null && composerBox.hasSize
             ? composerBox.size.height
             : 102.0) +
         14.0 +
@@ -4485,10 +4494,12 @@ class _ChatScreenState extends State<ChatScreen> {
         position.pixels >= position.maxScrollExtent - 24;
     final remaining = atBottom
         ? 0
-        : math.max(
-            0,
-            ((position.maxScrollExtent - position.pixels) / 46.0).ceil(),
-          ).clamp(0, totalEntries);
+        : math
+              .max(
+                0,
+                ((position.maxScrollExtent - position.pixels) / 46.0).ceil(),
+              )
+              .clamp(0, totalEntries);
     final overflow = position.maxScrollExtent > 0;
     if (remaining != _slashRemaining ||
         overflow != _slashOverflow ||
@@ -4515,35 +4526,46 @@ class _ChatScreenState extends State<ChatScreen> {
     final maxHeight = _slashMenuMaxHeight(pageContext);
     if (maxHeight < 48) return const SizedBox.shrink();
     Widget header(String label, int count, Color dot) => Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '$label $count',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w600,
-                  color: ink2,
-                ),
-              ),
-            ],
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
           ),
-        );
-    Widget item(({String name, String? description, String? hint, bool skill, bool userOnly}) entry) {
+          const SizedBox(width: 6),
+          Text(
+            '$label $count',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              color: ink2,
+            ),
+          ),
+        ],
+      ),
+    );
+    Widget item(
+      ({
+        String name,
+        String? description,
+        String? hint,
+        bool skill,
+        bool userOnly,
+      })
+      entry,
+    ) {
       final color = entry.skill ? skillColor : commandColor;
       return Semantics(
         button: true,
         label: '/${entry.name}',
         hint: entry.hint ?? entry.description,
         child: InkWell(
-          key: Key('slash-menu-${entry.skill ? 'skill' : 'command'}-${entry.name}'),
+          key: Key(
+            'slash-menu-${entry.skill ? 'skill' : 'command'}-${entry.name}',
+          ),
           onTap: () => _insertSlash(entry.name),
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 46),
@@ -4605,9 +4627,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final listChildren = <Widget>[
-      if (commands.isNotEmpty) header(L10n.t('命令', 'Commands'), commands.length, commandColor),
+      if (commands.isNotEmpty)
+        header(L10n.t('命令', 'Commands'), commands.length, commandColor),
       for (final entry in commands) item(entry),
-      if (skills.isNotEmpty) header(L10n.t('技能', 'Skills'), skills.length, skillColor),
+      if (skills.isNotEmpty)
+        header(L10n.t('技能', 'Skills'), skills.length, skillColor),
       for (final entry in skills) item(entry),
       if (_slashCatalogLoading && _slashSkills == null)
         const Padding(
@@ -4641,7 +4665,8 @@ class _ChatScreenState extends State<ChatScreen> {
     void scheduleScrollCheck() {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        if (_slashScroll.hasClients && _slashScroll.position.maxScrollExtent > 0) {
+        if (_slashScroll.hasClients &&
+            _slashScroll.position.maxScrollExtent > 0) {
           _slashScrollCheckTries = 0;
           _updateSlashMenuScroll(entries.length);
           return;
@@ -4665,6 +4690,7 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       });
     }
+
     scheduleScrollCheck();
     final showMore = entries.isNotEmpty && _slashOverflow && !_slashAtBottom;
     return Padding(
@@ -4681,7 +4707,10 @@ class _ChatScreenState extends State<ChatScreen> {
         child: entries.isEmpty
             ? Padding(
                 key: const Key('slash-menu-empty'),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 14,
+                ),
                 child: Text(
                   L10n.t('无匹配命令或技能', 'No matching commands or skills'),
                   style: TextStyle(fontSize: 12.5, color: ink2),
@@ -4721,10 +4750,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             gradient: LinearGradient(
                               begin: Alignment.topCenter,
                               end: Alignment.bottomCenter,
-                              colors: [
-                                surface.withValues(alpha: 0),
-                                surface,
-                              ],
+                              colors: [surface.withValues(alpha: 0), surface],
                             ),
                           ),
                           child: Text(
@@ -4738,7 +4764,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       ),
                     )
-                  else if (entries.isNotEmpty && _slashOverflow && (_slashAtBottom || _slashRemaining == 0))
+                  else if (entries.isNotEmpty &&
+                      _slashOverflow &&
+                      (_slashAtBottom || _slashRemaining == 0))
                     Positioned(
                       left: 0,
                       right: 0,
@@ -4775,7 +4803,8 @@ class _ChatScreenState extends State<ChatScreen> {
       for (final s in _slashSkills ?? const <Map<String, dynamic>>[])
         if (s['name'] is String) s['name'] as String,
     };
-    if (commandNames.isEmpty && skillNames.isEmpty) return Text(text, style: base);
+    if (commandNames.isEmpty && skillNames.isEmpty)
+      return Text(text, style: base);
     final spans = <InlineSpan>[];
     var cursor = 0;
     var changed = false;
@@ -4786,10 +4815,12 @@ class _ChatScreenState extends State<ChatScreen> {
       if (token.start > cursor) {
         spans.add(TextSpan(text: text.substring(cursor, token.start)));
       }
-      spans.add(WidgetSpan(
-        alignment: PlaceholderAlignment.middle,
-        child: _SlashInlineChip(name: token.name, skill: isSkill),
-      ));
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: _SlashInlineChip(name: token.name, skill: isSkill),
+        ),
+      );
       cursor = token.end;
       changed = true;
     }
@@ -5474,7 +5505,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
     final sid = _mySessionId ?? widget.store.sessionId;
     if (sid == null) return;
-    showSessionToolsSheet(context, widget.store, sid, onTitleChanged: widget.onTitleChanged);
+    showSessionToolsSheet(
+      context,
+      widget.store,
+      sid,
+      onTitleChanged: widget.onTitleChanged,
+    );
   }
 
   void _openSessionToolsFromActionRail() {
@@ -5713,109 +5749,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // - 无过程块锚点 → 保留现状思考（`思考中…（N 字）`，正文流式后 `已思考 N 字`）；
   // - 历史视图不渲染活动条；`showReasoning` 仍只控制内容能否展开。
   // 思考文本走 `_liveReasoningRevision` 行级通知（与 provisional 行同源、同一快照）。
-  /// re-review P2：运行工具行是否仍在真正视口内。
-  ///
-  /// 保守策略：key 尚未挂载/视口缺失/尺寸未定 → 视为不可见（活动条显示），
-  /// 避免“活动条被过滤但屏幕上看不到”的回归。
-  bool _isProcessToolRowInViewport(String callId) {
-    final rowContext = _processToolRowKeys[callId]?.currentContext;
-    final viewportContext = _liveViewportKey.currentContext;
-    if (rowContext == null ||
-        viewportContext == null ||
-        !rowContext.mounted ||
-        !viewportContext.mounted) {
-      return false;
-    }
-    try {
-      final rowBox = rowContext.findRenderObject();
-      final viewportBox = viewportContext.findRenderObject();
-      if (rowBox is! RenderBox || viewportBox is! RenderBox) return false;
-      if (!rowBox.attached || !viewportBox.attached) return false;
-      if (!rowBox.hasSize || !viewportBox.hasSize) return false;
-      final rowRect = rowBox.localToGlobal(Offset.zero) & rowBox.size;
-      final viewportRect =
-          viewportBox.localToGlobal(Offset.zero) & viewportBox.size;
-      _activityGeometryResolved = true;
-      return rowRect.overlaps(viewportRect);
-    } catch (_) {
-      // 布局/语义帧交界上的极端时序：保守视为不可见（活动条显示）。
-      return false;
-    }
-  }
-
-  Widget _buildActivityBar() {
-    final policy = _foldPolicy;
-    // issue #108 v4：简洁运行中隐藏活动条（摘要承载状态）；其他档保留。
-    if (!policy.liveActivityBarVisible) return const SizedBox.shrink();
-    final live = _liveReasoning.current;
-    final plan = _livePlanCache;
-    final inBlock =
-        plan != null && (plan.provisionalRendered || plan.reasoningRowVisible);
-    final reasoning = inBlock ? '' : (live?.text ?? '');
-    // re-review P2：过程行 key 在首帧 layout 后才挂载。用「已解析」状态驱动少量
-    // post-frame 重建（而不是固定多帧），避免空转重建影响性能用例。
-    // 用「当前可能重复的活动工具集合」判断是否需要重新尝试几何；流式 delta 只改文本，
-    // 集合不变 → 不重置，避免每帧都 post-frame 重建（性能用例敏感）。
-    final candidateKey = [
-      for (final callId in _activeTools.keys)
-        if (plan != null && plan.visibleToolCallIds.contains(callId)) callId,
-    ]..sort();
-    final signature = candidateKey.join('|');
-    if (signature != _activityGeometryCandidateKey) {
-      _activityGeometryCandidateKey = signature;
-      _activityGeometryResolved = false;
-      _activityGeometryRefreshScheduled = false;
-      _activityGeometryRefreshFrames = 0;
-    }
-    // 只有「活动条当前可能有重复候选」时才需要几何重建；没有运行中工具不影响活动条。
-    final hasGeometryCandidate = plan != null &&
-        _scrollFollow.nearBottom &&
-        _activeTools.keys.any(plan.visibleToolCallIds.contains);
-    if (!_activityGeometryResolved &&
-        !_activityGeometryRefreshScheduled &&
-        _activityGeometryRefreshFrames < 1 &&
-        hasGeometryCandidate) {
-      _activityGeometryRefreshFrames++;
-      _activityGeometryRefreshScheduled = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _activityGeometryRefreshScheduled = false;
-        if (mounted) setState(() {});
-      });
-    }
-    // issue #83 后续：过程块已展开且钉在底部时，运行中工具行已在对话里可见，
-    // 活动条不再重复同一工具；只保留过程块尚未承载的工具（或滚动离开底部时）。
-    final tools = [
-      for (final entry in _activeTools.entries)
-        if (!(plan != null &&
-            _scrollFollow.nearBottom &&
-            plan.visibleToolCallIds.contains(entry.key) &&
-            _isProcessToolRowInViewport(entry.key)))
-          entry.value,
-    ];
-    final shown = reasoning.isNotEmpty || tools.isNotEmpty;
-    if (shown != _activityBarShown) {
-      _activityBarShown = shown;
-      // 活动条显隐会改变消息视口高度；本帧由子 ListenableBuilder 重建，父 build 不会
-      // 再跑，必须帧后补一次底部占位实测，否则短内容会留下大块空白（issue #89）。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _scheduleLiveBottomGapMeasure();
-        _requestScrollFollow();
-      });
-    }
-    if (reasoning.isEmpty && tools.isEmpty) return const SizedBox.shrink();
-    return _ActivityBar(
-      reasoning: reasoning,
-      expanded: _reasoningExpanded,
-      textStreaming: _streaming,
-      // issue #108：隐藏「思考内容」设置后，活动条只显示状态，不显示思考正文。
-      showContent: false,
-      tools: tools,
-      onToggleReasoning: () =>
-          setState(() => _reasoningExpanded = !_reasoningExpanded),
-    );
-  }
-
   // ── UI ──
   @override
   Widget build(BuildContext context) {
@@ -5868,8 +5801,6 @@ class _ChatScreenState extends State<ChatScreen> {
     // 条目增删/分页会改变几何：本帧结束后校准"当前轮"。
     // 只在取值变化时 setState，因此会收敛，不会自激。
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateActiveTurn());
-    // issue #77：帧后实测 live 内容高度，维护「短内容底部对齐」的顶部占位。
-    if (!_inHistory) _scheduleLiveBottomGapMeasure();
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -5907,362 +5838,390 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
-      body: LayoutBuilder(builder: (context, constraints) {
-        _bodyMaxHeight = constraints.maxHeight;
-        return Column(
-        children: [
-          // 用量条
-          if (_usageLoaded && _usage.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
-              child: Text(
-                _fmtUsage(_usage),
-                style: TextStyle(fontSize: 11.5, color: ink3),
-              ),
-            ),
-          // v2.8.0：后台任务卡片移到对话框顶部（不再与问询/审批卡堆在底部），可收纳、默认收起
-          if (!_inHistory && widget.store.hasRunningJobs(_mySessionId ?? ''))
-            _JobCard(
-              jobs: widget.store.jobsOf(_mySessionId ?? ''),
-              onOpen: _openTools,
-              onKill: _killJob,
-            ),
-          // v3.1.5：休眠会话降级常驻提示——历史只含 current surface / 配置已回退默认
-          if (_historyDegraded || _configDegraded)
-            Container(
-              width: double.infinity,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (_historyDegraded)
-                    Text(
-                      L10n.t(
-                        '当前仅能恢复部分历史，更早内容可能不可用',
-                        'Only partial history available',
-                      ),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  if (_configDegraded)
-                    Text(
-                      L10n.t(
-                        '该会话配置已回退默认（模型/权限/预设）',
-                        'Session settings reverted to defaults (model/permissions)',
-                      ),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          // 消息流：live 视图（普通列表，最新在底部）或历史分段浏览；
-          // 上翻时右下角浮出"回到底部"圆钮（位于输入框正上方，不在消息流内）
-          Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: _inHistory ? _buildHistoryView() : _buildLiveView(),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          _bodyMaxHeight = constraints.maxHeight;
+          return Column(
+            children: [
+              // 用量条
+              if (_usageLoaded && _usage.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+                  child: Text(
+                    _fmtUsage(_usage),
+                    style: TextStyle(fontSize: 11.5, color: ink3),
+                  ),
                 ),
-                // issue #24：轮次导航刻度轨。放在消息流之上、右下角圆钮之下；
-                // 只占右侧约 28px，空白区域不吸收命中，消息流照常滚动。
-                if (!_inHistory && showTurnRail)
-                  // issue #80：轨道宽 28 + 右侧 8dp gutter；gutter 不命中（Align 只
-                  // 命中真实子节点）。底部预留 62dp，保证轨道下界与「回到底部」圆钮
-                  // 至少 12dp 避让；轨道自身仍受 420dp 轨框 + 可用高度约束。
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: turnRailBottomReserve,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: turnRailRightGutter),
-                        child: TurnNavigatorRail(
-                          anchors: turnAnchors,
-                          unloadedTurns: unloadedTurns,
-                          activeTurn: _activeTurn,
-                          busyTurn: _busyTurn,
-                          width: turnRailWidth,
-                          maxHeight: 420,
-                          onNavigate: (anchor) => unawaited(_navigateToTurn(anchor)),
+              // v2.8.0：后台任务卡片移到对话框顶部（不再与问询/审批卡堆在底部），可收纳、默认收起
+              if (!_inHistory &&
+                  widget.store.hasRunningJobs(_mySessionId ?? ''))
+                _JobCard(
+                  jobs: widget.store.jobsOf(_mySessionId ?? ''),
+                  onOpen: _openTools,
+                  onKill: _killJob,
+                ),
+              // v3.1.5：休眠会话降级常驻提示——历史只含 current surface / 配置已回退默认
+              if (_historyDegraded || _configDegraded)
+                Container(
+                  width: double.infinity,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_historyDegraded)
+                        Text(
+                          L10n.t(
+                            '当前仅能恢复部分历史，更早内容可能不可用',
+                            'Only partial history available',
+                          ),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                        ),
+                      if (_configDegraded)
+                        Text(
+                          L10n.t(
+                            '该会话配置已回退默认（模型/权限/预设）',
+                            'Session settings reverted to defaults (model/permissions)',
+                          ),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              // 消息流：live 视图（普通列表，最新在底部）或历史分段浏览；
+              // 上翻时右下角浮出"回到底部"圆钮（位于输入框正上方，不在消息流内）
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: _inHistory
+                          ? _buildHistoryView()
+                          : _buildLiveView(),
+                    ),
+                    // issue #24：轮次导航刻度轨。放在消息流之上、右下角圆钮之下；
+                    // 只占右侧约 28px，空白区域不吸收命中，消息流照常滚动。
+                    if (!_inHistory && showTurnRail)
+                      // issue #80：轨道宽 28 + 右侧 8dp gutter；gutter 不命中（Align 只
+                      // 命中真实子节点）。底部预留 62dp，保证轨道下界与「回到底部」圆钮
+                      // 至少 12dp 避让；轨道自身仍受 420dp 轨框 + 可用高度约束。
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: turnRailBottomReserve,
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: Padding(
+                            padding: const EdgeInsets.only(
+                              right: turnRailRightGutter,
+                            ),
+                            child: TurnNavigatorRail(
+                              anchors: turnAnchors,
+                              unloadedTurns: unloadedTurns,
+                              activeTurn: _activeTurn,
+                              busyTurn: _busyTurn,
+                              width: turnRailWidth,
+                              maxHeight: 420,
+                              onNavigate: (anchor) =>
+                                  unawaited(_navigateToTurn(anchor)),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                if (!_inHistory)
-                  // issue #81：圆钮移入右侧 action gutter（right 0，38dp），正文右
-                  // padding 相应取 38，避免 320+大字时遮挡尾段；动画/点击/语义不变。
-                  Positioned(
-                    bottom: 12,
-                    right: 0,
-                    child: _JumpToLatestButton(
-                      visible: _showJumpToLatest,
-                      onTap: _jumpToLatest,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          // issue #97 P2：composer 上方的底部控件统一成可测量的一组，
-          // 菜单可用高度需扣除它们，避免 320×640 + 键盘时 Column 溢出。
-          Column(
-            key: _bottomControlsKey,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-          // 活动条：工具状态 / 无过程块时的思考（issue #70：与 provisional 同源、三处不重复）
-          if (!_inHistory)
-            // re-review P2：随滚动重建，工具行滚出视口时活动条立刻恢复。
-            ListenableBuilder(
-              listenable: Listenable.merge([_liveReasoningRevision, _scrollCtrl]),
-              builder: (context, _) => _buildActivityBar(),
-            ),
-          // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
-          if (_question != null)
-            _QuestionCard(
-              // v3.1.6（app-audit ①5）：按 rpcId 给 key —— 同一会话连续两条问询若中间没有
-              // 一帧 `_question == null`（store 的 per-session pending 是覆盖式写入），
-              // 无 key 时 Flutter 会复用同一个 State：它按旧问询 id 建的 _selected/_ctrls
-              // 找不到新 id → `_selected[q.id]!` 抛 null-check 异常（整页构建失败）。
-              key: ValueKey<String>(_question!.rpcId),
-              request: _question!,
-              onCancel: () {
-                // 立即收起卡片（内核 resolved 帧可能因本地状态已清而不再转发）
-                final rpc = _question!.rpcId;
-                setState(() => _question = null);
-                unawaited(_cancelPending(rpc));
-              },
-              onSubmitted: _submitQuestion,
-            ),
-          if (_approval != null)
-            _ApprovalCard(
-              request: _approval!,
-              onDecide: _decideApproval,
-              onCancel: () {
-                final rpc = _approval!.rpcId;
-                setState(() => _approval = null);
-                unawaited(_cancelPending(rpc));
-              },
-            ),
-          // 快捷动作
-          if (store.actions.isNotEmpty)
-            SizedBox(
-              height: 40,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (final a in store.actions)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: _ActionChip(
-                        action: a,
-                        onTap: () => showActionSheet(context, a),
+                    if (!_inHistory)
+                      // issue #81：圆钮移入右侧 action gutter（right 0，38dp），正文右
+                      // padding 相应取 38，避免 320+大字时遮挡尾段；动画/点击/语义不变。
+                      Positioned(
+                        bottom: 12,
+                        right: 0,
+                        child: _JumpToLatestButton(
+                          visible: _showJumpToLatest,
+                          onTap: _jumpToLatest,
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          // v3.0.0 图像链路：待发送图片缩略图 rail（composer 上方，PC 端 AttachmentRail 同理念）
-          _buildImageRail(),
-          // v3.1.4：任务清单面板（内核 todo 投影同源，对齐 PC 端「任务」面板）
-          if (!_inHistory) _buildTodoPanel(),
-          // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
-          _buildQueueDock(),
-            ],
-          ),
-          // composer（v2.8.0 重构为两层，对齐 PC 端 InputBar）：
-          // 第一层 = [/命令] + 输入框（独占最宽）；第二层 = 模型/权限/排队胶囊 + 上下文圆环 + 发送
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-              child: TapRegion(
-                groupId: const ValueKey('slash-composer'),
-                onTapOutside: (_) {
-                  // issue #97：菜单/composer 内部拖动、点选不视为“外部点击”；
-                  // 只有真正点输入区外部才收起菜单（键盘焦点不受影响）。
-                  if (_slashToken != null && mounted) {
-                    setState(() => _slashToken = null);
-                  }
-                },
-                child: Column(
+              // issue #97 P2：composer 上方的底部控件统一成可测量的一组，
+              // 菜单可用高度需扣除它们，避免 320×640 + 键盘时 Column 溢出。
+              Column(
+                key: _bottomControlsKey,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // issue #97：菜单在 composer 卡片之外、输入框上方（键盘弹出随 composer 上移）。
-                  if (!_inHistory && _slashToken != null) ...[
-                    _buildSlashMenu(context),
-                    const SizedBox(height: 8),
-                  ],
-                  Container(
-                key: _composerKey,
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-                decoration: BoxDecoration(
-                  color: surface,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: Theme.of(context).brightness == Brightness.dark
-                      ? DshTheme.shadowDark
-                      : DshTheme.shadow,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 第一层：输入框（独占最宽）
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _inputCtrl,
-                            minLines: 1,
-                            maxLines: 4,
-                            style: const TextStyle(fontSize: 14.5),
-                            decoration: InputDecoration(
-                              hintText: L10n.t('回复 agent…', 'Reply to agent…'),
-                              hintStyle: TextStyle(color: ink3),
-                              filled: false,
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(
-                                vertical: 8,
-                              ),
-                            ),
-                            onSubmitted: (_) => _send(),
-                            onTap: _refreshSlashToken,
-                          ),
-                        ),
-                      ],
+                  // 内核问询/审批弹窗（思考中途需要你拍板，与 PC 端同一 pending 通道）
+                  if (_question != null)
+                    _QuestionCard(
+                      // v3.1.6（app-audit ①5）：按 rpcId 给 key —— 同一会话连续两条问询若中间没有
+                      // 一帧 `_question == null`（store 的 per-session pending 是覆盖式写入），
+                      // 无 key 时 Flutter 会复用同一个 State：它按旧问询 id 建的 _selected/_ctrls
+                      // 找不到新 id → `_selected[q.id]!` 抛 null-check 异常（整页构建失败）。
+                      key: ValueKey<String>(_question!.rpcId),
+                      request: _question!,
+                      onCancel: () {
+                        // 立即收起卡片（内核 resolved 帧可能因本地状态已清而不再转发）
+                        final rpc = _question!.rpcId;
+                        setState(() => _question = null);
+                        unawaited(_cancelPending(rpc));
+                      },
+                      onSubmitted: _submitQuestion,
                     ),
-                    const SizedBox(height: 8),
-                    // 第二层：⊕命令入口 + 模型/权限胶囊（省略显示）+ 排队发送 + 上下文圆环 + 发送
-                    Row(
-                      children: [
-                        // v2.8.0：命令入口——浅灰圆 +（对齐 PC 端 command）
-                        // v3.0.0 图像链路：⊕ = 更多（拍照 / 从相册选择 / 命令）
-                        InkWell(
-                          onTap: _showComposerMenu,
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            width: 28,
-                            height: 28,
-                            decoration: BoxDecoration(
-                              color: DshColors.line(context),
-                              shape: BoxShape.circle,
-                            ),
-                            // v2.8.0 review(P2-3)：图标用 ink3 主题自适应（深色下不再黑压黑）
-                            child: Icon(
-                              Icons.add,
-                              size: 17,
-                              color: DshColors.ink3(context),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        // 左侧弹性组：⊕ + 模型/权限（可收缩省略）+ 排队（固定）——
-                        // 整体包 Expanded，剩余空间在组内消化；右侧圆环/发送在组外固定，永不挤出
-                        Expanded(
-                          child: Row(
-                            children: [
-                              // 模型胶囊：名称省略；Flexible 空间不足时收缩（省略号），充足时自然宽
-                              Flexible(
-                                child: _Pill(
-                                  label: _shortModel(store.sessionConfig.model),
-                                  onTap: () => showModelSheet(context, store),
-                                ),
+                  if (_approval != null)
+                    _ApprovalCard(
+                      request: _approval!,
+                      onDecide: _decideApproval,
+                      onCancel: () {
+                        final rpc = _approval!.rpcId;
+                        setState(() => _approval = null);
+                        unawaited(_cancelPending(rpc));
+                      },
+                    ),
+                  // 快捷动作
+                  if (store.actions.isNotEmpty)
+                    SizedBox(
+                      height: 40,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        children: [
+                          for (final a in store.actions)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: _ActionChip(
+                                action: a,
+                                onTap: () => showActionSheet(context, a),
                               ),
-                              const SizedBox(width: 6),
-                              // 权限胶囊：同上
-                              Flexible(
-                                child: _Pill(
-                                  label: _shortPerm(
-                                    _permName(
-                                      store.sessionConfig.permissionPreset,
+                            ),
+                        ],
+                      ),
+                    ),
+                  // v3.0.0 图像链路：待发送图片缩略图 rail（composer 上方，PC 端 AttachmentRail 同理念）
+                  _buildImageRail(),
+                  // v3.1.4：任务清单面板（内核 todo 投影同源，对齐 PC 端「任务」面板）
+                  if (!_inHistory) _buildTodoPanel(),
+                  // v2.7.2：队列停靠区（独立于输入框的轻量条，空队列不渲染）
+                  _buildQueueDock(),
+                ],
+              ),
+              // composer（v2.8.0 重构为两层，对齐 PC 端 InputBar）：
+              // 第一层 = [/命令] + 输入框（独占最宽）；第二层 = 模型/权限/排队胶囊 + 上下文圆环 + 发送
+              SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                  child: TapRegion(
+                    groupId: const ValueKey('slash-composer'),
+                    onTapOutside: (_) {
+                      // issue #97：菜单/composer 内部拖动、点选不视为“外部点击”；
+                      // 只有真正点输入区外部才收起菜单（键盘焦点不受影响）。
+                      if (_slashToken != null && mounted) {
+                        setState(() => _slashToken = null);
+                      }
+                    },
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // issue #97：菜单在 composer 卡片之外、输入框上方（键盘弹出随 composer 上移）。
+                        if (!_inHistory && _slashToken != null) ...[
+                          _buildSlashMenu(context),
+                          const SizedBox(height: 8),
+                        ],
+                        Container(
+                          key: _composerKey,
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                          decoration: BoxDecoration(
+                            color: surface,
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow:
+                                Theme.of(context).brightness == Brightness.dark
+                                ? DshTheme.shadowDark
+                                : DshTheme.shadow,
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // 第一层：输入框（独占最宽）
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _inputCtrl,
+                                      minLines: 1,
+                                      maxLines: 4,
+                                      style: const TextStyle(fontSize: 14.5),
+                                      decoration: InputDecoration(
+                                        hintText: L10n.t(
+                                          '回复 agent…',
+                                          'Reply to agent…',
+                                        ),
+                                        hintStyle: TextStyle(color: ink3),
+                                        filled: false,
+                                        border: InputBorder.none,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              vertical: 8,
+                                            ),
+                                      ),
+                                      onSubmitted: (_) => _send(),
+                                      onTap: _refreshSlashToken,
                                     ),
                                   ),
-                                  onTap: () => showPermSheet(context, store),
-                                ),
+                                ],
                               ),
-                              // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）；
-                              // 固定宽度（不参与收缩，始终完整显示）
-                              if (_pageAgentStatus == 'running' &&
-                                  _inputCtrl.text.trim().isNotEmpty) ...[
-                                const SizedBox(width: 6),
-                                _Pill(
-                                  label: L10n.t('排队发送', 'Queue send'),
-                                  onTap: () => _send(),
-                                ),
-                              ],
+                              const SizedBox(height: 8),
+                              // 第二层：⊕命令入口 + 模型/权限胶囊（省略显示）+ 排队发送 + 上下文圆环 + 发送
+                              Row(
+                                children: [
+                                  // v2.8.0：命令入口——浅灰圆 +（对齐 PC 端 command）
+                                  // v3.0.0 图像链路：⊕ = 更多（拍照 / 从相册选择 / 命令）
+                                  InkWell(
+                                    onTap: _showComposerMenu,
+                                    borderRadius: BorderRadius.circular(16),
+                                    child: Container(
+                                      width: 28,
+                                      height: 28,
+                                      decoration: BoxDecoration(
+                                        color: DshColors.line(context),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      // v2.8.0 review(P2-3)：图标用 ink3 主题自适应（深色下不再黑压黑）
+                                      child: Icon(
+                                        Icons.add,
+                                        size: 17,
+                                        color: DshColors.ink3(context),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // 左侧弹性组：⊕ + 模型/权限（可收缩省略）+ 排队（固定）——
+                                  // 整体包 Expanded，剩余空间在组内消化；右侧圆环/发送在组外固定，永不挤出
+                                  Expanded(
+                                    child: Row(
+                                      children: [
+                                        // 模型胶囊：名称省略；Flexible 空间不足时收缩（省略号），充足时自然宽
+                                        Flexible(
+                                          child: _Pill(
+                                            label: _shortModel(
+                                              store.sessionConfig.model,
+                                            ),
+                                            onTap: () =>
+                                                showModelSheet(context, store),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        // 权限胶囊：同上
+                                        Flexible(
+                                          child: _Pill(
+                                            label: _shortPerm(
+                                              _permName(
+                                                store
+                                                    .sessionConfig
+                                                    .permissionPreset,
+                                              ),
+                                            ),
+                                            onTap: () =>
+                                                showPermSheet(context, store),
+                                          ),
+                                        ),
+                                        // 运行中且输入非空 → 「排队发送」胶囊（点击=普通发送，运行中自动排队）；
+                                        // 固定宽度（不参与收缩，始终完整显示）
+                                        if (_pageAgentStatus == 'running' &&
+                                            _inputCtrl.text
+                                                .trim()
+                                                .isNotEmpty) ...[
+                                          const SizedBox(width: 6),
+                                          _Pill(
+                                            label: L10n.t('排队发送', 'Queue send'),
+                                            onTap: () => _send(),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // 上下文窗口占用圆环（对齐 PC 端；数据齐全时才显示）——组外固定
+                                  if (_contextRatio != null) ...[
+                                    _ContextRing(ratio: _contextRatio!),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  // v2.7.2：发送按钮恢复原设计——运行中=停止（对齐 PC 端），空闲=发送；
+                                  // 长按=插队发送；运行中普通发送走「排队发送」胶囊——组外固定
+                                  GestureDetector(
+                                    onTap: _sending
+                                        ? null
+                                        : (_pageAgentStatus == 'running'
+                                              ? _stop
+                                              : _send),
+                                    onLongPress: _sending
+                                        ? null
+                                        : () => _send(null, 'steer'),
+                                    child: Container(
+                                      width: 32,
+                                      height: 32,
+                                      decoration: BoxDecoration(
+                                        color: brand,
+                                        borderRadius: BorderRadius.circular(9),
+                                      ),
+                                      child: _pageAgentStatus == 'running'
+                                          ? Center(
+                                              child: Container(
+                                                width: 10,
+                                                height: 10,
+                                                decoration: BoxDecoration(
+                                                  color: DshColors.onBrand(
+                                                    context,
+                                                  ),
+                                                  borderRadius:
+                                                      BorderRadius.circular(2),
+                                                ),
+                                              ),
+                                            )
+                                          : _sending
+                                          ? SizedBox(
+                                              width: 15,
+                                              height: 15,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: DshColors.onBrand(
+                                                  context,
+                                                ),
+                                              ),
+                                            )
+                                          : Icon(
+                                              Icons.arrow_upward,
+                                              size: 17,
+                                              color: DshColors.onBrand(context),
+                                            ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        // 上下文窗口占用圆环（对齐 PC 端；数据齐全时才显示）——组外固定
-                        if (_contextRatio != null) ...[
-                          _ContextRing(ratio: _contextRatio!),
-                          const SizedBox(width: 8),
-                        ],
-                        // v2.7.2：发送按钮恢复原设计——运行中=停止（对齐 PC 端），空闲=发送；
-                        // 长按=插队发送；运行中普通发送走「排队发送」胶囊——组外固定
-                        GestureDetector(
-                          onTap: _sending
-                              ? null
-                              : (_pageAgentStatus == 'running' ? _stop : _send),
-                          onLongPress: _sending
-                              ? null
-                              : () => _send(null, 'steer'),
-                          child: Container(
-                            width: 32,
-                            height: 32,
-                            decoration: BoxDecoration(
-                              color: brand,
-                              borderRadius: BorderRadius.circular(9),
-                            ),
-                            child: _pageAgentStatus == 'running'
-                                ? Center(
-                                    child: Container(
-                                      width: 10,
-                                      height: 10,
-                                      decoration: BoxDecoration(
-                                        color: DshColors.onBrand(context),
-                                        borderRadius: BorderRadius.circular(2),
-                                      ),
-                                    ),
-                                  )
-                                : _sending
-                                ? SizedBox(
-                                    width: 15,
-                                    height: 15,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: DshColors.onBrand(context),
-                                    ),
-                                  )
-                                : Icon(
-                                    Icons.arrow_upward,
-                                    size: 17,
-                                    color: DshColors.onBrand(context),
-                                  ),
-                          ),
-                        ),
                       ],
                     ),
-                  ],
-                ),
                   ),
-                ],
+                ),
               ),
-              ),
-            ),
-          ),
-        ],
-      );
-      }),
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -7129,6 +7088,45 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _loadReasoningDetail(ProcessRow row) async {
+    final id = _mySessionId ?? widget.store.sessionId;
+    final seq = row.detailSeq;
+    if (id == null ||
+        seq == null ||
+        !row.detailAvailable ||
+        !_api.timelineCapabilities.detail) {
+      return;
+    }
+    if (_reasoningDetailTexts.containsKey(seq) ||
+        !_reasoningDetailPending.add(seq)) {
+      return;
+    }
+    final generation = _loadGeneration;
+    try {
+      final detail = await _api.eventDetail(id, seq);
+      if (!mounted || generation != _loadGeneration) return;
+      final data = detail.event['data'] is Map
+          ? Map<String, dynamic>.from(detail.event['data'] as Map)
+          : const <String, dynamic>{};
+      final reasoning = data['reasoning'];
+      if (reasoning is String && reasoning.isNotEmpty) {
+        final full = clampTimelineDetailText(reasoning);
+        setState(() => _reasoningDetailTexts[seq] = full);
+      }
+    } catch (_) {
+      // 详情失败保留摘要正文；用户可以再次点展开触发重试。
+    } finally {
+      _reasoningDetailPending.remove(seq);
+    }
+  }
+
+  bool _userMessageNeedsDetail(_MsgItem item) {
+    final full = item.detailTextChars;
+    if (full != null && full > item.text.length) return true;
+    // 旧插件没有 textChars：按摘要上限兜底，只在可能被截断时提供入口。
+    return item.text.length >= 2000;
+  }
+
   String _failureKey(_MsgItem item) => item.kind == _MsgKind.tool
       ? 'tool:${item.toolCallId ?? item.seq}'
       : 'event:${item.eventType}:${item.seq ?? item.text}';
@@ -7159,6 +7157,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ? item.copyTool(detailLoading: true, clearDetailError: true)
         : item.kind == _MsgKind.assistant
         ? item.copyAssistant(detailLoading: true, clearDetailError: true)
+        : item.kind == _MsgKind.user
+        ? item.copyUser(detailLoading: true, clearDetailError: true)
         : item.copyEvent(detailLoading: true, clearDetailError: true);
     if (mounted) setState(() => _replaceTimelineItem(item, loading));
     try {
@@ -7259,6 +7259,28 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         );
+      } else if (current.kind == _MsgKind.user) {
+        // 用户消息详情：服务端附 canonical text（blocksToText，去图片占位）；
+        // 摘要只下发前 2000 字，完整正文仅在详情里。仍限制在 20k 渲染上限内。
+        final canonical = timelineDetailText(data);
+        final fullText = clampTimelineDetailText(canonical ?? '');
+        setState(
+          () => _replaceTimelineItem(
+            item,
+            current.copyUser(
+              text: fullText.isNotEmpty ? fullText : current.text,
+              rawData: full,
+              detailAvailable: true,
+              detailLoading: false,
+              detailDegraded: detail.degraded,
+              detailMode: detail.detailMode,
+              clearDetailError: true,
+              detailTextChars: fullText.isNotEmpty
+                  ? fullText.length
+                  : current.detailTextChars,
+            ),
+          ),
+        );
       } else {
         setState(
           () => _replaceTimelineItem(
@@ -7281,7 +7303,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final current = _currentTimelineItem(item);
       if (current == null ||
           ((current.kind == _MsgKind.tool ||
-                  current.kind == _MsgKind.assistant) &&
+                  current.kind == _MsgKind.assistant ||
+                  current.kind == _MsgKind.user) &&
               current.detailSeq != detailSeq)) {
         return;
       }
@@ -7292,6 +7315,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ? current.copyTool(detailErrorCode: code, detailLoading: false)
           : current.kind == _MsgKind.assistant
           ? current.copyAssistant(detailErrorCode: code, detailLoading: false)
+          : current.kind == _MsgKind.user
+          ? current.copyUser(detailErrorCode: code, detailLoading: false)
           : current.copyEvent(detailErrorCode: code, detailLoading: false);
       setState(() => _replaceTimelineItem(item, fallback));
       _requestScrollFollow();
@@ -7308,9 +7333,9 @@ class _ChatScreenState extends State<ChatScreen> {
   // 每帧只做查表，避免逐帧线性扫描与逐 delta 全量重建。
 
   TurnFoldPolicy get _foldPolicy => TurnFoldPolicy(
-        mode: widget.store.stepDisplayMode,
-        timing: widget.store.turnFoldTiming,
-      );
+    mode: widget.store.stepDisplayMode,
+    timing: widget.store.turnFoldTiming,
+  );
 
   _ProcessPlan? _livePlanCache;
   _ProcessPlan? _histPlanCache;
@@ -7395,13 +7420,24 @@ class _ChatScreenState extends State<ChatScreen> {
     final policy = _foldPolicy;
     final turns = _ensureProcessTurnMap();
     final humanUserSeqs = _turnProcess.humanUserSeqs;
+    // issue #126：加载更早历史后，live 轮的早期条目会落在 `_olderItems`（center 负方向）。
+    // 若过程块跟着最小 seq 宿主跑到 older 侧，live 侧只剩被压制的零高度行，页面在
+    // center 边界出现大块空白。这里给 live 轮一个“优先用 live 宿主”的约束。
+    final liveSeqSet = historyView
+        ? const <int>{}
+        : <int>{
+            for (final item in _items)
+              if (item.seq != null) item.seq!,
+          };
     final itemsByTurn = <int, List<_MsgItem>>{};
     for (final item in items) {
       int? turn;
       if (item.kind == _MsgKind.divider) {
         final seq = item.seq;
         if (seq != null) {
-          turn = _turnProcess.turnOfStartSeq(seq) ?? _turnProcess.turnOfEndSeq(seq);
+          turn =
+              _turnProcess.turnOfStartSeq(seq) ??
+              _turnProcess.turnOfEndSeq(seq);
         }
       } else if (item.kind == _MsgKind.tool) {
         final callId = item.toolCallId;
@@ -7419,10 +7455,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // 仅用于活动条去重；renderedCallIds 仍表示「过程块承载」用于平铺卡抑制。
     final visibleToolCallIds = <String>{};
     final anchoredTurns = <int>{};
+    // issue #123（照搬 DSH `retainAccountKeys`）：收集本轮**当前存在的组身份**，
+    // 构建结束后按存在性过滤用户选择缓存（只留仍存在的 key，不做任何身份匹配）。
+    final existingGroupIds = <String>{};
     // 页脚需要「该轮最后一条助手消息」：只存 seq（渲染时再从当前列表取对象，
     // 避免反馈/详情原地替换后仍拿着旧对象）。
     final assistantSeqByTurn = <int, int>{};
-    final hiddenByTurn = <int, int>{};
     // issue #70：provisional 只注入「当前流式轮次的最后一段」，且该段必须已有宿主
     // （无持久过程行 → 无锚点 → 不凭空造过程块，活动条保留现状思考）。
     // 计划里只存排序键，不存文本（文本由行级 ValueNotifier 读取，避免陈旧缓存）。
@@ -7457,23 +7495,72 @@ class _ChatScreenState extends State<ChatScreen> {
       if (start == null) continue; // 历史截断：没有 turn/start，不构造过程块
       anchoredTurns.add(turn);
       final segments = segmentsOf(process);
+      if (segments.isEmpty) {
+        // 运行中、尚无持久过程行：保留“思考中…”反馈，但不重建活动条。
+        // 以用户消息为宿主、渲染在它之后，形成一行固定高度的 provisional-only 块。
+        if (!historyView && live != null && live.turn == turn) {
+          _MsgItem? host;
+          for (final item in turnItems) {
+            final seq = item.seq;
+            if (seq == null || seq < process.startSeq) continue;
+            if (item.kind == _MsgKind.user) {
+              host = item;
+              break;
+            }
+          }
+          host ??= turnItems.isEmpty ? null : turnItems.first;
+          final hostSeq = host?.seq;
+          if (hostSeq != null) {
+            final slot = _ProvisionalSlot(
+              turn: live.turn,
+              step: live.step,
+              orderSeq: live.firstSeq,
+            );
+            final plan = _ProcessBlockPlan(
+              process: process,
+              segmentIndex: 0,
+              segment: const ProcessSegment(rows: []),
+              expanded: true,
+              grouping: false,
+              intervalKey: '${turn}:provisional',
+              isLastSegmentOfTurn: true,
+              liveProcessDetail: policy.liveProcessDetail,
+              historyView: false,
+              afterHost: true,
+              provisional: slot,
+            );
+            (hosts[hostSeq] ??= <_ProcessBlockPlan>[]).add(plan);
+            provisionalRendered = true;
+            reasoningRowVisible = true;
+          }
+        }
+        continue;
+      }
+      // issue #123：读手动折叠状态前先让 owner 对齐本轮段身份（partial 窗口补入
+      // 真实开段边界时，按成员行身份把旧键的手动状态迁移到新键）。
+      // 只在 live 视图同步：历史分段视图的窗口与 live 不同，两个窗口各自同步会
+      // 互相误判「同一段」（同一个 turn 在两个窗口里可能段不同）。
+      if (!historyView) _segmentFold.sync(turn, segments);
+      if (!historyView) {
+        for (final segment in segments) {
+          for (final group in segment.groups) {
+            existingGroupIds.add(groupIdentityOf(group, turn));
+          }
+        }
+      }
       final liveNow = !process.ended;
       // issue #108：运行中插话强制段展开（简洁档也一样）；异常结束同样强制。
       final forcedLive = liveNow && process.hasInterjection;
       final segmentExpandedByDefault = liveNow
           ? (policy.liveSegment == LiveSegmentMode.expanded || forcedLive)
           : (process.forceExpanded ||
-              !turnAutoCollapsed(
-                process,
-                policy: policy,
-                humanUserSeqs: humanUserSeqs,
-              ));
-      final limit = _processRowLimits[turn] ?? processBatchSize;
-      final batchWindow = batchProcessRows(process.rows, limit);
-      final visibleSeqSet = <int>{
-        for (final row in batchWindow.visible) row.seq,
-      };
-      final hiddenTotal = batchWindow.hidden;
+                !turnAutoCollapsed(
+                  process,
+                  policy: policy,
+                  humanUserSeqs: humanUserSeqs,
+                ));
+      // issue #126 / ADR 0035：取消 50 行分批——所有过程行都参与布局，不再有
+      // hidden 行；行数很多时由组体/详情体的固定高度上限控制可见区域。
       for (var si = 0; si < segments.length; si++) {
         final segment = segments[si];
         // 宿主：该段第一条过程行所在的（或其后最近的）条目——过程块渲染在它之前。
@@ -7482,26 +7569,31 @@ class _ChatScreenState extends State<ChatScreen> {
           if (row.seq > lastRowSeq) lastRowSeq = row.seq;
         }
         _MsgItem? host;
+        _MsgItem? liveHost;
         for (final item in turnItems) {
           final seq = item.seq;
           if (seq == null || seq < segment.startSeq) continue;
           if (item.kind == _MsgKind.user && seq <= lastRowSeq) continue;
           if (host == null || seq < (host.seq ?? 1 << 62)) host = item;
-        }
-        if (host == null || host.seq == null) continue;
-        final key = '$turn:$si';
-        final manual = _turnExpansions[key];
-        final occupied = manual ?? segmentExpandedByDefault;
-        final groupStyle = liveNow ? policy.liveGroups : policy.completedGroups;
-        final flat = groupStyle == LiveGroupMode.flat ||
-            groupStyle == CompletedGroupMode.flat;
-        final grouping = occupied && !flat && policy.mode != WorkStepDisplayMode.expanded;
-        final visibleRows = <int>{};
-        if (occupied) {
-          for (final row in segment.rows) {
-            if (visibleSeqSet.contains(row.seq)) visibleRows.add(row.seq);
+          if (liveSeqSet.contains(seq) &&
+              (liveHost == null || seq < (liveHost.seq ?? 1 << 62))) {
+            liveHost = item;
           }
         }
+        host = liveHost ?? host;
+        if (host == null || host.seq == null) continue;
+        // issue #122：段身份用「开段插话边界」而非位置索引 si。补页/裁剪/乱序补边
+        // 会让 si 整体移动，导致手动折叠状态失配或串段；边界 seq 只随 durable
+        // 插话变化，已渲染段的键保持稳定（见 `segmentKeyOf`）。
+        final key = segmentKeyOf(segment, turn);
+        final manual = _segmentFold.segmentExpandedOf(segment, turn);
+        final occupied = manual ?? segmentExpandedByDefault;
+        final groupStyle = liveNow ? policy.liveGroups : policy.completedGroups;
+        final flat =
+            groupStyle == LiveGroupMode.flat ||
+            groupStyle == CompletedGroupMode.flat;
+        final grouping =
+            occupied && !flat && policy.mode != WorkStepDisplayMode.expanded;
         List<bool>? groupExpandedFlags;
         if (grouping) {
           final defaultGroupExpanded = liveNow
@@ -7511,9 +7603,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   LiveGroupMode.collapsed || LiveGroupMode.flat => false,
                 }
               : false; // 已完成详细：组抬头折叠
+          // issue #123（方案 D）：组展开状态的**权威**在 `_ProcessGroupHeader` 的
+          // State；计划层只为活动条去重/provisional 放置读外部镜像（用户点过才有值），
+          // 没有迁移/同步——identity 变即视为新组，取档位默认。
           groupExpandedFlags = [
             for (final group in segment.groups)
-              _groupExpansions['$key:${group.step ?? 'x'}'] ??
+              _groupUserExpanded[groupIdentityOf(group, turn)] ??
                   defaultGroupExpanded,
           ];
         }
@@ -7524,14 +7619,14 @@ class _ChatScreenState extends State<ChatScreen> {
               for (final row in segment.groups[gi].rows) {
                 final callId = row.callId;
                 if (!row.isTool || callId == null) continue;
-                if (visibleRows.contains(row.seq)) visibleToolCallIds.add(callId);
+                visibleToolCallIds.add(callId);
               }
             }
           } else {
             for (final row in segment.rows) {
               final callId = row.callId;
               if (!row.isTool || callId == null) continue;
-              if (visibleRows.contains(row.seq)) visibleToolCallIds.add(callId);
+              visibleToolCallIds.add(callId);
             }
           }
         }
@@ -7560,7 +7655,7 @@ class _ChatScreenState extends State<ChatScreen> {
             for (var gi = 0; gi < segment.groups.length; gi++) {
               if (!groupExpandedFlags![gi]) continue;
               for (final row in segment.groups[gi].rows) {
-                if (row.isReasoning && visibleRows.contains(row.seq)) {
+                if (row.isReasoning) {
                   hasReasoning = true;
                   break;
                 }
@@ -7569,7 +7664,7 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           } else if (!hasReasoning) {
             for (final row in segment.rows) {
-              if (row.isReasoning && visibleRows.contains(row.seq)) {
+              if (row.isReasoning) {
                 hasReasoning = true;
                 break;
               }
@@ -7585,34 +7680,31 @@ class _ChatScreenState extends State<ChatScreen> {
           grouping: grouping,
           intervalKey: key,
           isLastSegmentOfTurn: si == segments.length - 1,
-          hiddenTotalInTurn: 0, // 稍后回填
-          visibleRowSeqs: visibleRows,
-          turnVisibleRowSeqs: visibleSeqSet,
           liveProcessDetail: policy.liveProcessDetail,
           historyView: historyView,
           provisional: slot,
         );
         (hosts[host.seq!] ??= <_ProcessBlockPlan>[]).add(plan);
-        // 无论该段当前是否展开、行是否被分批隐藏，只要段有宿主，
-        // 它的工具行就由过程块承载——否则平铺工具卡会与折叠摘要同时出现。
+        // 只要段有宿主，它的工具行就由过程块承载——否则平铺工具卡会与折叠摘要
+        // 同时出现。
         for (final row in segment.rows) {
           final callId = row.callId;
           if (row.isTool && callId != null) renderedCallIds.add(callId);
         }
       }
-      if (hiddenTotal > 0) hiddenByTurn[turn] = hiddenTotal;
     }
 
-    // 回填「该轮还有多少行未展示」，让最后一段承载「显示更多」。
-    if (hiddenByTurn.isNotEmpty) {
-      hosts.forEach((seq, plans) {
-        for (var i = 0; i < plans.length; i++) {
-          final plan = plans[i];
-          final hidden = hiddenByTurn[plan.process.turn];
-          if (hidden == null || !plan.isLastSegmentOfTurn) continue;
-          plans[i] = plan.copyWith(hiddenTotalInTurn: hidden);
-        }
-      });
+    // issue #123 v3：身份快照按轮累积（v3 每组多存成员令牌 ≈ O(rows)），必须收口，
+    // 否则长会话/长窗口无界增长。只剪 live 视图，且只剪**快照**：
+    // 不再渲染的轮次在不可见期间不会发生键变化，滚回窗口时重建快照即可。
+    if (!historyView) _segmentFold.retainTurns(anchoredTurns);
+    // 存在性过滤（DSH `retainAccountKeys` 等价物）：计划为空 → existing 为空 →
+    // 缓存被清空（历史真的为空时这是正确结果）。
+    // 注意：`_load` 的 `_items.clear()` 与重建在同一个同步 setState 块内（无 await），
+    // 不产生「旧列表已清空、新历史未到」的可渲染帧；是否存在组由 existingGroupIds
+    // 判定（计划输入是 `[..._items, ..._olderItems]`，不是只看 `_items`）。
+    if (!historyView) {
+      _retainExistingGroupExpansions(existingGroupIds);
     }
 
     return _ProcessPlan(
@@ -7628,14 +7720,69 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// issue #123（照搬 DSH `retainAccountKeys`）：**只按存在性**过滤组选择缓存。
+  ///
+  /// DSH（`packages/client/ui-workspace/src/client/stores.ts:99-105`）：
+  /// ```ts
+  /// setGroupExpanded: (d, key, expanded) => { d.groupExpansion[key] = expanded },
+  /// retainAccountKeys: (d, workspaceKeys) => {
+  ///   const retained = new Set(workspaceKeys)
+  ///   d.groupExpansion = Object.fromEntries(
+  ///     Object.entries(d.groupExpansion).filter(([key]) => retained.has(key)),
+  ///   )
+  /// }
+  /// ```
+  /// 这里一一对应：identity 仍存在 → 保留用户选择；不存在 → 删除。
+  ///
+  /// **不做**：事务分类、危险/安全事务、保守失效、视图访问世代、身份匹配。
+  /// 也不做「这个 identity 是否对应同一个逻辑组」的判断——那就是迁移。
+  ///
+  /// 触发时机：只在 `_processVersion` 变化后、且 live 计划重建时执行一次
+  /// （计划构建本来就要遍历所有轮次并算 `segmentsOf`，这里顺带收集 identity，
+  /// 零额外扫描；epoch 变化（展开态/档位）不会重复过滤）。
+  void _retainExistingGroupExpansions(Set<String> existing) {
+    if (_groupRetainVersion == _processVersion) return;
+    _groupRetainVersion = _processVersion;
+    _groupUserExpanded.removeWhere((key, _) => !existing.contains(key));
+  }
+
   Widget _buildProcessBlockPlan(_ProcessBlockPlan plan) {
     final context = this.context;
     final policy = _foldPolicy;
     final process = plan.process;
-    if (plan.segment.isEmpty) return const SizedBox.shrink();
+    if (plan.segment.isEmpty) {
+      final slot = plan.provisional;
+      if (slot == null) return const SizedBox.shrink();
+      // ADR 0035：简洁/标准只给一行状态；详细/完全展开才显示 provisional 思考行。
+      if (policy.mode == WorkStepDisplayMode.detailed ||
+          policy.mode == WorkStepDisplayMode.expanded) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: _buildProvisionalReasoningRow(slot, autoExpanded: false),
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: SizedBox(
+          height: transcriptRowHeight(context),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              L10n.t('思考中…', 'Thinking…'),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: DshColors.ink2(context),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     // issue #92：compaction 回放的旧 turn 只有工具行、没有轮次锚点/用户上下文；
     // 明确标注为历史工具结果 fallback（仍可随该过程块折叠），不伪装成当前过程行。
-    final toolOnlyReplay = process.partial &&
+    final toolOnlyReplay =
+        process.partial &&
         process.humanUserSeqs.isEmpty &&
         process.groups.isNotEmpty &&
         process.groups.every((g) => g.rows.every((row) => row.isTool));
@@ -7644,28 +7791,32 @@ class _ChatScreenState extends State<ChatScreen> {
     final liveNow = !process.ended;
     // issue #108 v4：完全展开只自动展开当前运行轮的详情；完成/历史不自动。
     // 完全展开：当前运行轮自动展开详情；运行中插话/异常不自动展开。
-    final autoDetail =
-        policy.liveDetailsAutoExpanded && liveNow && !process.hasInterjection;
+    // ADR 0035：完全展开不再自动展开详情；详情一律手动。
+    const autoDetail = false;
+    // provisional 思考行只在详细/完全展开档显示；简洁/标准由段摘要/组抬头承载状态。
+    final showProvisionalRow =
+        policy.mode == WorkStepDisplayMode.detailed ||
+        policy.mode == WorkStepDisplayMode.expanded;
     // 强制展开（运行中/插话/异常）保持不可收起；简洁正常运行中的摘要仍可手动展开。
     final forcedLive = liveNow && process.hasInterjection;
     final forced =
         process.forceExpanded &&
-        !(policy.mode == WorkStepDisplayMode.concise &&
-            liveNow &&
-            !forcedLive);
+        !(policy.mode == WorkStepDisplayMode.concise && liveNow && !forcedLive);
     final children = <Widget>[];
     if (toolOnlyReplay) {
-      children.add(Padding(
-        key: Key('historical-tool-results-${process.turn}'),
-        padding: const EdgeInsets.only(bottom: 4, left: 2),
-        child: Text(
-          L10n.t(
-            '历史工具结果（无过程上下文）',
-            'Historical tool results (no process context)',
+      children.add(
+        Padding(
+          key: Key('historical-tool-results-${process.turn}'),
+          padding: const EdgeInsets.only(bottom: 4, left: 2),
+          child: Text(
+            L10n.t(
+              '历史工具结果（无过程上下文）',
+              'Historical tool results (no process context)',
+            ),
+            style: TextStyle(fontSize: 10.5, color: DshColors.ink3(context)),
           ),
-          style: TextStyle(fontSize: 10.5, color: DshColors.ink3(context)),
         ),
-      ));
+      );
     }
     // issue #61：摘要行只作折叠态的「展开入口」；展开后组抬头/过程行已经表达了同一信息，
     // 再挂整轮摘要会造成层级重复（alpha.7 真机截图问题 1）。
@@ -7693,7 +7844,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ? null
               : () {
                   setState(() {
-                    _turnExpansions[plan.intervalKey] = true;
+                    _segmentFold.setSegmentExpanded(plan.intervalKey, true);
                     _invalidateProcessPlan();
                   });
                   _onContentLayoutChanged();
@@ -7713,14 +7864,10 @@ class _ChatScreenState extends State<ChatScreen> {
         var renderedGroups = 0;
         for (var gi = 0; gi < groupList.length; gi++) {
           final group = groupList[gi];
-          // issue #75：没有任何可见行（分批把整组行挡在窗口外等）的组不渲染抬头，
-          // 避免「0 次工具调用」幽灵行；用户可通过块末尾的「显示更多」把行放出来。
-          final hasVisibleRow = group.rows.any(
-            (row) => plan.visibleRowSeqs.contains(row.seq),
-          );
-          if (!hasVisibleRow) continue;
-          final groupKey = '${plan.intervalKey}:${group.step ?? 'x'}';
-          final manual = _groupExpansions[groupKey];
+          // issue #75 / ADR 0035：组内行不再被分批隐藏，非空组都渲染抬头。
+          // issue #123（方案 D）：组折叠状态的**权威**是 `_ProcessGroupHeader` 的
+          // State；这里只算 identity（唯一）与档位默认值，并读外部镜像做计划派生。
+          final identity = groupIdentityOf(group, plan.process.turn);
           // issue #108 v4：运行中简洁/详细组默认展开、标准折叠；已完成统一折叠。
           final defaultGroupExpanded = liveNow
               ? switch (policy.liveGroups) {
@@ -7729,11 +7876,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   LiveGroupMode.collapsed || LiveGroupMode.flat => false,
                 }
               : false;
-          final groupExpanded = manual ?? defaultGroupExpanded;
+          final effectiveExpanded =
+              _groupUserExpanded[identity] ?? defaultGroupExpanded;
           // issue #61（note 1791）：抬头只信真实运行态——组内还有未 settled 的工具行，
           // 且轮次尚未结束。此前「最后一段最后一组强制 running」的兜底会让已完成的
           // 工具一直挂着「正在调用工具…」，直到整轮结束（alpha.7 真机截图问题 4）。
-          final groupRunning = group.running && !process.ended;
+          final groupRunning =
+              (group.running ||
+                  (liveNow && group.toolCount == 0 && !showProvisionalRow)) &&
+              !process.ended;
           // issue #76：组间 8–12dp（设计取 8）；首个组前不加。
           if (renderedGroups > 0) children.add(const SizedBox(height: 8));
           renderedGroups++;
@@ -7744,85 +7895,111 @@ class _ChatScreenState extends State<ChatScreen> {
           );
           // issue #74：组折叠态聚合该组全部工具结果图片（含被分批隐藏的行），
           // 展开后由各工具卡/内容区呈现，不重复挂 chip。
-          final groupImages = groupExpanded
+          final groupImages = effectiveExpanded
               ? const <Map<String, dynamic>>[]
               : _imagesForProcessRows(
                   group.rows,
                   historyView: plan.historyView,
                 );
-          children.add(_ProcessGroupHeader(
-            text: processGroupHeader(
-              group,
+          // provisional 行：只有该组**当前会展开**时才在组内插入（否则沿用块尾兜底）。
+          final slotInThisGroup =
+              showProvisionalRow && slot != null && gi == slotGroupIndex;
+          if (slotInThisGroup && effectiveExpanded) slotPlaced = true;
+          children.add(
+            _ProcessGroupHeader(
+              key: ValueKey<String>('process-group:$identity'),
+              identity: identity,
+              defaultExpanded: defaultGroupExpanded,
+              persistedExpanded: _groupUserExpanded[identity],
+              resetVersion: 0,
+              text: processGroupHeader(
+                group,
+                running: groupRunning,
+                showDetail: plan.liveProcessDetail,
+              ),
               running: groupRunning,
-              showDetail: plan.liveProcessDetail,
+              failureCount: groupFailures,
+              reasoningOnly: reasoningOnly,
+              imageCount: groupImages.length,
+              onOpenImages: groupImages.isEmpty
+                  ? null
+                  : () => _openImagesGallery(groupImages),
+              onUserToggle: (expanded) {
+                setState(() {
+                  _groupUserExpanded[identity] = expanded;
+                  _invalidateProcessPlan();
+                });
+                _onContentLayoutChanged();
+              },
+              // 组内行**懒构建**：只有展开时才调用（与旧行为一致：折叠组不构建行）。
+              bodyMaxHeight: transcriptGroupMaxHeight(context),
+              bodyBuilder: () {
+                final groupRowWidgets = <Widget>[];
+                if (slotInThisGroup) {
+                  var inserted = false;
+                  for (final row in group.rows) {
+                    if (!inserted && row.seq > slot.orderSeq) {
+                      groupRowWidgets.add(
+                        _buildProvisionalReasoningRow(
+                          slot,
+                          autoExpanded: autoDetail,
+                        ),
+                      );
+                      inserted = true;
+                    }
+                    groupRowWidgets.add(
+                      _buildProcessRow(
+                        process,
+                        row,
+                        historyView: plan.historyView,
+                        policy: policy,
+                      ),
+                    );
+                  }
+                  if (!inserted) {
+                    groupRowWidgets.add(
+                      _buildProvisionalReasoningRow(
+                        slot,
+                        autoExpanded: autoDetail,
+                      ),
+                    );
+                  }
+                } else {
+                  for (final row in group.rows) {
+                    groupRowWidgets.add(
+                      _buildProcessRow(
+                        process,
+                        row,
+                        historyView: plan.historyView,
+                        policy: policy,
+                      ),
+                    );
+                  }
+                }
+                // issue #76：A 导轨——仅展开组出现：左 6dp 处 2dp line，内容左移 14dp，
+                // 行间 1dp hairline（首末无）；组收起不留线/空白；不加组外框。
+                return _buildGroupRail(groupRowWidgets);
+              },
             ),
-            expanded: groupExpanded,
-            running: groupRunning,
-            failureCount: groupFailures,
-            reasoningOnly: reasoningOnly,
-            imageCount: groupImages.length,
-            onOpenImages: groupImages.isEmpty
-                ? null
-                : () => _openImagesGallery(groupImages),
-            onTap: () {
-              setState(() {
-                _groupExpansions[groupKey] = !groupExpanded;
-                _invalidateProcessPlan();
-              });
-              _onContentLayoutChanged();
-            },
-          ));
-          if (!groupExpanded) continue;
-          final groupRowWidgets = <Widget>[];
-          if (slot != null && gi == slotGroupIndex) {
-            var inserted = false;
-            for (final row in group.rows) {
-              if (!inserted && row.seq > slot.orderSeq) {
-                groupRowWidgets.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
-                inserted = true;
-              }
-              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
-              groupRowWidgets.add(
-                _buildProcessRow(
-                  process,
-                  row,
-                  historyView: plan.historyView,
-                  policy: policy,
-                ),
-              );
-            }
-            if (!inserted) {
-              groupRowWidgets.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
-            }
-            slotPlaced = true;
-          } else {
-            for (final row in group.rows) {
-              if (!plan.visibleRowSeqs.contains(row.seq)) continue;
-              groupRowWidgets.add(
-                _buildProcessRow(
-                  process,
-                  row,
-                  historyView: plan.historyView,
-                  policy: policy,
-                ),
-              );
-            }
-          }
-          // issue #76：A 导轨——仅展开组出现：左 6dp 处 2dp line，内容左移 14dp，
-          // 行间 1dp hairline（首末无）；组收起不留线/空白；不加组外框。
-          children.add(_buildGroupRail(groupRowWidgets));
+          );
         }
-        if (slot != null && !slotPlaced) {
-          children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
+        if (showProvisionalRow && slot != null && !slotPlaced) {
+          children.add(
+            _buildProvisionalReasoningRow(slot, autoExpanded: autoDetail),
+          );
         }
       } else {
         var inserted = false;
         for (final row in plan.segment.rows) {
-          if (slot != null && !inserted && row.seq > slot.orderSeq) {
-            children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
+          if (showProvisionalRow &&
+              slot != null &&
+              !inserted &&
+              row.seq > slot.orderSeq) {
+            children.add(
+              _buildProvisionalReasoningRow(slot, autoExpanded: autoDetail),
+            );
             inserted = true;
           }
-          if (!plan.visibleRowSeqs.contains(row.seq)) continue;
           children.add(
             _buildProcessRow(
               process,
@@ -7832,67 +8009,11 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           );
         }
-        if (slot != null && !inserted) {
-          children.add(_buildProvisionalReasoningRow(slot, autoExpanded: autoDetail));
+        if (showProvisionalRow && slot != null && !inserted) {
+          children.add(
+            _buildProvisionalReasoningRow(slot, autoExpanded: autoDetail),
+          );
         }
-      }
-      if (plan.hiddenTotalInTurn > 0) {
-        final limit = _processRowLimits[process.turn] ?? processBatchSize;
-        // issue #74：被分批隐藏的行里若有工具结果图片，直接在「显示更多」行给入口，
-        // 不需要先点开 50 行。只聚合分批隐藏行，组折叠隐藏不算（那层由组抬头负责）。
-        final hiddenImages = _imagesForProcessRows(
-          plan.process.rows.where(
-            (row) => !plan.turnVisibleRowSeqs.contains(row.seq),
-          ),
-          historyView: plan.historyView,
-        );
-        // issue #76：批次入口平铺（透明、无卡、无额外箭头），最小 48dp 命中；
-        // 图片 chip 保留 #74 独立命中区（32 高），窄屏可自然换行到第二行。
-        final ink2 = DshColors.ink2(context);
-        children.add(
-          Padding(
-            padding: const EdgeInsets.only(left: 14, bottom: 6),
-            child: InkWell(
-              onTap: () {
-                setState(() {
-                  _processRowLimits[process.turn] = limit + processBatchSize;
-                  _invalidateProcessPlan();
-                });
-                _onContentLayoutChanged();
-              },
-              borderRadius: BorderRadius.circular(8),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 48),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        L10n.t(
-                          '显示更多（还有 ${plan.hiddenTotalInTurn} 行）',
-                          'Show more (${plan.hiddenTotalInTurn} rows left)',
-                        ),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: ink2,
-                        ),
-                      ),
-                      if (hiddenImages.isNotEmpty)
-                        _ImageCountChip(
-                          count: hiddenImages.length,
-                          onOpen: () => _openImagesGallery(hiddenImages),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
       }
       // issue #61：展开后摘要行不在，收起的入口改为过程块末尾的行内控件
       // （非卡片底色、chevron 向上）。issue #108：非强制段手动收起优先于档位默认。
@@ -7902,7 +8023,7 @@ class _ChatScreenState extends State<ChatScreen> {
             key: ValueKey<String>('collapse-process:${plan.intervalKey}'),
             onTap: () {
               setState(() {
-                _turnExpansions[plan.intervalKey] = false;
+                _segmentFold.setSegmentExpanded(plan.intervalKey, false);
                 _invalidateProcessPlan();
               });
               _onContentLayoutChanged();
@@ -7926,30 +8047,39 @@ class _ChatScreenState extends State<ChatScreen> {
     required bool historyView,
     required TurnFoldPolicy policy,
   }) {
-    final autoDetail = policy.liveDetailsAutoExpanded &&
-        !process.ended &&
-        !process.hasInterjection;
+    // ADR 0035：完全展开不再自动展开详情；详情一律手动。
+    const autoDetail = false;
     if (row.isReasoning) {
       final key = '${process.turn}:${row.seq}';
       final expanded = _reasoningRowExpansions[key] ?? autoDetail;
+      final loaded = row.detailSeq == null
+          ? null
+          : _reasoningDetailTexts[row.detailSeq!];
+      final text = loaded ?? row.reasoning;
       return _ReasoningProcessRow(
         rowKey: ValueKey<String>('reasoning-row:${process.turn}:${row.seq}'),
-        text: row.reasoning,
-        chars: row.reasoningChars,
+        text: text,
+        chars: loaded?.length ?? row.reasoningChars,
         // settledReasoningPreview 只作用于已结束思考行的折叠预览。
         preview: policy.settledReasoningPreview ? row.reasoningPreview() : '',
         expanded: expanded,
         onToggle: () {
+          final next = !expanded;
           setState(() {
-            _reasoningRowExpansions[key] = !expanded;
+            _reasoningRowExpansions[key] = next;
             _invalidateProcessPlan();
           });
+          // 摘要在 20k 处截断时，首次展开按需拉完整思考正文。
+          if (next &&
+              row.detailAvailable &&
+              row.reasoningChars > row.reasoning.length) {
+            unawaited(_loadReasoningDetail(row));
+          }
           _onContentLayoutChanged();
         },
       );
     }
     final item = _currentToolItem(row.callId, historyView: historyView);
-    final callId = row.callId;
     Widget child;
     if (item == null) {
       // 该工具卡不在当前列表（分页边界）：给一行只读摘要，不假装能展开详情。
@@ -7970,12 +8100,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // issue #76：过程区内用平铺变体（无逐卡边框）。
       child = _buildToolCard(item, flat: true, autoExpanded: autoDetail);
     }
-    if (callId == null) return child;
-    final rowKey = _processToolRowKeys.putIfAbsent(
-      callId,
-      () => GlobalKey(debugLabel: 'process-tool-row:$callId'),
-    );
-    return KeyedSubtree(key: rowKey, child: child);
+    return child;
   }
 
   /// issue #70：过程块里的运行中思考行（provisional）。
@@ -7983,7 +8108,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 行内容由 `_liveReasoningRevision` 行级通知驱动（读同一份 [LiveReasoning] 快照），
   /// 计划里只有排序键、没有文本 → delta 增长不会重建整轮计划；展开态由用户动作控制，
   /// 收起态恒定一行（最近非空行预览），delta 不改变行高（issue「不得明显跳动」）。
-  Widget _buildProvisionalReasoningRow(_ProvisionalSlot slot, {bool autoExpanded = false}) {
+  Widget _buildProvisionalReasoningRow(
+    _ProvisionalSlot slot, {
+    bool autoExpanded = false,
+  }) {
     final stepKey = slot.step ?? 'null';
     final stateKey = '${slot.turn}:$stepKey';
     return ValueListenableBuilder<int>(
@@ -8012,7 +8140,6 @@ class _ChatScreenState extends State<ChatScreen> {
             'Thinking… (${live.chars} chars)',
           ),
           expanded: expanded,
-          cappedBody: true,
           onToggle: () {
             setState(() {
               _provisionalExpansions[stateKey] = !expanded;
@@ -8101,7 +8228,11 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildToolCard(_MsgItem item, {bool flat = false, bool autoExpanded = false}) {
+  Widget _buildToolCard(
+    _MsgItem item, {
+    bool flat = false,
+    bool autoExpanded = false,
+  }) {
     final toolKey = 'tool:${item.toolCallId ?? item.seq}';
     return _ToolActivityCard(
       key: ValueKey<String>(
@@ -8132,7 +8263,8 @@ class _ChatScreenState extends State<ChatScreen> {
       onOpenQuestion: _openPendingQuestion,
       // issue #67：折叠行路径可点进预览（服务端两字段同现时才渲染为链接）。
       onOpenFilePath: _openFilePathPreview,
-      onLoadDetail: _api.timelineCapabilities.detail &&
+      onLoadDetail:
+          _api.timelineCapabilities.detail &&
               item.detailAvailable &&
               item.detailSeq != null
           ? () => _loadEventDetail(item)
@@ -8222,8 +8354,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadChangedSummary(String sessionId, int turn) async {
     final generation = _tailLoadGeneration;
-    final stillCurrent = () =>
-        mounted && generation == _tailLoadGeneration && sessionId == _tailSessionId;
+    bool stillCurrent() =>
+        mounted &&
+        generation == _tailLoadGeneration &&
+        sessionId == _tailSessionId;
     try {
       for (var attempt = 0; attempt < 2; attempt += 1) {
         try {
@@ -8246,8 +8380,9 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (!stillCurrent()) return;
       // 两次都失败：记录下来并退避；**不**阻止 TTL/重建后的恢复性重试。
-      _changedSummaryRetryAfter[turn] =
-          DateTime.now().add(_changedSummaryFailureBackoff);
+      _changedSummaryRetryAfter[turn] = DateTime.now().add(
+        _changedSummaryFailureBackoff,
+      );
       if (mounted) setState(() {});
     } finally {
       // in-flight 门闩必须总是释放：否则缓存 TTL 到期后卡片永久消失（issue #60 R06）。
@@ -8284,11 +8419,8 @@ class _ChatScreenState extends State<ChatScreen> {
               display: file.display,
               name: file.name,
             ),
-            onOpenDiff: (index) => _openTurnChangesDiff(
-              turn,
-              summary.files,
-              index,
-            ),
+            onOpenDiff: (index) =>
+                _openTurnChangesDiff(turn, summary.files, index),
           ),
         );
       }
@@ -8331,7 +8463,10 @@ class _ChatScreenState extends State<ChatScreen> {
         return Padding(
           padding: const EdgeInsets.only(bottom: 4),
           child: Text(
-            L10n.t('改动摘要不可用：$error', 'Changed-files summary unavailable: $error'),
+            L10n.t(
+              '改动摘要不可用：$error',
+              'Changed-files summary unavailable: $error',
+            ),
             style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
           ),
         );
@@ -8386,12 +8521,19 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 Text(
                   L10n.t('打开文件预览', 'Open file preview'),
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 SelectableText(
                   path,
-                  style: TextStyle(fontSize: 13, color: ink2, fontFamily: 'monospace'),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: ink2,
+                    fontFamily: 'monospace',
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -8603,7 +8745,31 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             if (item.files.isNotEmpty)
               userBubble(_FileResults(files: item.files)),
-            if (text.isNotEmpty) userBubble(_buildUserMessageText(text)),
+            if (text.isNotEmpty)
+              userBubble(
+                _CappedScrollBody(
+                  maxHeight: transcriptBodyMaxHeight,
+                  child: _buildUserMessageText(text),
+                ),
+              ),
+            // ADR 0035 / 可见内容对齐：摘要只到 2000 字；长用户消息提供按需详情，
+            // 加载后仍在上面的 320dp 框内滚动。
+            if (item.detailAvailable && _userMessageNeedsDetail(item))
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: item.detailLoading
+                      ? null
+                      : () => unawaited(_loadEventDetail(item)),
+                  child: Text(
+                    item.detailLoading
+                        ? L10n.t('加载全文…', 'Loading full text…')
+                        : item.detailErrorCode != null
+                        ? L10n.t('重试查看全文', 'Retry full text')
+                        : L10n.t('查看全文', 'View full text'),
+                  ),
+                ),
+              ),
             // v3.1.5（issue #15）：用户消息此前没有任何复制入口（只有助手消息有操作栏）——
             // 这里右对齐补一个「复制」，复用 _runMessageAction('copy')：复制正文 + 「已复制」提示，
             // 与助手消息行为一致。整段选择另由 SelectionArea 承担（长按选词）。
@@ -8628,12 +8794,14 @@ class _ChatScreenState extends State<ChatScreen> {
         // issue #52：思维链改为过程组首成员、消息操作迁到轮次页脚；
         // 仅当该轮没有可锚定的过程块（旧数据/无 turn 事件）时才保留气泡内旧形态。
         final turn = _turnProcess.turnOfSeq(item.seq);
-        final inProcess = turn != null &&
+        final inProcess =
+            turn != null &&
             _planFor(history: historyView).anchoredTurns.contains(turn);
         // issue #53 §6：收尾正文的行内文件链接只认本轮记录内的路径（精确优先、
         // 唯一 basename 次之、歧义不链接）。
-        final linkResolver =
-            turn == null ? null : _fileLinkResolverForTurn(turn);
+        final linkResolver = turn == null
+            ? null
+            : _fileLinkResolverForTurn(turn);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -8671,20 +8839,15 @@ class _ChatScreenState extends State<ChatScreen> {
                     : linkResolver?.resolve(code);
                 if (coordinate != null) {
                   final name = code.split('/').last;
-                  return () => _openTurnFile(
-                    coordinate,
-                    display: code,
-                    name: name,
-                  );
+                  return () =>
+                      _openTurnFile(coordinate, display: code, name: name);
                 }
                 // issue #83：未记录在本轮产出物里的绝对路径（如 /tmp/...）也允许
                 // 用户确认后预览；不在渲染阶段发起任何读取。
                 if (!absolutePath) return null;
                 return () => _confirmOpenPath(code);
               },
-              codeTapKey: linkResolver == null
-                  ? ''
-                  : '$_turnTailVersion:$turn',
+              codeTapKey: linkResolver == null ? '' : '$_turnTailVersion:$turn',
               imageLoader: _markdownImageLoader,
               imageUserAction: _markdownImageUserAction,
             ),
@@ -8796,8 +8959,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // 只按「这一行真的被渲染进过程块」判断——缺 turn 字段的旧宿主事件、
         // 以及分页截断导致过程块未锚定的工具卡仍按原样平铺（不会凭空消失）。
         if (item.toolCallId != null &&
-            _planFor(history: historyView)
-                .renderedCallIds
+            _planFor(history: historyView).renderedCallIds
                 .contains(item.toolCallId)) {
           return const SizedBox.shrink();
         }
@@ -8939,6 +9101,12 @@ class _MsgItem {
     this.images = const [],
     this.files = const [],
     this.sourceKind,
+    this.detailAvailable = false,
+    this.rawData,
+    this.detailLoading = false,
+    this.detailDegraded = false,
+    this.detailMode,
+    this.detailErrorCode,
     this.detailTextChars,
   }) : kind = _MsgKind.user,
        latestSeq = seq,
@@ -8952,13 +9120,7 @@ class _MsgItem {
        toolResult = '',
        toolStatus = 'complete',
        toolError = false,
-       detailAvailable = false,
-       rawData = null,
        eventType = null,
-       detailLoading = false,
-       detailDegraded = false,
-       detailMode = null,
-       detailErrorCode = null,
        callSummary = null,
        resultSummary = null,
        subCalls = const <ToolSubCall>[],
@@ -9104,6 +9266,34 @@ class _MsgItem {
       detailTextChars: detailTextChars,
     );
   }
+
+  _MsgItem copyUser({
+    String? text,
+    Map<String, dynamic>? rawData,
+    bool? detailAvailable,
+    bool? detailLoading,
+    bool? detailDegraded,
+    String? detailMode,
+    String? detailErrorCode,
+    bool? clearDetailError,
+    int? detailTextChars,
+  }) => _MsgItem.user(
+    text ?? this.text,
+    seq: seq,
+    messageId: messageId,
+    images: images,
+    files: files,
+    sourceKind: sourceKind,
+    detailAvailable: detailAvailable ?? this.detailAvailable,
+    rawData: rawData ?? this.rawData,
+    detailLoading: detailLoading ?? this.detailLoading,
+    detailDegraded: detailDegraded ?? this.detailDegraded,
+    detailMode: detailMode ?? this.detailMode,
+    detailErrorCode: clearDetailError == true
+        ? null
+        : (detailErrorCode ?? this.detailErrorCode),
+    detailTextChars: detailTextChars ?? this.detailTextChars,
+  );
 
   _MsgItem copyTool({
     String? name,
@@ -9253,8 +9443,8 @@ class _InjectedBubble extends StatelessWidget {
   IconData get _icon => sourceKind == 'team-message'
       ? Icons.groups_outlined
       : sourceKind == 'agent-message'
-          ? Icons.send_outlined
-          : Icons.settings_suggest_outlined;
+      ? Icons.send_outlined
+      : Icons.settings_suggest_outlined;
 
   @override
   Widget build(BuildContext context) {
@@ -9276,7 +9466,10 @@ class _InjectedBubble extends StatelessWidget {
             InkWell(
               onTap: canExpand ? () => onToggle(!expanded) : null,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     Icon(_icon, size: 15, color: DshColors.brand(context)),
@@ -9398,11 +9591,7 @@ bool _isPlaceholderToolName(String? name) =>
 
 /// issue #61：缺名工具卡的折叠行摘要——优先参数 JSON 的 `description`，其次参数首行，
 /// 再次结果首行；压平成一行、截断 ≤[max] 字。都没有时返回空串（不占位）。
-String _genericToolSummary(
-  String arguments,
-  String result, {
-  int max = 80,
-}) {
+String _genericToolSummary(String arguments, String result, {int max = 80}) {
   String firstLine(String text) {
     for (final raw in text.split('\n')) {
       final line = raw.trim();
@@ -9543,7 +9732,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   @override
   void initState() {
     super.initState();
-    expanded = widget.expandedOverride ?? (widget.autoExpanded || _defaultExpanded);
+    expanded =
+        widget.expandedOverride ?? (widget.autoExpanded || _defaultExpanded);
     userOverride = widget.expandedOverride != null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _requestDetailIfNeeded();
@@ -9768,7 +9958,8 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
   /// issue #61：缺名通用卡的折叠行。摘要可读；调试模式额外保留原始 callId/事件类型。
   Widget _genericFoldRow(String summary, {bool flat = false}) {
     final ink3 = flat ? DshColors.ink2(context) : DshColors.ink3(context);
-    final debugLine = 'callId: ${widget.item.toolCallId} · '
+    final debugLine =
+        'callId: ${widget.item.toolCallId} · '
         '${widget.item.eventType ?? 'tool/activity'}';
     if (summary.isEmpty && !widget.debug) return const SizedBox.shrink();
     return Padding(
@@ -9783,10 +9974,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               summary,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: flat ? 12 : 11.5,
-                color: ink3,
-              ),
+              style: TextStyle(fontSize: flat ? 12 : 11.5, color: ink3),
             ),
           if (widget.debug)
             Padding(
@@ -9819,7 +10007,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
     final stats = toolFileStats(call);
     // issue #60 R14：退出码/信号只对**已关联 command 工具**的卡片展示；非命令工具即便
     // 结果摘要带了终止字段（旧服务端/伪造内容）也不显示。
-    final exit = call.isCommand ? toolExitBadge(widget.item.resultSummary) : null;
+    final exit = call.isCommand
+        ? toolExitBadge(widget.item.resultSummary)
+        : null;
     final count = toolResultCountBadge(call, widget.item.resultSummary);
     // issue #66：仅当该问询卡仍有命中当前会话 pending 集合的问题时，行尾给「打开问询」入口。
     final showOpenQuestion =
@@ -9967,7 +10157,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 L10n.t('无输出', 'No output'),
-                style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: DshColors.ink3(context),
+                ),
               ),
             ),
         ];
@@ -10135,10 +10328,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (question.header != null)
-            Text(
-              question.header!,
-              style: TextStyle(fontSize: 11, color: ink3),
-            ),
+            Text(question.header!, style: TextStyle(fontSize: 11, color: ink3)),
           Padding(
             padding: const EdgeInsets.only(top: 2),
             child: Text(
@@ -10194,7 +10384,10 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               child: Text(
                 key: answerKey,
                 L10n.t('答案：$answer', 'Answer: $answer'),
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             )
           // values 为空数组 → 未回答；结果里完全没该题答案时，仅在该卡仍待答时隐藏
@@ -10265,10 +10458,7 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11.5,
-                color: DshColors.ink3(context),
-              ),
+              style: TextStyle(fontSize: 11.5, color: DshColors.ink3(context)),
             ),
           ),
         ],
@@ -10288,7 +10478,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         text: sub.text,
         isError: sub.isError,
       );
-      final label = fold == null ? '$name · $status' : '$name · $status · $fold';
+      final label = fold == null
+          ? '$name · $status'
+          : '$name · $status · $fold';
       // A3：按 depth 分级缩进（depth1=10、2=24、3=38…；≥9 层封顶 122，避免
       // 16 层嵌套在小屏横向溢出），仍单行 ellipsis、无二级交互。
       final indent = 10 + ((sub.depth - 1).clamp(0, 8)) * 14;
@@ -10348,17 +10540,22 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
         : (widget.flat ? ink2 : DshColors.brand(context));
     // issue #54：能力位声明支持 + 摘要可渲染才启用专用卡；否则完整回退通用卡。
     final call = item.callSummary;
-    final specialized = widget.toolCardsEnabled && call != null && call.renderable;
+    final specialized =
+        widget.toolCardsEnabled && call != null && call.renderable;
     final fold = specialized ? toolFoldText(call) : null;
     final column = Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          // ADR 0035：折叠态单行；有图片 chip 时保留 32dp 独立命中区（#74）。
+          height: math.max(
+            transcriptRowHeight(context),
+            item.images.isNotEmpty ? 32.0 : 0.0,
+          ),
+          child: InkWell(
             onTap: () => _setExpanded(!expanded),
             child: Padding(
-              padding: widget.flat
-                  ? const EdgeInsets.symmetric(vertical: 6)
-                  : const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              padding: EdgeInsets.symmetric(horizontal: widget.flat ? 0 : 10),
               child: Row(
                 children: [
                   Icon(
@@ -10379,8 +10576,9 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                           : item.toolName!,
                       style: TextStyle(
                         fontSize: 13,
-                        fontWeight:
-                            widget.flat ? FontWeight.w500 : FontWeight.w600,
+                        fontWeight: widget.flat
+                            ? FontWeight.w500
+                            : FontWeight.w600,
                         color: widget.flat ? ink : null,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -10413,29 +10611,30 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                         ? Icons.keyboard_arrow_up
                         : Icons.keyboard_arrow_down,
                     size: 18,
-                    color: widget.flat
-                        ? ink2
-                        : DshColors.ink3(context),
+                    color: widget.flat ? ink2 : DshColors.ink3(context),
                   ),
                 ],
               ),
             ),
           ),
-          if (specialized && fold != null)
-            _foldRow(call, flat: widget.flat)
-          else if (_nameUnknown)
-            // issue #61：通用卡缺名时给一行可读摘要（description → 参数首行 → 结果首行）。
-            _genericFoldRow(
-              _genericToolSummary(item.toolArguments, item.toolResult),
-              flat: widget.flat,
-            ),
-          // issue #68：子调用计数行在收起态也可见（能力位缺失时完全不渲染）。
-          if (_ptcVisible) _ptcCountRow(),
-          if (expanded)
-            Padding(
-              padding: widget.flat
-                  ? const EdgeInsets.only(left: 24, top: 8, bottom: 4)
-                  : const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        ),
+        if (specialized && fold != null)
+          _foldRow(call, flat: widget.flat)
+        else if (_nameUnknown)
+          // issue #61：通用卡缺名时给一行可读摘要（description → 参数首行 → 结果首行）。
+          _genericFoldRow(
+            _genericToolSummary(item.toolArguments, item.toolResult),
+            flat: widget.flat,
+          ),
+        // issue #68：子调用计数行在收起态也可见（能力位缺失时完全不渲染）。
+        if (_ptcVisible) _ptcCountRow(),
+        if (expanded)
+          Padding(
+            padding: widget.flat
+                ? const EdgeInsets.only(left: 24, top: 8, bottom: 4)
+                : const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: _CappedScrollBody(
+              maxHeight: transcriptBodyMaxHeight,
               child: Container(
                 padding: widget.flat ? const EdgeInsets.all(10) : null,
                 decoration: widget.flat
@@ -10449,101 +10648,108 @@ class _ToolActivityCardState extends State<_ToolActivityCard> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                  if (item.toolCallId != null)
-                    Text(
-                      'callId: ${item.toolCallId}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: DshColors.ink3(context),
-                      ),
-                    ),
-                  // issue #68：展开后缩进子行（名称/状态/安全摘要，只读，无二级详情）。
-                  if (_ptcVisible) ..._ptcChildRows(),
-                  if (specialized) ...[
-                    ..._specializedBody(call),
-                    if (widget.debug && item.toolArguments.isNotEmpty)
-                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
-                  ] else ...[
-                    if (item.toolArguments.isNotEmpty)
-                      _code(L10n.t('参数', 'Arguments'), item.toolArguments),
-                    if (item.toolResult.isNotEmpty)
-                      _looksMarkdown(item.toolResult) && !widget.debug
-                          ? _markdownResult(item.toolResult)
-                          : _code(L10n.t('结果', 'Result'), item.toolResult),
-                  ],
-                  if (item.images.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: ImageGalleryGrid(
-                        images: item.images,
-                        sessionId: widget.sessionId,
-                        api: widget.api,
-                      ),
-                    ),
-                  // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
-                  if (item.detailLoading)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Center(
-                        child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    ),
-                  if (item.detailDegraded)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        L10n.t(
-                          '详情来自当前界面，可能不完整',
-                          'Details came from the current surface and may be incomplete',
-                        ),
-                        style: TextStyle(fontSize: 11, color: Colors.orange),
-                      ),
-                    ),
-                  if (item.detailErrorCode != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        _detailErrorLabel(item.detailErrorCode!),
-                        style: TextStyle(fontSize: 11, color: Colors.redAccent),
-                      ),
-                    ),
-                  if (!item.detailAvailable && item.rawData == null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        L10n.t(
-                          '详情不可用（旧服务端未保存）',
-                          'Details unavailable (not retained by the server)',
-                        ),
+                    if (item.toolCallId != null)
+                      Text(
+                        'callId: ${item.toolCallId}',
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 10,
                           color: DshColors.ink3(context),
                         ),
                       ),
-                    ),
-                  if (item.detailErrorCode != null &&
-                      widget.onLoadDetail != null)
-                    TextButton(
-                      onPressed: () {
-                        requested = false;
-                        widget.onLoadDetail!();
-                      },
-                      child: Text(L10n.t('重试', 'Retry')),
-                    ),
-                  if (widget.debug && schema != null)
-                    _code(L10n.t('工具 schema', 'Tool schema'), _pretty(schema)),
-                  if (widget.debug && item.rawData != null)
-                    _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
+                    // issue #68：展开后缩进子行（名称/状态/安全摘要，只读，无二级详情）。
+                    if (_ptcVisible) ..._ptcChildRows(),
+                    if (specialized) ...[
+                      ..._specializedBody(call),
+                      if (widget.debug && item.toolArguments.isNotEmpty)
+                        _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                    ] else ...[
+                      if (item.toolArguments.isNotEmpty)
+                        _code(L10n.t('参数', 'Arguments'), item.toolArguments),
+                      if (item.toolResult.isNotEmpty)
+                        _looksMarkdown(item.toolResult) && !widget.debug
+                            ? _markdownResult(item.toolResult)
+                            : _code(L10n.t('结果', 'Result'), item.toolResult),
+                    ],
+                    if (item.images.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: ImageGalleryGrid(
+                          images: item.images,
+                          sessionId: widget.sessionId,
+                          api: widget.api,
+                        ),
+                      ),
+                    // 需求变更（issue #1）：工具产出文件不再展示（时间线不提供该下载入口）。
+                    if (item.detailLoading)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Center(
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
+                      ),
+                    if (item.detailDegraded)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          L10n.t(
+                            '详情来自当前界面，可能不完整',
+                            'Details came from the current surface and may be incomplete',
+                          ),
+                          style: TextStyle(fontSize: 11, color: Colors.orange),
+                        ),
+                      ),
+                    if (item.detailErrorCode != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          _detailErrorLabel(item.detailErrorCode!),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ),
+                    if (!item.detailAvailable && item.rawData == null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          L10n.t(
+                            '详情不可用（旧服务端未保存）',
+                            'Details unavailable (not retained by the server)',
+                          ),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: DshColors.ink3(context),
+                          ),
+                        ),
+                      ),
+                    if (item.detailErrorCode != null &&
+                        widget.onLoadDetail != null)
+                      TextButton(
+                        onPressed: () {
+                          requested = false;
+                          widget.onLoadDetail!();
+                        },
+                        child: Text(L10n.t('重试', 'Retry')),
+                      ),
+                    if (widget.debug && schema != null)
+                      _code(
+                        L10n.t('工具 schema', 'Tool schema'),
+                        _pretty(schema),
+                      ),
+                    if (widget.debug && item.rawData != null)
+                      _code(L10n.t('原始事件', 'Raw event'), _pretty(item.rawData)),
                   ],
                 ),
               ),
             ),
-        ],
-      );
+          ),
+      ],
+    );
     if (widget.flat) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -10993,13 +11199,17 @@ class _AssistantBubbleState extends State<_AssistantBubble> {
         '${widget.text}\u0000${Theme.of(context).brightness}\u0000${widget.codeTapKey}';
     if (cacheKey != _parsedFor) {
       _parsedFor = cacheKey;
-      _blocks = renderMarkdownBlocks(
-        widget.text.isEmpty ? '…' : widget.text,
-        context,
-        codeTap: widget.codeTap,
-        imageLoader: widget.imageLoader,
-        imageUserAction: widget.imageUserAction,
-      );
+      // issue #126（可见内容对齐）：只有图片、没有正文的 assistant 消息仍然是一条
+      // 可见回复；不要用「…」占位符伪造正文，也不要把整条消息丢掉。
+      _blocks = widget.text.trim().isEmpty
+          ? const <Widget>[]
+          : renderMarkdownBlocks(
+              widget.text,
+              context,
+              codeTap: widget.codeTap,
+              imageLoader: widget.imageLoader,
+              imageUserAction: widget.imageUserAction,
+            );
       if (_parseLogs < 3) {
         _parseLogs++;
         AppLog.instance.log(
@@ -11234,6 +11444,7 @@ class _FileResultTile extends StatelessWidget {
 class _MessageActionsBar extends StatelessWidget {
   final _MsgItem item;
   final void Function(String action) onAction;
+
   /// issue #52：页脚内复用同一组操作图标（无 hover → 常显），间距由调用方决定。
   final EdgeInsetsGeometry padding;
   const _MessageActionsBar({
@@ -11386,9 +11597,7 @@ class _ProcessSummaryRow extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Icon(
-                expanded
-                    ? Icons.keyboard_arrow_up
-                    : Icons.keyboard_arrow_down,
+                expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
                 size: 18,
                 color: onTap == null ? line : ink2,
               ),
@@ -11403,10 +11612,7 @@ class _ProcessSummaryRow extends StatelessWidget {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   if (imageCount > 0 && onOpenImages != null)
-                    _ImageCountChip(
-                      count: imageCount,
-                      onOpen: onOpenImages!,
-                    ),
+                    _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
                   if (failureCount > 0) _FailureCountChip(count: failureCount),
                 ],
               ),
@@ -11532,11 +11738,29 @@ class _FailureCountChip extends StatelessWidget {
 }
 
 /// 过程组抬头：运行中「正在调用工具…」，完成态「N 次工具调用」，不显示用时。
-class _ProcessGroupHeader extends StatelessWidget {
+/// issue #123（方案 D，对齐 DSH 本体 `useDisclosure(version)`）：
+/// **组折叠状态由组件自己的 State 持有**，不再走数据层 map + 迁移。
+///
+/// 配合调用方的 `ValueKey('process-group:<identity>')`：
+/// - identity 相同 → Flutter 复用同一个 State → 展开/收起状态保持；
+/// - identity 变化 → 销毁旧 State、创建新 State → 回落 `defaultExpanded`（失败模式
+///   是「回到默认」，不会串状态）；
+/// - `resetVersion` 变化 → 手动选择失效（DSH 的 version 语义；当前无该来源，恒 0）。
+class _ProcessGroupHeader extends StatefulWidget {
+  /// 组身份（唯一；见 `groupIdentityOf`）。
+  final String identity;
+
+  /// 档位/阶段决定的默认展开态（用户没手动操作过时用它）。
+  final bool defaultExpanded;
+
+  /// 外部镜像：滚动回收 State 后重建时用来恢复用户选择；null = 没手动操作过。
+  final bool? persistedExpanded;
+
+  /// 结构版本：变化即让手动选择失效（DSH `useDisclosure(version)` 的等价物）。
+  final int resetVersion;
+
   final String text;
-  final bool expanded;
   final bool running;
-  final VoidCallback onTap;
 
   /// issue #74：该组（含分批隐藏行）工具结果图片数；仅在组折叠时由调用方传入。
   final int imageCount;
@@ -11549,11 +11773,27 @@ class _ProcessGroupHeader extends StatelessWidget {
 
   /// issue #76：仅思考组（#75）用 psychology 品牌图标，其余工具组用 ink2 工具图标。
   final bool reasoningOnly;
+
+  /// 用户手动切换后通知调用方：镜像（计划派生 + 回收恢复）+ 计划失效。
+  final ValueChanged<bool> onUserToggle;
+
+  /// 组内行（**懒构建**：只有展开时才调用，折叠组不构建行）。
+  final Widget Function() bodyBuilder;
+
+  /// ADR 0035：展开组体的固定高度上限；null = 不限制（历史兼容）。
+  final double? bodyMaxHeight;
+
   const _ProcessGroupHeader({
+    super.key,
+    required this.identity,
+    required this.defaultExpanded,
+    required this.resetVersion,
     required this.text,
-    required this.expanded,
     required this.running,
-    required this.onTap,
+    required this.onUserToggle,
+    required this.bodyBuilder,
+    this.bodyMaxHeight,
+    this.persistedExpanded,
     this.imageCount = 0,
     this.onOpenImages,
     this.failureCount = 0,
@@ -11561,15 +11801,51 @@ class _ProcessGroupHeader extends StatelessWidget {
   });
 
   @override
+  State<_ProcessGroupHeader> createState() => _ProcessGroupHeaderState();
+}
+
+class _ProcessGroupHeaderState extends State<_ProcessGroupHeader> {
+  /// 用户手动选择（null = 没操作过）。DSH 的 `expandedVersion` 对应物：
+  /// 这里直接存展开态，`resetVersion` 变化时清空（回落默认）。
+  late bool? _userExpanded = widget.persistedExpanded;
+
+  /// 当前是否展开：没操作过 → 档位默认；操作过 → 用户选择。
+  bool get expanded => _userExpanded ?? widget.defaultExpanded;
+
+  /// 单测/诊断只读（测试通过 dynamic 读取）。
+  bool get debugExpanded => expanded;
+
+  @override
+  void didUpdateWidget(covariant _ProcessGroupHeader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // DSH 语义：结构版本变了 → 手动选择失效，回落默认值。
+    if (oldWidget.resetVersion != widget.resetVersion) {
+      _userExpanded = null;
+    } else if (oldWidget.persistedExpanded != null &&
+        widget.persistedExpanded == null) {
+      // 外部镜像被清空（换会话/reset）→ 跟随清空，避免同 identity 的残留 State 串状态。
+      _userExpanded = null;
+    }
+  }
+
+  void _toggle() {
+    final next = !expanded;
+    setState(() => _userExpanded = next);
+    widget.onUserToggle(next);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final ink = DshColors.ink(context);
     final ink2 = DshColors.ink2(context);
     final brand = DshColors.brand(context);
-    final hasMeta = imageCount > 0 || failureCount > 0;
+    final hasMeta = widget.imageCount > 0 || widget.failureCount > 0;
     final textScaler = MediaQuery.textScalerOf(context);
     final scale = textScaler.scale(13) / 13;
-    return InkWell(
-      onTap: onTap,
+    final header = InkWell(
+      // 组抬头点击区（测试定位用；identity 唯一，不会重复）。
+      key: ValueKey<String>('group-toggle:${widget.identity}'),
+      onTap: _toggle,
       borderRadius: BorderRadius.circular(8),
       child: ConstrainedBox(
         constraints: const BoxConstraints(minHeight: 48),
@@ -11578,7 +11854,7 @@ class _ProcessGroupHeader extends StatelessWidget {
             // issue #76：宽屏且未放大文字时徽标在右栏；窄屏/大字/实测装不下时
             // 徽标下移到文案左缘下一行，主行仍保留 chevron 与完整点击区。
             final narrow = constraints.maxWidth < 328 || scale > 1.2;
-            final icon = running
+            final icon = widget.running
                 ? SizedBox(
                     width: 16,
                     height: 16,
@@ -11588,14 +11864,14 @@ class _ProcessGroupHeader extends StatelessWidget {
                     ),
                   )
                 : Icon(
-                    reasoningOnly
+                    widget.reasoningOnly
                         ? Icons.psychology_outlined
                         : Icons.build_outlined,
                     size: 16,
-                    color: reasoningOnly ? brand : ink2,
+                    color: widget.reasoningOnly ? brand : ink2,
                   );
             final title = Text(
-              text,
+              widget.text,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
@@ -11610,15 +11886,17 @@ class _ProcessGroupHeader extends StatelessWidget {
               runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                if (imageCount > 0 && onOpenImages != null)
-                  _ImageCountChip(count: imageCount, onOpen: onOpenImages!),
-                if (failureCount > 0) _FailureCountChip(count: failureCount),
+                if (widget.imageCount > 0 && widget.onOpenImages != null)
+                  _ImageCountChip(
+                    count: widget.imageCount,
+                    onOpen: widget.onOpenImages!,
+                  ),
+                if (widget.failureCount > 0)
+                  _FailureCountChip(count: widget.failureCount),
               ],
             );
             final chevron = Icon(
-              expanded
-                  ? Icons.keyboard_arrow_up
-                  : Icons.keyboard_arrow_down,
+              expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
               size: 18,
               color: ink2,
             );
@@ -11627,10 +11905,7 @@ class _ProcessGroupHeader extends StatelessWidget {
                 icon,
                 const SizedBox(width: 8),
                 Expanded(child: title),
-                if (hasMeta && !narrow) ...[
-                  const SizedBox(width: 8),
-                  meta,
-                ],
+                if (hasMeta && !narrow) ...[const SizedBox(width: 8), meta],
                 const SizedBox(width: 4),
                 chevron,
               ],
@@ -11653,6 +11928,65 @@ class _ProcessGroupHeader extends StatelessWidget {
               ),
             );
           },
+        ),
+      ),
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        if (expanded)
+          widget.bodyMaxHeight == null
+              ? widget.bodyBuilder()
+              : _CappedScrollBody(
+                  maxHeight: widget.bodyMaxHeight!,
+                  child: widget.bodyBuilder(),
+                ),
+      ],
+    );
+  }
+}
+
+/// ADR 0035：展开正文的固定高度容器。
+///
+/// 内容不溢出时不产生滚动；溢出时只在容器内滚动（C 方案：不做边缘交接）。
+/// 这使得时间线只会因“新行/折叠/流式正文”改变高度，而不是任意长度的详情内容。
+class _CappedScrollBody extends StatefulWidget {
+  final double maxHeight;
+  final Widget child;
+
+  const _CappedScrollBody({
+    super.key,
+    required this.maxHeight,
+    required this.child,
+  });
+
+  @override
+  State<_CappedScrollBody> createState() => _CappedScrollBodyState();
+}
+
+class _CappedScrollBodyState extends State<_CappedScrollBody> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = math.max(0.0, widget.maxHeight);
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: Scrollbar(
+        controller: _controller,
+        thumbVisibility: false,
+        child: SingleChildScrollView(
+          controller: _controller,
+          primary: false,
+          child: widget.child,
         ),
       ),
     );
@@ -11725,9 +12059,6 @@ class _ReasoningProcessRow extends StatelessWidget {
   /// provisional 展开态标签（含字数）。
   final String? expandedLabel;
 
-  /// 展开正文是否限制高度并内部滚动（provisional：true；落定行：false，保持现状）。
-  final bool cappedBody;
-
   /// 行根节点 key（`provisional-reasoning-row:*` / `reasoning-row:*`，供测试断言唯一性）。
   final Key? rowKey;
 
@@ -11742,7 +12073,6 @@ class _ReasoningProcessRow extends StatelessWidget {
     required this.onToggle,
     this.collapsedLabel,
     this.expandedLabel,
-    this.cappedBody = false,
     this.rowKey,
     this.bodyKey,
   });
@@ -11752,8 +12082,10 @@ class _ReasoningProcessRow extends StatelessWidget {
     final ink2 = DshColors.ink2(context);
     final brand = DshColors.brand(context);
     final provisional = collapsedLabel != null;
-    final settledLabel =
-        L10n.t('思维链 $chars 字', 'Thinking chain · $chars chars');
+    final settledLabel = L10n.t(
+      '思维链 $chars 字',
+      'Thinking chain · $chars chars',
+    );
     final label = expanded
         ? (expandedLabel ?? settledLabel)
         : (collapsedLabel ?? (preview.isEmpty ? settledLabel : preview));
@@ -11764,67 +12096,64 @@ class _ReasoningProcessRow extends StatelessWidget {
     final header = Semantics(
       button: true,
       expanded: expanded,
-      child: InkWell(
-        onTap: onToggle,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: provisional ? 10 : 0,
-            vertical: 6,
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.psychology_outlined,
-                size: 16,
-                color: brand,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: showPreview
-                    ? Row(
-                        children: [
-                          Text(
-                            collapsedLabel!,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: ink2,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              preview,
-                              style: TextStyle(fontSize: 12, color: ink2),
+      child: SizedBox(
+        height: transcriptRowHeight(context),
+        child: InkWell(
+          onTap: onToggle,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: provisional ? 10 : 0),
+            child: Row(
+              children: [
+                Icon(Icons.psychology_outlined, size: 16, color: brand),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: showPreview
+                      ? Row(
+                          children: [
+                            Text(
+                              collapsedLabel!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: ink2,
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                preview,
+                                style: TextStyle(fontSize: 12, color: ink2),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: provisional
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                            color: ink2,
                           ),
-                        ],
-                      )
-                    : Text(
-                        label,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight:
-                              provisional ? FontWeight.w600 : FontWeight.w400,
-                          color: ink2,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-              ),
-              Icon(
-                expanded
-                    ? Icons.keyboard_arrow_up
-                    : Icons.keyboard_arrow_down,
-                size: 18,
-                color: ink2,
-              ),
-            ],
+                ),
+                Icon(
+                  expanded
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
+                  size: 18,
+                  color: ink2,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -11832,14 +12161,12 @@ class _ReasoningProcessRow extends StatelessWidget {
     final bodyWidget = expanded && text.isNotEmpty
         ? Padding(
             padding: EdgeInsets.fromLTRB(provisional ? 10 : 24, 0, 0, 6),
-            child: cappedBody
-                // issue #70 裁决 D1：展开正文不撑高消息流（与活动条内容面板同口径）。
-                ? ConstrainedBox(
-                    key: bodyKey,
-                    constraints: const BoxConstraints(maxHeight: 200),
-                    child: SingleChildScrollView(child: body),
-                  )
-                : body,
+            // ADR 0035：思考展开正文统一固定上限；超出在正文内滚动。
+            child: _CappedScrollBody(
+              key: bodyKey,
+              maxHeight: transcriptBodyMaxHeight,
+              child: body,
+            ),
           )
         : null;
     if (!provisional) {
@@ -11848,16 +12175,12 @@ class _ReasoningProcessRow extends StatelessWidget {
         key: rowKey,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
-        children: [
-          header,
-          ?bodyWidget,
-        ],
+        children: [header, ?bodyWidget],
       );
     }
     return Container(
       key: rowKey,
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
         color: DshColors.brandSoft(context),
         borderRadius: BorderRadius.circular(DshTheme.radiusSm),
@@ -11868,7 +12191,7 @@ class _ReasoningProcessRow extends StatelessWidget {
         children: [
           header,
           ?bodyWidget,
-          const SizedBox(height: 4),
+          if (bodyWidget != null) const SizedBox(height: 4),
         ],
       ),
     );
@@ -11969,9 +12292,8 @@ class _SlashHighlightController extends TextEditingController {
       final token = knownTokens
           .where((item) => item.start <= start && end <= item.end)
           .firstOrNull;
-      final composingHere = hasComposing &&
-          composing.start < end &&
-          composing.end > start;
+      final composingHere =
+          hasComposing && composing.start < end && composing.end > start;
       if (token == null && !composingHere) {
         children.add(TextSpan(text: text.substring(start, end), style: base));
         continue;
@@ -11987,12 +12309,14 @@ class _SlashHighlightController extends TextEditingController {
                   ? _SlashPalette.commandChipBg(context)
                   : _SlashPalette.skillChipBg(context),
             );
-      children.add(TextSpan(
-        text: text.substring(start, end),
-        style: composingHere
-            ? tokenStyle.copyWith(decoration: TextDecoration.underline)
-            : tokenStyle,
-      ));
+      children.add(
+        TextSpan(
+          text: text.substring(start, end),
+          style: composingHere
+              ? tokenStyle.copyWith(decoration: TextDecoration.underline)
+              : tokenStyle,
+        ),
+      );
     }
     return TextSpan(style: base, children: children);
   }
@@ -12052,139 +12376,6 @@ class _SlashInlineChip extends StatelessWidget {
   }
 }
 
-class _ActivityBar extends StatelessWidget {
-  final String reasoning;
-  final bool expanded;
-  final bool textStreaming;
-  final bool showContent; // 是否显示思考内容原文（默认关：只显示状态，思考原文多为英文）
-  final List<String> tools;
-  final VoidCallback onToggleReasoning;
-  const _ActivityBar({
-    required this.reasoning,
-    required this.expanded,
-    required this.textStreaming,
-    required this.showContent,
-    required this.tools,
-    required this.onToggleReasoning,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final ink2 = DshColors.ink2(context);
-    final ink3 = DshColors.ink3(context);
-    final line = DshColors.line(context);
-    final surface = DshColors.surface(context);
-    final brand = DshColors.brand(context);
-    final toolLabel = tools.isEmpty
-        ? ''
-        : (tools.length > 1
-              ? L10n.t(
-                  '正在执行 ${tools.length} 个工具（${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''}）',
-                  'Running ${tools.length} tools (${tools.take(2).join('、')}${tools.length > 2 ? '…' : ''})',
-                )
-              : '${L10n.t('正在调用 ', 'Calling ')}${tools.first}…');
-    final thinking = !textStreaming;
-    final header = expanded
-        ? (thinking
-              ? L10n.t('思考中，点此收起', 'Thinking — tap to collapse')
-              : L10n.t('思考内容，点此收起', 'Thinking content — tap to collapse'))
-        : (thinking
-              ? L10n.t(
-                  '思考中…（${reasoning.length} 字）',
-                  'Thinking… (${reasoning.length} chars)',
-                )
-              : L10n.t(
-                  '已思考 ${reasoning.length} 字',
-                  'Thought: ${reasoning.length} chars',
-                ));
-    return Container(
-      key: const ValueKey<String>('activity-bar'),
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: surface,
-        border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (reasoning.isNotEmpty)
-            InkWell(
-              key: const ValueKey<String>('activity-bar-thinking'),
-              onTap: showContent ? onToggleReasoning : null,
-              borderRadius: BorderRadius.circular(8),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(
-                  children: [
-                    Icon(Icons.psychology_outlined, size: 16, color: brand),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        header,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w600,
-                          color: ink2,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (showContent)
-                      Icon(
-                        expanded ? Icons.expand_less : Icons.expand_more,
-                        size: 16,
-                        color: ink3,
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          if (showContent && expanded && reasoning.isNotEmpty)
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 200),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  reasoning,
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.55,
-                    color: ink3,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ),
-            ),
-          if (tools.isNotEmpty)
-            Padding(
-              padding: EdgeInsets.only(top: reasoning.isNotEmpty ? 4 : 0),
-              child: Row(
-                key: const ValueKey<String>('activity-bar-tools'),
-                children: [
-                  Icon(Icons.handyman_outlined, size: 15, color: ink2),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      toolLabel,
-                      style: TextStyle(fontSize: 12.5, color: ink2),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// v2.7：进行中任务卡片（活动条下方；运行中的后台任务实时状态，点击进工具弹层）。
-/// v2.8.0：后台任务卡片——移到对话框顶部、可收纳（默认收起成一行，点标题展开/收起）、
-/// 精简为单任务行 + 计数，避免底部弹窗堆叠与卡片过大。
 class _JobCard extends StatefulWidget {
   final List<Map<String, dynamic>> jobs;
   final VoidCallback onOpen;
@@ -12991,16 +13182,19 @@ class _ProcessBlockPlan {
   final ProcessSegment segment;
   final bool expanded;
   final bool grouping;
+
+  /// issue #122：过程段的**稳定**折叠键（`segmentKeyOf`：轮号 + 开段插话边界
+  /// seq，轮首段为 `head`）。`ProcessFoldState` 与段收起行 key 都用它。
+  ///
+  /// 名称沿用 intervalKey：它标识「两条插话之间的 interval」，改后语义反而更准。
+  /// 不要换回 `turn:段索引`——补页/裁剪会让索引移动，折叠状态会串段。
   final String intervalKey;
   final bool isLastSegmentOfTurn;
-  final int hiddenTotalInTurn;
-  final Set<int> visibleRowSeqs;
-
-  /// issue #74：该轮分批后真正可见的过程行 seq（与 `visibleRowSeqs` 的段内视图区分），
-  /// 用于把「被分批隐藏的行」里的图片聚合到「显示更多」入口上。
-  final Set<int> turnVisibleRowSeqs;
   final bool liveProcessDetail;
   final bool historyView;
+
+  /// provisional-only 块：宿主是用户消息时，过程块渲染在它之后。
+  final bool afterHost;
 
   /// issue #70：该段要注入的 provisional（仅运行中最后一段可见时非空）。
   final _ProvisionalSlot? provisional;
@@ -13013,29 +13207,11 @@ class _ProcessBlockPlan {
     required this.grouping,
     required this.intervalKey,
     required this.isLastSegmentOfTurn,
-    required this.hiddenTotalInTurn,
-    required this.visibleRowSeqs,
-    required this.turnVisibleRowSeqs,
     required this.liveProcessDetail,
     required this.historyView,
+    this.afterHost = false,
     this.provisional,
   });
-
-  _ProcessBlockPlan copyWith({int? hiddenTotalInTurn}) => _ProcessBlockPlan(
-        process: process,
-        segmentIndex: segmentIndex,
-        segment: segment,
-        expanded: expanded,
-        grouping: grouping,
-        intervalKey: intervalKey,
-        isLastSegmentOfTurn: isLastSegmentOfTurn,
-        hiddenTotalInTurn: hiddenTotalInTurn ?? this.hiddenTotalInTurn,
-        visibleRowSeqs: visibleRowSeqs,
-        turnVisibleRowSeqs: turnVisibleRowSeqs,
-        liveProcessDetail: liveProcessDetail,
-        historyView: historyView,
-        provisional: provisional,
-      );
 }
 
 /// 一棵时间线列表的完整过程渲染计划。
