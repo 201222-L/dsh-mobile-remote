@@ -143,7 +143,7 @@ void main() {
   });
 
   group('派生展示（按钮显隐）', () {
-    test('阅读态 + 距底 100px：按钮仍按 160px 阈值隐藏（已知死角，上报产品）', () {
+    test('阅读态始终显示回底入口（含距底 100px 的原死角）', () {
       final h = _Harness();
       // 距底 100px：超过“真正到底”容差，但仍在 160px 展示阈值内。
       h.coordinator.onUserScrollStart(_geo(pixels: 900, max: 1000));
@@ -156,8 +156,30 @@ void main() {
       );
       expect(
         h.coordinator.showJumpToLatest,
-        isFalse,
-        reason: '本任务保留既有产品阈值：该死角不改，只在汇报中提出',
+        isTrue,
+        reason: '阅读态必须始终看到回底入口，不能出现“不跟随又没入口”的死角',
+      );
+
+      // 距底 10px（仍在 160 内）→ 阅读态也必须显示。
+      h.coordinator.onUserScrollStart(_geo(pixels: 990, max: 1000));
+      h.coordinator.onUserScrollEnd(_geo(pixels: 990, max: 1000));
+      expect(h.coordinator.intent, FollowIntent.reading);
+      expect(
+        h.coordinator.showJumpToLatest,
+        isTrue,
+        reason: '距底 10px 未真正到底 → 阅读态，同样必须有入口',
+      );
+    });
+
+    test('跟随态 + 距底 200px（非末端）：按新规则显示回底入口', () {
+      final h = _Harness();
+      expect(h.coordinator.intent, FollowIntent.followLatest);
+      h.coordinator.onMetrics(_geo(pixels: 800, max: 1000));
+      expect(h.coordinator.intent, FollowIntent.followLatest);
+      expect(
+        h.coordinator.showJumpToLatest,
+        isTrue,
+        reason: '跟随态但不在末端：仍给出回底入口',
       );
     });
 
@@ -182,16 +204,18 @@ void main() {
       expect(h.coordinator.showJumpToLatest, isTrue);
     });
 
-    test('无用户拖拽时像素向顶部移动 → 进入阅读（程序性移离末端）', () {
+    test('onMetrics 不因 pixels 移动方向改意图（意图只由用户手势/显式动作改变）', () {
       final h = _Harness();
-      h.coordinator.onMetrics(_geo(pixels: 900, max: 1000));
+      h.coordinator.onMetrics(_geo(pixels: 1000, max: 1000));
       expect(h.coordinator.intent, FollowIntent.followLatest);
       h.coordinator.onMetrics(_geo(pixels: 500, max: 1000));
       expect(
         h.coordinator.intent,
-        FollowIntent.reading,
-        reason: '程序性滚动把视口移离末端 → 阅读，避免已排队校正抢回',
+        FollowIntent.followLatest,
+        reason: '像素向顶部移动不是意图信号（§5.2：几何不得反写意图）',
       );
+      h.coordinator.onMetrics(_geo(pixels: 900, max: 1000));
+      expect(h.coordinator.intent, FollowIntent.followLatest);
     });
   });
 
@@ -419,6 +443,84 @@ void main() {
     test('center 负 min 的越界按实际 min 计算，不夹成 0', () {
       final g = _geo(pixels: -20, max: 1000, min: -10);
       expect(g.rangeError, 10);
+    });
+
+    test('rangeClamp：center 负区间内的负 pixels 是合法位置，不发起也不误夹', () {
+      final h = _Harness();
+      // #123 P1 现场几何：min=-1518, max=0, pixels=-990（上翻加载过更早历史）。
+      final pagedReading = _geo(pixels: -990, max: 0, min: -1518);
+      h.coordinator.onUserScrollStart(pagedReading);
+      h.coordinator.onUserScrollEnd(pagedReading);
+      expect(h.coordinator.intent, FollowIntent.reading);
+      h.coordinator.requestRangeClamp(geometry: pagedReading);
+      expect(
+        h.coordinator.hasPendingCorrection,
+        isFalse,
+        reason: '合法历史阅读位置（rangeError=0）不得排任何校正',
+      );
+      expect(h.frame(pagedReading), isNull);
+      expect(h.coordinator.jumpCount, 0);
+    });
+
+    test('rangeClamp：真越界时目标是最接近当前 pixels 的合法位置（不是末端）', () {
+      final h = _Harness();
+      // 内容变短：max 从 1000 掉到 0，pixels 仍停在 400（> max）→ 应夹回 0。
+      final shrunk = _geo(pixels: 400, max: 0);
+      h.coordinator.requestRangeClamp(geometry: shrunk);
+      final decision = h.frame(shrunk);
+      expect(decision, isNotNull);
+      expect(decision!.reason, CorrectionReason.rangeClamp);
+      expect(decision.targetPixels, 0);
+      // 另一个方向：pixels < min（center 之前的历史被裁掉）→ 夹回 min。
+      final h2 = _Harness();
+      final shrunkBelow = _geo(pixels: -900, max: 0, min: -300);
+      h2.coordinator.requestRangeClamp(geometry: shrunkBelow);
+      final below = h2.frame(shrunkBelow);
+      expect(below, isNotNull);
+      expect(below!.targetPixels, -300);
+    });
+
+    test('rangeClamp：阅读态也允许（合法位置不会发起；越界必须夹回，否则位置一直非法）', () {
+      final h = _Harness();
+      h.coordinator.onUserScrollEnd(_geo(pixels: 100, max: 1000));
+      expect(h.coordinator.intent, FollowIntent.reading);
+      final g = _geo(pixels: 400, max: 0);
+      h.coordinator.requestRangeClamp(geometry: g);
+      final decision = h.frame(g);
+      expect(decision, isNotNull, reason: '真越界时阅读态不得阻止夹回');
+      expect(decision!.targetPixels, 0);
+    });
+
+    test('rangeClamp：拖拽中作废（用户手势优先）', () {
+      final h = _Harness();
+      h.coordinator.onUserScrollStart(_geo(pixels: 400, max: 0));
+      h.coordinator.requestRangeClamp(geometry: _geo(pixels: 400, max: 0));
+      expect(h.coordinator.hasPendingCorrection, isFalse,
+          reason: '拖拽中不排队');
+      // 安排时未拖拽、执行前开始拖拽：执行时守卫仍要拦下。
+      final h2 = _Harness();
+      h2.coordinator.requestRangeClamp(geometry: _geo(pixels: 400, max: 0));
+      h2.coordinator.onUserScrollStart(_geo(pixels: 400, max: 0));
+      expect(h2.frame(_geo(pixels: 400, max: 0)), isNull);
+      expect(h2.coordinator.cancelledByUserCount, greaterThan(0));
+    });
+
+    test('rangeClamp：世代失效作废', () {
+      final h = _Harness();
+      h.coordinator.requestRangeClamp(geometry: _geo(pixels: 400, max: 0));
+      h.coordinator.bumpGeneration();
+      expect(h.frame(_geo(pixels: 400, max: 0)), isNull);
+      expect(h.coordinator.staleGenerationCount, greaterThan(0));
+    });
+
+    test('rangeClamp 与内容跟随合并：跟随态下取更显式的原因（目标=末端）', () {
+      final h = _Harness();
+      h.coordinator.requestRangeClamp(geometry: _geo(pixels: 400, max: 0));
+      h.coordinator.requestFollowOnLayout(_geo(pixels: 400, max: 0));
+      final decision = h.frame(_geo(pixels: 400, max: 0));
+      expect(decision, isNotNull);
+      expect(decision!.reason, CorrectionReason.contentLayout);
+      expect(decision.targetPixels, 0);
     });
 
     test('160px 阈值只决定展示，不决定 1px 收敛容差', () {

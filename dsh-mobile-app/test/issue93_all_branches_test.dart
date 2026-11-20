@@ -1,4 +1,5 @@
 /// issue #93：全部分支图（all=true）+ focus 定位 + 双向分页。
+library;
 import 'dart:async';
 import 'dart:convert';
 

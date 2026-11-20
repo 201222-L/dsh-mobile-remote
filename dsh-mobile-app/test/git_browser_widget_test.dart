@@ -424,7 +424,7 @@ class SnapshotMarginGitApi extends DynamicMarginGitApi {
     );
     final wide = graphCalls.isEven;
     return GitGraphPage(
-      snapshotId: 'snapshot-${graphCalls}',
+      snapshotId: 'snapshot-$graphCalls',
       tips: page.tips,
       commits: wide ? _mergeFirst : _plain,
     );

@@ -1311,8 +1311,9 @@ class AppStore extends ChangeNotifier {
         // 归属判定必须比对**实时**连接身份，而不是 `_refreshIdentity`（它只在刷新入口
         // 更新）：地址可能在没有任何刷新的情况下被自动轮换掉，那时两者的存储值仍然相等，
         // 旧地址的数据就会被应用上去。
-        if (generation != _refreshGeneration || identity != _connectionIdentity)
+        if (generation != _refreshGeneration || identity != _connectionIdentity) {
           return;
+        }
         // issue #133：慢快照与 SSE 合并——请求期间若有新 agent/status 帧，旧快照不得
         // 覆盖新帧：用 SSE 计数回填这些根的服务端字段；无新帧时快照才是权威。
         if (agentEpochAtStart == _agentStatusEpoch) {
@@ -2086,6 +2087,8 @@ class AppStore extends ChangeNotifier {
     api.onSseKeepalive = null;
     _sub = null;
     _connecting = false;
+    // issue #22/#133：连接代失效——释放旧代刷新守卫并清掉子代理瞬态状态。
+    _invalidateSessionRefresh();
   }
 
   @override

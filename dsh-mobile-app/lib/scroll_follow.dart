@@ -59,11 +59,16 @@ enum FollowIntent {
 
 /// 校正原因。合并时按「越显式越优先」选择，预算取较大者。
 enum CorrectionReason {
-  /// 新事件 / 同一过程条目内部增高 / 展开收起 / 异步详情 / 活动条显隐等布局版本变化。
-  contentLayout,
-
   /// 内部再收敛（例如一次 jump 后 lazy extent 修正）；由 owner 预算驱动，外部一般不用。
   settle,
+
+  /// 布局变短后的**越界夹回**（issue #123）：`pixels` 落到 `[minExtent, maxExtent]`
+  /// 之外。语义是机械修正而不是「跟随最新」——目标 = 当前 pixels 夹回合法区间，
+  /// **不是** `maxExtent`（详见 [ScrollFollowCoordinator.requestRangeClamp]）。
+  rangeClamp,
+
+  /// 新事件 / 同一过程条目内部增高 / 展开收起 / 异步详情 / 活动条显隐等布局版本变化。
+  contentLayout,
 
   /// 点击「回到底部」按钮。
   explicitBackToBottom,
@@ -74,9 +79,10 @@ enum CorrectionReason {
 
 int _reasonRank(CorrectionReason reason) => switch (reason) {
   CorrectionReason.settle => 1,
-  CorrectionReason.contentLayout => 2,
-  CorrectionReason.explicitBackToBottom => 3,
-  CorrectionReason.forcedPosition => 4,
+  CorrectionReason.rangeClamp => 2,
+  CorrectionReason.contentLayout => 3,
+  CorrectionReason.explicitBackToBottom => 4,
+  CorrectionReason.forcedPosition => 5,
 };
 
 /// 一次待执行的校正决策（适配器拿到后执行 jumpTo，再回报 [ScrollFollowCoordinator.noteCorrectionApplied]）。
@@ -232,24 +238,11 @@ class ScrollFollowCoordinator {
 
   /// 非用户驱动的几何变化（滚动 tick / ScrollMetricsNotification）。
   ///
-  /// 只更新派生展示；**不**因“接近底部”而恢复意图（§5.2：near-bottom 不得反过来
-  /// 偷偷改变意图）。但有一个例外：**像素位置向顶部移动**且没有用户拖拽时，说明
-  /// 有程序性滚动把视口移离末端（如测试/外部 ensureVisible）——此时按“上翻”进入
-  /// 阅读，避免已排队的跟随校正把视口拉回底部。内容增高/缩短只改 max、不改 pixels，
-  /// 不会触发这条；缩短时的 clamp 会落在末端（atBottom），也不触发。
+  /// 只更新派生展示；**不**改意图。意图只由真实用户手势（拖拽/惯性结束）、显式
+  /// 导航/回底/强制定位改变——不能从 pixels 移动方向逆推（§5.2：几何不得反写意图；
+  /// 键盘/视口/框架布局调整同样会移动 pixels，programmaticDepth 也覆盖不全）。
   void onMetrics(ScrollGeometry geometry) {
-    final previous = _lastGeometry;
-    final movedTowardTop =
-        previous != null &&
-        !_dragging &&
-        geometry.pixels < previous.pixels - 0.5;
     _updateDisplay(geometry);
-    if (movedTowardTop &&
-        _intent == FollowIntent.followLatest &&
-        !_isAtBottom(geometry)) {
-      _intent = FollowIntent.reading;
-      _refreshShowJumpToLatest();
-    }
   }
 
   // ── 世代 / 模式 ───────────────────────────────────────────────────
@@ -308,6 +301,25 @@ class ScrollFollowCoordinator {
     _book(reason, budget ?? defaultBudget);
   }
 
+  /// issue #123：布局变短后的**越界夹回**请求（`pixels` 落到 `[minExtent, maxExtent]` 外）。
+  ///
+  /// 与跟随校正共用同一决策 seam 与守卫，但语义不是「跟随最新」而是**机械修正**：
+  /// - 目标 = 当前 `pixels` 夹回合法区间后的位置，**永远不是 `maxExtent`**；
+  /// - 因此阅读态不阻止：合法阅读位置（含 center 之前的负区间）根本不会发起请求，
+  ///   真越界时夹回也不改变用户在看哪段内容；若这里也按阅读态拒绝，越界位置会
+  ///   一直留着（#118 的「内容被推到视口上方」正是这样产生的）；
+  /// - 拖拽中一律作废（用户手势优先），世代失效由 [takeCorrection] 复核后作废。
+  ///
+  /// 为什么不能直接 `jumpTo`：`#123` P1 的原始实现只看 `max` 就 `jumpTo(0)`，
+  /// 把 center 布局的合法负区间当成越界——用户正在读的历史被抢回 center。
+  void requestRangeClamp({ScrollGeometry? geometry, int budget = 2}) {
+    if (_disposed) return;
+    if (geometry != null) _updateDisplay(geometry);
+    if (_dragging) return;
+    if (geometry != null && geometry.rangeError <= convergeTolerance) return;
+    _book(CorrectionReason.rangeClamp, budget);
+  }
+
   void _book(CorrectionReason reason, int budget) {
     final current = _pending;
     if (current == null) {
@@ -339,8 +351,12 @@ class ScrollFollowCoordinator {
   // ── 执行（适配器在帧后调用） ───────────────────────────────────────
   /// 取一次可执行的校正。
   ///
-  /// 返回 null 表示本帧不动作：无待执行、拖拽中（用户优先）、阅读态（除非强制定位）、
+  /// 返回 null 表示本帧不动作：无待执行、拖拽中（用户优先）、阅读态（跟随校正）、
   /// 世代失效、或已收敛。执行时逐项重查，防止「安排时有效、执行时已失效」。
+  ///
+  /// issue #123：`rangeClamp` 的目标是「当前 pixels 夹回合法区间」而不是末端，
+  /// 它不改变用户在看哪段内容，所以不受阅读态拦截（合法阅读位置不会被请求）；
+  /// 真越界时必须夹回，否则位置会一直留在 `[min, max]` 之外。
   ScrollCorrection? takeCorrection(ScrollGeometry geometry) {
     _updateDisplay(geometry);
     _frameBooked = false;
@@ -357,10 +373,27 @@ class ScrollFollowCoordinator {
       _pending = null;
       return null;
     }
-    if (_intent != FollowIntent.followLatest) {
+    final rangeClamp = pending.reason == CorrectionReason.rangeClamp;
+    if (!rangeClamp && _intent != FollowIntent.followLatest) {
       _cancelledByIntentCount += 1;
       _pending = null;
       return null;
+    }
+    if (rangeClamp) {
+      if (geometry.rangeError <= convergeTolerance) {
+        _pending = null; // 已回到合法区间：无需动作
+        return null;
+      }
+      return ScrollCorrection(
+        targetPixels: geometry.pixels.clamp(
+          geometry.minExtent,
+          geometry.maxExtent,
+        ),
+        reason: pending.reason,
+        attempt: pending.attempt,
+        budget: pending.budget,
+        generation: pending.generation,
+      );
     }
     if (_isConverged(geometry)) {
       _pending = null;
@@ -448,13 +481,13 @@ class ScrollFollowCoordinator {
     _refreshShowJumpToLatest();
   }
 
-  /// 回底按钮/刻度轨显隐 = 派生展示：按 160px 产品阈值（近底隐藏）。
+  /// 回底按钮/刻度轨显隐 = 派生展示。
   ///
-  /// 已知产品取舍（#114 task-11 汇报）：意图改为“真正到底才钉”后，用户停在
-  /// 距底 ≤160px 但 >容差处会处于阅读态而按钮隐藏（看不到显式恢复入口）。
-  /// 本任务不擅自改按钮产品阈值——保留既有 160px 行为，把该死角上报产品决策。
+  /// 维护者决策（#114 P2）：**阅读态始终显示回底入口**——用户上翻即取消钉底，
+  /// 必须始终能看到一个明确的“回到底部”；160px 产品阈值只用于跟随态（近底隐藏）。
+  /// 这消除了“reading + 距底 130px → 按钮隐藏但又不跟随”的死角。
   void _refreshShowJumpToLatest() {
-    final show = !_nearBottom;
+    final show = _intent == FollowIntent.reading || !_nearBottom;
     if (show != _showJumpToLatest) _showJumpToLatest = show;
   }
 }

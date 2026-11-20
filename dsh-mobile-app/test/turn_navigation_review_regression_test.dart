@@ -249,8 +249,9 @@ void main() {
 
       // #114 P1：用真实手势持续上翻（不用 jumpTo 伪装用户滚动）。
       for (var i = 0; i < 60; i++) {
-        if (_position(tester).pixels <= 1 && _rail(tester).activeTurn == 1)
+        if (_position(tester).pixels <= 1 && _rail(tester).activeTurn == 1) {
           break;
+        }
         await tester.drag(scroll, const Offset(0, 600));
         await tester.pump(const Duration(milliseconds: 120));
       }

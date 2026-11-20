@@ -183,8 +183,9 @@ double? _visibleUserTextRight(WidgetTester tester) {
   for (final element in find.textContaining('这是一条足够长的用户消息').evaluate()) {
     final rect = tester.getRect(find.byWidget(element.widget));
     if (rect.top >= 0 && rect.bottom <= 1200 && rect.left >= 0) {
-      if (rect.right <= screenW && rect.right > screenW - 140)
+      if (rect.right <= screenW && rect.right > screenW - 140) {
         return rect.right;
+      }
     }
   }
   return null;

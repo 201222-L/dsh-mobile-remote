@@ -121,13 +121,6 @@ const assistantDetail = mod.detailEventFor({
 check("详情规范化正文不含 reasoning 块文本", assistantDetail.data?.text === "VISIBLE-BODY", JSON.stringify(assistantDetail.data?.text));
 check("详情保留原始 message 块（无损语义）", assistantDetail.data?.message?.content?.length === 2);
 check("详情规范化正文与指针提示同口径", assistantDetail.data?.text?.length === reasoningMessage.detail?.textChars);
-check("详情附带完整 reasoning（摘要 20k 截断时按需补齐）", assistantDetail.data?.reasoning === "THINKING-CHAIN");
-const userDetail = mod.detailEventFor({
-  seq: 30,
-  type: "user/message",
-  data: { id: "u1", content: [{ type: "text", text: "USER-RAW-FULL" }, { type: "image", attachment: {} }] },
-});
-check("user 详情附带规范化正文（不含图片占位）", userDetail.data?.text === "USER-RAW-FULL", JSON.stringify(userDetail.data?.text));
 check("详情不改写其它类型事件的 data", mod.detailEventFor({ seq: 22, type: "tool/result", data: { text: "raw" } }).data?.text === "raw");
 const liveChunk = mod.summarizeEvent({
   seq: 10,

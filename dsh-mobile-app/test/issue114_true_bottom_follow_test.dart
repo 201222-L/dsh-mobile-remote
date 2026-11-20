@@ -155,6 +155,35 @@ class _Probe {
   }
 }
 
+Future<void> _scrollMainUntilVisible(WidgetTester tester, Finder finder) async {
+  final scroll = find.byType(CustomScrollView);
+  for (var i = 0; i < 20; i++) {
+    if (finder.evaluate().isNotEmpty) {
+      final rect = tester.getRect(finder.first);
+      final viewport = tester.getRect(scroll);
+      if (rect.top >= viewport.top && rect.bottom <= viewport.bottom) return;
+    }
+    await tester.drag(scroll, const Offset(0, -300));
+    await tester.pump(const Duration(milliseconds: 120));
+  }
+  fail('目标未能通过真实手势进入主列表视口');
+}
+
+Finder get _jumpButton => find.byWidgetPredicate(
+  (w) => w.runtimeType.toString() == '_JumpToLatestButton',
+);
+
+bool _jumpVisible(WidgetTester tester) {
+  final finder = _jumpButton;
+  if (finder.evaluate().isEmpty) return false;
+  final animated = find.descendant(
+    of: finder,
+    matching: find.byType(AnimatedOpacity),
+  );
+  if (animated.evaluate().isEmpty) return false;
+  return tester.widget<AnimatedOpacity>(animated.first).opacity > 0.5;
+}
+
 Future<AppStore> _mount(
   WidgetTester tester,
   _Backend backend, {
@@ -299,11 +328,13 @@ void main() {
       reason: '用例前提：落在 160px 产品展示阈值内（用于验证死角修复）',
     );
     expect(probe.intentFollow, isFalse, reason: '真正到底才钉：130px 不是底部 → 阅读态');
-    // 注意：按钮显隐仍是既有 160px 产品阈值（本任务不改）；该场景按钮隐藏，
-    // 属已知死角，已在 task-11 汇报中提交产品决策。
+    // #114 P2：阅读态始终显示回底入口（该场景正是原死角：距底 130px 未到底）。
+    expect(probe.showJump, isTrue, reason: '阅读态必须始终看得到回底入口，否则无法恢复跟随');
+    expect(_jumpVisible(tester), isTrue);
 
     // 新消息：不滚动、内容向下延长。
     final tailBefore = probe.tailResidual;
+    final maxBefore = probe.pos.maxScrollExtent;
     final jumpsBefore = probe.jumps;
     await _injectTool(tester, store);
     expect(
@@ -313,10 +344,16 @@ void main() {
     );
     expect(probe.intentFollow, isFalse, reason: '阅读态不得被新消息改写为跟随');
     expect(probe.jumps, jumpsBefore, reason: '阅读态不得执行任何自动校正');
+    // 强证据：新消息确实让内容变高（max 增大），并被延长到视口下方。
+    expect(
+      probe.pos.maxScrollExtent,
+      greaterThanOrEqualTo(maxBefore + 20),
+      reason: '新消息必须产生真实内容增高（max 增大），而不是空注入',
+    );
     expect(
       (probe.tailResidual ?? 0),
-      lessThanOrEqualTo((tailBefore ?? 0) + 1),
-      reason: '新消息应向视口下方延长（tail 残差更负）',
+      lessThanOrEqualTo((tailBefore ?? 0) - 20),
+      reason: '新内容应在视口下方延长至少 20px（tail 残差更负）',
     );
     await _flush(tester);
   });
@@ -411,30 +448,32 @@ void main() {
     await _flush(tester);
   });
 
-  testWidgets('程序性移动离开末端 → 进入阅读；已排队校正不得把视口抢回', (tester) async {
+  testWidgets('程序性移动不改变意图：follow 仍跟回末端（意图只由用户手势/显式动作改变）', (tester) async {
     final store = await _mount(tester, _Backend(_history()), debug: false);
     final probe = _Probe(tester);
     await _flush(tester);
     expect(probe.intentFollow, isTrue);
 
-    // 先制造一个已排队的跟随校正（内容增长请求），再在它执行前把视口程序性移离末端。
+    // 先制造一个已排队的跟随校正（内容增长请求）。
     await _injectReasoning(tester, store);
     await tester.pump(const Duration(milliseconds: 16));
-    expect(probe.pending, isTrue, reason: '用例前提：已有待执行校正');
-    final jumpsBefore = probe.jumps;
 
-    // 直接改 ScrollPosition（未包 begin/endProgrammaticScroll）：模拟外部程序性移动。
+    // 程序性直接改 ScrollPosition（未包 begin/endProgrammaticScroll）：不得被当成
+    // “用户上翻”而把意图改成阅读——像素移动方向不是意图信号。
     probe.pos.jumpTo(probe.pos.maxScrollExtent - 300);
     await tester.pump(const Duration(milliseconds: 16));
     await tester.pump(const Duration(milliseconds: 16));
-    expect(probe.intentFollow, isFalse, reason: '程序性滚动把视口移离末端 → 阅读态');
-    expect(probe.pending, isFalse, reason: '已排队校正必须被阅读态作废');
+    expect(
+      probe.intentFollow,
+      isTrue,
+      reason: '程序性移动不得逆推意图（若这里变红，说明像素逆推规则被重新引入）',
+    );
+    // follow 意图下，排队校正继续收敛，把视口带回末端。
     expect(
       probe.pos.pixels,
-      closeTo(probe.pos.maxScrollExtent - 300, 1),
-      reason: '阅读态不得被自动校正拉回',
+      closeTo(probe.pos.maxScrollExtent, 1),
+      reason: '跟随意图下程序性移动仍会被校正回末端',
     );
-    expect(probe.jumps, jumpsBefore, reason: '作废后不得执行校正');
     await _flush(tester);
   });
 
@@ -449,16 +488,19 @@ void main() {
     expect(probe.intentFollow, isFalse);
     final readingPixels = probe.pos.pixels;
 
-    // 程序性直接跳到末端（不是用户手势、也不是显式回底按钮）。
+    // 程序性直接跳到末端（不是用户手势、也不是显式回底按钮）。lazy 估值可能先跳到
+    // 估值 max 再由布局修正，因此用 pumpAndSettle 等到停稳（程序性/异步 ScrollEnd 不改意图）。
     probe.pos.jumpTo(probe.pos.maxScrollExtent);
-    await tester.pump(const Duration(milliseconds: 16));
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pumpAndSettle();
     expect(probe.pos.pixels, closeTo(probe.pos.maxScrollExtent, 1));
     expect(
       probe.intentFollow,
       isFalse,
       reason: '程序性 ScrollEnd 不得被当成用户“主动滚回底部”而恢复跟随',
     );
+    // P2-1 补：reading 态 + 恰好到底（程序性移动到这里）→ 按钮必须显示。
+    expect(probe.showJump, isTrue, reason: '阅读态即使恰好到底也必须显示回底入口');
+    expect(_jumpVisible(tester), isTrue);
 
     // 真正的用户回底（拖到末端松手）才恢复跟随。
     await tester.drag(
@@ -486,6 +528,74 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 16));
     expect(probe.frameScheduled, isFalse, reason: '执行完一帧后不得自激');
+    await _flush(tester);
+  });
+
+  testWidgets('P2 按钮显隐1：阅读态 + 距底约 130px（原死角）→ 按钮显示', (tester) async {
+    await _mount(tester, _Backend(_history()), debug: false);
+    final probe = _Probe(tester);
+    await _flush(tester);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 150));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(probe.intentFollow, isFalse);
+    expect(probe.distanceToEnd, greaterThan(1));
+    expect(
+      probe.distanceToEnd,
+      lessThanOrEqualTo(160),
+      reason: '用例前提：落在 160px 产品展示阈值内（原死角）',
+    );
+    expect(probe.showJump, isTrue);
+    expect(_jumpVisible(tester), isTrue, reason: '阅读态必须始终显示回底圆钮');
+    await _flush(tester);
+  });
+
+  testWidgets('P2 按钮显隐2：阅读态 + 距底约 10px（真实手势，仍在 160 内）→ 按钮显示', (tester) async {
+    await _mount(tester, _Backend(_history()), debug: false);
+    final probe = _Probe(tester);
+    await _flush(tester);
+    // 真实手势：拖 30px（越过 touch slop 后约 10px 位移）→ 未真正到底 → 阅读态。
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 30));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      probe.distanceToEnd,
+      greaterThan(1),
+      reason: '必须离开真正的末端（实测 ${probe.distanceToEnd}）',
+    );
+    expect(probe.distanceToEnd, lessThan(160), reason: '用例前提：仍在 160px 产品阈值内');
+    expect(probe.intentFollow, isFalse, reason: '未真正到底 → 阅读态');
+    expect(probe.showJump, isTrue);
+    expect(_jumpVisible(tester), isTrue);
+    await _flush(tester);
+  });
+
+  testWidgets('P2 按钮显隐3：跟随态 + 在底部 → 按钮隐藏（不能永远显示）', (tester) async {
+    await _mount(tester, _Backend(_history()), debug: false);
+    final probe = _Probe(tester);
+    await _flush(tester);
+    expect(probe.intentFollow, isTrue);
+    expect(probe.distanceToEnd.abs(), lessThanOrEqualTo(1));
+    expect(probe.showJump, isFalse);
+    expect(_jumpVisible(tester), isFalse, reason: '真正到底跟随时不显示回底圆钮');
+    await _flush(tester);
+  });
+
+  testWidgets('P2 按钮显隐5：阅读态点回底按钮 → 恢复跟随且按钮消失', (tester) async {
+    await _mount(tester, _Backend(_history()), debug: false);
+    final probe = _Probe(tester);
+    await _flush(tester);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 400));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(probe.intentFollow, isFalse);
+    expect(_jumpVisible(tester), isTrue);
+
+    await tester.tap(_jumpButton, warnIfMissed: false);
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(probe.intentFollow, isTrue, reason: '点回底 = 显式进入跟随');
+    expect(probe.distanceToEnd.abs(), lessThanOrEqualTo(1));
+    expect(probe.showJump, isFalse, reason: '回到真正底部后按钮必须消失');
+    expect(_jumpVisible(tester), isFalse);
     await _flush(tester);
   });
 
@@ -540,21 +650,34 @@ void main() {
       matching: find.byType(SingleChildScrollView),
     );
     expect(inner, findsOneWidget, reason: '展开后应出现内层滚动视区');
-    // 把内层视区滚进可见区域（测试侧 ensureVisible；主列表 intent 不因此改变）。
-    await tester.ensureVisible(inner.first);
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    // #114 P1：用真实手势把内层视区滚进可见区域（不使用 ensureVisible）。
+    await _scrollMainUntilVisible(tester, inner);
+    final innerScrollable = find.descendant(
+      of: inner.first,
+      matching: find.byType(Scrollable),
+    );
+    expect(innerScrollable, findsOneWidget);
+    final innerPos = tester.state<ScrollableState>(innerScrollable).position;
+    final innerBefore = innerPos.pixels;
 
     final mainPixels = probe.pos.pixels;
     final mainJumps = probe.jumps;
+    final mainIntent = probe.intentFollow;
+    final mainShow = probe.showJump;
     // 在内层拖动（不会触底，几何与主列表无关）。
     await tester.drag(inner.first, const Offset(0, -120));
     await tester.pump(const Duration(milliseconds: 200));
     await tester.pump(const Duration(milliseconds: 200));
-    expect(probe.intentFollow, isTrue, reason: '用户只滚了内层内容，主对话不得取消钉底');
+    // P3-a：内层必须真的发生了滚动，否则这条用例是空过。
+    expect(
+      innerPos.pixels,
+      greaterThan(innerBefore + 20),
+      reason: '内层必须真实滚动（before=$innerBefore, after=${innerPos.pixels}）',
+    );
     expect(probe.pos.pixels, closeTo(mainPixels, 1), reason: '内层滚动不得移动主列表');
     expect(probe.jumps, mainJumps, reason: '内层滚动不得触发主列表校正');
-    expect(probe.showJump, isFalse, reason: '内层 metrics 不得污染主列表派生展示（近底/按钮）');
+    expect(probe.intentFollow, mainIntent, reason: '内层滚动不得改写主列表意图');
+    expect(probe.showJump, mainShow, reason: '内层 metrics 不得污染主列表派生展示（近底/按钮）');
     await _flush(tester);
   });
 

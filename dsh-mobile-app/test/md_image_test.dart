@@ -86,10 +86,10 @@ void main() {
 
   testWidgets('md 不持全局缓存：请求去重由 ChatScreen LRU 注入；双图各调用 loader', (tester) async {
     var count = 0;
-    final loader = (String source) async {
+    Future<MarkdownImageData> loader(String source) async {
       count += 1;
       return MarkdownImageData(bytes: _png);
-    };
+    }
     await _pumpMarkdown(
       tester,
       '![a](pics/same.png)\n\n![b](pics/same.png)',

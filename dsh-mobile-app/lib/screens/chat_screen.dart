@@ -647,9 +647,9 @@ class _ChatScreenState extends State<ChatScreen> {
   // v2.7.2 review(M1)：本页绑定的会话（initState 时捕获）——事件按它过滤，叠层页面互不污染
   String? _mySessionId;
   // issue #94/#95：Markdown 本地图片 loader；缓存/并发/会话隔离由本页 LRU 负责。
-  late final MarkdownImageLoader _markdownImageLoader = (source) =>
+  Future<MarkdownImageData> _markdownImageLoader(String source) =>
       _loadMarkdownImage(source);
-  late final MarkdownImageUserAction _markdownImageUserAction = (source) =>
+  Future<MarkdownImageData> _markdownImageUserAction(String source) =>
       _loadMarkdownImage(source, userInitiated: true);
   late final WorkspaceImageCache _workspaceImageCache = WorkspaceImageCache();
   final List<_WorkspaceImageConsent> _imageConsents = [];
@@ -5101,8 +5101,9 @@ class _ChatScreenState extends State<ChatScreen> {
     for (final c in commands) {
       final name = c['name'];
       if (name is! String ||
-          !slashItemMatches(token.query, name, c['description']?.toString()))
+          !slashItemMatches(token.query, name, c['description']?.toString())) {
         continue;
+      }
       entries.add((
         name: name,
         description: c['description']?.toString(),
@@ -5118,8 +5119,9 @@ class _ChatScreenState extends State<ChatScreen> {
         token.query,
         name,
         skill['description']?.toString(),
-      ))
+      )) {
         continue;
+      }
       entries.add((
         name: name,
         description: skill['description']?.toString(),
@@ -5525,8 +5527,9 @@ class _ChatScreenState extends State<ChatScreen> {
       for (final s in _slashSkills ?? const <Map<String, dynamic>>[])
         if (s['name'] is String) s['name'] as String,
     };
-    if (commandNames.isEmpty && skillNames.isEmpty)
+    if (commandNames.isEmpty && skillNames.isEmpty) {
       return Text(text, style: base);
+    }
     final spans = <InlineSpan>[];
     var cursor = 0;
     var changed = false;
@@ -8374,7 +8377,7 @@ class _ChatScreenState extends State<ChatScreen> {
               segment: const ProcessSegment(rows: []),
               expanded: true,
               grouping: false,
-              intervalKey: '${turn}:provisional',
+              intervalKey: '$turn:provisional',
               isLastSegmentOfTurn: true,
               liveProcessDetail: policy.liveProcessDetail,
               historyView: false,

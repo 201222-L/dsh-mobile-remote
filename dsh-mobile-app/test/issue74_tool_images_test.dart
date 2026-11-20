@@ -247,6 +247,29 @@ Future<void> _scrollUpUntil(WidgetTester tester, Finder finder) async {
   }
 }
 
+/// issue #114 P1：用**真实手势**把目标滚进视口（不要用 ensureVisible 程序性滚动，
+/// 那会把“用户上翻”伪装成程序性移动，产品规则不应为测试手法让路）。
+Future<void> _scrollIntoViewport(WidgetTester tester, Finder finder) async {
+  final scroll = find.byType(CustomScrollView);
+  for (var i = 0; i < 40; i++) {
+    if (finder.evaluate().isEmpty) {
+      await tester.drag(scroll, const Offset(0, 600));
+      await tester.pump(const Duration(milliseconds: 120));
+      continue;
+    }
+    final rect = tester.getRect(finder.first);
+    final viewport = tester.getRect(scroll);
+    if (rect.top >= viewport.top + 4 && rect.bottom <= viewport.bottom - 4) {
+      return;
+    }
+    // 目标在上方 → 手指向下拖（滚向更早内容）；目标在下方 → 反向。
+    final dy = rect.top < viewport.top ? 400.0 : -400.0;
+    await tester.drag(scroll, Offset(0, dy));
+    await tester.pump(const Duration(milliseconds: 120));
+  }
+  fail('目标未能通过真实手势进入视口');
+}
+
 void main() {
   testWidgets('真实 turn-1：整轮折叠摘要即显示 2 张图片入口（含分批隐藏的 read_image）', (tester) async {
     final events = (jsonDecode(issue74Turn1EventsJson) as List)
@@ -262,8 +285,8 @@ void main() {
     // 收起态不应该先构建任何图片内容。
     expect(find.byType(ImageGalleryGrid), findsNothing);
     // 点击 chip 直接开图库，且**不展开整轮**。
-    await tester.ensureVisible(_imageChip(2));
-    await tester.pumpAndSettle();
+    // #114 P1：真实手势把 chip 滚进视口（不使用 ensureVisible 程序性滚动）。
+    await _scrollIntoViewport(tester, _imageChip(2));
     await tester.tap(_imageChip(2));
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 50));
