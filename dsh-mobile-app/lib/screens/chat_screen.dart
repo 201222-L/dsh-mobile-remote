@@ -222,6 +222,63 @@ bool shouldLoadOlderFromScroll(
   return false;
 }
 
+/// issue #130：上翻历史顶部状态行的四态。
+///
+/// 状态行是 center **之前的独立首 sliver**（`SliverPadding → SliverToBoxAdapter`），
+/// 位于 older 列表的**视觉顶部**：四态共用同一个固定高度，切换时滚动范围不变，
+/// 因此不会产生跳动（ADR 0035 的高度/对齐规则不变）。
+enum OlderHistoryStatus {
+  /// 正在请求更早一页：转圈 +「正在加载更早消息…」。
+  loading,
+
+  /// 上次加载失败：「更早消息加载失败，点此重试」。失败后 80px 自动触发不再重发，
+  /// 只允许点状态行手动重试（`_olderLoadFailed` 门禁）。
+  failed,
+
+  /// 已到会话最顶端：勾选/灰字 +「没有更早消息了」；降级会话为「更早历史不可恢复」。
+  exhausted,
+
+  /// 还有更早历史：淡箭头 +「继续上滑加载更早」。自动触发仍由既有 80px 判定负责，
+  /// 点击整行只是同一实现的**手动**入口（`_loadingMore` 去重，不会双发）。
+  idle,
+}
+
+/// issue #130：顶部状态行的固定高度（dp）。四态等高是「不引入滚动跳动」的前提；
+/// 文字缩放由行内 `maxLines: 1` + 省略号兜底（1.5× 不溢出）。
+const double olderHistoryStatusRowHeight = 36;
+
+/// issue #130：状态行的稳定 key（widget/几何回归用）。
+const Key olderHistoryStatusRowKey = ValueKey<String>('older-history-status');
+
+/// issue #130 P2：顶部浮层加载 pill 的稳定 key。
+///
+/// 自动触发阈值（距顶 80px）大于状态行高度（36dp）：上翻停在距顶 50–80px 时请求
+/// 已开始，但首 sliver 状态行仍在视口上方。该 pill 用 Stack 浮在消息区顶部补位，
+/// 不参与滚动布局（不改变 extent、不参与 owner 校正）；到顶后隐藏，避免与状态行双显。
+const Key olderLoadingOverlayKey = ValueKey<String>('older-loading-overlay');
+
+/// issue #130：四态判定（纯函数，便于单测）。
+///
+/// [loaded]：当前窗口已取得最旧 seq（`_earliestSeq > 0`）——初始加载完成前返回 null，
+/// 避免把「还没读过历史」误显示成「没有更早消息了」。
+/// [loadingMore]：正在请求更早一页（必须优先于失败/到顶判断）。
+/// [loadFailed]：上次请求失败（失败后自动触发被门禁拦住，只允许点击重试）。
+/// [hasMore]：服务端声明的 `hasMore`（含初始页与最近一页）。
+/// [noMore]：空页确认到顶（`_noMoreHistory`）。
+OlderHistoryStatus? olderHistoryStatusFor({
+  required bool loaded,
+  required bool loadingMore,
+  required bool loadFailed,
+  required bool hasMore,
+  required bool noMore,
+}) {
+  if (!loaded) return null;
+  if (loadingMore) return OlderHistoryStatus.loading;
+  if (loadFailed) return OlderHistoryStatus.failed;
+  if (noMore || !hasMore) return OlderHistoryStatus.exhausted;
+  return OlderHistoryStatus.idle;
+}
+
 /// Phase 2(A4)：统一「打开会话页」流程——切换会话 + 刷新会话配置 + 推入 ChatScreen。
 /// 返回后执行 [onReturn]（各调用点差异：刷新列表 / 恢复原会话）。
 /// [apiClient] 仅供测试注入（与 `ChatScreen.apiClient` 同款）；生产路径传 null 即用全局 `api`。
@@ -724,6 +781,11 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _configDegraded = false; // 休眠会话配置已回退默认（服务端 configDegraded）：持续提示
   bool _loadingMore = false;
   bool _noMoreHistory = false; // 已到会话最顶端（无更早消息），停止再查询
+  // issue #130：older 列表顶部状态行的模型（行存在性在会话加载时锁定；之后只换文字/图标）。
+  bool _olderStatusRowVisible = false; // 首屏即全部（hasMore=false）的短会话不显示状态行
+  bool _olderLoadFailed = false; // 上次更早分页失败：80px 自动触发不再重发，只允许点行重试
+  // issue #130 P2：状态行尚未进入视口时的顶部浮层加载 pill（不参与滚动布局）。
+  bool _olderLoadingOverlayVisible = false;
   bool _showJumpToLatest = false; // 上翻后显示"回到底部"浮钮（派生展示，不反写意图）
   // ── issue #114（§5.2）：跟随意图/拖拽/世代/待执行校正的唯一 owner ──────────
   // 生产只负责把 ScrollMetrics/用户手势/布局版本喂给它，并执行它给出的有界校正；
@@ -863,8 +925,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void _syncScrollFollowDisplay() {
     if (!mounted) return;
     final show = _scrollFollow.showJumpToLatest;
-    if (show != _showJumpToLatest) {
-      setState(() => _showJumpToLatest = show);
+    // issue #130 P2：loading pill 的显隐只由只读几何决定；与回底按钮合并到一次
+    // setState，避免滚动过程中每帧两次重建。
+    final overlay = _computeOlderLoadingOverlayVisible();
+    if (show != _showJumpToLatest || overlay != _olderLoadingOverlayVisible) {
+      setState(() {
+        _showJumpToLatest = show;
+        _olderLoadingOverlayVisible = overlay;
+      });
     }
   }
 
@@ -1513,10 +1581,58 @@ class _ChatScreenState extends State<ChatScreen> {
   int get _contentChildCount =>
       _olderItems.length + (_olderButtonVisible ? 1 : 0) + _items.length;
 
-  /// center 之后那条列表的首项是否为「更早」按钮 / 加载条（与 `_buildChatView` 一致）。
-  bool get _olderButtonVisible =>
-      (!_infiniteMode && _earliestSeq > 0) ||
-      (_infiniteMode && _loadingMore && _earliestSeq > 0);
+  /// center 之后那条列表的首项是否为「更早」按钮（与 `_buildLiveView` 一致）。
+  ///
+  /// issue #130：无限模式不再在 center 之后放加载条——加载反馈移到 older 列表
+  /// 顶部的状态行；这里只保留分段模式（`!_infiniteMode`）的「更早」按钮语义。
+  bool get _olderButtonVisible => !_infiniteMode && _earliestSeq > 0;
+
+  /// issue #130：older 列表顶部状态行当前状态。
+  ///
+  /// null = 短会话（首屏即全部，`_olderStatusRowVisible=false`）或窗口还没加载完：
+  /// 状态行整条不渲染。「行存在性固定」——一旦显示，四态切换只换文字/图标与 36dp 等高
+  /// 内容，不会动态增删高度（不产生滚动跳动）。
+  OlderHistoryStatus? get _olderHistoryStatus {
+    if (!_olderStatusRowVisible) return null;
+    return olderHistoryStatusFor(
+      loaded: _earliestSeq > 0,
+      loadingMore: _loadingMore,
+      loadFailed: _olderLoadFailed,
+      hasMore: _historyHasMore,
+      noMore: _noMoreHistory,
+    );
+  }
+
+  @visibleForTesting
+  OlderHistoryStatus? get debugOlderHistoryStatus => _olderHistoryStatus;
+
+  @visibleForTesting
+  bool get debugOlderStatusRowVisible => _olderStatusRowVisible;
+
+  @visibleForTesting
+  bool get debugOlderLoadFailed => _olderLoadFailed;
+
+  @visibleForTesting
+  bool get debugLoadingMore => _loadingMore;
+
+  @visibleForTesting
+  bool get debugOlderLoadingOverlayVisible => _olderLoadingOverlayVisible;
+
+  /// issue #130 P2：loading 时首 sliver 状态行是否仍不足以承担提示。
+  ///
+  /// 状态行高 36dp，但“进入视口”不等于“转圈/文案可见”：距顶 9–35px 时只露出
+  /// 行的底部若干像素，文字仍被裁掉。因此 overlay 只在**接近顶部**（距顶 ≤8px，
+  /// 行内主要内容已进入视口）时才让位，其余触发带（8–80px）继续由 pill 补位；
+  /// 交接区间允许 pill 与行短暂重叠，不做 35px 硬切。
+  /// 只读几何，不写入 owner、不触发校正。
+  bool _computeOlderLoadingOverlayVisible() {
+    if (!_infiniteMode || _inHistory || !_loadingMore) return false;
+    if (!_olderStatusRowVisible) return false;
+    if (!_scrollCtrl.hasClients) return false;
+    final pos = _scrollCtrl.position;
+    if (!pos.hasContentDimensions) return false;
+    return pos.pixels > pos.minScrollExtent + 8;
+  }
 
   /// 已构建**子项**的实测几何（内容顺序索引 + 内容偏移 + 高度），供定位循环判断目标
   /// 在当前落点的**之前还是之后**并收窄搜索区间。
@@ -1962,6 +2078,11 @@ class _ChatScreenState extends State<ChatScreen> {
           // 无 seq 的非用户条目（如发送失败提示）跳过。
         }
         _noMoreHistory = false;
+        // issue #130：状态行模型随会话/历史重建重置——首屏即全部（hasMore=false）的
+        // 短会话不显示状态行；失败门禁也不能跨会话残留。
+        _olderStatusRowVisible = page.hasMore;
+        _olderLoadFailed = false;
+        _olderLoadingOverlayVisible = false;
         _items.clear();
         _olderItems.clear();
         _histItems.clear();
@@ -2170,7 +2291,22 @@ class _ChatScreenState extends State<ChatScreen> {
     if (id == null || _loadingMore || _earliestSeq <= 0 || _noMoreHistory) {
       return _PrependOutcome.skipped;
     }
-    _loadingMore = true;
+    // issue #130：置位与状态行切换放在同一帧——转圈必须在请求**开始**时出现，
+    // 不能等响应回来（旧实现只改字段，靠其它事件偶然 setState 才可见）。
+    // 进入加载即证明“确有更早历史”，锁存行存在性；重试时同时清掉失败门禁。
+    if (mounted) {
+      setState(() {
+        _loadingMore = true;
+        _olderStatusRowVisible = true;
+        _olderLoadFailed = false;
+        // P2：触发点通常距顶 50–80px，状态行还在视口上方——同一帧亮起浮层 pill。
+        _olderLoadingOverlayVisible = _computeOlderLoadingOverlayVisible();
+      });
+    } else {
+      _loadingMore = true;
+      _olderStatusRowVisible = true;
+      _olderLoadFailed = false;
+    }
     final generation = _loadGeneration;
     AppLog.instance.log('Chat: 上翻一页 before=$_earliestSeq limit=$limit');
     try {
@@ -2207,28 +2343,32 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       return _PrependOutcome.loaded;
     } catch (e) {
+      // issue #130：失败后置门禁——80px 自动触发不再连续重发，只允许点状态行重试。
+      _olderLoadFailed = true;
       AppLog.instance.log('Chat: 上翻失败 $e');
       return _PrependOutcome.failed;
     } finally {
       _loadingMore = false;
+      _olderLoadingOverlayVisible = false;
       if (mounted) setState(() {});
     }
   }
 
   /// 滑到 live 顶部时静默加载更早一页：追加到 center 之前的旧消息 sliver。
   /// center 让顶部增长不会改变当前 viewport 锚点，视觉连续无缝（最新在底部）。
-  Future<void> _loadMoreInfinite() async {
-    final outcome = await _prependOlderPage(limit: _histPageSize);
-    if (!mounted || outcome != _PrependOutcome.exhausted) return;
-    showToast(
-      context,
-      L10n.t(
-        _historyDegraded ? '更早历史不可恢复' : '没有更早的消息了',
-        _historyDegraded
-            ? 'Earlier history unavailable'
-            : 'No earlier messages',
-      ),
-    );
+  ///
+  /// [manual]：由顶部状态行点击触发（idle 的“继续上滑加载更早”或 failed 的“重试”）。
+  /// 手动入口绕过失败门禁（只允许它重试），但和自动入口共用 [prependOlderPage]，
+  /// 由 `_loadingMore` 去重——不会双发。
+  Future<void> _loadMoreInfinite({bool manual = false}) async {
+    // issue #130：服务端已声明到顶时，顶部状态行就是反馈；不再发一次必然返回空页的
+    // 请求（短会话/到顶后都不产生多余请求）。轮次跨页跳转走 `_loadOlderForTurnJump`，
+    // 不受此守卫影响。
+    if (_loadingMore || !_historyHasMore) return;
+    // issue #130：失败后 80px 自动触发不再连续重发，只允许点状态行重试。
+    if (_olderLoadFailed && !manual) return;
+    // 到顶的说明统一由顶部状态行承载（exhausted / degraded），这里不再弹重复 toast。
+    await _prependOlderPage(limit: _histPageSize);
   }
 
   /// 跨页跳转专用上翻：页大小 200，且**不弹**"没有更早消息"——
@@ -2601,6 +2741,129 @@ class _ChatScreenState extends State<ChatScreen> {
     _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
   }
 
+  /// issue #130：older 列表视觉顶部的固定高度状态行。
+  ///
+  /// 四态共用 [olderHistoryStatusRowHeight]（36dp），切换只换文字/图标，不改变
+  /// 滚动范围（无跳动）；1.5× 字号由单行省略号兜底。
+  ///
+  /// 触发入口：idle 点整行 = 加载一页；failed 点整行 = 重试。两者都走 [_loadMoreInfinite]
+  /// 的 `manual=true`，与 80px 自动触发共用同一实现（`_loadingMore` 去重）。
+  /// loading/exhausted 不挂手势。
+  Widget _buildOlderHistoryStatusRow(OlderHistoryStatus status) {
+    final ink2 = DshColors.ink2(context);
+    final ink3 = DshColors.ink3(context);
+    final warn = DshColors.warn(context);
+    final tappable =
+        status == OlderHistoryStatus.idle ||
+        status == OlderHistoryStatus.failed;
+    final label = switch (status) {
+      OlderHistoryStatus.loading => L10n.t(
+        '正在加载更早消息…',
+        'Loading earlier messages…',
+      ),
+      OlderHistoryStatus.failed => L10n.t(
+        '更早消息加载失败，点此重试',
+        'Load failed — tap to retry',
+      ),
+      OlderHistoryStatus.exhausted =>
+        _historyDegraded
+            ? L10n.t('更早历史不可恢复', 'Earlier history unavailable')
+            : L10n.t('没有更早消息了', 'No earlier messages'),
+      OlderHistoryStatus.idle => L10n.t(
+        '继续上滑加载更早',
+        'Scroll up to load earlier',
+      ),
+    };
+    final leading = switch (status) {
+      OlderHistoryStatus.loading => const SizedBox(
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+      OlderHistoryStatus.failed => Icon(Icons.refresh, size: 15, color: warn),
+      OlderHistoryStatus.exhausted => Icon(
+        Icons.check_circle_outline,
+        size: 14,
+        color: ink3,
+      ),
+      OlderHistoryStatus.idle => Icon(
+        Icons.keyboard_arrow_up,
+        size: 16,
+        color: ink3,
+      ),
+    };
+    final row = Center(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          leading,
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: status == OlderHistoryStatus.failed ? warn : ink2,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    return SizedBox(
+      key: olderHistoryStatusRowKey,
+      width: double.infinity,
+      height: olderHistoryStatusRowHeight,
+      child: tappable
+          ? InkWell(
+              onTap: _loadingMore
+                  ? null
+                  : () => unawaited(_loadMoreInfinite(manual: true)),
+              child: row,
+            )
+          : row,
+    );
+  }
+
+  /// issue #130 P2：状态行仍在视口上方时的顶部 loading pill。
+  ///
+  /// 只做视觉补位：`IgnorePointer` 不拦截滚动/点击，也不参与滚动布局。
+  /// 与首 sliver 状态行互斥显示（到顶后 pill 隐藏，行显示 loading），避免双转圈。
+  Widget _buildOlderLoadingOverlay() {
+    final surface = DshColors.surface(context);
+    final ink2 = DshColors.ink2(context);
+    final line = DshColors.line(context);
+    return Container(
+      key: olderLoadingOverlayKey,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: line, width: 0.8),
+        boxShadow: Theme.of(context).brightness == Brightness.dark
+            ? DshTheme.shadowDark
+            : DshTheme.shadow,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            L10n.t('正在加载更早消息…', 'Loading earlier messages…'),
+            style: TextStyle(fontSize: 12, color: ink2),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// live 视图：普通列表（非 reverse，最旧在顶、最新在底、草稿末尾），
   /// 列表占满高度、可正常滚动、内容贴顶——无"下半空白死区 + 滑动消息消失"问题（v2.8.0）。
   /// 统一单一方向（不再按条数切换 reverse）：根治 50/51 条边界翻转导致滚动位置跳变
@@ -2624,9 +2887,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final hasDraft = _streaming || _draft.isNotEmpty;
     final topButton = !_infiniteMode && _earliestSeq > 0;
-    final loadingTail = _infiniteMode && _loadingMore && _earliestSeq > 0;
-    final currentExtra =
-        (hasDraft ? 1 : 0) + (topButton ? 1 : 0) + (loadingTail ? 1 : 0);
+    // issue #130：older 列表顶部的固定高度状态行（加载中/没有更早/可继续）。
+    // 只有当前窗口加载完成（earliestSeq>0）才渲染，避免初始加载时误报“没有更早”。
+    final olderStatus = _olderHistoryStatus;
+    final currentExtra = (hasDraft ? 1 : 0) + (topButton ? 1 : 0);
     final itemCount = _olderItems.length + _items.length + currentExtra;
     if (itemCount != _lastLoggedCount) {
       _lastLoggedCount = itemCount;
@@ -2646,6 +2910,15 @@ class _ChatScreenState extends State<ChatScreen> {
             controller: _scrollCtrl,
             center: _liveCenterKey,
             slivers: [
+              // issue #130：状态行是 center **之前的独立首 sliver**（视觉顶部），
+              // 不在 older 子项里（那会落在 older 区视觉底部）。固定 36dp、四态等高。
+              if (olderStatus != null)
+                SliverPadding(
+                  padding: EdgeInsets.fromLTRB(16, 0, rightPadding, 0),
+                  sliver: SliverToBoxAdapter(
+                    child: _buildOlderHistoryStatusRow(olderStatus),
+                  ),
+                ),
               SliverPadding(
                 padding: EdgeInsets.fromLTRB(16, 10, rightPadding, 0),
                 sliver: SliverList(
@@ -2668,27 +2941,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 sliver: SliverList(
                   key: _liveSliverKey,
                   delegate: SliverChildBuilderDelegate((context, index) {
-                    // center 之后：加载条/按钮 → 当前窗口消息（最旧→最新）→ 草稿。
-                    if ((topButton || loadingTail) && index == 0) {
-                      if (topButton) {
-                        return _OlderButton(
-                          busy: _loadingMore,
-                          onTap: _openHistory,
-                        );
-                      }
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 10),
-                        child: Center(
-                          child: SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ),
+                    // center 之后：「更早」按钮（仅分段模式）→ 当前窗口消息（最旧→最新）→ 草稿。
+                    // issue #130：无限模式的加载条已移到 older 列表顶部状态行，这里不再重复转圈。
+                    if (topButton && index == 0) {
+                      return _OlderButton(
+                        busy: _loadingMore,
+                        onTap: _openHistory,
                       );
                     }
-                    final dataIndex =
-                        index - (topButton || loadingTail ? 1 : 0);
+                    final dataIndex = index - (topButton ? 1 : 0);
                     if (dataIndex < _items.length) {
                       return _buildItemWithTurnKey(
                         _items[_items.length - 1 - dataIndex],
@@ -5972,6 +6233,19 @@ class _ChatScreenState extends State<ChatScreen> {
                               onNavigate: (anchor) =>
                                   unawaited(_navigateToTurn(anchor)),
                             ),
+                          ),
+                        ),
+                      ),
+                    // issue #130 P2：loading 时状态行尚未进入视口 → 顶部浮层 pill 补位。
+                    // Stack 子项，不参与滚动布局/owner 校正；到顶后隐藏，由首 sliver 行显示。
+                    if (_olderLoadingOverlayVisible && !_inHistory)
+                      Positioned(
+                        top: 8,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: IgnorePointer(
+                            child: _buildOlderLoadingOverlay(),
                           ),
                         ),
                       ),

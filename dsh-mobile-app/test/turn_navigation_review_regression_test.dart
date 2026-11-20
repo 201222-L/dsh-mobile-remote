@@ -115,7 +115,10 @@ class _Backend {
       body = {
         'ok': true,
         'events': older ? olderEvents : initialEvents,
-        'hasMore': false,
+        // issue #130：`hasMore` 必须与“还能否返回更早页”一致——初始页有 olderEvents
+        // 即 true；before 页返回的是完整的更早集合，故 false。
+        // （旧夹具恒写 false，却仍返回 olderEvents；#130 起加载入口按 hasMore 守卫。）
+        'hasMore': older ? false : olderEvents.isNotEmpty,
       };
     } else if (request.url.path == '/m/api/queue') {
       body = {'ok': true, 'rows': <Object>[]};
@@ -506,7 +509,8 @@ void main() {
         )..olderGate = gate;
         await _pumpChat(tester, backend: backend);
 
-        // 滑到顶部触发上翻：请求挂起时 live sliver 首项就是加载条。
+        // 滑到顶部触发上翻：请求挂起时顶部显示加载中
+        // （issue #130 起加载反馈位于 older 侧顶部的固定高度状态行，不再占用 live 首项）。
         final position = _position(tester);
         position.jumpTo(0);
         await tester.pump();

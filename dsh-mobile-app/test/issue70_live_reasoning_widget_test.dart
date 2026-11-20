@@ -96,7 +96,9 @@ class _Backend {
         body = {
           'ok': true,
           'events': tail,
-          'hasMore': events.length > tail.length,
+          // issue #130：`hasMore` 必须与“还能否返回更早页”一致——有 olderEvents
+          // 就应声明还有更早（旧夹具恒由窗口推断，和 before 夹具自相矛盾）。
+          'hasMore': events.length > tail.length || olderEvents.isNotEmpty,
         };
       }
     } else if (request.url.path == '/m/api/queue') {
@@ -275,6 +277,9 @@ Future<AppStore> _pumpChat(
   WorkStepDisplayMode mode = WorkStepDisplayMode.detailed,
   TurnFoldTiming timing = TurnFoldTiming.afterAnswer,
   String keySuffix = '',
+  // issue #130：「流式中上翻」用例需要真实上翻触发 before，关掉首屏自动补拉，
+  // 避免最新轮 partial 时先走 ADR 0035 的 autofill 路径（其余用例保持默认 true）。
+  bool autoFillFirstScreen = true,
 }) async {
   final store = AppStore()
     ..sessionId = _session
@@ -288,6 +293,7 @@ Future<AppStore> _pumpChat(
         store: store,
         apiClient: backend.api,
         onTitleChanged: () {},
+        autoFillFirstScreen: autoFillFirstScreen,
       ),
     ),
   );
@@ -1250,7 +1256,13 @@ void main() {
         },
       ],
     );
-    final store = await _pumpChat(tester, backend);
+    final store = await _pumpChat(
+      tester,
+      backend,
+      // issue #130：本用例要验证“用户上翻触发 durable 回放”；关闭首屏自动补拉，
+      // 否则修正 hasMore 后最新 partial 轮会先被 autofill 补页（首屏填充是另一路径）。
+      autoFillFirstScreen: false,
+    );
 
     // 流式 provisional（turn1/step2）：已有 step1 持久行作为过程块锚点。
     await _inject(tester, store, {
