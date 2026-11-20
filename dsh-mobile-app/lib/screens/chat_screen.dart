@@ -993,12 +993,13 @@ class _ChatScreenState extends State<ChatScreen> {
     debugLastFollowTarget = correction.targetPixels;
     if (!_scrolledLogged) {
       _scrolledLogged = true;
-      AppLog.instance.log(
-        'Chat: 跟随校正(${correction.reason.name}) '
-        'pixels=${position.pixels.toStringAsFixed(0)} '
-        'target=${correction.targetPixels.toStringAsFixed(0)} '
-        'attempt=${correction.attempt + 1}/${correction.budget}',
-      );
+      // rc.6 发布前：脱底排障日志先关闭；日志级别能力见 #136，后续再迁移为 debug。
+      // AppLog.instance.log(
+      //   'Chat: 跟随校正(${correction.reason.name}) '
+      //   'pixels=${position.pixels.toStringAsFixed(0)} '
+      //   'target=${correction.targetPixels.toStringAsFixed(0)} '
+      //   'attempt=${correction.attempt + 1}/${correction.budget}',
+      // );
     }
     debugFollowJumps += 1;
     _scrollFollow.beginProgrammaticScroll();
@@ -1371,6 +1372,7 @@ class _ChatScreenState extends State<ChatScreen> {
   ///
   /// 目标：区分“短内容顶对齐的正常留白”和“某个不可见子项/占位造成的假留白”。
   /// 只写 AppLog（设置页可复制），不参与任何布局/滚动决策；节流 400ms，避免长会话刷屏。
+  // ignore: unused_element -- rc.6 临时关闭脱底几何日志；#136 迁移到 debug 级别后恢复调用。
   void _scheduleGeometryDiagnostic(String reason) {
     if (!mounted || _inHistory) return;
     _geoDiagReason = reason;
@@ -1456,7 +1458,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _onContentLayoutChanged() {
     if (!mounted || _inHistory) return;
     _requestScrollFollow();
-    _scheduleGeometryDiagnostic('layout');
+    // rc.6 发布前：脱底几何诊断日志先关闭；日志级别能力见 #136。
+    // _scheduleGeometryDiagnostic('layout');
   }
 
   /// 一键回到最新消息：显式进入跟随，由 owner 做有界收敛。
@@ -2765,7 +2768,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _loadMoreInfinite();
     }
     if (n is ScrollEndNotification) {
-      _scheduleGeometryDiagnostic('scroll-end');
+      // rc.6 发布前：脱底几何诊断日志先关闭；日志级别能力见 #136。
+      // _scheduleGeometryDiagnostic('scroll-end');
     }
     return false;
   }
@@ -3100,7 +3104,10 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           const SizedBox(width: 4),
-          _userDetailFooterAction(L10n.t('重试', 'Retry'), () => _requestUserDetail(item)),
+          _userDetailFooterAction(
+            L10n.t('重试', 'Retry'),
+            () => _requestUserDetail(item),
+          ),
         ],
       );
     }
@@ -3285,9 +3292,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final itemCount = _olderItems.length + _items.length + currentExtra;
     if (itemCount != _lastLoggedCount) {
       _lastLoggedCount = itemCount;
-      AppLog.instance.log(
-        'Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length + _olderItems.length}',
-      );
+      // rc.6 发布前：脱底排障日志先关闭；日志级别能力见 #136。
+      // AppLog.instance.log(
+      //   'Chat: build itemCount=$itemCount streaming=$_streaming draftLen=${_draft.length} items=${_items.length + _olderItems.length}',
+      // );
     }
     // v3.1.5（issue #15）：整条消息流包一层 SelectionArea —— 普通 Text 也能长按选中复制，
     // 且不引入 SelectableText（后者在部分 Android 设备上长文本换行/重叠渲染异常，见 md.dart 注释）。
@@ -3531,7 +3539,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     _requestScrollFollow();
     _clampOverscrollAfterShrink();
-    _scheduleGeometryDiagnostic('event');
+    // rc.6 发布前：脱底几何诊断日志先关闭；日志级别能力见 #136。
+    // _scheduleGeometryDiagnostic('event');
   }
 
   /// issue #118 / #123：内容因**布局变化**变短后，把**真正越界**的滚动位置夹回合法范围。
@@ -7868,10 +7877,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     if (code == 'event-detail-incomplete') {
-      return L10n.t(
-        '详情正文不完整，请重试',
-        'The detail text is incomplete — retry',
-      );
+      return L10n.t('详情正文不完整，请重试', 'The detail text is incomplete — retry');
     }
     return L10n.t('完整正文加载失败，请重试', 'Failed to load the full text — retry');
   }
@@ -8045,10 +8051,7 @@ class _ChatScreenState extends State<ChatScreen> {
           setState(
             () => _replaceTimelineItem(
               item,
-              current.copyUser(
-                detailLoading: false,
-                detailErrorCode: code,
-              ),
+              current.copyUser(detailLoading: false, detailErrorCode: code),
             ),
           );
           _showUserDetailErrorToast(code);
