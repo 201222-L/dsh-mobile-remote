@@ -70,6 +70,22 @@ const double turnRailBottomReserve = 62;
 // 避免键盘开合改变 cap 造成额外 resize。
 const double transcriptBodyMaxHeight = 320;
 
+/// issue #132：用户消息气泡内「查看全文」footer 的固定槽高（dp）。
+///
+/// 加载成功后只清空内容、保留槽高（maintainSize），避免入口显隐造成卡片高度跳动。
+const double userDetailFooterHeight = 36;
+
+/// issue #132：服务端用户消息摘要上限（2000 字）。旧插件没给 `detail.textChars` 时，
+/// 仅用它判断"可能被截断"以决定是否给出入口；**不得**用它判断详情是否已加载
+/// （已加载由 `_MsgItem.detailLoaded` 显式记录）。
+const int userSummaryTruncationThreshold = 2000;
+
+/// issue #132：测试锚点——用户消息文本气泡（含 footer）与 footer 槽的稳定 key。
+Key userMessageBubbleKeyFor(Object? id) =>
+    ValueKey<String>('user-bubble-${id ?? 'x'}');
+Key userDetailFooterKeyFor(Object? id) =>
+    ValueKey<String>('user-detail-footer-${id ?? 'x'}');
+
 double transcriptGroupMaxHeight(BuildContext context) =>
     math.min(400.0, MediaQuery.sizeOf(context).height * 0.5);
 
@@ -3038,6 +3054,82 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollFollow.bumpGeneration(intent: FollowIntent.followLatest);
     _requestScrollFollow(forced: true, reason: CorrectionReason.forcedPosition);
+  }
+
+  /// issue #132：用户消息气泡内底部 footer 的内容（槽高固定 36dp）。
+  ///
+  /// 四态：加载中（转圈+「加载全文…」）/ 错误（明确文案 + 重试）/ 可加载（「查看全文」）/
+  /// 已加载（内容清空，保留槽高）。任何失败都不得静默——旧插件空正文走错误态 + toast。
+  Widget _buildUserDetailFooter(_MsgItem item) {
+    if (item.detailLoaded) return const SizedBox.shrink();
+    final ink2 = DshColors.ink2(context);
+    if (item.detailLoading) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              L10n.t('加载全文…', 'Loading full text…'),
+              style: TextStyle(fontSize: 12, color: ink2),
+            ),
+          ],
+        ),
+      );
+    }
+    final error = item.detailErrorCode;
+    if (error != null) {
+      final warn = DshColors.warn(context);
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.error_outline, size: 14, color: warn),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              _userDetailErrorMessage(error),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: warn),
+            ),
+          ),
+          const SizedBox(width: 4),
+          _userDetailFooterAction(L10n.t('重试', 'Retry'), () => _requestUserDetail(item)),
+        ],
+      );
+    }
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: _userDetailFooterAction(
+        L10n.t('查看全文', 'View full text'),
+        () => _requestUserDetail(item),
+      ),
+    );
+  }
+
+  Widget _userDetailFooterAction(String label, VoidCallback onTap) {
+    final brand = DshColors.brand(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: brand,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+    );
   }
 
   /// issue #130：older 列表视觉顶部的固定高度状态行。
@@ -7734,11 +7826,77 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  bool _userMessageNeedsDetail(_MsgItem item) {
+  /// issue #132：用户消息气泡内「查看全文」footer 槽是否出现。
+  ///
+  /// - 注入消息、短消息、仅图片/文件（无正文）不出现；
+  /// - 服务端声明 detail 指针且摘要可能被截断时出现；
+  /// - 加载成功后仍保留槽（内容清空）以维持卡片高度；错误态保留入口用于重试。
+  bool _userDetailFooterVisible(_MsgItem item) {
+    if (item.injected) return false;
+    if (item.text.isEmpty) return false;
+    if (!item.detailAvailable) return false;
+    if (item.detailLoaded || item.detailErrorCode != null) return true;
     final full = item.detailTextChars;
-    if (full != null && full > item.text.length) return true;
-    // 旧插件没有 textChars：按摘要上限兜底，只在可能被截断时提供入口。
-    return item.text.length >= 2000;
+    if (full != null) return full > item.text.length;
+    // rc.5 的 user 详情没有 textChars：只有可能被 2000 字摘要上限截断时才给入口。
+    return item.text.length >= userSummaryTruncationThreshold;
+  }
+
+  String _userDetailErrorMessage(String? code) {
+    if (code == 'event-detail-text-unavailable') {
+      return L10n.t(
+        '宿主机版本过旧，无法读取完整正文',
+        'Host version is too old to provide the full text',
+      );
+    }
+    if (code == 'detail-capability-missing') {
+      return L10n.t(
+        '当前连接不支持读取完整正文',
+        'This connection does not support reading the full text',
+      );
+    }
+    if (code == 'event-detail-text-truncated') {
+      return L10n.t(
+        '正文超过 20000 字，当前仅显示前 20000 字（完整内容请在电脑端查看）',
+        'Text exceeds 20,000 characters; showing the first 20,000 (open on desktop for the full text)',
+      );
+    }
+    if (code == 'event-detail-no-growth') {
+      return L10n.t(
+        '无法确认正文是否完整，请重试',
+        'Could not confirm the full text — retry',
+      );
+    }
+    if (code == 'event-detail-incomplete') {
+      return L10n.t(
+        '详情正文不完整，请重试',
+        'The detail text is incomplete — retry',
+      );
+    }
+    return L10n.t('完整正文加载失败，请重试', 'Failed to load the full text — retry');
+  }
+
+  void _showUserDetailErrorToast(String? code) {
+    if (!mounted) return;
+    showToast(context, _userDetailErrorMessage(code));
+  }
+
+  /// issue #132：用户消息详情的统一入口。
+  ///
+  /// 能力缺失时**不得**静默 return（旧实现的“点了没反应”）；显式置错误码 + toast。
+  void _requestUserDetail(_MsgItem item) {
+    if (item.detailLoading) return;
+    if (!_api.timelineCapabilities.detail) {
+      setState(
+        () => _replaceTimelineItem(
+          item,
+          item.copyUser(detailErrorCode: 'detail-capability-missing'),
+        ),
+      );
+      _showUserDetailErrorToast('detail-capability-missing');
+      return;
+    }
+    unawaited(_loadEventDetail(item));
   }
 
   String _failureKey(_MsgItem item) => item.kind == _MsgKind.tool
@@ -7875,23 +8033,99 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       } else if (current.kind == _MsgKind.user) {
         // 用户消息详情：服务端附 canonical text（blocksToText，去图片占位）；
-        // 摘要只下发前 2000 字，完整正文仅在详情里。仍限制在 20k 渲染上限内。
-        final canonical = timelineDetailText(data);
-        final fullText = clampTimelineDetailText(canonical ?? '');
+        // 摘要只下发前 2000 字，完整正文仅在详情里。渲染仍限制在 20k 上限内。
+        //
+        // issue #132（复审 P2-1/P2-2）：只有“确认拿到增量”才算成功。
+        //  - canonical 为空/非 String（旧插件 rc.5）→ 显式不可用；
+        //  - canonical 超过 20k 渲染上限 → 只能显示前 20k，**不得** detailLoaded=true
+        //    永久隐藏入口；footer 保留“仅显示前 20000 字”的受限态；
+        //  - 缺 textChars 且 canonical 长度 <= 摘要 → 无法确认完整性 → 显式 no-growth 错误；
+        //  - canonical 比摘要短 → 服务端异常，保留摘要并报不可用。
+        void failWith(String code) {
+          setState(
+            () => _replaceTimelineItem(
+              item,
+              current.copyUser(
+                detailLoading: false,
+                detailErrorCode: code,
+              ),
+            ),
+          );
+          _showUserDetailErrorToast(code);
+          _requestScrollFollow();
+        }
+
+        final canonical = timelineDetailText(data) ?? '';
+        if (canonical.isEmpty) {
+          failWith('event-detail-text-unavailable');
+          return;
+        }
+        final overLimit = canonical.length > timelineDetailTextMax;
+        final fullText = clampTimelineDetailText(canonical);
+        if (overLimit) {
+          // 先渲染前 20k（比截断摘要多），但保留 footer：入口不得永久隐藏。
+          setState(
+            () => _replaceTimelineItem(
+              item,
+              current.copyUser(
+                text: fullText,
+                rawData: full,
+                detailAvailable: true,
+                detailLoading: false,
+                detailErrorCode: 'event-detail-text-truncated',
+              ),
+            ),
+          );
+          _showUserDetailErrorToast('event-detail-text-truncated');
+          _requestScrollFollow();
+          return;
+        }
+        // 复审 P2-3：服务端声明了未截断长度时，canonical 必须覆盖该长度才算完整；
+        // 只比较 canonical 与摘要长度会漏掉“canonical 有增长但少于 textChars”的残缺响应。
+        final declaredChars = current.detailTextChars;
+        if (declaredChars != null && fullText.length < declaredChars) {
+          // 展示已拿到的更长部分（若有），但保留入口并显式提示不完整。
+          setState(
+            () => _replaceTimelineItem(
+              item,
+              current.copyUser(
+                text: fullText.length > current.text.length
+                    ? fullText
+                    : current.text,
+                rawData: full,
+                detailAvailable: true,
+                detailLoading: false,
+                detailErrorCode: 'event-detail-incomplete',
+              ),
+            ),
+          );
+          _showUserDetailErrorToast('event-detail-incomplete');
+          _requestScrollFollow();
+          return;
+        }
+        if (fullText.length < current.text.length) {
+          failWith('event-detail-text-unavailable');
+          return;
+        }
+        if (fullText.length == current.text.length) {
+          // 无增长：没有 textChars 时无法确认摘要是否完整；即使刚好 2000 字也
+          // 不得无条件宣称成功（复审 P2-2）。
+          failWith('event-detail-no-growth');
+          return;
+        }
         setState(
           () => _replaceTimelineItem(
             item,
             current.copyUser(
-              text: fullText.isNotEmpty ? fullText : current.text,
+              text: fullText,
               rawData: full,
               detailAvailable: true,
+              detailLoaded: true,
               detailLoading: false,
               detailDegraded: detail.degraded,
               detailMode: detail.detailMode,
               clearDetailError: true,
-              detailTextChars: fullText.isNotEmpty
-                  ? fullText.length
-                  : current.detailTextChars,
+              detailTextChars: fullText.length,
             ),
           ),
         );
@@ -7933,6 +8167,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ? current.copyUser(detailErrorCode: code, detailLoading: false)
           : current.copyEvent(detailErrorCode: code, detailLoading: false);
       setState(() => _replaceTimelineItem(item, fallback));
+      if (current.kind == _MsgKind.user) _showUserDetailErrorToast(code);
       _requestScrollFollow();
     }
   }
@@ -9333,9 +9568,10 @@ class _ChatScreenState extends State<ChatScreen> {
         // v3.0.0(热修 07)：不再剥离 [图片]——占位改由服务端 user 摘要直接去除
         // （blocksToText imagePlaceholder:false），客户端保留用户原文，不误删手打内容。
         final text = item.text;
-        Widget userBubble(Widget child) => Align(
+        Widget userBubble(Widget child, {Key? key}) => Align(
           alignment: Alignment.centerRight,
           child: Container(
+            key: key,
             margin: const EdgeInsets.only(bottom: 4),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             constraints: const BoxConstraints(maxWidth: 320),
@@ -9361,28 +9597,25 @@ class _ChatScreenState extends State<ChatScreen> {
               userBubble(_FileResults(files: item.files)),
             if (text.isNotEmpty)
               userBubble(
-                _CappedScrollBody(
-                  maxHeight: transcriptBodyMaxHeight,
-                  child: _buildUserMessageText(text),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _CappedScrollBody(
+                      maxHeight: transcriptBodyMaxHeight,
+                      child: _buildUserMessageText(text),
+                    ),
+                    // issue #132：入口移进气泡内部底部，固定 36dp 槽；加载成功后
+                    // 清空内容但保留槽高（maintainSize），卡片高度不跳。
+                    if (_userDetailFooterVisible(item))
+                      SizedBox(
+                        key: userDetailFooterKeyFor(item.seq),
+                        height: userDetailFooterHeight,
+                        child: _buildUserDetailFooter(item),
+                      ),
+                  ],
                 ),
-              ),
-            // ADR 0035 / 可见内容对齐：摘要只到 2000 字；长用户消息提供按需详情，
-            // 加载后仍在上面的 320dp 框内滚动。
-            if (item.detailAvailable && _userMessageNeedsDetail(item))
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: item.detailLoading
-                      ? null
-                      : () => unawaited(_loadEventDetail(item)),
-                  child: Text(
-                    item.detailLoading
-                        ? L10n.t('加载全文…', 'Loading full text…')
-                        : item.detailErrorCode != null
-                        ? L10n.t('重试查看全文', 'Retry full text')
-                        : L10n.t('查看全文', 'View full text'),
-                  ),
-                ),
+                key: userMessageBubbleKeyFor(item.seq),
               ),
             // v3.1.5（issue #15）：用户消息此前没有任何复制入口（只有助手消息有操作栏）——
             // 这里右对齐补一个「复制」，复用 _runMessageAction('copy')：复制正文 + 「已复制」提示，
@@ -9701,6 +9934,12 @@ class _MsgItem {
   /// 详情正文长度提示（服务端 `detail.textChars`）：普通模式据此判断是否真有正文增量。
   final int? detailTextChars;
 
+  /// issue #132：用户消息详情是否已成功加载**完整正文**（显式状态）。
+  ///
+  /// 不能用 `text.length >= 2000` 兜底反推——加载成功后正文可能仍恰好 2000 字/更长，
+  /// 但入口必须隐藏；退出重进按摘要重建时该状态自然回到 false。
+  final bool detailLoaded;
+
   /// issue #54（M3 Batch 1）：工具卡结构化摘要（tool/call 与 tool/result 分别投影）。
   final ToolCallSummary? callSummary;
   final ToolResultSummary? resultSummary;
@@ -9722,6 +9961,7 @@ class _MsgItem {
     this.detailMode,
     this.detailErrorCode,
     this.detailTextChars,
+    this.detailLoaded = false,
   }) : kind = _MsgKind.user,
        latestSeq = seq,
        detailSeq = seq,
@@ -9769,7 +10009,8 @@ class _MsgItem {
        callSummary = null,
        resultSummary = null,
        subCalls = const <ToolSubCall>[],
-       subCallsTruncated = false;
+       subCallsTruncated = false,
+       detailLoaded = false;
   _MsgItem.divider(this.text, {this.seq})
     : kind = _MsgKind.divider,
       latestSeq = seq,
@@ -9798,7 +10039,8 @@ class _MsgItem {
       callSummary = null,
       resultSummary = null,
       subCalls = const <ToolSubCall>[],
-      subCallsTruncated = false;
+      subCallsTruncated = false,
+      detailLoaded = false;
   _MsgItem.tool({
     required this.toolCallId,
     required this.toolName,
@@ -9829,7 +10071,8 @@ class _MsgItem {
        rating = null,
        reasoning = null,
        sourceKind = null,
-       eventType = 'tool/activity';
+       eventType = 'tool/activity',
+       detailLoaded = false;
   _MsgItem.event({
     required this.eventType,
     required this.text,
@@ -9863,7 +10106,8 @@ class _MsgItem {
        callSummary = null,
        resultSummary = null,
        subCalls = const <ToolSubCall>[],
-       subCallsTruncated = false;
+       subCallsTruncated = false,
+       detailLoaded = false;
 
   /// 注入消息（非真人发言）→ 渲染成可折叠块，而不是普通气泡（v3.1.4）
   bool get injected => sourceKind != null && sourceKind != 'user';
@@ -9878,6 +10122,7 @@ class _MsgItem {
       files: files,
       sourceKind: sourceKind,
       detailTextChars: detailTextChars,
+      detailLoaded: detailLoaded,
     );
   }
 
@@ -9891,6 +10136,7 @@ class _MsgItem {
     String? detailErrorCode,
     bool? clearDetailError,
     int? detailTextChars,
+    bool? detailLoaded,
   }) => _MsgItem.user(
     text ?? this.text,
     seq: seq,
@@ -9907,6 +10153,7 @@ class _MsgItem {
         ? null
         : (detailErrorCode ?? this.detailErrorCode),
     detailTextChars: detailTextChars ?? this.detailTextChars,
+    detailLoaded: detailLoaded ?? this.detailLoaded,
   );
 
   _MsgItem copyTool({
