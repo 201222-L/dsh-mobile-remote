@@ -24,6 +24,10 @@ class Session {
   /// 因此按它过滤会误伤用户的 fork。当前仅为将来"折叠到父会话"预留。
   final String? parentSession;
 
+  /// issue #124/#133：该会话下**递归**运行中的子代理数（服务端聚合提示，0 也下发）。
+  /// 旧宿主/旧插件不返回该字段时为 null；客户端优先 SSE 帧，再它，最后本地树兜底。
+  final int? subagentsRunning;
+
   Session({
     required this.id,
     this.title,
@@ -34,6 +38,7 @@ class Session {
     this.lastMessageAt,
     this.origin,
     this.parentSession,
+    this.subagentsRunning,
   });
   factory Session.fromJson(Map<String, dynamic> j) => Session(
     id: j['id'] as String,
@@ -45,6 +50,7 @@ class Session {
     lastMessageAt: (j['lastMessageAt'] as num?)?.toInt(),
     origin: j['origin'] as String?,
     parentSession: j['parentSession'] as String?,
+    subagentsRunning: (j['subagentsRunning'] as num?)?.toInt(),
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -56,6 +62,7 @@ class Session {
     'lastMessageAt': lastMessageAt,
     'origin': origin,
     'parentSession': parentSession,
+    'subagentsRunning': subagentsRunning,
   };
   String get label =>
       (title != null && title!.trim().isNotEmpty) ? title! : '新会话';
@@ -74,6 +81,9 @@ class Session {
     int? lastMessageAt,
     String? origin,
     String? parentSession,
+    int? subagentsRunning,
+    /// issue #133：显式清空瞬态子代理计数（copyWith(null) 无法清掉可空字段）。
+    bool clearSubagentsRunning = false,
   }) => Session(
     id: id,
     title: title ?? this.title,
@@ -84,6 +94,9 @@ class Session {
     lastMessageAt: lastMessageAt ?? this.lastMessageAt,
     origin: origin ?? this.origin,
     parentSession: parentSession ?? this.parentSession,
+    subagentsRunning: clearSubagentsRunning
+        ? null
+        : (subagentsRunning ?? this.subagentsRunning),
   );
 
   /// 排序键（ADR 0013）：最新消息时间 → 最近活跃时间 → 创建时间。
