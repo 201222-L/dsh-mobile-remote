@@ -1730,6 +1730,10 @@ class AppStore extends ChangeNotifier {
       // 服务端连接满：5s/10s 退避，不再每 2s 探测。
       final delay = Duration(seconds: _retry >= 6 ? 10 : 5);
       _retry = _retry >= 6 ? 6 : _retry + 1;
+      // 真机诊断（issue #131）：把"被 503 拒绝"与"普通断线重连"在日志里分开。
+      AppLog.instance.log(
+        'SSE: 服务端连接满（503），${delay.inSeconds}s 后重试（第 $_retry 次退避）',
+      );
       _retryTimer = Timer(delay, connect);
       return;
     }
