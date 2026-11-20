@@ -348,4 +348,65 @@ void main() {
       expect(resolver.resolve('report.pdf'), isNull, reason: '每类必须恰好一个去重坐标才允许旧数据合并');
     });
   });
+
+  group('issue #88 绝对路径只做精确记录匹配', () {
+    test('绝对路径 /tmp/B/report.pdf 不匹配记录 /tmp/A/report.pdf 的裸 display basename', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 3, index: 0, id: 'id-a'),
+        ],
+      );
+      expect(resolver.resolveExact('/tmp/B/report.pdf'), isNull,
+          reason: '绝对路径未精确命中时不得用 basename 唯一兜底');
+      expect(resolver.resolveExact('/tmp/A/report.pdf'), isNull,
+          reason: '记录只有裸 display，绝对路径同样不是精确命中');
+      expect(resolver.resolve('report.pdf')?.seq, 3, reason: '裸 display 自身的精确键仍有效');
+    });
+
+    test('多个同 basename 记录时绝对路径不匹配任何一个', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 3, index: 0, id: 'id-a'),
+          DeliverableFile(name: 'report.pdf', display: 'report.pdf', seq: 4, index: 0, id: 'id-b'),
+        ],
+      );
+      expect(resolver.resolveExact('/tmp/A/report.pdf'), isNull);
+      expect(resolver.resolveExact('report.pdf'), isNull, reason: '同 display 不同 id 属歧义');
+    });
+
+    test('记录 display 本身是绝对路径时，绝对精确命中可打开', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'report.pdf', display: '/tmp/A/report.pdf', seq: 3, index: 0, id: 'id-a'),
+        ],
+      );
+      final hit = resolver.resolveExact('/tmp/A/report.pdf');
+      expect(hit?.seq, 3);
+      expect(resolver.resolveExact('/tmp/B/report.pdf'), isNull,
+          reason: '同 basename 不同目录不得误命中');
+    });
+
+    test('相对路径保持精确优先/唯一 basename 次之/歧义不链', () {
+      final resolver = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'a.ts', display: 'src/a.ts', seq: 3, index: 0, id: 'id-a'),
+          DeliverableFile(name: 'b.ts', display: 'src/b.ts', seq: 3, index: 1, id: 'id-b'),
+        ],
+      );
+      expect(resolver.resolve('src/a.ts')?.seq, 3, reason: '精确优先');
+      expect(resolver.resolve('a.ts')?.seq, 3, reason: '唯一 basename 次之');
+      final ambiguous = TurnFileLinkResolver(
+        sessionId: 's1',
+        presented: const [
+          DeliverableFile(name: 'a.ts', display: 'src/a.ts', seq: 3, index: 0, id: 'id-a'),
+          DeliverableFile(name: 'a.ts', display: 'lib/a.ts', seq: 4, index: 0, id: 'id-b'),
+        ],
+      );
+      expect(ambiguous.resolve('a.ts'), isNull, reason: '同 basename 不同逻辑文件不链接');
+    });
+  });
 }

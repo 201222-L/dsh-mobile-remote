@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'api.dart';
+import 'l10n.dart';
 import 'theme.dart';
 import 'toast.dart';
 
@@ -18,8 +20,28 @@ Uri? safeLinkUrl(String raw) {
   return null;
 }
 
-/// 行内 token：**加粗** *斜体* `代码` [链接](url)
-final _inlineRe = RegExp(r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]*\]\([^)\s]+\))');
+/// issue #94：Markdown 图片数据。ChatScreen 通过只读 `/workspace-image` 加载，
+/// md.dart 不直接读写文件系统。
+class MarkdownImageData {
+  final Uint8List bytes;
+  final String? contentType;
+  const MarkdownImageData({required this.bytes, this.contentType});
+}
+
+/// 按会话加载图片字节；失败必须 throw（UI 显示 alt + 可读原因，不静默空白）。
+typedef MarkdownImageLoader = Future<MarkdownImageData> Function(String source);
+
+/// 用户主动点击图片占位上的「授权读取/重试」；与自动加载区分，用于避免取消后
+/// 组件重建再次自动弹授权。
+typedef MarkdownImageUserAction = Future<MarkdownImageData> Function(String source);
+
+/// 行内 token：**加粗** *斜体* `代码` [链接](url) ![alt](图片)
+final _inlineRe = RegExp(
+  r'(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|!\[[^\]]*\]\([^)\s]+\)|\[[^\]]*\]\([^)\s]+\))',
+);
+
+/// 块级图片：整行只有一个 `![alt](url)`。
+final _mdImageOnlyRe = RegExp(r'^!\[([^\]]*)\]\(([^)\s]+)\)$');
 
 // v3.0.0 review：块级判定正则提为顶层常量——渲染长消息时逐行构造会重复编译
 final _mdTableSepRe = RegExp(r'^\s*\|?[\s:|-]+\|?\s*$');
@@ -73,6 +95,8 @@ List<Widget> renderMarkdownBlocks(
   String text,
   BuildContext context, {
   InlineCodeTap? codeTap,
+  MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   final ink = DshColors.ink(context);
   final ink2 = DshColors.ink2(context);
@@ -94,7 +118,7 @@ List<Widget> renderMarkdownBlocks(
     if (para.isEmpty) return;
     blocks.add(Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap),
+      child: _InlineText(para.join('\n'), style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
     ));
     para = [];
   }
@@ -119,7 +143,7 @@ List<Widget> renderMarkdownBlocks(
                       style: TextStyle(fontSize: 14, color: ink2, height: 1.6),
                     ),
                   ),
-                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap)),
+                  Expanded(child: _InlineText(listEl[idx], style: TextStyle(fontSize: 15, height: 1.6, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction)),
                 ],
               ),
             ),
@@ -131,7 +155,7 @@ List<Widget> renderMarkdownBlocks(
 
   void flushTable() {
     if (tableBuf.isEmpty) return;
-    blocks.add(_buildTable(tableBuf, context, line, ink, codeTap: codeTap));
+    blocks.add(_buildTable(tableBuf, context, line, ink, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction));
     tableBuf = [];
   }
 
@@ -229,6 +253,22 @@ List<Widget> renderMarkdownBlocks(
       i++;
       continue;
     }
+    // issue #94：整行图片（代码块内已在上面短路，不解析 ![]）。
+    final imageOnly = _mdImageOnlyRe.firstMatch(raw.trim());
+    if (imageOnly != null) {
+      flushPara();
+      flushList();
+      flushTable();
+      blocks.add(_MarkdownImage(
+        alt: imageOnly.group(1)!,
+        source: imageOnly.group(2)!,
+        loader: imageLoader,
+        userAction: imageUserAction,
+        block: true,
+      ));
+      i++;
+      continue;
+    }
     // 表格：| a | b | 下一行是分隔行 |---|---|
     final tableStart = raw.startsWith('|') &&
         i + 1 < lines.length &&
@@ -256,7 +296,7 @@ List<Widget> renderMarkdownBlocks(
       final size = [18.0, 16.5, 15.5, 15.0][level - 1];
       blocks.add(Padding(
         padding: const EdgeInsets.only(top: 10, bottom: 6),
-        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink), codeTap: codeTap),
+        child: _InlineText(heading.group(2)!, style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.4, color: ink), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
       ));
       i++;
       continue;
@@ -302,7 +342,7 @@ List<Widget> renderMarkdownBlocks(
             children: [
               Container(width: 3, margin: const EdgeInsets.only(right: 10), color: DshColors.brand(context)),
               Expanded(
-                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2), codeTap: codeTap),
+                child: _InlineText(raw.replaceFirst(_mdQuoteRe, ''), style: TextStyle(fontSize: 14, height: 1.6, color: ink2), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
               ),
             ],
           ),
@@ -358,6 +398,8 @@ Widget _buildTable(
   Color line,
   Color ink, {
   InlineCodeTap? codeTap,
+  MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   List<String> parseRow(String l) =>
       l.trim().replaceAll(RegExp(r'^\||\|$'), '').split('|').map((s) => s.trim()).toList();
@@ -391,7 +433,7 @@ Widget _buildTable(
   final ambient = DefaultTextStyle.of(context).style;
   double measure(String text, {required bool header}) {
     final style = ambient.merge(cellStyle(header: header));
-    final spans = _inlineSpans(text, context, codeTap: codeTap);
+    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction);
     // 链接在 _inlineSpans 中是 WidgetSpan，而 WidgetSpan 无法在裸 TextPainter 里布局
     // （需要 placeholder dimensions，否则断言 'dimensions != null' / 空指针 → 整条消息
     // 渲染失败）。此时退化为「按 spans 还原的纯文本」测量：链接 child 只改颜色与下划线、
@@ -436,7 +478,7 @@ Widget _buildTable(
         ),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: _InlineText(text, style: cellStyle(header: header), codeTap: codeTap),
+          child: _InlineText(text, style: cellStyle(header: header), codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction),
         ),
       );
 
@@ -486,16 +528,330 @@ Widget _buildTable(
 }
 
 /// 段落文本（可选中复制），内部解析行内样式。
+/// issue #94：Markdown 图片渲染。
+///
+/// - http(s)：网络图（Image.network，带加载/失败占位）；
+/// - 本地绝对/工作区相对路径：通过 [loader] 调 `/workspace-image`（不直接读文件系统）；
+/// - 其他 scheme（file:/data: 等）明确失败，不静默空白；
+/// - 代码块中的 `![]` 由块解析提前短路，不会走到这里。
+class _MarkdownImage extends StatefulWidget {
+  final String alt;
+  final String source;
+  final MarkdownImageLoader? loader;
+  final MarkdownImageUserAction? userAction;
+  final bool block;
+  const _MarkdownImage({
+    required this.alt,
+    required this.source,
+    required this.loader,
+    required this.userAction,
+    required this.block,
+  });
+
+  @override
+  State<_MarkdownImage> createState() => _MarkdownImageState();
+}
+
+class _MarkdownImageState extends State<_MarkdownImage> {
+  Future<MarkdownImageData>? _future;
+  ImageProvider? _provider;
+
+  bool get _isHttp =>
+      widget.source.startsWith('http://') || widget.source.startsWith('https://');
+
+  bool get _hasUnsupportedScheme => RegExp(
+        r'^[A-Za-z][A-Za-z0-9+.-]*:',
+      ).hasMatch(widget.source) &&
+      !_isHttp;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MarkdownImage old) {
+    super.didUpdateWidget(old);
+    if (old.source != widget.source) {
+      _provider?.evict();
+      _provider = null;
+      _future = _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _provider?.evict(); // 页面销毁释放图片 provider 缓存，避免跨页残留
+    super.dispose();
+  }
+
+  Future<MarkdownImageData>? _load() {
+    if (_isHttp || _hasUnsupportedScheme) return null;
+    final loader = widget.loader;
+    if (loader == null) return null;
+    // 缓存/并发/会话隔离由 ChatScreen 注入的 loader 负责；md 不持全局 Map。
+    return loader(widget.source);
+  }
+
+  String _reason(Object error) {
+    if (error is ApiException) {
+      if (error.code == 'consent-required') {
+        return L10n.t(
+          '需要授权读取该图片',
+          'Authorization is required to read this image',
+        );
+      }
+      if (error.code == 'consent-invalid') {
+        return L10n.t(
+          '图片授权已失效，请重新授权',
+          'Image authorization expired; please authorize again',
+        );
+      }
+      if (error.code == 'unsupported-image-symlink') {
+        return L10n.t(
+          '图片是符号链接，无法授权读取',
+          'Symbolic-link images cannot be authorized',
+        );
+      }
+      if (error.code == 'consent-root-not-allowed') {
+        return L10n.t(
+          '该目录不允许授权读取图片',
+          'This directory cannot be authorized for images',
+        );
+      }
+      if (error.code == 'workspace-not-authorized') {
+        return L10n.t(
+          '当前工作区未授权读取图片（或电脑端版本过旧）',
+          'This workspace is not authorized for images (or the desktop is too old)',
+        );
+      }
+      return switch (error.status) {
+        403 => L10n.t(
+            '图片不可读取：工作区未授权或路径不允许',
+            'Image not readable: workspace not authorized or path not allowed',
+          ),
+        404 => L10n.t(
+            '图片不存在，或电脑端版本过旧不支持该端点',
+            'Image not found, or the desktop is too old for this endpoint',
+          ),
+        413 => L10n.t('图片过大', 'Image too large'),
+        415 => L10n.t('不支持的图片类型', 'Unsupported image type'),
+        501 => L10n.t(
+            '当前电脑端不支持图片安全校验，请升级',
+            'This desktop cannot verify images safely; please update',
+          ),
+        _ => L10n.t('图片加载失败', 'Failed to load image'),
+      };
+    }
+    return L10n.t('图片加载失败', 'Failed to load image');
+  }
+
+  Widget _placeholder(
+    String reason, {
+    bool loading = false,
+    VoidCallback? onRetry,
+    String? actionLabel,
+  }) {
+    final ink3 = DshColors.ink3(context);
+    return Container(
+      key: const Key('markdown-image-placeholder'),
+      constraints: widget.block
+          ? const BoxConstraints(maxWidth: double.infinity)
+          : const BoxConstraints(maxWidth: 280),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: DshColors.surface(context),
+        border: Border.all(color: DshColors.line(context)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (loading)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(Icons.broken_image_outlined, size: 16, color: ink3),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (widget.alt.isNotEmpty)
+                  Text(
+                    widget.alt,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13, height: 1.3),
+                  ),
+                Text(
+                  reason,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: ink3),
+                ),
+                if (onRetry != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: TextButton(
+                      key: const Key('markdown-image-retry'),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                      ),
+                      onPressed: onRetry,
+                      child: Text(
+                        actionLabel ?? L10n.t('重试', 'Retry'),
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _imageWidget(ImageProvider provider) {
+    final image = Image(
+      image: provider,
+      fit: BoxFit.contain,
+      semanticLabel: widget.alt.isEmpty ? null : widget.alt,
+      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+        if (frame != null) return child;
+        return _placeholder(L10n.t('图片加载中…', 'Loading image…'), loading: true);
+      },
+      errorBuilder: (context, error, stack) =>
+          _placeholder(_reason(error), loading: false),
+    );
+    return widget.block
+        ? ConstrainedBox(
+            constraints: const BoxConstraints(
+              maxWidth: double.infinity,
+              maxHeight: 360,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: image,
+            ),
+          )
+        : ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 280, maxHeight: 220),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: image,
+            ),
+          );
+  }
+
+  /// 按布局/DPR 生成 ResizeImage，避免大图全分辨率驻留内存。
+  Widget _resizedImage(Uint8List bytes) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        final logicalWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : (widget.block
+                ? MediaQuery.sizeOf(context).width - 32
+                : 280.0);
+        final targetMax = widget.block ? 1600 : 800;
+        final physical = (logicalWidth * dpr).round().clamp(1, targetMax);
+        final provider = ResizeImage(
+          MemoryImage(bytes),
+          width: physical,
+          policy: ResizeImagePolicy.fit,
+        );
+        _provider = provider;
+        return _imageWidget(provider);
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // issue #95：本轮不自动加载 http(s) 第三方图片，避免隐私/追踪请求。
+    if (_isHttp) {
+      return _placeholder(
+        L10n.t(
+          '远程图片不自动加载（本轮仅支持工作区本地图片）',
+          'Remote images are not loaded automatically (workspace-local images only)',
+        ),
+      );
+    }
+    if (_hasUnsupportedScheme) {
+      return _placeholder(
+        L10n.t('不支持的图片地址', 'Unsupported image URL'),
+      );
+    }
+    final future = _future;
+    if (future == null) {
+      return _placeholder(
+        L10n.t('当前页面无法加载本地图片', 'Local image is not available here'),
+      );
+    }
+    return FutureBuilder<MarkdownImageData>(
+      future: future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return _placeholder(L10n.t('图片加载中…', 'Loading image…'), loading: true);
+        }
+        if (snapshot.hasError || snapshot.data == null) {
+          final error = snapshot.error;
+          final consentError = error is ApiException &&
+              (error.code == 'consent-required' ||
+                  error.code == 'consent-invalid');
+          final noAction = error is ApiException &&
+              error.code == 'unsupported-image-symlink';
+          return _placeholder(
+            _reason(error ?? Object()),
+            actionLabel: consentError
+                ? L10n.t('授权读取', 'Authorize')
+                : null,
+            onRetry: noAction
+                ? null
+                : () {
+              final action = widget.userAction;
+              final future = action != null
+                  ? action(widget.source)
+                  : _load();
+                    setState(() {
+                      _future = future;
+                    });
+                  },
+          );
+        }
+        return _resizedImage(snapshot.data!.bytes);
+      },
+    );
+  }
+}
+
 class _InlineText extends StatelessWidget {
   final String text;
   final TextStyle style;
   final InlineCodeTap? codeTap;
-  const _InlineText(this.text, {required this.style, this.codeTap});
+  final MarkdownImageLoader? imageLoader;
+  final MarkdownImageUserAction? imageUserAction;
+  const _InlineText(
+    this.text, {
+    required this.style,
+    this.codeTap,
+    this.imageLoader,
+    this.imageUserAction,
+  });
 
   @override
   Widget build(BuildContext context) {
     // v2.9.0 review(M3)：行内解析带 context——深色模式下链接用品牌深色（原静态浅色对比度差）
-    final spans = _inlineSpans(text, context, codeTap: codeTap);
+    final spans = _inlineSpans(text, context, codeTap: codeTap, imageLoader: imageLoader, imageUserAction: imageUserAction);
     // 用普通 Text 渲染（SelectableText 在部分 Android 设备上长文本换行/重叠渲染异常）
     return Text.rich(
       TextSpan(children: spans, style: style),
@@ -511,6 +867,8 @@ List<InlineSpan> _inlineSpans(
   String text,
   BuildContext context, {
   InlineCodeTap? codeTap,
+  MarkdownImageLoader? imageLoader,
+  MarkdownImageUserAction? imageUserAction,
 }) {
   final spans = <InlineSpan>[];
   var last = 0;
@@ -547,6 +905,22 @@ List<InlineSpan> _inlineSpans(
             ),
           ),
         ));
+      }
+    } else if (tok.startsWith('![')) {
+      final mm = RegExp(r'^!\[([^\]]*)\]\(([^)]*)\)$').firstMatch(tok);
+      if (mm != null) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: _MarkdownImage(
+            alt: mm.group(1)!,
+            source: mm.group(2)!,
+            loader: imageLoader,
+            userAction: imageUserAction,
+            block: false,
+          ),
+        ));
+      } else {
+        spans.add(TextSpan(text: tok));
       }
     } else if (tok.startsWith('[')) {
       final mm = RegExp(r'^\[([^\]]*)\]\(([^)]*)\)$').firstMatch(tok);

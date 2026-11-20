@@ -11,6 +11,7 @@ import '../api.dart';
 import '../app_icon.dart';
 import '../app_icon_switcher.dart';
 import '../floating.dart';
+import '../git_models.dart';
 import '../keep_alive.dart';
 import '../l10n.dart';
 import '../local_notifications.dart';
@@ -41,6 +42,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  bool _showInlineGitLimit = false;
   UsageSnapshot? _usage;
   String? _usageError; // partial | outdated | failed；build 时再翻译
   bool _usageBusy = false; // 用量与额度刷新中
@@ -355,6 +357,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String get _gitTabsSummary =>
       widget.store.gitTabs.map(_gitTabName).join(' · ');
+
+  String get _gitGraphLimitSummary => switch (widget.store.gitGraphBranchLimit) {
+    GitGraphBranchLimit.five => '5',
+    GitGraphBranchLimit.ten => '10',
+    GitGraphBranchLimit.unlimited => L10n.t('不限', 'Unlimited'),
+  };
+
+  String get _gitGraphLimitSub => switch (widget.store.gitGraphBranchLimit) {
+    GitGraphBranchLimit.five => L10n.t(
+      '最多同时选中 5 个分支（默认）；下次打开分支图时生效',
+      'Up to 5 selected branches (default); applies the next time you open the branch graph',
+    ),
+    GitGraphBranchLimit.ten => L10n.t(
+      '最多同时选中 10 个分支；下次打开分支图时生效',
+      'Up to 10 selected branches; applies the next time you open the branch graph',
+    ),
+    GitGraphBranchLimit.unlimited => L10n.t(
+      '不限制已选分支数；大仓库可能较慢，30 秒超时会提示改回 10 档',
+      'No cap on selected branches; large repos may be slow, and a 30s timeout suggests switching to 10',
+    ),
+  };
+
+  Future<void> _pickGitGraphLimit() async {
+    setState(() => _showInlineGitLimit = !_showInlineGitLimit);
+  }
+
+  Widget _inlineGitLimitOptions() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            L10n.t('Git 分支图上限', 'Git branch graph limit'),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          Text(
+            L10n.t(
+              '对所有仓库生效；下次打开分支图时生效',
+              'Applies to all repositories; takes effect the next time the branch graph opens',
+            ),
+            style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+          ),
+          for (final limit in GitGraphBranchLimit.values)
+            InkWell(
+              key: Key('git-graph-limit-${limit.storageValue}'),
+              onTap: () async {
+                await widget.store.setGitGraphBranchLimit(limit);
+                if (mounted) setState(() => _showInlineGitLimit = false);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Text(
+                  limit == widget.store.gitGraphBranchLimit
+                      ? '${_inlineLimitLabel(limit)}  ${L10n.t('当前', 'Current')}'
+                      : _inlineLimitLabel(limit),
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ),
+            ),
+          InkWell(
+            key: const Key('git-graph-limit-cancel'),
+            onTap: () => setState(() => _showInlineGitLimit = false),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(L10n.t('取消', 'Cancel')),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _inlineLimitLabel(GitGraphBranchLimit limit) => switch (limit) {
+    GitGraphBranchLimit.five => '5',
+    GitGraphBranchLimit.ten => '10',
+    GitGraphBranchLimit.unlimited => L10n.t('不限', 'Unlimited'),
+  };
 
   Future<void> _pickGitTabs() async {
     var selected = List<String>.of(widget.store.gitTabs);
@@ -1165,6 +1245,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _row({
+    Key? key,
     required Widget leading,
     required String title,
     String? sub,
@@ -1174,6 +1255,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     return InkWell(
+      key: key,
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1415,6 +1497,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             sub: _gitTabsSummary,
             onTap: _pickGitTabs,
           ),
+          _row(
+            key: const Key('settings-git-graph-limit'),
+            leading: const Icon(Icons.account_tree_outlined),
+            title: L10n.t('Git 分支图上限', 'Git branch graph limit'),
+            sub: _gitGraphLimitSub,
+            trailing: Text(
+              _gitGraphLimitSummary,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: brand,
+              ),
+            ),
+            onTap: _pickGitGraphLimit,
+          ),
+          if (_showInlineGitLimit) _inlineGitLimitOptions(),
           // issue #52（ADR 0027 §2）：轮次过程折叠的工作步骤展示模式与收起时机。
           // 偏好只存手机本地；改动即时重算时间线（store.notifyListeners）。
           //
