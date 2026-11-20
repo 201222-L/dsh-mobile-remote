@@ -246,7 +246,10 @@ class _Replay {
     record(tag);
   }
 
-  /// 注入真实 SSE `session/jobs` 帧（JobCard 显隐会改变消息区视口高度）。
+  /// 注入真实 SSE `session/jobs` 帧。
+  ///
+  /// issue #128 起聊天页不再渲染 JobCard，该帧**不再改变消息区布局**；本用例
+  /// 仍保留「不得抢走历史阅读位置 / 不得改成跟随」的回归断言。
   void injectJobs(List<Map<String, dynamic>> jobs) {
     store.injectFrame({
       'type': 'session/jobs',
@@ -435,8 +438,8 @@ void main() {
           '注入后 px=${probe.pixels.toStringAsFixed(1)}）${replay.recent()}',
     );
 
-    // ── 4. 另一条布局变化路径：`session/jobs` 帧（JobCard 显隐改变视口高度） ──
-    // 与 `todo/write` 走不同入口，防止「只在某一种事件上碰巧通过」。
+    // ── 4. 另一条事件入口：`session/jobs` 帧（#128 之前 JobCard 显隐改变视口高度；
+    // 现在不再进入布局，但仍走独立事件分支，防「只在某一种事件上碰巧通过」）。
     replay.injectJobs([
       {'id': 'job-1', 'title': '后台任务', 'status': 'running'},
     ]);

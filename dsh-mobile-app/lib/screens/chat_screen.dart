@@ -2861,11 +2861,12 @@ class _ChatScreenState extends State<ChatScreen> {
   // issue #118：SSE 事件的**统一跟随出口**。
   //
   // 旧实现把 `_requestScrollFollow()` 写在每个分支（或忘记写）——#114 只覆盖到过程行/
-  // 工具增量/异步详情/活动条，`session/jobs`（顶部 JobCard 显隐改变消息区视口高度）
-  // 就漏了：内容被裁到视口下方 35px，且之后不再自动校正。这里把「处理事件」与
-  // 「布局变化后跟随」拆开：`_handleEventInner` 返回本次处理**是否改变了消息区布局/
-  // 视口高度**，统一出口只在为真时重测短内容占位并请求有界收敛。新增事件类型必须
-  // 显式声明，避免再次漏挂（也覆盖 question/approval 卡片、队列 dock、turn/end 自动折叠）。
+  // 工具增量/异步详情/活动条，`session/jobs`（当时顶部 JobCard 显隐改变消息区视口高度；
+  // issue #128 已移除该卡）就漏了：内容被裁到视口下方 35px，且之后不再自动校正。
+  // 这里把「处理事件」与「布局变化后跟随」拆开：`_handleEventInner` 返回本次处理
+  // **是否改变了消息区布局/视口高度**，统一出口只在为真时重测短内容占位并请求有界收敛。
+  // 新增事件类型必须显式声明，避免再次漏挂（也覆盖 question/approval 卡片、队列 dock、
+  // turn/end 自动折叠）。
   void _handleEvent(ChatEvent ev) {
     if (!mounted) return;
     if (!_handleEventInner(ev)) return;
@@ -3070,16 +3071,15 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       return false; // 只更新用量圆环/文字，不改变消息区视口高度。
     }
-    // v2.7：会话任务视图更新（后台任务卡片/工具弹层刷新）
+    // v2.7：会话任务视图更新（store.jobsBySession，供会话列表运行指示/工具弹层）
     if (ev.type == 'session/jobs') {
-      // jobs is a non-durable projection rendered by the top JobCard; do not
-      // turn every reconnect snapshot into another timeline event.
+      // jobs 是非持久投影，不写入时间线（调试模式的历史回放仍可见原始事件）。
       //
-      // issue #118：JobCard 位于消息区上方，显隐会改变消息视口高度；本帧无法预知
-      // 下一帧是否真的换行，因此如实声明为「可能改变布局」——已收敛时 owner 的
-      // takeCorrection 会判 converged/no-op，不会产生空闲自激。
-      if (mounted) setState(() {});
-      return true;
+      // issue #128：聊天页不再渲染顶部 JobCard，本帧**不再改变消息区布局**；store
+      // 已写 jobsBySession 并 notifyListeners（会话列表/「会话工具」任务页签各自
+      // 消费），因此这里既不需要 setState 刷新本页，也不能返回 true 声明布局变化
+      // ——那会误触发滚动跟随/越界收敛（旧 JobCard 时代的 #118 口径已不适用）。
+      return false;
     }
     // v3.1.4（issue #12 姊妹需求）：任务清单实时折叠——与内核 dsh-tool-todo 的会话投影
     // 完全同语义（最新 todo/write 覆盖整份、turn/start 清空）。
@@ -5546,32 +5546,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ── v2.7：任务（jobs） ──
-  Future<void> _killJob(String jobId) async {
-    // v2.9.0 review(HIGH)：页级动作绑定本页会话
-    final sid = _mySessionId ?? widget.store.sessionId;
-    if (sid == null) return;
-    try {
-      await _api.jobKill(sid, jobId);
-      if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
-    } catch (e) {
-      if (mounted) {
-        showToast(context, '${L10n.t('取消失败：', 'Cancel failed: ')}$e');
-      }
-    }
-  }
-
-  void _openTools() {
-    // v2.9.0 review：与页级动作一致，绑定本页会话（工具页上下文不能跟随全局切换）
-    final sid = _mySessionId ?? widget.store.sessionId;
-    if (sid == null) return;
-    showSessionToolsSheet(
-      context,
-      widget.store,
-      sid,
-      onTitleChanged: widget.onTitleChanged,
-    );
-  }
-
   void _openSessionToolsFromActionRail() {
     // Preserve the app-bar action's existing page-session-only behavior.
     final sid = _mySessionId;
@@ -5581,6 +5555,9 @@ class _ChatScreenState extends State<ChatScreen> {
         widget.store,
         sid,
         onTitleChanged: widget.onTitleChanged,
+        // 与页级动作同一 API 接缝：生产为全局 `api`，测试注入时面板与聊天页共用
+        // 同一宿主（issue #128：任务页签的取消入口需要可注入验证）。
+        apiClient: widget.apiClient,
       );
     }
   }
@@ -5911,14 +5888,12 @@ class _ChatScreenState extends State<ChatScreen> {
                     style: TextStyle(fontSize: 11.5, color: ink3),
                   ),
                 ),
-              // v2.8.0：后台任务卡片移到对话框顶部（不再与问询/审批卡堆在底部），可收纳、默认收起
-              if (!_inHistory &&
-                  widget.store.hasRunningJobs(_mySessionId ?? ''))
-                _JobCard(
-                  jobs: widget.store.jobsOf(_mySessionId ?? ''),
-                  onOpen: _openTools,
-                  onKill: _killJob,
-                ),
+              // issue #128：聊天页不再显示「后台任务进行中」内联卡（它占用对话区
+              // 高度并随任务启停显隐，造成视口/滚动跳变）。后台任务状态与取消
+              // 入口保留在「会话工具 → 任务」面板（应用栏「对话操作」可进入）：
+              //   - 任务页签展示全部 job 状态，运行中可取消（不丢失能力）；
+              //   - 会话列表仍按 running job 显示运行指示；
+              //   - 调试模式仍可在时间线查看原始 `session/jobs` 事件。
               // v3.1.5：休眠会话降级常驻提示——历史只含 current surface / 配置已回退默认
               if (_historyDegraded || _configDegraded)
                 Container(
@@ -12429,142 +12404,6 @@ class _SlashInlineChip extends StatelessWidget {
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _JobCard extends StatefulWidget {
-  final List<Map<String, dynamic>> jobs;
-  final VoidCallback onOpen;
-  final void Function(String jobId) onKill;
-  const _JobCard({
-    required this.jobs,
-    required this.onOpen,
-    required this.onKill,
-  });
-
-  @override
-  State<_JobCard> createState() => _JobCardState();
-}
-
-class _JobCardState extends State<_JobCard> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final brand = DshColors.brand(context);
-    final ink2 = DshColors.ink2(context);
-    final ink3 = DshColors.ink3(context);
-    final line = DshColors.line(context);
-    final surface = DshColors.surface(context);
-    final running = widget.jobs
-        .where((j) => j['status'] == 'running' || j['status'] == 'stopping')
-        .toList();
-    final extra = running.length - 1;
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 2, 12, 2),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: surface,
-        border: Border.all(color: line),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 1),
-              child: Row(
-                children: [
-                  Icon(Icons.hourglass_top_outlined, size: 14, color: brand),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      running.length > 1
-                          ? L10n.t(
-                              '后台任务 ${running.length} 个进行中',
-                              '${running.length} background tasks running',
-                            )
-                          : L10n.t('后台任务进行中', 'Background task running'),
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: ink2,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    size: 16,
-                    color: ink3,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_expanded)
-            for (final j in running.take(2))
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Row(
-                  children: [
-                    Icon(Icons.circle, size: 6, color: brand),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        (j['label'] as String? ??
-                                j['id'] as String? ??
-                                L10n.t('任务', 'Task'))
-                            .toString(),
-                        style: const TextStyle(fontSize: 11.5),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: j['status'] == 'stopping'
-                          ? null
-                          : () => widget.onKill(j['id'] as String? ?? ''),
-                      style: TextButton.styleFrom(
-                        minimumSize: const Size(0, 24),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: Text(
-                        j['status'] == 'stopping'
-                            ? L10n.t('停止中', 'Stopping')
-                            : L10n.t('取消', 'Cancel'),
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: j['status'] == 'stopping'
-                              ? ink3
-                              : DshColors.danger(context),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          if (_expanded && extra > 0)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: InkWell(
-                onTap: widget.onOpen,
-                borderRadius: BorderRadius.circular(6),
-                child: Text(
-                  L10n.t('还有 $extra 个任务 ▸', '$extra more tasks ▸'),
-                  style: TextStyle(fontSize: 11, color: brand),
-                ),
-              ),
-            ),
         ],
       ),
     );
