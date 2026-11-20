@@ -30,6 +30,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.UUID
 
 /**
  * 悬浮球常驻服务（v2.7）：
@@ -126,6 +127,7 @@ class FloatingBubbleService : Service() {
         }
     }
 
+    private val sseLock = Any() // issue #131：startSse 单连接守卫（同一服务实例只允许一条 SSE 线程）
     private var sseThread: Thread? = null
     @Volatile private var sseAlive = false
     // v2.7.2 review(FS2)：持有当前 SSE 连接，onDestroy 时 disconnect 解除 readLine 阻塞
@@ -251,10 +253,13 @@ class FloatingBubbleService : Service() {
         sseAlive = false
         // v2.7.2 review(FS2/FS4)：interrupt 对阻塞在 socket readLine 的线程无效——
         // 必须 disconnect 连接才能解除阻塞；动画也要取消，否则下一帧 updateViewLayout
-        // 操作已移除的视图 → IllegalArgumentException 崩溃
-        runCatching { sseConn?.disconnect() }
-        sseConn = null
-        sseThread?.interrupt()
+        // 操作已移除的视图 → IllegalArgumentException 崩溃。
+        // issue #131：统一走 closeSseConn（清 sseConn + disconnect），并清线程登记。
+        closeSseConn()
+        synchronized(sseLock) {
+            sseThread?.interrupt()
+            sseThread = null
+        }
         bubbleAnim?.cancel()
         bubbleAnim = null
         // v3.0.0：面板展开/收起是 ViewPropertyAnimator（Choreographer 驱动，removeCallbacksAndMessages
@@ -1549,61 +1554,118 @@ class FloatingBubbleService : Service() {
     }
 
     // ── SSE：自己连插件事件流 ──
+    /**
+     * 启动原生 SSE 线程（issue #131）。
+     *
+     * 同一服务实例只允许一条：重复调用（防御未来 onStartCommand/重试路径）直接复用现有线程，
+     * 避免两条线程各自持有一条 SSE 把 `mobileOnline` 越顶越高。线程退出时清掉登记，
+     * 销毁/异常后允许下一次干净启动。
+     */
     private fun startSse() {
-        sseAlive = true
-        sseThread = Thread({
-            var backoff = 1000L
-            while (sseAlive) {
+        synchronized(sseLock) {
+            if (sseThread?.isAlive == true) return
+            sseAlive = true
+            val thread = Thread({
+                var backoff = 1000L
                 try {
-                    connectSse()
-                } catch (e: Exception) {
-                    // 网络/解析错误：退避重连
+                    while (sseAlive) {
+                        try {
+                            connectSse()
+                        } catch (_: Exception) {
+                            // 网络/解析错误：退避重连
+                        }
+                        if (!sseAlive) break
+                        try {
+                            Thread.sleep(backoff)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                        backoff = (backoff * 2).coerceAtMost(30000)
+                    }
+                } finally {
+                    synchronized(sseLock) {
+                        if (sseThread === Thread.currentThread()) sseThread = null
+                    }
                 }
-                if (!sseAlive) break
-                Thread.sleep(backoff)
-                backoff = (backoff * 2).coerceAtMost(30000)
-            }
-        }, "dsh-bubble-sse").apply { isDaemon = true; start() }
+            }, "dsh-bubble-sse").apply { isDaemon = true }
+            sseThread = thread
+            thread.start()
+        }
     }
 
+    /**
+     * 建立一条 SSE 连接并阻塞读取，直到断开或 [sseAlive] 变 false。
+     *
+     * issue #131 修复：此前 `responseCode`/建流等异常路径会跳过 `disconnect()`，旧连接被
+     * `sseConn` 覆盖后可能一直留在服务端（手机只看到 appVersion=null 的原生连接累积）。
+     * 现在用 try/finally 保证任何退出路径都 disconnect 并清 `sseConn`，且重连前先关旧连接。
+     */
     private fun connectSse(): Boolean {
         val base = baseUrl() ?: return true
         val token = prefs("flutter.dsh_mr_token") ?: return true
+        if (!sseAlive) return true
+        // 防御：上一轮异常退出可能没走到 cleanup；重连前兜底释放旧连接。
+        closeSseConn()
         val url = URL("$base/m/api/events")
         val conn = url.openConnection() as HttpURLConnection
         sseConn = conn // v2.7.2 review(FS2)：onDestroy 时 disconnect 解除 readLine 阻塞
-        conn.connectTimeout = 8000
-        // v3.0.0：readTimeout 0→50s——插件 SSE 每 25s 必有 ": ping" 心跳，50s 只会在
-        // 静默死链（TCP 已死但无 FIN/RST：切网/路由器丢连接/PC 休眠）时触发 IOException，
-        // 让重连循环兜底；此前 0=无限阻塞，死链后通知断供且永不恢复
-        conn.readTimeout = 50_000
-        conn.setRequestProperty("x-mobile-token", token)
-        conn.setRequestProperty("Accept", "text/event-stream")
-        val code = conn.responseCode
-        if (code != 200) {
-            conn.disconnect()
-            sseConn = null
+        try {
+            conn.connectTimeout = 8000
+            // v3.0.0：readTimeout 0→50s——插件 SSE 每 25s 必有 ": ping" 心跳，50s 只会在
+            // 静默死链（TCP 已死但无 FIN/RST：切网/路由器丢连接/PC 休眠）时触发 IOException，
+            // 让重连循环兜底；此前 0=无限阻塞，死链后通知断供且永不恢复
+            conn.readTimeout = 50_000
+            conn.setRequestProperty("x-mobile-token", token)
+            conn.setRequestProperty("Accept", "text/event-stream")
+            // issue #131：原生 SSE 与 Flutter 一样上报 App 版本；此前缺失导致诊断 appVersion=null。
+            conn.setRequestProperty(
+                "x-mobile-app-version",
+                "${BuildConfig.VERSION_NAME}+${BuildConfig.VERSION_CODE}",
+            )
+            // 持久化安装 id：宿主满额时优先驱逐同设备旧连接（Flutter 端暂未共享，可选头）。
+            conn.setRequestProperty("x-mobile-client-id", nativeClientId())
+            val code = conn.responseCode
+            if (code != 200) return false
+            val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
+            try {
+                while (sseAlive) {
+                    val line = try {
+                        reader.readLine() ?: break
+                    } catch (_: Exception) {
+                        break // onDestroy disconnect 后 readLine 抛 IOException → 正常退出
+                    }
+                    if (!line.startsWith("data: ")) continue
+                    val data = line.removePrefix("data: ")
+                    try {
+                        handleFrame(JSONObject(data))
+                    } catch (_: Exception) {
+                    }
+                }
+            } finally {
+                runCatching { reader.close() }
+            }
             return false
+        } finally {
+            runCatching { conn.disconnect() }
+            if (sseConn === conn) sseConn = null
         }
-        val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-        var line: String?
-        while (sseAlive) {
-            try {
-                line = reader.readLine() ?: break
-            } catch (_: Exception) {
-                break // onDestroy disconnect 后 readLine 抛 IOException → 正常退出
-            }
-            if (!line.startsWith("data: ")) continue
-            val data = line.removePrefix("data: ")
-            try {
-                handleFrame(JSONObject(data))
-            } catch (_: Exception) {
-            }
-        }
-        runCatching { reader.close() }
-        runCatching { conn.disconnect() }
-        if (sseConn === conn) sseConn = null
-        return false
+    }
+
+    /** 主动断开当前 SSE 连接并清空登记；重复调用安全（onDestroy/重连前共用）。 */
+    private fun closeSseConn() {
+        val old = sseConn
+        sseConn = null
+        runCatching { old?.disconnect() }
+    }
+
+    /** 原生侧持久化安装 id（独立 SharedPreferences，不与 Flutter 共享）。 */
+    private fun nativeClientId(): String {
+        val sp = getSharedPreferences("dsh_native_sse", Context.MODE_PRIVATE)
+        val existing = sp.getString("client_id", null)
+        if (!existing.isNullOrEmpty()) return existing
+        val id = UUID.randomUUID().toString()
+        sp.edit().putString("client_id", id).apply()
+        return id
     }
 
     private fun handleFrame(o: JSONObject) {
