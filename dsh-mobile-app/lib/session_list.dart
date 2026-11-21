@@ -19,7 +19,9 @@ enum SessionRowState { idle, running, waiting }
 bool isSessionRunning({
   required String? agentStatus,
   required bool hasRunningJobs,
-}) => agentStatus == 'running' || hasRunningJobs;
+  bool hasRunningSubagents = false,
+}) =>
+    agentStatus == 'running' || hasRunningJobs || hasRunningSubagents;
 
 /// 等待判定：该会话存在挂起的问询或审批。
 /// 该信息来自已有的独立待答通道，与会话运行状态无关。
@@ -32,6 +34,7 @@ bool isSessionWaitingForUser({
 SessionRowState sessionRowState({
   required String? agentStatus,
   required bool hasRunningJobs,
+  bool hasRunningSubagents = false,
   required bool hasPendingQuestion,
   required bool hasPendingApproval,
 }) {
@@ -41,7 +44,11 @@ SessionRowState sessionRowState({
   )) {
     return SessionRowState.waiting;
   }
-  if (isSessionRunning(agentStatus: agentStatus, hasRunningJobs: hasRunningJobs)) {
+  if (isSessionRunning(
+    agentStatus: agentStatus,
+    hasRunningJobs: hasRunningJobs,
+    hasRunningSubagents: hasRunningSubagents,
+  )) {
     return SessionRowState.running;
   }
   return SessionRowState.idle;
@@ -74,6 +81,82 @@ List<Session> sortSessionsForList(Iterable<Session> sessions) {
 /// 归档只是分类，不代表会话停了——因此**已归档但仍运行**的会话同样带状态标识。
 List<Session> projectSessions(Iterable<Session> sessions) =>
     sortSessionsForList(visibleSessions(sessions));
+
+/// issue #124/#133：子代理运行聚合结果。
+///
+/// [hasKnownChildren]：当前 `/api/sessions` 里能看到该会话的子代理行（可用于本地实时
+/// 聚合）；[running]：递归子代理中是否有 running。
+class SubagentRunAggregate {
+  final bool hasKnownChildren;
+  final bool running;
+  const SubagentRunAggregate({
+    required this.hasKnownChildren,
+    required this.running,
+  });
+
+  static const none = SubagentRunAggregate(
+    hasKnownChildren: false,
+    running: false,
+  );
+}
+
+/// 递归聚合子代理运行状态（纯函数）。
+///
+/// 数据源完全来自现有 `/api/sessions`（子代理会话带 `origin=subagent` 与
+/// `parentSession`，列表层按 ADR 0013 过滤不显示）与 SSE/`bootstrap` 维护的
+/// 每会话 agent 状态——**不逐会话请求**；同时带 visited 防御环。
+///
+/// 用户 fork 的会话只有 `parentSession` 而没有 `origin`，不得当子代理聚合。
+SubagentRunAggregate subagentRunAggregate({
+  required String sessionId,
+  required Iterable<Session> sessions,
+  required String Function(String sessionId) agentStatusOf,
+}) {
+  final childrenByParent = <String, List<Session>>{};
+  for (final s in sessions) {
+    if (s.origin != 'subagent') continue;
+    final parent = s.parentSession;
+    if (parent == null || parent.isEmpty) continue;
+    childrenByParent.putIfAbsent(parent, () => <Session>[]).add(s);
+  }
+  if (childrenByParent.isEmpty) return SubagentRunAggregate.none;
+  var running = false;
+  final visited = <String>{sessionId};
+  final queue = <String>[sessionId];
+  while (queue.isNotEmpty) {
+    final parent = queue.removeLast();
+    for (final child in childrenByParent[parent] ?? const <Session>[]) {
+      if (!visited.add(child.id)) continue;
+      if (agentStatusOf(child.id) == 'running') {
+        running = true;
+        break;
+      }
+      queue.add(child.id);
+    }
+    if (running) break;
+  }
+  return SubagentRunAggregate(hasKnownChildren: true, running: running);
+}
+
+/// 该会话是否有递归运行中的子代理（聚合结果的便捷读法）。
+bool hasRunningSubagentDescendant({
+  required String sessionId,
+  required Iterable<Session> sessions,
+  required String Function(String sessionId) agentStatusOf,
+}) => subagentRunAggregate(
+  sessionId: sessionId,
+  sessions: sessions,
+  agentStatusOf: agentStatusOf,
+).running;
+
+/// 列表/首页面板共用的“运行中会话数”（issue #124/#133：面板计数必须与行同口径）。
+///
+/// 传 [rowStateOf]（通常是 `store.rowStateOf`）而不是直接读 agent 状态，保证
+/// “根 idle + 子代理 running”的行在转时，面板计数不会显示 0。
+int runningSessionCountOf(
+  Iterable<Session> visible,
+  SessionRowState Function(String sessionId) rowStateOf,
+) => visible.where((s) => rowStateOf(s.id) == SessionRowState.running).length;
 
 /// 状态标识的旋转是否需要 ticker 运行（ADR 0013 的动效生命周期）。
 ///

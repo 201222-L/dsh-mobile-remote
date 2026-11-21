@@ -355,10 +355,18 @@ void main() {
     expect(_groupHeaders, findsNWidgets(2));
     // 组默认折叠：组内工具行不可见。
     expect(find.text('shell'), findsNothing);
-    await tester.tap(_groupHeaders.first);
+    await tester.tap(
+      find
+          .descendant(of: _groupHeaders.first, matching: find.byType(InkWell))
+          .first,
+    );
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('shell'), findsOneWidget);
-    await tester.tap(_groupHeaders.first);
+    await tester.tap(
+      find
+          .descendant(of: _groupHeaders.first, matching: find.byType(InkWell))
+          .first,
+    );
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('shell'), findsNothing);
     await tester.pump(const Duration(milliseconds: 900));

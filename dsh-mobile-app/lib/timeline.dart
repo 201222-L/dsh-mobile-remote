@@ -68,6 +68,10 @@ const debugOnlyTimelineTypes = <String>{
   // issue #53 / ADR 0027 §4：新插件已把它移出移动时间线；旧插件仍会下发，
   // 归入调试可见（普通模式不出现裸 `workspace/changes` 空卡）。
   'workspace/changes',
+  // issue #119：`todo/write` 是任务面板的投影事件，**任务清单面板是唯一展示入口**；
+  // 普通模式不再生成「任务清单已更新」独立时间线卡（推翻 v3.1.4「时间线同时更新」的
+  // 决策）。调试模式仍保留该卡与原始事件（服务端 DETAIL_VISIBLE_TYPES 已含该类型）。
+  'todo/write',
   'hook/invoked',
   'hook/result',
   'llm/retry',
@@ -81,8 +85,9 @@ const debugOnlyTimelineTypes = <String>{
   'tool-workflow/agent-end',
   'tool-workflow/run-start',
   'tool-workflow/run-end',
-  // issue #61：协议生命周期事件不构成对话内容——后台任务在会话头部呈现、问询/审批在
-  // 弹卡与工具行内呈现，独立成卡会与 `ask_user_question` 工具卡重复。普通模式不渲染
+  // issue #61：协议生命周期事件不构成对话内容——后台任务在「会话工具 → 任务」
+  // 面板查看（issue #128 移除聊天页内联卡）、问询/审批在弹卡与工具行内呈现，
+  // 独立成卡会与 `ask_user_question` 工具卡重复。普通模式不渲染
   // 裸协议卡；调试模式仍可审阅（事件仍保留在时间线模型与详情指针里）。
   // 注意：待答/审批弹卡来自 store 的 pending 快照与 `mobile/frame` 帧（chat_screen
   // 的 `_question`/`_approval`），不依赖这些历史事件卡，因此归入调试不影响待答能力。
@@ -398,6 +403,9 @@ class TimelineReducer {
   final List<TimelineItem> items = [];
   final Map<String, ToolLifecycle> tools = {};
   final Set<int> _seenSeq = {};
+
+  /// issue #99：被 surface replace 遮蔽的旧 seq；即使随后才到达（分页/实时乱序）也不显示。
+  final Set<int> _shadowedSeq = {};
   int _fallbackId = 0;
   int _identity = 0;
 
@@ -414,10 +422,14 @@ class TimelineReducer {
   /// 本次 apply 影响到的根工具 callId（只读快照，供 ChatScreen 原地刷新）。
   Set<String> get lastTouchedToolRoots => Set.unmodifiable(_ptcRootsTouched);
 
+  /// issue #99：该 seq 是否已被 surface replace shadow（各投影必须一致跳过）。
+  bool isShadowedSeq(int? seq) => seq != null && _shadowedSeq.contains(seq);
+
   void reset() {
     items.clear();
     tools.clear();
     _seenSeq.clear();
+    _shadowedSeq.clear();
     _ptcNodes.clear();
     _ptcParent.clear();
     _ptcTruncatedRoots.clear();
@@ -427,7 +439,13 @@ class TimelineReducer {
 
   bool apply(ChatEvent event) {
     final seq = event.seq;
+    // 旧事件已被 surface replace 遮蔽：后到的原始 seq 不得再次显示。
+    if (seq != null && _shadowedSeq.contains(seq)) return true;
     if (seq != null && !_seenSeq.add(seq)) return false;
+    // issue #99：replace 事件声明它替代的旧 seq；先登记遮蔽，再按类型合并/替换。
+    final replaceSources =
+        event.isSurfaceReplace ? event.sourceEventSeqs : const <int>[];
+    if (replaceSources.isNotEmpty) _shadowedSeq.addAll(replaceSources);
     _ptcRootsTouched.clear();
     if (hiddenTimelineTypes.contains(event.type)) return true;
     final data = event.data ?? const <String, dynamic>{};
@@ -473,9 +491,14 @@ class TimelineReducer {
     final isResult = event.type == 'tool/result';
     final callId = timelineCallIdOf(data, seq, _fallbackId++);
     final current = tools[callId];
+    final isCall = event.type == 'tool/call';
+    final replayOnly = event.isSurfaceReplace && current == null;
+    // replace replay 不是新调用：只作为旧事件的替代输入，锚点留在 source seq，不新增行。
+    final anchorSeq = replayOnly
+        ? (event.surfaceAnchorSeq ?? seq)
+        : (isCall ? seq : (current?.seq ?? seq));
     final delta = _string(data['argumentsDelta']) ?? '';
     final settled = current?.status == 'success' || current?.status == 'failed';
-    final isCall = event.type == 'tool/call';
     // 详情指针取「信息量最大的 durable 事件」：有结果就指向结果，
     // 否则指向调用事件；仅 delta 存在时先沿用（那时还没有 durable 记录）。
     final hasResult = current != null && current.result.isNotEmpty;
@@ -488,7 +511,7 @@ class TimelineReducer {
       status: isResult
           ? (data['isError'] == true ? 'failed' : 'success')
           : (settled ? current!.status : 'running'),
-      seq: isCall && seq != null ? seq : (current?.seq ?? seq),
+      seq: anchorSeq,
       latestSeq: _maxSeq(_maxSeq(current?.latestSeq, current?.seq), seq),
       detailSeq: isResult && seq != null
           ? seq
@@ -504,6 +527,11 @@ class TimelineReducer {
     // issue #68：新根/新结果到达后，把等待该父的 PTC orphan 挂回并物化子树；
     // 物化后的 lifecycle 才是渲染层要的版本（不能再用未带子树的 next）。
     _retryPtcOrphans();
+    if (replayOnly) {
+      // 只在 tools 中记录替代内容，等原始 tool/call 到达（或已有旧行）时再合并；
+      // 单独出现时绝不生成新的历史工具卡。
+      return;
+    }
     _upsertTool(tools[callId] ?? next, event);
   }
 

@@ -109,7 +109,8 @@ class _OutlineBackend {
     _outlineGates.remove(index)?.complete();
   }
 
-  int get _firstLoadedTurn => (sessionTurns - loadedTurns + 1).clamp(1, sessionTurns);
+  int get _firstLoadedTurn =>
+      (sessionTurns - loadedTurns + 1).clamp(1, sessionTurns);
 
   /// 更早的一页：**服务端最多返回 `limit` 条事件**（每轮 3 条），所以一次上翻覆盖
   /// 的轮数与 limit 成正比——这正是 issue #25 要"一次翻足够多"的原因。
@@ -142,26 +143,26 @@ class _OutlineBackend {
       body = switch (outlineStateByCall[nth] ?? outlineState) {
         'empty' => {'ok': true, 'state': 'empty', 'turns': <Object>[]},
         'read-failed' => {
-            'ok': true,
-            'state': 'read-failed',
-            'code': 'turn-outline-timeout',
-            'degraded': true,
-            'turns': <Object>[],
-          },
+          'ok': true,
+          'state': 'read-failed',
+          'code': 'turn-outline-timeout',
+          'degraded': true,
+          'turns': <Object>[],
+        },
         _ => {
-            'ok': true,
-            'state': 'available',
-            'asOfSeq': _seqOfTurn(sessionTurns),
-            'turns': [
-              for (var turn = 1; turn <= sessionTurns; turn++)
-                {
-                  'turn': turn,
-                  'seq': _seqOfTurn(turn),
-                  'prompt': '大纲第 $turn 轮提示',
-                  'response': '大纲第 $turn 轮回复',
-                },
-            ],
-          },
+          'ok': true,
+          'state': 'available',
+          'asOfSeq': _seqOfTurn(sessionTurns),
+          'turns': [
+            for (var turn = 1; turn <= sessionTurns; turn++)
+              {
+                'turn': turn,
+                'seq': _seqOfTurn(turn),
+                'prompt': '大纲第 $turn 轮提示',
+                'response': '大纲第 $turn 轮回复',
+              },
+          ],
+        },
       };
     } else if (path == '/m/api/history') {
       final params = request.url.queryParameters;
@@ -202,14 +203,16 @@ Future<void> _pumpChat(
   required _OutlineBackend backend,
   required AppStore store,
 }) async {
-  await tester.pumpWidget(MaterialApp(
-    home: ChatScreen(
-      key: const ValueKey('outline-chat'),
-      store: store,
-      apiClient: backend.api,
-      onTitleChanged: () {},
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChatScreen(
+        key: const ValueKey('outline-chat'),
+        store: store,
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
     ),
-  ));
+  );
   await tester.pump(const Duration(milliseconds: 350));
   await tester.pump(const Duration(milliseconds: 350));
 }
@@ -246,8 +249,11 @@ void main() {
     expect(backend.outlineRequests, greaterThan(0), reason: '会话打开后应拉一次大纲');
     expect(find.byType(TurnNavigatorRail), findsOneWidget);
     for (var turn = 1; turn <= 10; turn++) {
-      expect(find.byKey(ValueKey<String>('turn-tick-$turn')), findsOneWidget,
-          reason: '第 $turn 轮应有刻度（9/10 已加载，1..8 来自宿主大纲）');
+      expect(
+        find.byKey(ValueKey<String>('turn-tick-$turn')),
+        findsOneWidget,
+        reason: '第 $turn 轮应有刻度（9/10 已加载，1..8 来自宿主大纲）',
+      );
     }
     expect(find.byKey(const ValueKey<String>('turn-tick-11')), findsNothing);
   });
@@ -265,8 +271,11 @@ void main() {
       Offset(railRect.center.dx, railRect.top + _tickLocalY(5)),
     );
     await tester.pump(const Duration(milliseconds: 600));
-    expect(find.textContaining('大纲第 6 轮提示'), findsOneWidget,
-        reason: '未加载轮次的预览应由大纲补齐');
+    expect(
+      find.textContaining('大纲第 6 轮提示'),
+      findsOneWidget,
+      reason: '未加载轮次的预览应由大纲补齐',
+    );
     await gesture.up();
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
@@ -289,11 +298,11 @@ void main() {
     expect(
       backend.olderRequests.any((r) => r['limit'] == '200'),
       isTrue,
-      reason: '未加载刻度必须用跨页跳转的 200 条/页（不改动既有 30 条/页），'
+      reason:
+          '未加载刻度必须用跨页跳转的 200 条/页（不改动既有 30 条/页），'
           '实际请求：${backend.olderRequests}',
     );
-    expect(find.text('第 6 轮的问题'), findsOneWidget,
-        reason: '翻页完成后应落在目标轮');
+    expect(find.text('第 6 轮的问题'), findsOneWidget, reason: '翻页完成后应落在目标轮');
     expect(tester.takeException(), isNull);
   });
 
@@ -315,8 +324,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pump(const Duration(milliseconds: 400));
 
-    expect(find.textContaining('不可达'), findsOneWidget,
-        reason: '目标不可达必须明确告知（ADR 0018 有意偏离电脑端的静默停下）');
+    expect(
+      find.textContaining('不可达'),
+      findsOneWidget,
+      reason: '目标不可达必须明确告知（ADR 0018 有意偏离电脑端的静默停下）',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -391,10 +403,16 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(backend.outlineRequests, greaterThan(0),
-        reason: '能力后到时必须补拉一次大纲（评测 P2 反例：0 次请求）');
-    expect(find.byKey(const ValueKey<String>('turn-tick-1')), findsOneWidget,
-        reason: '补拉后未加载刻度应出现');
+    expect(
+      backend.outlineRequests,
+      greaterThan(0),
+      reason: '能力后到时必须补拉一次大纲（评测 P2 反例：0 次请求）',
+    );
+    expect(
+      find.byKey(const ValueKey<String>('turn-tick-1')),
+      findsOneWidget,
+      reason: '补拉后未加载刻度应出现',
+    );
     expect(tester.takeException(), isNull);
     await _teardownStore(tester, store);
   });
@@ -419,8 +437,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.byKey(const ValueKey<String>('turn-tick-1')), findsNothing,
-        reason: '能力撤销后不得继续渲染上一台机器的大纲刻度');
+    expect(
+      find.byKey(const ValueKey<String>('turn-tick-1')),
+      findsNothing,
+      reason: '能力撤销后不得继续渲染上一台机器的大纲刻度',
+    );
     expect(tester.takeException(), isNull);
     await _teardownStore(tester, store);
   });
@@ -436,7 +457,7 @@ void main() {
       matching: find.byType(Scrollable),
     );
     double offset() =>
-        tester.state<ScrollableState>(listScrollable).position.pixels;
+        tester.state<ScrollableState>(listScrollable.first).position.pixels;
 
     // 1) 选未加载的第 6 轮，把它的跨页请求挂起（该齿开始脉冲）。
     backend.holdOlder = Completer<void>();
@@ -455,16 +476,21 @@ void main() {
     );
     await _pumpFrames(tester);
     final afterSecondChoice = offset();
-    expect(find.text('第 19 轮的问题'), findsOneWidget,
-        reason: '第二次选择应先落在第 19 轮');
+    expect(find.text('第 19 轮的问题'), findsOneWidget, reason: '第二次选择应先落在第 19 轮');
 
     // 3) 放行旧请求：它已完成（或已作废），但**不得**再把视口拉回第 6 轮。
     backend.holdOlder!.complete();
     await _pumpFrames(tester);
-    expect(find.text('第 19 轮的问题'), findsOneWidget,
-        reason: '旧跳转完成后不得覆盖新选择的落点（评测 P2 反例：视口被拉回第 6 轮附近）');
-    expect((offset() - afterSecondChoice).abs(), lessThan(3000),
-        reason: '旧跳转不得把视口整体搬走（未被取消时会冲向第 6 轮，位移数千像素）');
+    expect(
+      find.text('第 19 轮的问题'),
+      findsOneWidget,
+      reason: '旧跳转完成后不得覆盖新选择的落点（评测 P2 反例：视口被拉回第 6 轮附近）',
+    );
+    expect(
+      (offset() - afterSecondChoice).abs(),
+      lessThan(3000),
+      reason: '旧跳转不得把视口整体搬走（未被取消时会冲向第 6 轮，位移数千像素）',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -479,8 +505,11 @@ void main() {
     await _scrollUp(tester);
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.textContaining('这个会话'), findsOneWidget,
-        reason: 'empty 必须有说明（评测 P2 反例：说明被 UI 排除）');
+    expect(
+      find.textContaining('这个会话'),
+      findsOneWidget,
+      reason: 'empty 必须有说明（评测 P2 反例：说明被 UI 排除）',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -495,17 +524,20 @@ void main() {
     await _scrollUp(tester);
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.textContaining('这台电脑'), findsOneWidget,
-        reason: 'capability-missing 必须有说明（评测 P2 反例：说明被 UI 排除）');
+    expect(
+      find.textContaining('这台电脑'),
+      findsOneWidget,
+      reason: 'capability-missing 必须有说明（评测 P2 反例：说明被 UI 排除）',
+    );
     expect(tester.takeException(), isNull);
   });
 
   // ── 第二轮评审 note 1073 的回归 ──────────────────────────────────────
 
   Finder pulsingTicks() => find.descendant(
-        of: find.byType(TurnNavigatorRail),
-        matching: find.byType(FadeTransition),
-      );
+    of: find.byType(TurnNavigatorRail),
+    matching: find.byType(FadeTransition),
+  );
 
   testWidgets('用户主动滚动取消跳转后，旧刻度不再一直脉冲', (tester) async {
     final backend = _OutlineBackend(sessionTurns: 20, loadedTurns: 2);
@@ -531,8 +563,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1200));
 
-    expect(pulsingTicks(), findsNothing,
-        reason: '取消入口必须主动结束旧操作的脉冲（旧 finally 因世代失效不会再收尾）');
+    expect(
+      pulsingTicks(),
+      findsNothing,
+      reason: '取消入口必须主动结束旧操作的脉冲（旧 finally 因世代失效不会再收尾）',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -549,24 +584,38 @@ void main() {
     store.injectFrame({
       'type': 'hello',
       'capabilities': {
-        'turnOutline': {'version': 1, 'supported': true, 'unloaded': true, 'truncated': true},
+        'turnOutline': {
+          'version': 1,
+          'supported': true,
+          'unloaded': true,
+          'truncated': true,
+        },
       },
     });
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(backend.outlineRequests, greaterThanOrEqualTo(2),
-        reason: '应有两个重叠的大纲刷新请求');
+    expect(
+      backend.outlineRequests,
+      greaterThanOrEqualTo(2),
+      reason: '应有两个重叠的大纲刷新请求',
+    );
 
     backend.releaseOutline(1);
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.byKey(const ValueKey<String>('turn-tick-1')), findsOneWidget,
-        reason: '较新的刷新给出完整阶梯（20 轮）');
+    expect(
+      find.byKey(const ValueKey<String>('turn-tick-1')),
+      findsOneWidget,
+      reason: '较新的刷新给出完整阶梯（20 轮）',
+    );
 
     // 更早的 #0 现在才返回失败：不得抹掉较新的成功。
     backend.releaseOutline(0);
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.byKey(const ValueKey<String>('turn-tick-1')), findsOneWidget,
-        reason: '迟到的旧失败不得覆盖新成功（评测 P2 反例：退回 2 个本地刻度）');
+    expect(
+      find.byKey(const ValueKey<String>('turn-tick-1')),
+      findsOneWidget,
+      reason: '迟到的旧失败不得覆盖新成功（评测 P2 反例：退回 2 个本地刻度）',
+    );
     expect(backend.outlineRequests, greaterThanOrEqualTo(2));
     expect(tester.takeException(), isNull);
     await _teardownStore(tester, store);

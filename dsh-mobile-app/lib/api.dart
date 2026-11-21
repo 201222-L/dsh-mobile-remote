@@ -16,6 +16,13 @@ import 'turn_tail.dart';
 import 'git_models.dart';
 import 'turn_outline.dart';
 
+/// issue #94：/workspace-image 返回的图片字节。
+class WorkspaceImageData {
+  final Uint8List bytes;
+  final String? contentType;
+  const WorkspaceImageData({required this.bytes, this.contentType});
+}
+
 class ApiException implements Exception {
   final String message;
 
@@ -26,7 +33,8 @@ class ApiException implements Exception {
   /// 命令通路要靠它区分 `commands-execute-failed` 的两种含义：504 = 服务端 AbortSignal 中止
   /// （结果未知，不能断言失败）vs 400 = 命令自己抛错（确定失败）。
   final int? status;
-  ApiException(this.message, {this.code, this.status});
+  final Map<String, dynamic>? body;
+  ApiException(this.message, {this.code, this.status, this.body});
   @override
   String toString() => message;
 }
@@ -60,6 +68,7 @@ abstract interface class GitReadApi {
     String? snapshotId,
     String? cursor,
     int limit,
+    Duration timeout,
   });
   Future<GitCommitDetails> commitDetails(
     String sessionId,
@@ -98,7 +107,38 @@ abstract interface class GitReadApi {
   });
 }
 
-class Api implements GitReadApi {
+/// task-28（#86 方案 B）：支持 POST graph（1–128 tips）的宿主能力（可选接口）。
+///
+/// 旧宿主/测试 fake 不实现本接口 → controller 自动回退 GET；不给 `GitReadApi.graph`
+/// 加参数，避免破坏既有 fake 与 GET 兼容路径。
+abstract interface class GitGraphPostApi {
+  Future<GitGraphPage> graphPost(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit,
+    Duration timeout,
+  });
+}
+
+/// issue #93（全部分支模式）：all=true 的图请求只走 POST，固定页大小由宿主声明。
+/// 旧宿主/测试 fake 不实现本接口 → controller 回退现有 5/10/不限选择档。
+abstract interface class GitGraphAllApi {
+  Future<GitGraphPage> graphAll(
+    String sessionId,
+    String repositoryId, {
+    required bool all,
+    String? focus,
+    String? snapshotId,
+    String? cursor,
+    int limit = 16,
+    Duration timeout = const Duration(seconds: 35),
+  });
+}
+
+class Api implements GitReadApi, GitGraphPostApi, GitGraphAllApi {
   bool releaseUpdatesSupported = false;
   int? pairedAppBuild;
   String? pairedAppVersion;
@@ -136,6 +176,8 @@ class Api implements GitReadApi {
 
   /// 电脑端插件版本（bootstrap 返回，设置页「版本」展示用）。
   String pluginVersion = '';
+  /// App 版本透传（旧基线无 update 模块时保持空）。
+  String appVersion = '';
 
   /// 对话时间线能力由服务端显式声明，不能只按 package version 猜测。
   TimelineCapabilities timelineCapabilities = const TimelineCapabilities();
@@ -694,20 +736,19 @@ class Api implements GitReadApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadToFileUri(
-        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
-        target,
-        cancel: cancel,
-        onProgress: onProgress,
-        onMetadata: onMetadata,
-        startOffset: startOffset,
-        expectedEtag: expectedEtag,
-        keepPartialOnCancel: keepPartialOnCancel,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadToFileUri(
+    _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+    target,
+    cancel: cancel,
+    onProgress: onProgress,
+    onMetadata: onMetadata,
+    startOffset: startOffset,
+    expectedEtag: expectedEtag,
+    keepPartialOnCancel: keepPartialOnCancel,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// `/api/files?path=` 的前缀读取入口（保留既有签名/语义）。
   Future<DownloadPrefix> downloadFilePrefix(
@@ -716,14 +757,13 @@ class Api implements GitReadApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadPrefixFrom(
-        _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
-        maxBytes,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadPrefixFrom(
+    _uri('/api/files?path=${Uri.encodeQueryComponent(remotePath)}'),
+    maxBytes,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// `/turn-file` 坐标 URI：客户端只给记录坐标，不给路径（§6.23）。
   Uri _turnFileUri(TurnFileCoordinate coordinate) => _uri(
@@ -769,14 +809,13 @@ class Api implements GitReadApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadPrefixFrom(
-        _turnFileUri(coordinate),
-        maxBytes,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadPrefixFrom(
+    _turnFileUri(coordinate),
+    maxBytes,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// 按轮末记录坐标流式下载到临时文件（⋮ 打开/分享/保存到手机）。
   Future<DownloadResult> turnFileToFile(
@@ -789,18 +828,17 @@ class Api implements GitReadApi {
     Duration connectTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     http.Client? downloadClient,
-  }) =>
-      _downloadToFileUri(
-        _turnFileUri(coordinate),
-        target,
-        cancel: cancel,
-        onProgress: onProgress,
-        onMetadata: onMetadata,
-        startOffset: startOffset,
-        connectTimeout: connectTimeout,
-        idleTimeout: idleTimeout,
-        downloadClient: downloadClient,
-      );
+  }) => _downloadToFileUri(
+    _turnFileUri(coordinate),
+    target,
+    cancel: cancel,
+    onProgress: onProgress,
+    onMetadata: onMetadata,
+    startOffset: startOffset,
+    connectTimeout: connectTimeout,
+    idleTimeout: idleTimeout,
+    downloadClient: downloadClient,
+  );
 
   /// 读取 [stream] 的前 [maxBytes] 字节；空闲超过 [idleTimeout] 抛 [TimeoutException]。
   ///
@@ -1093,6 +1131,65 @@ class Api implements GitReadApi {
     });
   }
 
+  /// issue #98：为工作区外图片申请会话授权（once / session-directory）。
+  ///
+  /// 仅由用户显式操作调用；模型/Markdown 不自动申请。返回 `consentId/scope/expiresAt`。
+  Future<Map<String, dynamic>> createWorkspaceImageConsent({
+    required String sessionId,
+    required String path,
+    required String scope,
+    Duration timeout = const Duration(seconds: 15),
+  }) => postJson('/api/workspace-image/consent', {
+    'sessionId': sessionId,
+    'path': path,
+    'scope': scope,
+  }, timeout: timeout);
+
+  /// issue #94：只读工作区图片字节（本地 Markdown `![alt](path)`）。
+  ///
+  /// 只由服务端 `/workspace-image` 端点读取会话 cwd 内图片；客户端不直接读文件系统。
+  /// 失败抛 [ApiException]（UI 显示 alt + 可读原因）。
+  Future<WorkspaceImageData> workspaceImage(
+    String sessionId,
+    String path, {
+    String? consentId,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final uri = _uri(
+      '/api/workspace-image?sessionId=${Uri.encodeQueryComponent(sessionId)}'
+      '&path=${Uri.encodeQueryComponent(path)}'
+      '${consentId == null || consentId.isEmpty ? '' : '&consentId=${Uri.encodeQueryComponent(consentId)}'}',
+    );
+    final res = await _client
+        .get(
+          uri,
+          headers: {
+            if (token.isNotEmpty) 'x-mobile-token': token,
+            if (appVersion.isNotEmpty) 'x-mobile-app-version': appVersion,
+            'accept': 'image/*',
+          },
+        )
+        .timeout(timeout);
+    if (res.statusCode == 200) {
+      return WorkspaceImageData(
+        bytes: res.bodyBytes,
+        contentType: res.headers['content-type'],
+      );
+    }
+    Map<String, dynamic>? body;
+    try {
+      body = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {}
+    throw ApiException(
+      (body?['detail'] as String?) ??
+          (body?['error'] as String?) ??
+          'HTTP ${res.statusCode}',
+      code: body?['error'] is String ? body!['error'] as String : null,
+      status: res.statusCode,
+      body: body,
+    );
+  }
+
   /// v2.8.0：斜杠命令目录（对齐 PC 端 ctx.commands）。
   /// v2.9.0 review(LOW#13)：返回 (命令列表, unavailable)——服务端 commands 服务缺失时
   /// unavailable=true，UI 应提示"命令服务不可用"而非"无可用命令"。
@@ -1110,6 +1207,17 @@ class Api implements GitReadApi {
   /// issue #25：提交时（`_send` 判定为命令行且名字在命令目录里）与 ⊕ 菜单里的裸命令都走这里。
   /// 服务端把整条命令的上限放宽到 180s（`/compact` 要等内核跑完一次完整 LLM 摘要），客户端
   /// 必须比它更晚放弃（200s）——否则会在服务端收敛前先本地超时，把"已提交、结果未知"误报成失败。
+  /// issue #90：技能目录（GET /api/skills）。
+  Future<(List<Map<String, dynamic>>, bool)> skills(String sessionId) async {
+    final data = await getJson(
+      '/api/skills?sessionId=${Uri.encodeQueryComponent(sessionId)}',
+    );
+    return (
+      (data['skills'] as List? ?? []).cast<Map<String, dynamic>>(),
+      data['unavailable'] == true,
+    );
+  }
+
   Future<Map<String, dynamic>?> runCommand(
     String sessionId,
     String line, {
@@ -1563,6 +1671,7 @@ class Api implements GitReadApi {
     String? snapshotId,
     String? cursor,
     int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
   }) async => GitGraphPage.fromJson(
     await getJson(
       _gitQuery('/api/git/graph', {
@@ -1573,7 +1682,52 @@ class Api implements GitReadApi {
         'cursor': ?cursor,
         'limit': '$limit',
       }),
+      timeout: timeout,
     ),
+  );
+
+  /// task-28：POST graph（1–128 tips）。与 GET 共用 snapshotId/cursor 快照。
+  @override
+  Future<GitGraphPage> graphPost(
+    String sessionId,
+    String repositoryId,
+    List<GitGraphTip> tips, {
+    String? snapshotId,
+    String? cursor,
+    int limit = 100,
+    Duration timeout = const Duration(seconds: 15),
+  }) async => GitGraphPage.fromJson(
+    await postJson('/api/git/graph', {
+      'sessionId': sessionId,
+      'repositoryId': repositoryId,
+      'tips': [for (final tip in tips) tip.toJson()],
+      'limit': limit,
+      'snapshotId': ?snapshotId,
+      'cursor': ?cursor,
+    }, timeout: timeout),
+  );
+
+  /// issue #93：全部分支图（all=true，仅 POST；忽略 tips 选择集）。
+  @override
+  Future<GitGraphPage> graphAll(
+    String sessionId,
+    String repositoryId, {
+    required bool all,
+    String? focus,
+    String? snapshotId,
+    String? cursor,
+    int limit = 16,
+    Duration timeout = const Duration(seconds: 35),
+  }) async => GitGraphPage.fromJson(
+    await postJson('/api/git/graph', {
+      'sessionId': sessionId,
+      'repositoryId': repositoryId,
+      'all': all,
+      'focus': ?focus,
+      'limit': limit,
+      'snapshotId': ?snapshotId,
+      'cursor': ?cursor,
+    }, timeout: timeout),
   );
 
   @override
@@ -1683,6 +1837,22 @@ class Api implements GitReadApi {
   void Function()? onSseKeepalive;
 
   Stream<Map<String, dynamic>> eventsRaw() {
+    // v3.3.4（issue #126 真机）：SSE 必须用**独立 http.Client**，并在取消/错误/完成时
+    // 关闭它。共享 `_client` 的 keep-alive 连接在 `bodySub.cancel()` 后仍可能留在
+    // 连接池里，服务端看到的 TCP 不关闭；多次重连后 `mobileOnline` 涨到 maxConnections，
+    // 之后所有新连接 503 `too-many-connections`（实测 16/16）。
+    final client = http.Client();
+    var clientClosed = false;
+    void closeClient() {
+      if (clientClosed) return;
+      clientClosed = true;
+      try {
+        client.close();
+      } catch (_) {
+        // 已经关闭
+      }
+    }
+
     // v2.7.2 review(FS3)：onCancel 必须取消底层响应流订阅，否则订阅取消后
     // await-for 消费循环仍读 socket → 每条 SSE 长连接在 App 存活期间永不释放
     StreamSubscription<dynamic>? bodySub;
@@ -1702,6 +1872,7 @@ class Api implements GitReadApi {
       onCancel: () {
         cancelled = true;
         bodySub?.cancel();
+        closeClient();
       },
     );
     final req = http.Request('GET', _uri('/api/events'));
@@ -1711,20 +1882,26 @@ class Api implements GitReadApi {
     // 8 秒足够（正常服务器毫秒级回响应），失败越快轮换越快。
     final timeoutWatchdog = Timer(const Duration(seconds: 8), () {
       timedOut = true;
+      closeClient();
       if (!controller.isClosed) {
         controller.addError(ApiException('SSE 连接超时'));
         controller.close();
       }
     });
-    _client
+    client
         .send(req)
         .then((res) {
           if (timedOut || cancelled || controller.isClosed) {
             // 晚到的响应/已取消：立即消费并释放，不留半开 socket
             res.stream.listen((_) {}).cancel();
+            closeClient();
             return;
           }
           if (res.statusCode != 200) {
+            // 503/401 等：必须把 body 读完并关闭独立 client，否则服务端连接的 close
+            // 事件可能迟迟不触发；这是 16 条连接泄漏的另一条路径。
+            res.stream.listen((_) {}).cancel();
+            closeClient();
             if (!controller.isClosed) {
               controller.addError(ApiException('SSE HTTP ${res.statusCode}'));
               controller.close();
@@ -1760,15 +1937,18 @@ class Api implements GitReadApi {
                 ..write(s);
             },
             onDone: () {
+              closeClient();
               if (!controller.isClosed) controller.close();
             },
             onError: (e) {
+              closeClient();
               if (!controller.isClosed) controller.addError(e);
             },
             cancelOnError: true,
           );
         })
         .catchError((e) {
+          closeClient();
           if (!controller.isClosed) {
             controller.addError(e);
             controller.close();

@@ -3,16 +3,12 @@
 // 这里锁的是**行为语义**，不是像素：三层折叠、强制展开三条件、两档收起时机、
 // 用时只认服务端 time、单轮 >50 行分批、按 step 派生过程组。
 
+import 'package:dsh_mobile_app/l10n.dart';
 import 'package:dsh_mobile_app/models.dart';
 import 'package:dsh_mobile_app/turn_process.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ChatEvent ev(
-  int seq,
-  String type, [
-  Map<String, dynamic>? data,
-  int? time,
-]) =>
+ChatEvent ev(int seq, String type, [Map<String, dynamic>? data, int? time]) =>
     ChatEvent(seq: seq, type: type, data: data, time: time);
 
 TurnProcessTracker trackerOf(List<ChatEvent> events) {
@@ -79,7 +75,8 @@ List<ChatEvent> oneTurn({
         'turn': turn,
         if (endKind != null) 'reason': {'kind': endKind},
       }, includeTime ? endTime : null),
-    for (final seq in extraUserSeqs ?? const <int>[]) ev(seq, 'user/message', {'text': '插话'}),
+    for (final seq in extraUserSeqs ?? const <int>[])
+      ev(seq, 'user/message', {'text': '插话'}),
   ];
   return events;
 }
@@ -91,8 +88,10 @@ void main() {
       expect(turns, hasLength(1));
       final turn = turns.single;
       expect(turn.groups.map((g) => g.step), [1, 2]);
-      expect(turn.groups.first.rows.map((r) => r.kind),
-          [ProcessRowKind.reasoning, ProcessRowKind.tool]);
+      expect(turn.groups.first.rows.map((r) => r.kind), [
+        ProcessRowKind.reasoning,
+        ProcessRowKind.tool,
+      ]);
       expect(turn.groups.first.rows.last.callId, 'call-a');
       expect(turn.groups.last.rows.map((r) => r.callId), ['call-b']);
       expect(turn.toolCount, 2);
@@ -104,7 +103,10 @@ void main() {
         ev(1, 'turn/start', {'turn': 3}),
         ev(2, 'tool/call', {'turn': 3, 'callId': 'c1', 'name': 'shell'}),
         ev(3, 'tool/result', {'turn': 3, 'callId': 'c1', 'text': 'ok'}),
-        ev(4, 'turn/end', {'turn': 3, 'reason': {'kind': 'completed'}}),
+        ev(4, 'turn/end', {
+          'turn': 3,
+          'reason': {'kind': 'completed'},
+        }),
       ]).build();
       expect(turns.single.groups, hasLength(1));
       expect(turns.single.groups.single.step, isNull);
@@ -126,10 +128,18 @@ void main() {
     test('工具调用进行中 → 组抬头显示「正在调用工具…」，完成 → 「N 次工具调用」', () {
       final running = trackerOf([
         ev(1, 'turn/start', {'turn': 1}),
-        ev(2, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
+        ev(2, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
       ]).build().single;
       expect(running.groups.single.running, isTrue);
-      expect(processGroupHeader(running.groups.single, running: true), '正在调用工具…');
+      expect(
+        processGroupHeader(running.groups.single, running: true),
+        '1 次工具调用 · 进行中',
+      );
       final done = trackerOf(oneTurn()).build().single;
       expect(done.groups.first.running, isFalse);
       expect(processGroupHeader(done.groups.first, running: false), '1 次工具调用');
@@ -146,11 +156,25 @@ void main() {
         ev(1, 'turn/start', {'turn': 1}),
         // 提示词：事件序里 turn/start 之后的第一条真人 user/message（不算插话）。
         ev(2, 'user/message', {'text': '提示词', 'sourceKind': 'user'}),
-        ev(3, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
-        ev(4, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'c1', 'text': 'ok'}),
+        ev(3, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
+        ev(4, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'text': 'ok',
+        }),
         for (final seq in steerSeqs)
           ev(seq, 'user/message', {'text': '插话', 'sourceKind': 'user'}),
-        if (ended) ev(9, 'turn/end', {'turn': 1, 'reason': {'kind': endKind}}),
+        if (ended)
+          ev(9, 'turn/end', {
+            'turn': 1,
+            'reason': {'kind': endKind},
+          }),
       ];
       return trackerOf(events).build().single;
     }
@@ -254,17 +278,22 @@ void main() {
           policy: policy,
           turnRunning: false,
         );
-        expect(
-          collapsed,
-          policy.groupsCollapsedByDefault,
-          reason: '${mode.name}：组默认折叠只由展示模式决定',
-        );
+        expect(collapsed, isTrue, reason: '${mode.name}：已完成轮组默认折叠');
       }
-      // 运行中组仍强制展开。
+      // v4：标准运行中折叠、详细运行中展开。
       expect(
         groupAutoCollapsed(
           turn.groups.first,
           policy: const TurnFoldPolicy(),
+          turnRunning: true,
+        ),
+        isTrue,
+        reason: '标准运行中组抬头折叠',
+      );
+      expect(
+        groupAutoCollapsed(
+          turn.groups.first,
+          policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           turnRunning: true,
         ),
         isFalse,
@@ -300,21 +329,42 @@ void main() {
   });
 
   group('展示模式四档策略表（issue #52 note 1700 / 桌面 presentation-policy）', () {
-    const cases = <WorkStepDisplayMode, (bool, StepGrouping, bool, bool)>{
-      // mode: (foldCompletedTurns, stepGrouping, liveProcessDetail,
-      //        settledReasoningPreview)
-      WorkStepDisplayMode.concise: (true, StepGrouping.collapsed, false, false),
-      WorkStepDisplayMode.standard: (true, StepGrouping.collapsed, true, true),
-      WorkStepDisplayMode.detailed: (true, StepGrouping.history, true, true),
-      WorkStepDisplayMode.expanded: (false, StepGrouping.none, false, true),
-    };
+    const cases =
+        <WorkStepDisplayMode, (bool, LiveSegmentMode, LiveGroupMode, bool)>{
+          // mode: (foldCompletedTurns, liveSegment, liveGroups,
+          //        liveDetailsAutoExpanded)
+          WorkStepDisplayMode.concise: (
+            true,
+            LiveSegmentMode.summary,
+            LiveGroupMode.hidden,
+            false,
+          ),
+          WorkStepDisplayMode.standard: (
+            true,
+            LiveSegmentMode.expanded,
+            LiveGroupMode.collapsed,
+            false,
+          ),
+          WorkStepDisplayMode.detailed: (
+            false,
+            LiveSegmentMode.expanded,
+            LiveGroupMode.expanded,
+            false,
+          ),
+          WorkStepDisplayMode.expanded: (
+            false,
+            LiveSegmentMode.expanded,
+            LiveGroupMode.flat,
+            true,
+          ),
+        };
     for (final entry in cases.entries) {
       test('${entry.key.name} 档策略', () {
         final policy = TurnFoldPolicy(mode: entry.key);
         expect(policy.foldCompletedTurns, entry.value.$1);
-        expect(policy.stepGrouping, entry.value.$2);
-        expect(policy.liveProcessDetail, entry.value.$3);
-        expect(policy.settledReasoningPreview, entry.value.$4);
+        expect(policy.liveSegment, entry.value.$2);
+        expect(policy.liveGroups, entry.value.$3);
+        expect(policy.liveDetailsAutoExpanded, entry.value.$4);
       });
     }
 
@@ -324,13 +374,14 @@ void main() {
       expect(policy.timing, TurnFoldTiming.afterAnswer);
     });
 
-    test('单张工具卡在所有档位都默认收起（完全展开不自动展开工具卡）', () {
-      // 策略里不再有「单卡默认展开」字段：完全展开只影响整轮/过程组。
+    test('完全展开只自动展开运行中当前轮详情；已完成不自动', () {
       for (final mode in WorkStepDisplayMode.values) {
         final policy = TurnFoldPolicy(mode: mode);
-        expect(policy.groupsCollapsedByDefault,
-            mode != WorkStepDisplayMode.expanded,
-            reason: mode.name);
+        expect(
+          policy.liveDetailsAutoExpanded,
+          mode == WorkStepDisplayMode.expanded,
+          reason: mode.name,
+        );
       }
     });
   });
@@ -351,10 +402,19 @@ void main() {
 
     test('下次有新消息：无新 user 消息时保持展开，来了才收起', () {
       const policy = TurnFoldPolicy(timing: TurnFoldTiming.onNewMessage);
-      expect(turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const []), isFalse);
-      expect(turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const [8]), isFalse,
-          reason: 'endSeq 本身不算「之后的新消息」');
-      expect(turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const [20]), isTrue);
+      expect(
+        turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const []),
+        isFalse,
+      );
+      expect(
+        turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const [8]),
+        isFalse,
+        reason: 'endSeq 本身不算「之后的新消息」',
+      );
+      expect(
+        turnAutoCollapsed(turn, policy: policy, humanUserSeqs: const [20]),
+        isTrue,
+      );
       expect(newMessageArrivedAfter(turn, const [20]), isTrue);
       expect(newMessageArrivedAfter(turn, const [5]), isFalse);
     });
@@ -370,14 +430,15 @@ void main() {
       );
     });
 
-    test('详细档仍自动收起已完成轮（foldCompletedTurns=true）', () {
+    test('详细档不再整轮折叠（foldCompletedTurns=false）', () {
       expect(
         turnAutoCollapsed(
           turn,
           policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           humanUserSeqs: const [20],
         ),
-        isTrue,
+        isFalse,
+        reason: '详细档不整轮折叠',
       );
       expect(
         turnAutoCollapsed(
@@ -385,16 +446,31 @@ void main() {
           policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
           humanUserSeqs: const [],
         ),
-        isTrue,
+        isFalse,
       );
     });
 
     test('运行中的组强制展开（底部最新组延后收起）；完成的组默认折叠', () {
       final running = trackerOf([
         ev(1, 'turn/start', {'turn': 1}),
-        ev(2, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
-        ev(3, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'c1', 'text': 'ok'}),
-        ev(4, 'tool/call', {'turn': 1, 'step': 2, 'callId': 'c2', 'name': 'read_file'}),
+        ev(2, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
+        ev(3, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'text': 'ok',
+        }),
+        ev(4, 'tool/call', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'name': 'read_file',
+        }),
       ]).build().single;
       expect(running.groups, hasLength(2));
       for (var i = 0; i < running.groups.length; i++) {
@@ -404,16 +480,22 @@ void main() {
             policy: const TurnFoldPolicy(),
             turnRunning: true,
           ),
+          isTrue,
+          reason: 'v4 标准运行中组抬头折叠（$i）',
+        );
+        expect(
+          groupAutoCollapsed(
+            running.groups[i],
+            policy: const TurnFoldPolicy(mode: WorkStepDisplayMode.detailed),
+            turnRunning: true,
+          ),
           isFalse,
-          reason: '运行中的组强制展开（$i）',
+          reason: 'v4 详细运行中组展开（$i）',
         );
       }
       final done = trackerOf(oneTurn()).build().single;
       expect(
-        groupAutoCollapsed(
-          done.groups.first,
-          policy: const TurnFoldPolicy(),
-        ),
+        groupAutoCollapsed(done.groups.first, policy: const TurnFoldPolicy()),
         isTrue,
         reason: '已完成的组默认折叠',
       );
@@ -433,12 +515,35 @@ void main() {
       final turn = trackerOf([
         ev(1, 'turn/start', {'turn': 1}),
         ev(2, 'user/message', {'text': '提示词', 'sourceKind': 'user'}),
-        ev(3, 'tool/call', {'turn': 1, 'step': 1, 'callId': 'c1', 'name': 'shell'}),
-        ev(4, 'tool/result', {'turn': 1, 'step': 1, 'callId': 'c1', 'text': 'ok'}),
+        ev(3, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
+        ev(4, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'text': 'ok',
+        }),
         ev(5, 'user/message', {'text': '插话', 'sourceKind': 'user'}),
-        ev(6, 'tool/call', {'turn': 1, 'step': 2, 'callId': 'c2', 'name': 'read_file'}),
-        ev(7, 'tool/result', {'turn': 1, 'step': 2, 'callId': 'c2', 'text': 'ok'}),
-        ev(9, 'turn/end', {'turn': 1, 'reason': {'kind': 'completed'}}),
+        ev(6, 'tool/call', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'name': 'read_file',
+        }),
+        ev(7, 'tool/result', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'text': 'ok',
+        }),
+        ev(9, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }),
       ]).build().single;
       final segments = segmentsOf(turn);
       expect(segments, hasLength(2));
@@ -452,13 +557,17 @@ void main() {
 
   group('用时只认服务端 time（缺省不显示）', () {
     test('起止 time 可用且正常完成 → 页脚带用时', () {
-      final turn = trackerOf(oneTurn(startTime: 1000, endTime: 4500)).build().single;
+      final turn = trackerOf(oneTurn(startTime: 1000, endTime: 4500))
+          .build()
+          .single;
       expect(turn.durationMs, 3500);
       expect(turnFooterText(turn), '已完成 · 用时 3.5 秒');
     });
 
     test('桌面口径：不足 1 秒按 1 秒显示（Math.max(1000, end-start)）', () {
-      final turn = trackerOf(oneTurn(startTime: 1000, endTime: 1200)).build().single;
+      final turn = trackerOf(oneTurn(startTime: 1000, endTime: 1200))
+          .build()
+          .single;
       expect(turn.durationMs, 1000);
       expect(turnFooterText(turn), '已完成 · 用时 1.0 秒');
     });
@@ -476,8 +585,10 @@ void main() {
       final events = oneTurn();
       final noEndTime = [
         for (final e in events)
-          if (e.type == 'turn/end') ChatEvent(seq: e.seq, type: e.type, data: e.data)
-          else e,
+          if (e.type == 'turn/end')
+            ChatEvent(seq: e.seq, type: e.type, data: e.data)
+          else
+            e,
       ];
       final turn = trackerOf(noEndTime).build().single;
       expect(turn.durationMs, isNull);
@@ -492,34 +603,7 @@ void main() {
     });
   });
 
-  group('单轮过程行分批展示（>50 行）', () {
-    List<ProcessRow> rows(int count) => [
-          for (var i = 0; i < count; i++)
-            ProcessRow.tool(
-              seq: i + 1,
-              step: 1,
-              callId: 'c$i',
-              toolName: 'shell',
-              status: 'success',
-            ),
-        ];
-
-    test('50 行以内全量展示', () {
-      final window = batchProcessRows(rows(50), processBatchSize);
-      expect(window.visible, hasLength(50));
-      expect(window.hidden, 0);
-      expect(window.total, 50);
-    });
-
-    test('超过 50 行只展示前 50 行，并给出剩余数', () {
-      final window = batchProcessRows(rows(120), processBatchSize);
-      expect(window.visible, hasLength(50));
-      expect(window.hidden, 70);
-      expect(window.total, 120);
-      expect(window.visible.first.callId, 'c0');
-      expect(window.visible.last.callId, 'c49');
-    });
-
+  group('单轮过程行（取消分批后）', () {
     test('折叠摘要只给计数，不拼思维链预览（预览只作用于思考行标题）', () {
       final segment = segmentsOf(trackerOf(oneTurn()).build().single).single;
       expect(segment.summary, '思考 16 字 · 2 组 · 2 次工具调用');
@@ -545,66 +629,106 @@ void main() {
       expect(long.reasoningPreview(max: 20), '${'x' * 20}…');
     });
 
-    test('liveProcessDetail：标准/详细档抬头附带当前工具名，简洁/完全展开只给通用文案', () {
-      final group = ProcessGroup(step: 1, rows: [
-        ProcessRow.tool(
-          seq: 1,
-          step: 1,
-          callId: 'c',
-          toolName: 'shell',
-          status: 'running',
-        ),
-      ]);
-      expect(processGroupHeader(group, running: true), '正在调用工具…');
+    test('liveProcessDetail：详细档运行中抬头附当前工具名；标准折叠抬头给计数/状态', () {
+      final group = ProcessGroup(
+        step: 1,
+        rows: [
+          ProcessRow.tool(
+            seq: 1,
+            step: 1,
+            callId: 'c',
+            toolName: 'shell',
+            status: 'running',
+          ),
+        ],
+      );
+      expect(processGroupHeader(group, running: true), '1 次工具调用 · 进行中');
       expect(
         processGroupHeader(group, running: true, showDetail: true),
         '正在调用工具…（shell）',
       );
       // 完成态不显示用时（有意简化）。
-      final doneGroup = ProcessGroup(step: 1, rows: [
-        ProcessRow.tool(
-          seq: 1,
-          step: 1,
-          callId: 'c',
-          toolName: 'shell',
-          status: 'success',
-        ),
-      ]);
+      final doneGroup = ProcessGroup(
+        step: 1,
+        rows: [
+          ProcessRow.tool(
+            seq: 1,
+            step: 1,
+            callId: 'c',
+            toolName: 'shell',
+            status: 'success',
+          ),
+        ],
+      );
       expect(processGroupHeader(doneGroup, running: false), '1 次工具调用');
     });
 
     test('reasoning-only 组抬头：显示「思考 N 字」，不得是「0 次工具调用」', () {
-      final group = ProcessGroup(step: 2, rows: [
-        ProcessRow.reasoning(
-          seq: 9,
-          step: 2,
-          reasoning: '只有思考没有工具\n第二行',
-          reasoningChars: 14,
-        ),
-      ]);
+      final group = ProcessGroup(
+        step: 2,
+        rows: [
+          ProcessRow.reasoning(
+            seq: 9,
+            step: 2,
+            reasoning: '只有思考没有工具\n第二行',
+            reasoningChars: 14,
+          ),
+        ],
+      );
       expect(processGroupHeader(group, running: false), '思考 14 字');
-      expect(processGroupHeader(group, running: false), isNot(contains('0 次工具调用')));
-      expect(processGroupHeader(group, running: false), isNot(contains('工具调用')));
+      expect(
+        processGroupHeader(group, running: false),
+        isNot(contains('0 次工具调用')),
+      );
+      expect(
+        processGroupHeader(group, running: false),
+        isNot(contains('工具调用')),
+      );
     });
 
     test('缺 step 的 reasoning-only 组（旧内核退化组）：仍给思考语义，不是 0 次工具调用', () {
-      final group = ProcessGroup(step: null, rows: [
-        ProcessRow.reasoning(seq: 5, step: null, reasoning: '回想', reasoningChars: 2),
-      ]);
+      final group = ProcessGroup(
+        step: null,
+        rows: [
+          ProcessRow.reasoning(
+            seq: 5,
+            step: null,
+            reasoning: '回想',
+            reasoningChars: 2,
+          ),
+        ],
+      );
       expect(processGroupHeader(group, running: false), '思考 2 字');
     });
 
     test('旧内核缺 reasoningChars 的 reasoning-only 组：抬头退化为「思考」', () {
-      final group = ProcessGroup(step: 3, rows: [
-        ProcessRow.reasoning(seq: 11, step: 3, reasoning: '', reasoningChars: 0),
-      ]);
+      final group = ProcessGroup(
+        step: 3,
+        rows: [
+          ProcessRow.reasoning(
+            seq: 11,
+            step: 3,
+            reasoning: '',
+            reasoningChars: 0,
+          ),
+        ],
+      );
       expect(processGroupHeader(group, running: false), '思考');
     });
 
     test('过程组抬头不显示用时（有意简化）', () {
-      final group = ProcessGroup(step: 1, rows: [
-        ProcessRow.tool(seq: 1, step: 1, callId: 'c', toolName: 'shell', status: 'success'),
-      ]);
+      final group = ProcessGroup(
+        step: 1,
+        rows: [
+          ProcessRow.tool(
+            seq: 1,
+            step: 1,
+            callId: 'c',
+            toolName: 'shell',
+            status: 'success',
+          ),
+        ],
+      );
       expect(processGroupHeader(group, running: false), '1 次工具调用');
       expect(processGroupHeader(group, running: false), isNot(contains('用时')));
     });
@@ -618,8 +742,16 @@ void main() {
       }
       for (final event in [
         ev(11, 'turn/start', {'turn': 2}),
-        ev(12, 'tool/call', {'turn': 2, 'step': 1, 'callId': 'c2', 'name': 'shell'}),
-        ev(13, 'turn/end', {'turn': 2, 'reason': {'kind': 'completed'}}),
+        ev(12, 'tool/call', {
+          'turn': 2,
+          'step': 1,
+          'callId': 'c2',
+          'name': 'shell',
+        }),
+        ev(13, 'turn/end', {
+          'turn': 2,
+          'reason': {'kind': 'completed'},
+        }),
       ]) {
         tracker.observe(event);
       }
@@ -634,6 +766,255 @@ void main() {
       expect(tracker.build(), isNotEmpty);
       tracker.reset();
       expect(tracker.build(), isEmpty);
+    });
+  });
+
+  group('R04 部分轮次（历史窗口缺 turn/start）', () {
+    test('缺 turn/start 仍保留轮次身份与合成锚点，页脚可用且不猜用时', () {
+      final events = <ChatEvent>[
+        for (var i = 0; i < 6; i += 1)
+          ev(100 + i * 2, 'tool/call', {
+            'turn': 1,
+            'step': 1,
+            'callId': 'c$i',
+            'name': 'bash',
+          }),
+        ev(120, 'assistant/message', {
+          'turn': 1,
+          'step': 1,
+          'messageId': 'a1',
+          'text': 'done',
+        }),
+        ev(121, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }),
+      ];
+      final tracker = TurnProcessTracker();
+      for (final event in events) {
+        tracker.observe(event);
+      }
+      final turns = tracker.build();
+      expect(turns, hasLength(1), reason: '缺 start 的部分轮次不得整轮丢弃');
+      final turn = turns.single;
+      expect(turn.partial, isTrue);
+      expect(turn.startSeq, 100, reason: '合成锚点取该轮最早可观察事件 seq');
+      expect(turn.toolCount, 6);
+      expect(turn.ended, isTrue);
+      expect(turnFooterText(turn), '已完成', reason: '缺 time 时按既有规则不显示用时');
+    });
+  });
+
+  group('R19 过程抬头/页脚随语言设置本地化', () {
+    tearDown(() => L10n.lang = 'zh');
+
+    test('英文设置下页脚、用时、过程组抬头与段摘要均为英文', () {
+      L10n.lang = 'en';
+      final tracker = trackerOf(oneTurn(startTime: 1000, endTime: 4500));
+      final turn = tracker.build().single;
+      expect(turnFooterText(turn), 'Completed · took 3.5s');
+      expect(turnFooterText(turn), isNot(contains('已完成')));
+      expect(formatTurnDuration(3500), '3.5s');
+      expect(formatTurnDuration(65000), '1m 05s');
+      expect(formatTurnDuration(3660000), '1h 01m');
+
+      final group = ProcessGroup(
+        step: 1,
+        rows: [
+          ProcessRow.tool(
+            seq: 1,
+            callId: 'c1',
+            toolName: 'bash',
+            status: 'success',
+          ),
+        ],
+      );
+      expect(processGroupHeader(group, running: false), '1 tool calls');
+      expect(
+        processGroupHeader(group, running: true),
+        '1 tool calls · running',
+      );
+      final segment = ProcessSegment(
+        rows: [
+          ProcessRow.reasoning(seq: 1, reasoning: 'think', reasoningChars: 5),
+          ProcessRow.tool(
+            seq: 2,
+            callId: 'c1',
+            toolName: 'bash',
+            status: 'success',
+          ),
+        ],
+      );
+      expect(segment.summary, contains('tool calls'));
+      expect(segment.summary, contains('thinking'));
+
+      // 含用时的页脚：英文标签 + 英文用时。
+      final withDuration = TurnProcess(
+        turn: 1,
+        startSeq: 1,
+        endSeq: 9,
+        ended: true,
+        startedAtMs: 1000,
+        endedAtMs: 4500,
+        groups: const [],
+      );
+      expect(turnFooterText(withDuration), 'Completed · took 3.5s');
+    });
+
+    test('中文（默认）仍输出既有中文文案', () {
+      final tracker = trackerOf(oneTurn());
+      expect(turnFooterText(tracker.build().single), '已完成 · 用时 3.5 秒');
+      expect(formatTurnDuration(3500), '3.5 秒');
+    });
+  });
+  group('issue #91：同 turn 内插话的段边界（提示词可为 agent-message）', () {
+    test('首条 user 是 agent-message 时，后续真人 user 都是插话而不是提示词', () {
+      final turn = trackerOf([
+        ev(1, 'turn/start', {'turn': 1}),
+        // 提示词不是真人（agent-message/team message）；旧实现会把它当"首条真人"，
+        // 错误吞掉真正的第一个插话。
+        ev(2, 'user/message', {
+          'text': 'team message',
+          'sourceKind': 'agent-message',
+        }),
+        ev(3, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
+        ev(4, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'text': 'ok',
+        }),
+        ev(5, 'user/message', {'text': '另外', 'sourceKind': 'user'}),
+        ev(6, 'tool/call', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'name': 'shell',
+        }),
+        ev(7, 'tool/result', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'text': 'ok',
+        }),
+        ev(8, 'user/message', {'text': '你没有子代理吗', 'sourceKind': 'user'}),
+        ev(9, 'tool/call', {
+          'turn': 1,
+          'step': 3,
+          'callId': 'c3',
+          'name': 'shell',
+        }),
+        ev(10, 'tool/result', {
+          'turn': 1,
+          'step': 3,
+          'callId': 'c3',
+          'text': 'ok',
+        }),
+        ev(11, 'assistant/message', {'turn': 1, 'step': 3, 'text': '回答'}),
+        ev(12, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }),
+      ]).build().single;
+      expect(turn.humanUserSeqs, [
+        5,
+        8,
+      ], reason: '两条真人发言都是插话，提示词是 agent-message');
+      expect(turn.hasInterjection, isTrue);
+      final segments = segmentsOf(turn);
+      expect(segments.length, 3, reason: '按两条插话切成 3 段，不能吞掉第一段之后的边界');
+      expect(segments.map((s) => s.rows.length), [1, 1, 1]);
+    });
+
+    test('首条 user 是真人提示词时，仍只把后续真人消息算插话（旧行为不回归）', () {
+      final turn = trackerOf([
+        ev(1, 'turn/start', {'turn': 1}),
+        ev(2, 'user/message', {'text': '提示词', 'sourceKind': 'user'}),
+        ev(3, 'tool/call', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'name': 'shell',
+        }),
+        ev(4, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'c1',
+          'text': 'ok',
+        }),
+        ev(5, 'user/message', {'text': '插话', 'sourceKind': 'user'}),
+        ev(6, 'tool/call', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'name': 'shell',
+        }),
+        ev(7, 'tool/result', {
+          'turn': 1,
+          'step': 2,
+          'callId': 'c2',
+          'text': 'ok',
+        }),
+        ev(8, 'turn/end', {
+          'turn': 1,
+          'reason': {'kind': 'completed'},
+        }),
+      ]).build().single;
+      expect(turn.humanUserSeqs, [5], reason: '提示词不算插话');
+      expect(segmentsOf(turn).length, 2);
+    });
+  });
+
+  group('issue #92：压缩回放孤儿工具结果', () {
+    test('有已锚定轮次时，缺 turn/start 的旧 turn tool/result 生成 partial 过程组', () {
+      final turns = trackerOf([
+        ev(1, 'turn/start', {'turn': 220}),
+        ev(2, 'user/message', {'text': '开始', 'sourceKind': 'user'}),
+        ev(3, 'tool/call', {
+          'turn': 220,
+          'step': 1,
+          'callId': 'c-now',
+          'name': 'bash',
+        }),
+        ev(4, 'tool/result', {
+          'turn': 220,
+          'step': 1,
+          'callId': 'c-now',
+          'name': 'bash',
+          'text': 'ok',
+        }),
+        // 压缩回放：新 seq、旧 turn，窗口里没有 148 的 turn/start。
+        ev(5, 'tool/result', {
+          'turn': 148,
+          'step': 1,
+          'callId': 'c-old',
+          'name': 'bash',
+          'text': 'note 2312',
+        }),
+      ]).build();
+      expect(turns.map((t) => t.turn), containsAll([148, 220]));
+      final orphan = turns.singleWhere((t) => t.turn == 148);
+      expect(orphan.partial, isTrue);
+      expect(orphan.ended, isTrue);
+      expect(orphan.rows.single.callId, 'c-old');
+      expect(orphan.groups.single.toolCount, 1);
+    });
+
+    test('没有已锚定轮次时（典型 #61 旧卡片场景）不生成孤儿过程组', () {
+      final turns = trackerOf([
+        ev(1, 'tool/result', {
+          'turn': 1,
+          'step': 1,
+          'callId': 'call-orphan',
+          'text': 'SUMMARY',
+        }),
+      ]).build();
+      expect(turns, isEmpty, reason: '无 turn/start 的 fallback 仍走独立工具卡');
     });
   });
 }

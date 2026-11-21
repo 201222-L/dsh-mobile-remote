@@ -25,7 +25,11 @@ List<Map<String, dynamic>> _turnEvents(int turns, {int replyRepeat = 20}) {
   final out = <Map<String, dynamic>>[];
   var seq = 1;
   for (var turn = 1; turn <= turns; turn++) {
-    out.add({'seq': seq++, 'type': 'turn/start', 'data': {'turn': turn}});
+    out.add({
+      'seq': seq++,
+      'type': 'turn/start',
+      'data': {'turn': turn},
+    });
     out.add({
       'seq': seq++,
       'type': 'user/message',
@@ -34,7 +38,11 @@ List<Map<String, dynamic>> _turnEvents(int turns, {int replyRepeat = 20}) {
     out.add({
       'seq': seq++,
       'type': 'assistant/message',
-      'data': {'messageId': 'a$turn', 'turn': turn, 'text': '回答 $turn ' * replyRepeat},
+      'data': {
+        'messageId': 'a$turn',
+        'turn': turn,
+        'text': '回答 $turn ' * replyRepeat,
+      },
     });
   }
   return out;
@@ -48,7 +56,11 @@ List<Map<String, dynamic>> _denseTurnEvents({
   final out = <Map<String, dynamic>>[];
   var seq = 1;
   for (var turn = 1; turn <= turns; turn++) {
-    out.add({'seq': seq++, 'type': 'turn/start', 'data': {'turn': turn}});
+    out.add({
+      'seq': seq++,
+      'type': 'turn/start',
+      'data': {'turn': turn},
+    });
     out.add({
       'seq': seq++,
       'type': 'user/message',
@@ -58,7 +70,12 @@ List<Map<String, dynamic>> _denseTurnEvents({
       out.add({
         'seq': seq++,
         'type': 'tool/result',
-        'data': {'callId': 'c$turn-$i', 'name': 'shell', 'text': '工具输出 $turn-$i', 'isError': false},
+        'data': {
+          'callId': 'c$turn-$i',
+          'name': 'shell',
+          'text': '工具输出 $turn-$i',
+          'isError': false,
+        },
       });
     }
     out.add({
@@ -97,10 +114,10 @@ class _PagedBackend {
     );
 
   http.Response _json(Map<String, dynamic> body) => http.Response(
-        jsonEncode(body),
-        200,
-        headers: {'content-type': 'application/json; charset=utf-8'},
-      );
+    jsonEncode(body),
+    200,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
 
   Future<http.Response> _handle(http.Request request) async {
     final path = request.url.path;
@@ -124,14 +141,18 @@ class _PagedBackend {
       if (params.containsKey('after')) {
         final after = int.tryParse(params['after'] ?? '') ?? 0;
         final following = events.where((e) => seqOf(e) > after).toList();
-        final page = following.length > limit ? following.sublist(0, limit) : following;
+        final page = following.length > limit
+            ? following.sublist(0, limit)
+            : following;
         return _json({
           'ok': true,
           'events': page,
           'hasMore': following.length > page.length,
         });
       }
-      final tail = events.length > limit ? events.sublist(events.length - limit) : events;
+      final tail = events.length > limit
+          ? events.sublist(events.length - limit)
+          : events;
       return _json({
         'ok': true,
         'events': tail,
@@ -167,23 +188,27 @@ Future<void> _pumpChat(
   WidgetTester tester, {
   required _PagedBackend backend,
 }) async {
-  await tester.pumpWidget(MaterialApp(
-    home: ChatScreen(
-      store: AppStore()..sessionId = 'paged-session',
-      apiClient: backend.api,
-      onTitleChanged: () {},
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChatScreen(
+        store: AppStore()..sessionId = 'paged-session',
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
     ),
-  ));
+  );
   await tester.pump(const Duration(milliseconds: 350));
   await tester.pumpAndSettle();
 }
 
 ScrollPosition _position(WidgetTester tester) => tester
     .state<ScrollableState>(
-      find.descendant(
-        of: find.byType(CustomScrollView),
-        matching: find.byType(Scrollable),
-      ),
+      find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     )
     .position;
 
@@ -221,8 +246,10 @@ Future<List<double>> _navigate(
   }
   position.removeListener(record);
   // ignore: avoid_print
-  print('PAGEDLOC turn=$turn probes=${offsets.length} offsets=$offsets '
-      'pixels=${position.pixels} min=${position.minScrollExtent} max=${position.maxScrollExtent}');
+  print(
+    'PAGEDLOC turn=$turn probes=${offsets.length} offsets=$offsets '
+    'pixels=${position.pixels} min=${position.minScrollExtent} max=${position.maxScrollExtent}',
+  );
   return offsets;
 }
 
@@ -238,13 +265,21 @@ void main() {
 
     final probes = await _navigate(tester, 2);
 
-    expect(backend.beforeRequests.length, greaterThan(5),
-        reason: '跨页跳转应真的翻了多页历史（不是一次性全给）');
-    expect(_textInViewport(tester, '问题 2'), isTrue,
-        reason: '真实分页路径下第 2 轮必须真的进入视口（复审反例：24 次用尽仍未进入）');
+    expect(
+      backend.beforeRequests.length,
+      greaterThan(5),
+      reason: '跨页跳转应真的翻了多页历史（不是一次性全给）',
+    );
+    expect(
+      _textInViewport(tester, '问题 2'),
+      isTrue,
+      reason: '真实分页路径下第 2 轮必须真的进入视口（复审反例：24 次用尽仍未进入）',
+    );
     expect(tester.takeException(), isNull);
     // ignore: avoid_print
-    print('PAGEDLOC coldProbes=${probes.length} beforePages=${backend.beforeRequests.length}');
+    print(
+      'PAGEDLOC coldProbes=${probes.length} beforePages=${backend.beforeRequests.length}',
+    );
   });
 
   testWidgets('真实分页：热跳同一目标不劣化（先离开再重跳）', (tester) async {
@@ -264,17 +299,22 @@ void main() {
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 40));
     }
-    expect(_textInViewport(tester, '问题 2'), isFalse,
-        reason: '重跳前目标必须已经不在视口（否则测不到热缓存）');
+    expect(
+      _textInViewport(tester, '问题 2'),
+      isFalse,
+      reason: '重跳前目标必须已经不在视口（否则测不到热缓存）',
+    );
     // 贴近底部时刻度轨会隐藏；再离开底部把它显出来（历史仍已加载、缓存未清）。
     await _leaveBottom(tester);
 
     final hot = await _navigate(tester, 2);
 
-    expect(_textInViewport(tester, '问题 2'), isTrue,
-        reason: '热跳同样必须落到目标');
-    expect(hot.length, lessThanOrEqualTo(cold.length),
-        reason: '热缓存不应比冷跳更慢（冷 ${cold.length} 步 / 热 ${hot.length} 步）');
+    expect(_textInViewport(tester, '问题 2'), isTrue, reason: '热跳同样必须落到目标');
+    expect(
+      hot.length,
+      lessThanOrEqualTo(cold.length),
+      reason: '热缓存不应比冷跳更慢（冷 ${cold.length} 步 / 热 ${hot.length} 步）',
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -286,8 +326,11 @@ void main() {
 
     await _navigate(tester, 5);
 
-    expect(_textInViewport(tester, '问题 5'), isTrue,
-        reason: '真机形状（轮少条目多）的中段目标也要进入视口');
+    expect(
+      _textInViewport(tester, '问题 5'),
+      isTrue,
+      reason: '真机形状（轮少条目多）的中段目标也要进入视口',
+    );
     expect(tester.takeException(), isNull);
   });
 }

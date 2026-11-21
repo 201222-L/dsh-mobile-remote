@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:dsh_mobile_app/api.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'sse_test_host.dart' show waitFor;
+
 const _waitTimeout = Duration(seconds: 3);
 
 class FakeSse {
@@ -132,6 +134,29 @@ class FakeSseConnection {
     _cancellationExpected = true;
   }
 
+  /// 回写一个带 Content-Length 的非 200 响应（issue #131：503 容量拒绝路径）。
+  Future<void> sendErrorResponse(int statusCode, String body) async {
+    if (isClosed) return;
+    expect(responseSent, isFalse);
+    responseSent = true;
+    final payload = utf8.encode(body);
+    try {
+      _socket
+        ..add(
+          utf8.encode(
+            'HTTP/1.1 $statusCode Service Unavailable\r\n'
+            'Content-Type: application/json\r\n'
+            'Content-Length: ${payload.length}\r\n'
+            'Connection: close\r\n\r\n',
+          ),
+        )
+        ..add(payload);
+      await _socket.flush();
+    } catch (error) {
+      _handleError(error);
+    }
+  }
+
   void _handleError(Object error) {
     if (_disposing) return;
     // 只有显式发起取消后发生的传输断连才可接受；其它错误必须让断言失败。
@@ -202,6 +227,14 @@ class SseClient {
     expectHealthy();
     expect(events, isNotEmpty, reason: '必须实际收到 SSE 帧而不只是请求已到达');
     expect(events.first['type'], 'hello');
+  }
+
+  Future<void> waitForError() async {
+    await waitFor(
+      () => errors.isNotEmpty,
+      label: 'SSE 错误事件',
+      timeout: _waitTimeout,
+    );
   }
 
   Future<void> cancel() => _subscription.cancel();
@@ -282,5 +315,30 @@ void main() {
     }
     expect(s.unexpectedErrors, isEmpty);
     expect(s.openConnections, 0, reason: '每次窗口内重建都必须释放自己的连接');
+  });
+
+  // GitLab #131：服务端配额满返回 503 时，App 必须消费响应体并关闭独立 client，
+  // 否则事件流虽已 error，底层 socket 仍被 http.Client 连接池挂着，服务端继续占用配额。
+  test('503 容量拒绝 → 消费响应体并释放连接', () async {
+    final s = await FakeSse.start();
+    addTearDown(s.stop);
+    final client = SseClient(s.api());
+    addTearDown(client.cancel);
+    final connection = await s.nextRequest();
+    expect(s.requests, 1);
+    connection.prepareForCancellation();
+
+    await connection.sendErrorResponse(
+      503,
+      '{"error":"too-many-connections"}',
+    );
+
+    await client.waitForError();
+    expect('${client.errors.first}', contains('SSE HTTP 503'));
+    await connection.waitForClose();
+    expect(client.errors.length, 1, reason: '503 只上报一次错误，不能重试风暴');
+    expect(client.events, isEmpty);
+    expect(s.unexpectedErrors, isEmpty);
+    expect(s.openConnections, 0, reason: '503 路径必须关闭独立 client，不能留下 socket');
   });
 }
