@@ -21,6 +21,10 @@ const CONFIG = {
 };
 
 // 1x1 PNG（带合法 CRC），用于真实解码前嗅探/尺寸路径。
+// 真实 fd 校验依赖 Linux /proc/self/fd + O_NOFOLLOW；Windows/macOS 端点在
+// open 前 fail-closed 501。平台无关的注入 fs 用例仍全平台运行。
+const LINUX_FD_VERIFICATION = process.platform === "linux";
+
 const PNG_1X1 = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAF9Z2ZkAAAAASUVORK5CYII=",
 	"base64",
@@ -98,7 +102,7 @@ function workspace() {
 	return { root, cwd };
 }
 
-test("GET /workspace-image：合法 PNG（相对/绝对）→ 200 + 类型/缓存/ETag；HEAD/304", async () => {
+test("GET /workspace-image：合法 PNG（相对/绝对）→ 200 + 类型/缓存/ETag；HEAD/304", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -124,7 +128,7 @@ test("GET /workspace-image：合法 PNG（相对/绝对）→ 200 + 类型/缓�
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
 
-test("GET /workspace-image：目录逃逸 / 绝对路径越界 / symlink 逃逸 → 403", async () => {
+test("GET /workspace-image：目录逃逸 / 绝对路径越界 / symlink 逃逸 → 403", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -141,7 +145,7 @@ test("GET /workspace-image：目录逃逸 / 绝对路径越界 / symlink 逃逸 
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
 
-test("GET /workspace-image：非图片/扩展名与 magic 不符 → 415；缺文件/会话 → 4xx", async () => {
+test("GET /workspace-image：非图片/扩展名与 magic 不符 → 415；缺文件/会话 → 4xx", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -160,7 +164,7 @@ test("GET /workspace-image：非图片/扩展名与 magic 不符 → 415；缺�
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
 
-test("GET /workspace-image：字节/像素/工作区授权限制", async () => {
+test("GET /workspace-image：字节/像素/工作区授权限制", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -313,7 +317,7 @@ test("openVerifiedWorkspaceImage：成功读满 bytes 并 close；不在登记�
 });
 
 
-test("issue #98：工作区外无 consent → consent-required；once 授权后 200，换文件/换会话/伪造失效", async () => {
+test("issue #98：工作区外无 consent → consent-required；once 授权后 200，换文件/换会话/伪造失效", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -351,7 +355,7 @@ test("issue #98：工作区外无 consent → consent-required；once 授权后 
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
 
-test("issue #98：session-directory 只授权图片所在目录；根目录/工作区根拒绝；过期失效", async () => {
+test("issue #98：session-directory 只授权图片所在目录；根目录/工作区根拒绝；过期失效", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd, consentTtlMs: 60 });
 	try {
@@ -391,7 +395,7 @@ test("issue #98：session-directory 只授权图片所在目录；根目录/工�
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
 
-test("issue #98：consent 不绕过类型/大小/像素限制；HEAD 复用授权；工作区内仍无需 consent", async () => {
+test("issue #98：consent 不绕过类型/大小/像素限制；HEAD 复用授权；工作区内仍无需 consent", { skip: !LINUX_FD_VERIFICATION }, async () => {
 	const { root, cwd } = workspace();
 	const h = harness({ cwd });
 	try {
@@ -438,5 +442,16 @@ test("issue #98：consent 不绕过类型/大小/像素限制；HEAD 复用授�
 		// 旧行为回归：cwd 内图片不带 consent 仍然 200。
 		const inside = await request(h.route, `sessionId=s1&path=${encodeURIComponent("pic.png")}`);
 		assert.equal(inside.status, 200);
+	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
+});
+
+test("非 Linux：GET /workspace-image 501 image-verification-unavailable（平台门禁，不伪造 200）", { skip: LINUX_FD_VERIFICATION }, async () => {
+	const { root, cwd } = workspace();
+	const h = harness({ cwd });
+	try {
+		const res = await request(h.route, `sessionId=s1&path=${encodeURIComponent("pic.png")}`);
+		assert.equal(res.status, 501);
+		assert.equal(res.json.error, "image-verification-unavailable");
+		assert.equal(JSON.stringify(res.json).includes(root), false, "错误不得泄露主机路径");
 	} finally { rmSync(root, { recursive: true, force: true }); h.clean(); }
 });
