@@ -1,5 +1,51 @@
 # Changelog
 
+## 3.3.0（2026-11-27，build 36）— 上游化整合（PR #98）+ 会话/SSE 稳定化
+
+> 版本：插件 `3.3.0` / App `3.3.0+36`。并入 marktrue-ahu 的整合 PR #98（100 files / +33k，
+> 含此前关闭的 #92–#94 与 rc.6 周期），并在合并时补了三处修复（SSE 判活、503 守卫、Windows 用例）。
+
+### 会话界面与滚动
+
+- ADR 0035 高度模型：顶对齐、删除底部占位、320dp 上限、取消 50 行分批；
+- 滚动跟随单一 owner（新增 `scroll_follow.dart`）：真实贴底/阅读态、程序性滚动与用户手势分离、连接代隔离；
+- 过程折叠四档、历史阅读位置、任务清单去重、问询归属；
+- 首屏补拉最新轮直到 `turn/start`；首次打开会话三态（loading/empty/failed + 重试）；
+- 上翻历史顶部固定 36dp 状态行（四态 + 失败重试门禁）；
+- 长用户消息「查看全文」：入口固定在气泡 footer，20k 上限、旧插件/空正文/413 显式错误 + 重试。
+
+### SSE 与运行状态
+
+- SSE 连接池（issue #131）：独立 client、全路径 close、503 退避、满池驱逐陈旧连接；
+- **行为变更**：SSE 建链开启 TCP keepalive（30s）并在心跳环清扫 `destroyed` socket，
+  `phoneOnline` 只统计未销毁 socket——半开连接不再被当成"手机在线"，审批回退不再被拖满 1 小时；
+- 503 分支补 `guardRes`：重试风暴下客户端提前断开不再触发未捕获 error；
+- 子代理运行状态聚合：`/sessions.subagentsRunning`（int，0 也发）+ SSE `rootSessionId/subagentsRunning`，
+  App 侧三路并集与连接代隔离。
+
+### 输入、媒体与 Git
+
+- `/workspace-image` 与 `/workspace-image/consent`：Markdown 引用工作区图片的授权 + 取字节链路；
+- Slash 输入、Git 分支图（`/git/graph`）与文件预览、Source Chat、CJK 处理。
+
+### 兼容与数据
+
+- DSH `0.2.2-rc.5` 起 `AgentRegistry` 移除 `roots()`：`firstAgent` 改为能力探测（是函数才调用，
+  缺失/抛错退回 `list()`），修复 `/catalog`、`/send-receipt` 等 500（issue #100）；
+- 空会话过滤与 `firstAgent` 兼容（#109/#111/#112）。
+
+### 修复
+
+- **#96**：从通知进入会话后未读不标已读——缓存非空但未命中该会话时先重拉服务端再判定；
+- Windows：`issue133` 的 4 个断链用例改为轮询等待（原先固定 400ms，Windows 上稳定红）；
+- README 标注官方安装来源，减少第三方 scope 同名包造成的误报。
+
+### 验证
+
+- `npm test`：459 用例 / 0 失败 / 19 跳过；`npm run check`：179 + 15 + 19 全过；
+- `flutter analyze`：No issues found；`flutter test`：1402 全过；
+- Windows 本机跑通 node（含新增 SSE 判活用例）与 flutter（含改轮询后的 `issue133`）。
+
 ## 3.2.4（2026-11-18，build 35）— 会话界面改版（#71–#87）+ 门禁修复
 
 > 版本：插件 `3.2.4` / App `3.2.4+35`。main 自 2026-11-06（`fbe8375`）起冻结 12 天，
