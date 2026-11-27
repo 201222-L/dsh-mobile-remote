@@ -57,7 +57,9 @@ class _Backend {
       }
       if (params.containsKey('before')) {
         final before = int.tryParse(params['before'] ?? '') ?? 0;
-        final preceding = events.where((e) => (e['seq'] as int) < before).toList();
+        final preceding = events
+            .where((e) => (e['seq'] as int) < before)
+            .toList();
         final page = preceding.length > limit
             ? preceding.sublist(preceding.length - limit)
             : preceding;
@@ -74,7 +76,10 @@ class _Backend {
       attachmentRequests++;
       if (attachmentFails) {
         return http.Response(
-          jsonEncode({'ok': false, 'error': {'code': 'attachment-not-found'}}),
+          jsonEncode({
+            'ok': false,
+            'error': {'code': 'attachment-not-found'},
+          }),
           404,
           headers: {'content-type': 'application/json'},
         );
@@ -101,19 +106,19 @@ class _Backend {
   }
 
   http.Response _json(Map<String, dynamic> body) => http.Response(
-        jsonEncode(body),
-        200,
-        headers: {'content-type': 'application/json; charset=utf-8'},
-      );
+    jsonEncode(body),
+    200,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
 }
 
 Map<String, dynamic> _image(String id, String name) => {
-      'attachmentId': id,
-      'mediaType': 'image/png',
-      'width': 780,
-      'height': 1688,
-      'name': name,
-    };
+  'attachmentId': id,
+  'mediaType': 'image/png',
+  'width': 780,
+  'height': 1688,
+  'name': name,
+};
 
 /// 单组 read_image：可控制是否带图片、是否重复同一张图。
 List<Map<String, dynamic>> readImageTurn({
@@ -121,7 +126,12 @@ List<Map<String, dynamic>> readImageTurn({
   bool duplicateImages = false,
 }) {
   final events = <Map<String, dynamic>>[
-    {'seq': 1, 'type': 'turn/start', 'data': {'turn': 1}, 'time': 1000},
+    {
+      'seq': 1,
+      'type': 'turn/start',
+      'data': {'turn': 1},
+      'time': 1000,
+    },
     {
       'seq': 2,
       'type': 'user/message',
@@ -205,7 +215,9 @@ List<Map<String, dynamic>> readImageTurn({
 Future<AppStore> _pumpChat(WidgetTester tester, _Backend backend) async {
   final store = AppStore()
     ..sessionId = 'session-74'
-    ..sessions = [Session(id: 'session-74', title: 'S', cwd: null, createdAt: 1)];
+    ..sessions = [
+      Session(id: 'session-74', title: 'S', cwd: null, createdAt: 1),
+    ];
   await tester.pumpWidget(
     MaterialApp(
       home: ChatScreen(
@@ -235,6 +247,29 @@ Future<void> _scrollUpUntil(WidgetTester tester, Finder finder) async {
   }
 }
 
+/// issue #114 P1：用**真实手势**把目标滚进视口（不要用 ensureVisible 程序性滚动，
+/// 那会把“用户上翻”伪装成程序性移动，产品规则不应为测试手法让路）。
+Future<void> _scrollIntoViewport(WidgetTester tester, Finder finder) async {
+  final scroll = find.byType(CustomScrollView);
+  for (var i = 0; i < 40; i++) {
+    if (finder.evaluate().isEmpty) {
+      await tester.drag(scroll, const Offset(0, 600));
+      await tester.pump(const Duration(milliseconds: 120));
+      continue;
+    }
+    final rect = tester.getRect(finder.first);
+    final viewport = tester.getRect(scroll);
+    if (rect.top >= viewport.top + 4 && rect.bottom <= viewport.bottom - 4) {
+      return;
+    }
+    // 目标在上方 → 手指向下拖（滚向更早内容）；目标在下方 → 反向。
+    final dy = rect.top < viewport.top ? 400.0 : -400.0;
+    await tester.drag(scroll, Offset(0, dy));
+    await tester.pump(const Duration(milliseconds: 120));
+  }
+  fail('目标未能通过真实手势进入视口');
+}
+
 void main() {
   testWidgets('真实 turn-1：整轮折叠摘要即显示 2 张图片入口（含分批隐藏的 read_image）', (tester) async {
     final events = (jsonDecode(issue74Turn1EventsJson) as List)
@@ -250,18 +285,22 @@ void main() {
     // 收起态不应该先构建任何图片内容。
     expect(find.byType(ImageGalleryGrid), findsNothing);
     // 点击 chip 直接开图库，且**不展开整轮**。
-    await tester.ensureVisible(_imageChip(2));
-    await tester.pumpAndSettle();
+    // #114 P1：真实手势把 chip 滚进视口（不使用 ensureVisible 程序性滚动）。
+    await _scrollIntoViewport(tester, _imageChip(2));
     await tester.tap(_imageChip(2));
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
     expect(find.byType(ImageGalleryViewer), findsOneWidget);
     expect(find.textContaining('1 次工具调用'), findsNothing, reason: 'chip 不应触发展开');
-    expect(backend.attachmentRequests, greaterThan(0), reason: '图库应按 attachmentId 取图');
+    expect(
+      backend.attachmentRequests,
+      greaterThan(0),
+      reason: '图库应按 attachmentId 取图',
+    );
   });
 
-  testWidgets('真实 turn-1：展开整轮后「显示更多」行也有 2 张图片入口', (tester) async {
+  testWidgets('真实 turn-1：展开整轮后图片入口仍可达（取消分批）', (tester) async {
     final events = (jsonDecode(issue74Turn1EventsJson) as List)
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
@@ -269,15 +308,18 @@ void main() {
     await _pumpChat(tester, backend);
     await _scrollUpUntil(tester, _imageChip(2));
     await _expandTurn(tester);
-    // 先展开整轮：前 50 行是可见组，read_image 组在 hidden 区 → 组抬头不渲染(#75)，
-    // 但「显示更多」行带聚合图片入口（过程块较长，滚动到它进入构建范围）。
-    await _scrollUpUntil(tester, find.textContaining('显示更多（还有'));
-    expect(find.textContaining('显示更多（还有'), findsOneWidget);
-    expect(_imageChip(2), findsOneWidget);
-
-    await tester.ensureVisible(_imageChip(2));
-    await tester.pumpAndSettle();
-    await tester.tap(_imageChip(2));
+    // issue #126：取消分批后不再有「显示更多」行。
+    expect(
+      find.textContaining('显示更多'),
+      findsNothing,
+      reason: '取消分批后不再有「显示更多」行',
+    );
+    // 展开整轮后，图片入口在工具折叠行（单卡默认收起，ADR 0027 §2）。
+    // 点折叠行 chip 直接开图库；网格只在工具卡展开后出现。
+    await _scrollUpUntil(tester, _imageChip(1));
+    expect(_imageChip(1), findsWidgets, reason: '展开整轮后每个 read_image 折叠行仍有图片入口');
+    await _scrollIntoViewport(tester, _imageChip(1).first);
+    await tester.tap(_imageChip(1).first);
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }

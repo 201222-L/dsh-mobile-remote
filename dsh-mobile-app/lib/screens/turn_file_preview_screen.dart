@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api.dart';
+import '../download.dart';
 import '../l10n.dart';
 import '../session_files_logic.dart';
 import '../theme.dart';
@@ -27,10 +28,27 @@ class TurnFilePreviewScreen extends StatefulWidget {
     required this.coordinate,
     required this.display,
     required this.name,
-  });
+  }) : absolutePath = null;
+
+  /// issue #83：按**用户确认过的绝对路径**打开预览（非轮末记录坐标）。
+  ///
+  /// 只应在本页打开前由用户显式确认；不在渲染阶段探测/预加载。
+  const TurnFilePreviewScreen.path({
+    super.key,
+    required this.api,
+    required String path,
+    required this.display,
+    required this.name,
+  }) : coordinate = null,
+       absolutePath = path;
 
   final Api api;
-  final TurnFileCoordinate coordinate;
+
+  /// 轮末记录坐标；与 [absolutePath] 二选一。
+  final TurnFileCoordinate? coordinate;
+
+  /// 用户确认后的绝对路径；与 [coordinate] 二选一。
+  final String? absolutePath;
 
   /// 展示路径（`display`，工作区外通常是 basename）。
   final String display;
@@ -57,6 +75,12 @@ class _TurnFilePreviewScreenState extends State<TurnFilePreviewScreen> {
     super.initState();
     _load();
   }
+  Future<DownloadPrefix> _prefix(int maxBytes) {
+    final path = widget.absolutePath;
+    if (path != null) return widget.api.downloadFilePrefix(path, maxBytes);
+    return widget.api.turnFilePrefix(widget.coordinate!, maxBytes);
+  }
+
 
   Future<void> _load() async {
     setState(() {
@@ -66,10 +90,7 @@ class _TurnFilePreviewScreenState extends State<TurnFilePreviewScreen> {
     });
     try {
       if (_isImage) {
-        final prefix = await widget.api.turnFilePrefix(
-          widget.coordinate,
-          kTurnTailImagePreviewLimit,
-        );
+        final prefix = await _prefix(kTurnTailImagePreviewLimit);
         final total = prefix.total;
         if (total != null && total > prefix.bytes.length) {
           _imageTooLarge = true;
@@ -78,10 +99,7 @@ class _TurnFilePreviewScreenState extends State<TurnFilePreviewScreen> {
           _imageBytes = prefix.bytes;
         }
       } else {
-        final prefix = await widget.api.turnFilePrefix(
-          widget.coordinate,
-          kPreviewByteLimit,
-        );
+        final prefix = await _prefix(kPreviewByteLimit);
         final bytes = prefix.bytes;
         final encoding = detectPreviewEncoding(bytes);
         if (encoding == PreviewEncoding.gb18030) {

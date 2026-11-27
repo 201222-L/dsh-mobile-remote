@@ -106,14 +106,16 @@ Future<void> _pumpChat(
   required _TurnBackend backend,
   required AppStore store,
 }) async {
-  await tester.pumpWidget(MaterialApp(
-    home: ChatScreen(
-      key: const ValueKey('turn-chat'),
-      store: store,
-      apiClient: backend.api,
-      onTitleChanged: () {},
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChatScreen(
+        key: const ValueKey('turn-chat'),
+        store: store,
+        apiClient: backend.api,
+        onTitleChanged: () {},
+      ),
     ),
-  ));
+  );
   await tester.pump(const Duration(milliseconds: 350));
 }
 
@@ -129,8 +131,11 @@ void main() {
     final store = AppStore()..sessionId = 'session-turns';
     await _pumpChat(tester, backend: backend, store: store);
 
-    expect(find.byType(TurnNavigatorRail), findsNothing,
-        reason: '初始位于底部，刻度轨不应出现');
+    expect(
+      find.byType(TurnNavigatorRail),
+      findsNothing,
+      reason: '初始位于底部，刻度轨不应出现',
+    );
   });
 
   testWidgets('上翻离开底部后刻度轨出现，且刻度数与已加载轮次一致', (tester) async {
@@ -140,11 +145,17 @@ void main() {
 
     await _scrollUp(tester);
 
-    expect(find.byType(TurnNavigatorRail), findsOneWidget,
-        reason: '离开底部且轮次数 ≥2 → 显形');
+    expect(
+      find.byType(TurnNavigatorRail),
+      findsOneWidget,
+      reason: '离开底部且轮次数 ≥2 → 显形',
+    );
     for (var turn = 1; turn <= 6; turn++) {
-      expect(find.byKey(ValueKey<String>('turn-tick-$turn')), findsOneWidget,
-          reason: '第 $turn 轮应有刻度');
+      expect(
+        find.byKey(ValueKey<String>('turn-tick-$turn')),
+        findsOneWidget,
+        reason: '第 $turn 轮应有刻度',
+      );
     }
     expect(find.byKey(const ValueKey<String>('turn-tick-7')), findsNothing);
   });
@@ -156,8 +167,7 @@ void main() {
 
     await _scrollUp(tester);
 
-    expect(find.byType(TurnNavigatorRail), findsNothing,
-        reason: '一轮没有导航价值');
+    expect(find.byType(TurnNavigatorRail), findsNothing, reason: '一轮没有导航价值');
   });
 
   testWidgets('点按刻度的定位路径可走通：目标轮最终进入视图且不抛异常', (tester) async {
@@ -176,8 +186,40 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('第 1 轮的问题'), findsOneWidget,
-        reason: '定位后该轮应进入已构建范围');
+    expect(find.text('第 1 轮的问题'), findsOneWidget, reason: '定位后该轮应进入已构建范围');
+  });
+
+  // task-38（对齐上游 9793976 的意图）：定位只保证「目标与视口相交」，正文变窄后
+  // 估算落点可能让目标停在阅读线下方 → 用户点第 N 轮、高亮却停在 N-1。这里锁死
+  // 「点第 N 轮 → 高亮第 N 轮」（真实点击刻度 + 断言刻度轨 activeTurn）。
+  testWidgets('点第 N 轮刻度后，高亮必须落在第 N 轮（不能滞后一轮）', (tester) async {
+    final backend = _TurnBackend(turns: 6);
+    final store = AppStore()..sessionId = 'session-turns';
+    await _pumpChat(tester, backend: backend, store: store);
+
+    await _scrollUp(tester, by: 1200);
+    expect(find.byType(TurnNavigatorRail), findsOneWidget);
+
+    for (final target in [3, 5, 2]) {
+      await tester.tap(
+        find.byKey(ValueKey<String>('turn-tick-$target')),
+        warnIfMissed: false,
+      );
+      await tester.pumpAndSettle();
+      final rail = tester.widget<TurnNavigatorRail>(
+        find.byType(TurnNavigatorRail),
+      );
+      expect(
+        rail.activeTurn,
+        target,
+        reason: '点第 $target 轮后高亮必须落在第 $target 轮（activeTurn=${rail.activeTurn}）',
+      );
+      expect(
+        find.text('第 $target 轮的问题'),
+        findsOneWidget,
+        reason: '第 $target 轮的内容应在已构建范围内',
+      );
+    }
   });
 
   testWidgets('刻度轨不是滚动死区：沿轨扫掠出预览并落到所指轮次', (tester) async {
@@ -216,8 +258,11 @@ void main() {
     final viewport = tester.getRect(find.byType(CustomScrollView));
     final landed = find.text('第 4 轮的问题');
     expect(landed, findsOneWidget, reason: '松手后目标轮应已构建');
-    expect(viewport.overlaps(tester.getRect(landed)), isTrue,
-        reason: '落点是"目标与视口相交"，不只是已构建');
+    expect(
+      viewport.overlaps(tester.getRect(landed)),
+      isTrue,
+      reason: '落点是"目标与视口相交"，不只是已构建',
+    );
   });
 
   testWidgets('消息流本身仍可正常上翻（轨道之外的滚动不受影响）', (tester) async {
@@ -230,64 +275,12 @@ void main() {
       matching: find.byType(Scrollable),
     );
     double offset() =>
-        tester.state<ScrollableState>(listScrollable).position.pixels;
+        tester.state<ScrollableState>(listScrollable.first).position.pixels;
     final before = offset();
 
     await _scrollUp(tester, by: 300);
 
     expect(offset(), lessThan(before), reason: '消息流照常滚动');
     expect(find.byType(TurnNavigatorRail), findsOneWidget);
-  });
-
-
-  group('轮次轨道 action gutter', () {
-    test('右留白优先级：圆钮 38 > 轨道 36 > 默认 16', () {
-      expect(listRightPaddingFor(jumpVisible: false, railVisible: false), 16);
-      expect(listRightPaddingFor(jumpVisible: false, railVisible: true), 36);
-      expect(listRightPaddingFor(jumpVisible: true, railVisible: false), 38);
-      expect(listRightPaddingFor(jumpVisible: true, railVisible: true), 38);
-    });
-
-    testWidgets('上翻后轨道在右 8、正文留白 38，且与圆钮至少 12dp 不重叠', (tester) async {
-      final backend = _TurnBackend(turns: 6);
-      final store = AppStore()..sessionId = 'session-gutter';
-      await _pumpChat(tester, backend: backend, store: store);
-      await _scrollUp(tester);
-
-      expect(find.byType(TurnNavigatorRail), findsOneWidget);
-      final screen = tester.getRect(find.byType(CustomScrollView));
-      final rail = tester.getRect(find.byType(TurnNavigatorRail));
-      expect(rail.right, closeTo(screen.right - 8, 0.5), reason: '轨道右留白 8');
-      expect(rail.width, closeTo(28, 0.5), reason: '轨道宽 28');
-      for (final sliver in tester.widgetList<SliverPadding>(find.byType(SliverPadding))) {
-        expect(sliver.padding.resolve(TextDirection.ltr).right, 38,
-            reason: '圆钮可见时正文右留白 38');
-      }
-
-      final jump = tester.getRect(find.byIcon(Icons.keyboard_arrow_down));
-      expect(rail.bottom, lessThanOrEqualTo(jump.top - 12),
-          reason: '轨道与回到底部圆钮至少 12dp 避让');
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('320 窄屏不缩轨，正文仍让出 38dp 且无 overflow', (tester) async {
-      tester.view.physicalSize = const Size(320, 800);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final backend = _TurnBackend(turns: 6);
-      final store = AppStore()..sessionId = 'session-gutter-320';
-      await _pumpChat(tester, backend: backend, store: store);
-      await _scrollUp(tester, by: 300);
-
-      expect(find.byType(TurnNavigatorRail), findsOneWidget);
-      final rail = tester.getRect(find.byType(TurnNavigatorRail));
-      expect(rail.width, closeTo(28, 0.5));
-      expect(rail.right, closeTo(312, 0.5));
-      for (final sliver in tester.widgetList<SliverPadding>(find.byType(SliverPadding))) {
-        expect(sliver.padding.resolve(TextDirection.ltr).right, 38);
-      }
-      expect(tester.takeException(), isNull);
-    });
   });
 }

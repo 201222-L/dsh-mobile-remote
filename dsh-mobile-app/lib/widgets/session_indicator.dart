@@ -12,6 +12,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../l10n.dart';
 import '../session_list.dart';
 import '../theme.dart';
 
@@ -74,7 +75,13 @@ class SessionIcon extends StatelessWidget {
       SessionRowState.idle => Colors.transparent,
     };
 
-    return SizedBox(
+    final semanticLabel = switch (state) {
+      // issue #124/#133：运行/等待不能只靠动画与颜色区分，读屏必须有明确语义。
+      SessionRowState.running => L10n.t('运行中', 'Running'),
+      SessionRowState.waiting => L10n.t('等待你处理', 'Needs your input'),
+      SessionRowState.idle => null,
+    };
+    final iconBody = SizedBox(
       width: size,
       height: size,
       child: Stack(
@@ -106,6 +113,8 @@ class SessionIcon extends StatelessWidget {
         ],
       ),
     );
+    if (semanticLabel == null) return iconBody;
+    return Semantics(label: semanticLabel, container: true, child: iconBody);
   }
 }
 

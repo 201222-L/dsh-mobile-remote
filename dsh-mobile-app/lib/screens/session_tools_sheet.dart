@@ -92,7 +92,11 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
               Expanded(
                 child: TabBarView(
                   children: [
-                    _JobsTab(store: widget.store, sessionId: widget.sessionId),
+                    _JobsTab(
+                      store: widget.store,
+                      sessionId: widget.sessionId,
+                      apiClient: widget.apiClient,
+                    ),
                     _SubagentsTab(
                       sessionId: widget.sessionId,
                       onOpenSubagent: widget.onOpenSubagent,
@@ -115,7 +119,13 @@ class _SessionToolsSheetState extends State<_SessionToolsSheet> {
 class _JobsTab extends StatefulWidget {
   final AppStore store;
   final String sessionId;
-  const _JobsTab({required this.store, required this.sessionId});
+  // 与子代理/目标页签同一测试接缝：生产为全局 `api`，测试可注入同一宿主客户端。
+  final Api? apiClient;
+  const _JobsTab({
+    required this.store,
+    required this.sessionId,
+    this.apiClient,
+  });
 
   @override
   State<_JobsTab> createState() => _JobsTabState();
@@ -136,9 +146,15 @@ class _JobsTabState extends State<_JobsTab> {
   Future<void> _load() async {
     // v2.7.2 review：弹层可下滑关闭,异步回调后必须防 setState-after-dispose
     if (!mounted) return;
-    setState(() => _jobs = null);
+    // issue #128 review(P2)：重试开始即清旧错误。此前 `_error` 从不清除——首次失败后
+    // 点「重试」即使成功，仍会停在错误页，任务看不到也取消不了；移除聊天页卡片后
+    // 本页签是唯一后台任务入口，必须能恢复。
+    setState(() {
+      _jobs = null;
+      _error = null;
+    });
     try {
-      final list = await api.jobs(widget.sessionId);
+      final list = await (widget.apiClient ?? api).jobs(widget.sessionId);
       if (!mounted) return;
       setState(() => _jobs = list);
     } catch (e) {
@@ -151,7 +167,8 @@ class _JobsTabState extends State<_JobsTab> {
     if (_killBusy) return;
     _killBusy = true;
     try {
-      await api.jobKill(widget.sessionId, job['id'] as String? ?? '');
+      await (widget.apiClient ?? api)
+          .jobKill(widget.sessionId, job['id'] as String? ?? '');
       if (mounted) showToast(context, L10n.t('已请求取消任务', 'Cancel requested'));
       if (mounted) _load();
     } catch (e) {

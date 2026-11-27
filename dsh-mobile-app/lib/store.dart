@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'attention.dart';
 import 'floating.dart';
+import 'git_models.dart';
 import 'l10n.dart';
 import 'logger.dart';
 import 'models.dart';
@@ -37,15 +38,32 @@ class AppStore extends ChangeNotifier {
   /// SSE 的 agentId 与 sessionId 不是同一标识时，按 session 维护页面状态。
   final Map<String, String> sessionAgentStatus = {};
 
+  /// issue #124/#133：主会话根 → 递归 running 子代理数（SSE agent/status 帧维护）。
+  /// 值可为 0（显式“没有运行子代理”）；缺失时才回退 `/sessions` 字段或本地树聚合。
+  final Map<String, int> subagentRunningByRoot = {};
+
   /// agent/status 帧计数（v3.1.6）：`/bootstrap` 是"某一刻的活跃 agent 全量快照"，
   /// 若快照请求期间已有更新帧落地，就跳过裁剪（只合并）——否则旧快照会抹掉刚到的 running。
   /// 下一轮 bootstrap 自然收敛，不必在这里赌时序。
   int _agentStatusEpoch = 0;
-  String agentStatusForSession(String? id) => id == null
-      ? agentStatus
-      : sessionAgentStatus[id] ??
-            agentStatusMap[id] ??
-            (id == sessionId ? agentStatus : 'idle');
+  String agentStatusForSession(String? id) {
+    if (id == null) return agentStatus;
+    final mapped = sessionAgentStatus[id] ?? agentStatusMap[id];
+    if (mapped != null) return mapped;
+    if (id != sessionId) return 'idle';
+    // issue #133（复审 P2）：legacy 全局 agentStatus 只代表“当前打开的 agent”。
+    // 当前会话是子代理时，断链清理映射后这里曾继续回退到旧 running，导致主会话
+    // 经本地树聚合误报；子代理查询一律屏蔽该回退（根会话语义不变）。
+    if (_isKnownSubagentSession(id)) return 'idle';
+    return agentStatus;
+  }
+
+  bool _isKnownSubagentSession(String id) {
+    for (final s in sessions) {
+      if (s.id == id) return s.isSubagent;
+    }
+    return false;
+  }
   String darkMode = 'system'; // system | dark | light
   DshSkin skin = DshSkin.dsh; // 主题皮肤（默认 / 深潜夜航 / 海盐汽水 / 鲸落星海）
   String appIcon = 'default'; // 桌面图标样式 id（default/deepsea/shell/moon/sticker/stamp/neon/mono）
@@ -57,7 +75,10 @@ class AppStore extends ChangeNotifier {
   /// issue #52（ADR 0027 §2）：工作步骤展示模式（四档）与收起时机（两档）。
   /// 偏好只存手机本地（不新增宿主设置端点）；默认「标准」+「回答结束后」。
   WorkStepDisplayMode stepDisplayMode = WorkStepDisplayMode.standard;
+  /// issue #86：Git 分支图选中上限（全局偏好）。
+  GitGraphBranchLimit gitGraphBranchLimit = GitGraphBranchLimit.fallback;
   TurnFoldTiming turnFoldTiming = TurnFoldTiming.afterAnswer;
+
   /// 思维链折叠手动状态（会话 -> 消息key -> 手动展开值；滚动/重进/重启持久，null=跟随设置默认）
   Map<String, Map<String, bool>> reasoningOverrides = {};
   String language = 'zh'; // zh | en（v2.7：界面语言，持久化）
@@ -275,6 +296,9 @@ class AppStore extends ChangeNotifier {
   StreamSubscription<Map<String, dynamic>>? _sub;
   int _retry = 0;
   Timer? _retryTimer;
+  // SSE 503（服务端 too-many-connections）：单独退避，避免 bootstrap 成功后
+  // 又把 retry 清零、每 2s 重连一次形成风暴。
+  bool _sseBusy = false;
   bool _connecting = false;
 
   static const _kSession = 'dsh_mr_session';
@@ -284,6 +308,7 @@ class AppStore extends ChangeNotifier {
   static const _kReasoningDefaultExpanded = 'dsh_mr_reasoning_default_expanded';
   static const _kTimelineDebug = 'dsh_mr_timeline_debug';
   static const _kStepDisplayMode = 'dsh_mr_step_display_mode';
+  static const _kGitGraphBranchLimit = 'dsh_mr_git_graph_branch_limit';
   static const _kTurnFoldTiming = 'dsh_mr_turn_fold_timing';
   static const _kReasoningOverrides = 'dsh_mr_reasoning_overrides';
   static const _kWorkspace = 'dsh_mr_workspace';
@@ -308,14 +333,16 @@ class AppStore extends ChangeNotifier {
     skin = DshSkin.fromId(prefs.getString(_kSkin));
     appIcon = prefs.getString(_kAppIcon) ?? 'default';
     iconMigrationTipShown = prefs.getBool(_kIconMigrationTip) ?? false;
-    showReasoning = prefs.getBool(_kReasoning) ?? false;
+    // issue #108：旧「思考内容 / 思维链默认展开」key 保留在 prefs 但不读取，
+    // 不迁移、不改变行为（字段仅为旧代码兼容保留，默认 false）。
     showHiddenFiles = prefs.getBool(_kShowHiddenFiles) ?? true;
-    reasoningDefaultExpanded =
-        prefs.getBool(_kReasoningDefaultExpanded) ?? false;
     timelineDebug = prefs.getBool(_kTimelineDebug) ?? false;
     stepDisplayMode = WorkStepDisplayMode.values.firstWhere(
       (mode) => mode.name == prefs.getString(_kStepDisplayMode),
       orElse: () => WorkStepDisplayMode.standard,
+    );
+    gitGraphBranchLimit = GitGraphBranchLimit.fromStorage(
+      prefs.getString(_kGitGraphBranchLimit),
     );
     final foldTiming = prefs.getString(_kTurnFoldTiming);
     turnFoldTiming = foldTiming == 'onNewMessage'
@@ -384,6 +411,8 @@ class AppStore extends ChangeNotifier {
         final list = jsonDecode(raw) as List;
         sessions = list
             .map((e) => Session.fromJson(e as Map<String, dynamic>))
+            // issue #133：子代理运行数是瞬态数据（连接相关），不得从本地缓存带出来。
+            .map((s) => s.copyWith(clearSubagentsRunning: true))
             .toList();
       }
     } catch (_) {
@@ -398,7 +427,14 @@ class AppStore extends ChangeNotifier {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(
           _kSessCache,
-          jsonEncode(sessions.map((s) => s.toJson()).toList()),
+          jsonEncode(
+            sessions.map((s) {
+              final json = s.toJson();
+              // issue #133：瞬态字段不落盘（避免下次启动/切宿主误显示运行中）。
+              json.remove('subagentsRunning');
+              return json;
+            }).toList(),
+          ),
         );
       } catch (_) {}
     }());
@@ -787,12 +823,42 @@ class AppStore extends ChangeNotifier {
 
   /// 会话行的状态标识（ADR 0013）：等待态优先于运行态。
   /// 「等待用户处理」来自挂起的问询/审批，不是运行状态的第三个取值。
-  SessionRowState rowStateOf(String sessionId) => sessionRowState(
-    agentStatus: agentStatusForSession(sessionId),
-    hasRunningJobs: hasRunningJobs(sessionId),
-    hasPendingQuestion: questionForSession(sessionId) != null,
-    hasPendingApproval: approvalForSession(sessionId) != null,
-  );
+  ///
+  /// issue #124/#133：主会话行还要聚合**递归子代理**的运行状态——根 agent 已 idle、
+  /// 但只要任一子代理仍在 running，行仍显示运行中（子代理会话本身不进入列表）。
+  ///
+  /// 双来源：
+  /// - 列表里能看到子代理行时，用本地递归聚合（SSE `agent/status` 即时更新，子结束立即消失）；
+  /// - 看不到子代理行时（新宿主 `/sessions` 的 `subagentsRunning` 聚合提示，可覆盖
+  ///   被 includeEmpty 过滤掉的空子会话），退回服务端提示；
+  /// - 旧宿主两者都缺 → false（保持既有行为，不发额外请求）。
+  SessionRowState rowStateOf(String sessionId) {
+    final aggregate = subagentRunAggregate(
+      sessionId: sessionId,
+      sessions: sessions,
+      agentStatusOf: agentStatusForSession,
+    );
+    // issue #124/#133（UI 规范 §3）：SSE / `/sessions` 字段 / 本地树三者**取并集**，
+    // 不互相门控——任一路径说 running 就显示；SSE 帧与快照合并保证不互相抹掉。
+    final sseCount = subagentRunningByRoot[sessionId];
+    final serverCount = _sessionSubagentCount(sessionId);
+    final hasRunningSubagents =
+        (sseCount ?? 0) > 0 || (serverCount ?? 0) > 0 || aggregate.running;
+    return sessionRowState(
+      agentStatus: agentStatusForSession(sessionId),
+      hasRunningJobs: hasRunningJobs(sessionId),
+      hasRunningSubagents: hasRunningSubagents,
+      hasPendingQuestion: questionForSession(sessionId) != null,
+      hasPendingApproval: approvalForSession(sessionId) != null,
+    );
+  }
+
+  int? _sessionSubagentCount(String sessionId) {
+    for (final s in sessions) {
+      if (s.id == sessionId) return s.subagentsRunning;
+    }
+    return null;
+  }
 
   /// 当前列表里是否存在需要驱动旋转标识的会话（存在运行中会话才启动动画）。
   bool hasRunningSessions(Iterable<Session> visible) =>
@@ -843,6 +909,14 @@ class AppStore extends ChangeNotifier {
     stepDisplayMode = mode;
     notifyListeners();
     await _persistPrefs(_kStepDisplayMode, mode.name);
+  }
+
+  /// issue #86：Git 分支图选中上限三档（5/10/不限）——下次打开分支图生效。
+  Future<void> setGitGraphBranchLimit(GitGraphBranchLimit limit) async {
+    if (gitGraphBranchLimit == limit) return;
+    gitGraphBranchLimit = limit;
+    notifyListeners();
+    await _persistPrefs(_kGitGraphBranchLimit, limit.storageValue);
   }
 
   /// issue #52：收起时机两档（回答结束后 / 下次有新消息时）——改动即时重算。
@@ -1078,19 +1152,228 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> refreshSessions({bool notify = true}) async {
+  // ── 会话列表刷新的在途守卫（issue #22）──
+  //
+  // 触发源：`_debounceSessions()` 每 800ms 就可能调一次本方法，而一次 `/sessions`
+  // 在服务端是一次**全语料扫描**（实测 70 秒量级）。没有守卫时同一时刻可以有任意多个
+  // 刷新在飞——实测现场 16–18 个连接全部来自手机、宿主 CPU 171%、主线程 91.6%。
+  // 到达速率长期高于完成速率 → 请求无界堆积 → **谁都完不成**，列表永远刷不出来。
+  //
+  // 策略：在途期间不发新请求，只记一次"待补"；在途结束后补发**一次**。
+  //
+  // 评审指出的三条语义，逐条对应到实现：
+  //  1. **被合并的调用不得提前完成**：合并时返回"待补这一轮"的共享 Future，直到补发
+  //     真正结束才释放等待者。否则 `_refreshAllInner()` 会先发布旧数据，而随后的补发
+  //     （notify 意图可能是 false）更新了 sessions 却不再通知 UI——列表就停在旧数据上。
+  //  2. **不得越过生命周期补发**：dispose / 关闭 bridge 时清除待补并释放等待者；
+  //     finally 里还必须确认当前请求仍属于当前代，才允许补发。
+  //  3. **守卫按连接代归属**：切换到新地址后，旧地址的在途请求既不能阻塞新地址的刷新，
+  //     也不能在迟到时清掉新代的在途标志或启动新代补发。
+  //
+  // 注意第 3 条**不能**用"在 disposeBridge 里直接把布尔复位"糊过去：那样旧代的
+  // 迟到 finally 会把新代的守卫清掉，重新放出同代并发。故一律以 `_refreshGeneration`
+  // 判定归属。
+  // 评审第二轮（WARNING 1）暴露的边界：generation 只在 disposeBridge 里自增，
+  // 而**自动地址轮换**（`connect.onError`、`_scheduleReconnect`、`refreshAll` 的候选
+  // 切换）与手动切换都只改 `api.baseUrl`，没有任何统一回调。于是旧地址的请求仍是
+  // "当代 owner"：新地址的刷新被合并到它后面，旧地址的迟到结果还能通过 generation
+  // 检查被当作当前地址的数据应用。
+  //
+  // 逐入口补失效既容易漏，又可能在新代请求已经开始之后**重复失效新代**（评审第 4 点）。
+  // 故改为**按连接身份归属**：在刷新入口比对身份，所有路径一次覆盖，且天然幂等
+  // ——身份没变就什么都不做。
+  int _refreshGeneration = 0;
+  String? _refreshIdentity; // 上次刷新归属的连接身份；**只用于比较**
+  bool _sessionsInFlight = false;
+  bool _sessionsPending = false;
+  bool _sessionsPendingNotify = true;
+  Completer<void>? _sessionsWaiters; // 「待补这一轮」的等待者（尚未启动）
+  // 评审 WARNING 2：等待者一旦成为「补发中那一轮」就会被摘成局部变量，失效逻辑只看
+  // 字段就释放不到它。故用集合追踪**所有尚未完成的轮次**，直到该轮结束或生命周期失效。
+  final Set<Completer<void>> _roundWaiters = <Completer<void>>{};
+
+  /// 当前连接身份：活动地址 + **挂载路径** + 认证身份。
+  /// **只用于比较**——`api.token` 绝不写入日志、界面或错误信息。
+  ///
+  /// 评审备注：`Api` 把挂载路径单独存在 `path` 里，并不包含在 `baseUrl` 中，
+  /// 所以这里必须一并带上，否则"同地址换挂载路径"会被误判为身份未变。
+  String get _connectionIdentity =>
+      '${api.baseUrl}\u0000${api.path}\u0000${api.token}';
+
+  /// 轮次等待者的**幂等**收尾：生命周期可能已经先释放过它，此时旧回调还会到达，
+  /// 二次 complete 会抛 StateError / 未捕获异步异常。
+  void _finishRound(Completer<void>? waiter) {
+    if (waiter == null) return;
+    _roundWaiters.remove(waiter);
+    if (!waiter.isCompleted) waiter.complete();
+  }
+
+  void _finishAllRounds() {
+    for (final w in _roundWaiters.toList(growable: false)) {
+      _finishRound(w);
+    }
+  }
+
+  /// issue #133：丢弃**瞬态**子代理运行数据（SSE 计数 + 会话快照里的字段）。
+  ///
+  /// 连接代切换/断链时必须做：否则同 sessionId 在宿主 B 上会沿用宿主 A 的 running，
+  /// 且断链缓存的 `subagentsRunning` 会被读到。`copyWith(null)` 清不掉可空字段，
+  /// 这里用显式 `clearSubagentsRunning`；清空后必须通知，否则换宿主瞬间旧行仍显示。
+  void _clearSubagentRunningState() {
+    // 只保留**根会话**状态：被名单过滤掉的子代理不在 sessions 里，不能只按可见
+    // 子代理 id 清；这里反过来清所有“非根”条目（issue #133 复审 P2 盲区）。
+    final rootIds = <String>{
+      for (final s in sessions)
+        if (!s.isSubagent) s.id,
+    };
+    // 当前打开的会话若已知不是子代理，也必须保留其 running（发送/停止键语义）。
+    if (sessionId != null && !_isKnownSubagentSession(sessionId!)) {
+      rootIds.add(sessionId!);
+    }
+    String normalized(String agentId) =>
+        agentId.startsWith('session:') ? agentId.substring(8) : agentId;
+    bool isNonRoot(String key) => !rootIds.contains(key);
+    final hadSubagentStatus =
+        sessionAgentStatus.keys.any(isNonRoot) ||
+        agentStatusMap.keys.any((id) => isNonRoot(normalized(id)));
+    final hadState =
+        hadSubagentStatus ||
+        subagentRunningByRoot.isNotEmpty ||
+        sessions.any((s) => s.subagentsRunning != null);
+    subagentRunningByRoot.clear();
+    if (sessions.any((s) => s.subagentsRunning != null)) {
+      sessions = [
+        for (final s in sessions) s.copyWith(clearSubagentsRunning: true),
+      ];
+    }
+    // 清掉所有非根会话状态（含 SSE 已记录、但列表被过滤的 child）。
+    sessionAgentStatus.removeWhere((id, _) => isNonRoot(id));
+    agentStatusMap.removeWhere((agentId, _) => isNonRoot(normalized(agentId)));
+    if (hadState) notifyListeners();
+  }
+
+  /// 连接身份变化 → 旧代的刷新归属全部失效（幂等：身份没变就什么都不做）。
+  void _syncConnectionGeneration() {
+    final id = _connectionIdentity;
+    if (id == _refreshIdentity) return;
+    _refreshIdentity = id;
+    _refreshGeneration++;
+    // 新代从零开始：旧地址的在途不再阻塞新地址的首屏刷新。
+    _sessionsInFlight = false;
+    _sessionsPending = false;
+    _sessionsWaiters = null;
+    // issue #133：旧宿主的子代理运行数据不得进入新连接（SSE 计数 + 快照字段）。
+    _clearSubagentRunningState();
+    // 释放旧代**全部**等待者——包括已经变成「补发中」的那一轮（WARNING 2）。
+    _finishAllRounds();
+  }
+
+  /// 连接代变更（关闭 bridge / 销毁）时使旧代的守卫与待补全部失效。
+  ///
+  /// 与 [_syncConnectionGeneration] 的区别：这里**不比对身份**。关闭 bridge 时地址
+  /// 可能没变，但连接已经没了——等待者必须立刻释放，不能拖到旧响应回来或逻辑超时。
+  void _invalidateSessionRefresh() {
+    _refreshGeneration++;
+    _sessionsInFlight = false;
+    _sessionsPending = false;
+    _sessionsWaiters = null;
+    // issue #133：连接代切换（换地址/重连/销毁）后，旧宿主的子代理运行数据失效
+    // （SSE 计数 + 快照字段；断链缓存也不得残留）。
+    _clearSubagentRunningState();
+    _finishAllRounds();
+  }
+
+  Future<void> refreshSessions({bool notify = true}) {
+    // 兜底入口：任何方式的连接变更（含自动轮换）都在这里被发现。
+    _syncConnectionGeneration();
+    if (_sessionsInFlight) {
+      // 已有刷新在飞：合并到「待补这一轮」，并返回**该轮**的 Future——
+      // 调用者要的是"刷新完成"，不能在旧请求和补发都没结束时就提前完成。
+      _sessionsPending = true;
+      _sessionsPendingNotify = notify; // 沿用最新一次调用的意图
+      final waiter = _sessionsWaiters ??= Completer<void>();
+      _roundWaiters.add(waiter);
+      return waiter.future;
+    }
+    return _runSessionRefresh(notify);
+  }
+
+  Future<void> _runSessionRefresh(bool notify) async {
+    final generation = _refreshGeneration;
+    final identity = _refreshIdentity;
+    // issue #133：慢快照与 SSE 合并——请求期间若没有新 agent/status 帧，快照是权威的；
+    // 有新帧则保留帧里的 subagentsRunning（旧快照不得清掉新帧）。
+    final agentEpochAtStart = _agentStatusEpoch;
+    _sessionsInFlight = true;
     try {
-      sessions = await api.sessions();
-      _persistSessions(); // 本地缓存：下次打开 App 秒出列表
-      // 排障日志：打印工作区选择与会话 cwd 样本，便于定位筛选不显示的问题
-      AppLog.instance.log(
-        'Sessions: 拉取 ${sessions.length} 条 · workspacePath=${workspacePath ?? "全部"} · '
-        'workspaces=${workspaces.map((w) => w['path']).join("|")} · '
-        'cwd样例=${sessions.take(3).map((s) => s.cwd ?? "null").join("|")}',
-      );
-      if (notify) notifyListeners();
-    } catch (e) {
-      AppLog.instance.log('Sessions: 拉取失败 $e');
+      try {
+        final fetched = await api.sessions();
+        // 归属判定必须比对**实时**连接身份，而不是 `_refreshIdentity`（它只在刷新入口
+        // 更新）：地址可能在没有任何刷新的情况下被自动轮换掉，那时两者的存储值仍然相等，
+        // 旧地址的数据就会被应用上去。
+        if (generation != _refreshGeneration || identity != _connectionIdentity) {
+          return;
+        }
+        // issue #133：慢快照与 SSE 合并——请求期间若有新 agent/status 帧，旧快照不得
+        // 覆盖新帧：用 SSE 计数回填这些根的服务端字段；无新帧时快照才是权威。
+        if (agentEpochAtStart == _agentStatusEpoch) {
+          subagentRunningByRoot.clear();
+          sessions = fetched;
+        } else {
+          sessions = fetched
+              .map((s) => subagentRunningByRoot.containsKey(s.id)
+                  ? s.copyWith(
+                      subagentsRunning: subagentRunningByRoot[s.id],
+                    )
+                  : s)
+              .toList();
+        }
+        _persistSessions(); // 本地缓存：下次打开 App 秒出列表
+        // 排障日志：打印工作区选择与会话 cwd 样本，便于定位筛选不显示的问题
+        AppLog.instance.log(
+          'Sessions: 拉取 ${sessions.length} 条 · workspacePath=${workspacePath ?? "全部"} · '
+          'workspaces=${workspaces.map((w) => w['path']).join("|")} · '
+          'cwd样例=${sessions.take(3).map((s) => s.cwd ?? "null").join("|")}',
+        );
+        if (notify) notifyListeners();
+      } catch (e) {
+        AppLog.instance.log('Sessions: 拉取失败 $e');
+      }
+    } finally {
+      // 收尾必须区分**三种**情形（第三轮评审核定）：
+      //
+      // ① generation 已过期：说明本代已经被别处取代（disposeBridge，或刷新入口的
+      //    身份同步）。此时**绝不能触碰新代**的守卫与等待者。
+      // ② 仍属当前 owner 代，但**实时连接身份已变**（自动轮换 / 手动切换，且期间
+      //    没有任何刷新或 disposeBridge 来收尾）：既不能走正常收尾——那会把旧代的
+      //    pending **补发到新地址**上；也**不能整个跳过**——那会留下一个永远不会被
+      //    清理的 in-flight 与未释放的等待者，而且若之后又轮换回原地址，刷新入口会
+      //    认为"身份没变"（存储值仍是旧地址），那个遗留守卫就**永久卡住、再也不发
+      //    请求**。正确做法是同步失效本代残留并释放旧轮次等待者，**不补发**。
+      // ③ generation 与实时身份都匹配：走正常复位与补发。
+      if (generation == _refreshGeneration) {
+        if (identity != _connectionIdentity) {
+          _syncConnectionGeneration();
+        } else {
+          // **无论成功、失败还是异常都必须复位**：否则一次失败会把守卫永久卡在
+          // in-flight，列表从此再也不刷新——那比不加守卫更糟。
+          _sessionsInFlight = false;
+          final waiters = _sessionsWaiters;
+          _sessionsWaiters = null;
+          if (_sessionsPending) {
+            _sessionsPending = false;
+            // 补发一次（不 await：不让当前调用方被二次刷新拖住）。
+            // 等待者已登记在 `_roundWaiters` 里，**不在这里摘除**——它要等到补发结束
+            // 或生命周期失效才释放（评审 WARNING 2）。
+            unawaited(
+              _runSessionRefresh(_sessionsPendingNotify)
+                  .whenComplete(() => _finishRound(waiters)),
+            );
+          } else {
+            _finishRound(waiters);
+          }
+        }
+      }
     }
   }
 
@@ -1167,6 +1450,9 @@ class AppStore extends ChangeNotifier {
   String connState = 'connecting';
 
   void _setConnState(String v) {
+    // issue #133：普通断链（_scheduleReconnect / resume catch / 看门狗）也必须让
+    // 子代理运行数据失效，否则列表行会一直显示旧的 running。
+    if (v == 'offline') _clearSubagentRunningState();
     if (connState != v) {
       connState = v;
       notifyListeners();
@@ -1192,6 +1478,8 @@ class AppStore extends ChangeNotifier {
         AppLog.instance.log(
           'SSE: 心跳超时（${DateTime.now().difference(_lastLiveness).inSeconds}s），强制重建连接',
         );
+        // issue #133：静默断链同样是连接代失效——清掉旧子代理运行数据。
+        _clearSubagentRunningState();
         _sub?.cancel();
         _sub = null;
         _connecting = false;
@@ -1212,6 +1500,7 @@ class AppStore extends ChangeNotifier {
       _onFrame,
       onError: (e) {
         AppLog.instance.log('SSE: error $e');
+        if ('$e'.contains('SSE HTTP 503')) _sseBusy = true;
         // 超时 = 黑洞地址（路由不可达，如手机关了组网 VPN）→ 立即轮换候选地址，
         // 不再白等 3×15 秒的重试循环（连接被拒/中断等瞬时错误仍走正常退避）
         if (e is TimeoutException && api.rotateBaseUrl()) {
@@ -1279,6 +1568,7 @@ class AppStore extends ChangeNotifier {
   void injectFrame(Map<String, dynamic> frame) => _onFrame(frame);
 
   void _onFrame(Map<String, dynamic> frame) {
+    _sseBusy = false;
     _retry = 0;
     final type = frame['type'];
     if (type == 'hello') {
@@ -1430,6 +1720,15 @@ class AppStore extends ChangeNotifier {
         );
         _pendingQuestionsBySession[request.sessionId] = request;
         pendingQuestion = request; // legacy single-pending compatibility
+        // issue #120：真机定位日志（只观测）——记录问询实际挂到哪个 session、
+        // 帧自身携带的 sessionId、以及 store 当前会话，便于与 ChatScreen 的日志对账。
+        AppLog.instance.log(
+          '[120-debug] question pending stored: '
+          'sessionId=${request.sessionId} '
+          'frameSessionId=${f['sessionId'] ?? ''} '
+          'storeSessionId=${sessionId ?? ''} '
+          'rpcId=${request.rpcId}',
+        );
         notifyListeners();
         _emitChatEvent(
           ChatEvent(
@@ -1621,10 +1920,20 @@ class AppStore extends ChangeNotifier {
           data: ce.data,
           sessionId: fsid as String?,
           detailAvailable: ce.detailAvailable,
+          // issue #126：实时摘要的 call/result 结构化数据与正文长度提示也必须原样
+          // 带给时间线；否则同一事件在 live 与 reload 后呈现不同（工具卡缺退出码/
+          // 命中数徽标，assistant 缺“查看全文”入口）。
+          detailTextChars: ce.detailTextChars,
+          callSummary: ce.callSummary,
+          resultSummary: ce.resultSummary,
           // issue #52/#53：实时摘要的 time 与 turn/end 的 tail 必须原样带给时间线，
           // 否则 live 轮次页脚没有用时、轮末卡片要等重进会话才出现。
           time: ce.time,
           tail: ce.tail,
+          // issue #99：surface 投影 envelope 必须原样带给时间线/跟踪器，
+          // 否则 SSE replay 会被当成新的工具调用（history 路径已直接解析）。
+          surfaceOp: ce.surfaceOp,
+          sourceEventSeqs: ce.sourceEventSeqs,
         ),
       );
     } else if (type == 'agent/status') {
@@ -1633,11 +1942,33 @@ class AppStore extends ChangeNotifier {
       final sid = frame['sessionId'] as String?;
       final st = frame['status'];
       final norm = normalizeAgentStatus(st);
-      _agentStatusEpoch++; // 增量帧落地：期间到达的 bootstrap 快照不再裁剪（见 _syncAgentStatus）
+      // issue #124/#133：新宿主帧携带 rootSessionId + 递归 running 子代理数（0 也发）。
+      // 根 idle、子 running 时会话列表据此立即显示运行指示；子结束/agent disposed
+      // （插件补合成 idle 帧）时立即清零。字段缺失（旧宿主）→ 本地树 fallback。
+      final rootId = frame['rootSessionId'];
+      final runningRaw = frame['subagentsRunning'];
+      final runningCount = runningRaw is num ? runningRaw.toInt() : null;
+      var subagentsChanged = false;
+      if (rootId is String &&
+          rootId.isNotEmpty &&
+          runningCount != null &&
+          subagentRunningByRoot[rootId] != runningCount) {
+        subagentRunningByRoot[rootId] = runningCount;
+        subagentsChanged = true;
+      }
+      // 同步内存会话字段（union 读取时会用到；不必等下一次 /sessions 慢快照）。
+      if (rootId is String && rootId.isNotEmpty && runningCount != null) {
+        final idx = sessions.indexWhere((s) => s.id == rootId);
+        if (idx >= 0 && sessions[idx].subagentsRunning != runningCount) {
+          sessions[idx] = sessions[idx].copyWith(subagentsRunning: runningCount);
+        }
+      }
+      _agentStatusEpoch++; // 增量帧落地：期间到达的 bootstrap/慢快照不再裁剪（见 _syncAgentStatus）
       // v3.1.6（issue #14）：会话列表的 running 标识必须随**任意**会话的状态变化实时
       // 启停（此前只在"当前打开的会话"变化时通知界面，列表动效会卡住不动）。
       // 但也不能每帧都通知——高频重复帧会让整页反复重建；只在取值真的变化时通知。
       final changed =
+          subagentsChanged ||
           (aid != null && aid.isNotEmpty && agentStatusMap[aid] != norm) ||
           (sid != null && sid.isNotEmpty && sessionAgentStatus[sid] != norm);
       if (aid != null && aid.isNotEmpty) agentStatusMap[aid] = norm;
@@ -1687,6 +2018,17 @@ class AppStore extends ChangeNotifier {
     _connecting = false;
     _retryTimer?.cancel();
     _setConnState('offline');
+    if (_sseBusy) {
+      // 服务端连接满：5s/10s 退避，不再每 2s 探测。
+      final delay = Duration(seconds: _retry >= 6 ? 10 : 5);
+      _retry = _retry >= 6 ? 6 : _retry + 1;
+      // 真机诊断（issue #131）：把"被 503 拒绝"与"普通断线重连"在日志里分开。
+      AppLog.instance.log(
+        'SSE: 服务端连接满（503），${delay.inSeconds}s 后重试（第 $_retry 次退避）',
+      );
+      _retryTimer = Timer(delay, connect);
+      return;
+    }
     if (_retry >= 3) {
       _retryTimer = Timer(const Duration(seconds: 2), () async {
         final epoch = _agentStatusEpoch;
@@ -1745,6 +2087,8 @@ class AppStore extends ChangeNotifier {
     api.onSseKeepalive = null;
     _sub = null;
     _connecting = false;
+    // issue #22/#133：连接代失效——释放旧代刷新守卫并清掉子代理瞬态状态。
+    _invalidateSessionRefresh();
   }
 
   @override
