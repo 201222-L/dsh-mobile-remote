@@ -76,6 +76,12 @@ android {
             }
         }
     }
+
+    // issue #131：原生 SSE 需要上报 `x-mobile-app-version`（VERSION_NAME+VERSION_CODE）。
+    // AGP 8+ 默认不再生成 BuildConfig，这里显式开启（仅此用途，不影响其它字段）。
+    buildFeatures {
+        buildConfig = true
+    }
 }
 
 kotlin {

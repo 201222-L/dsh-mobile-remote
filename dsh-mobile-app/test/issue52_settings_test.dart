@@ -102,6 +102,31 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('详细：已完成轮仍折叠'), findsOneWidget);
+    expect(find.textContaining('详细：已完成轮展开过程段、组抬头折叠'), findsOneWidget);
   });
+
+  testWidgets('#108 设置页隐藏旧两项；旧 prefs key 保留但不读取', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'dsh_mr_show_reasoning': true,
+      'dsh_mr_reasoning_default_expanded': true,
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final store = await makeStore();
+    // 旧 key 仍保留，没有被迁移/删除；store 不再读取它们。
+    expect(prefs.getBool('dsh_mr_show_reasoning'), isTrue);
+    expect(prefs.getBool('dsh_mr_reasoning_default_expanded'), isTrue);
+    expect(store.showReasoning, isFalse);
+    expect(store.reasoningDefaultExpanded, isFalse);
+
+    await pumpSettings(tester, store);
+    await tester.scrollUntilVisible(
+      find.byIcon(Icons.tune_outlined),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('思考内容'), findsNothing);
+    expect(find.text('思维链默认展开'), findsNothing);
+  });
+
 }

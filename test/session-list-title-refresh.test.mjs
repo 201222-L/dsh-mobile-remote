@@ -305,7 +305,7 @@ function createHarness(fixtures, {
 	};
 }
 
-function startRequest(route, url = "/m/api/sessions") {
+function startRequest(route, url = "/m/api/sessions?includeEmpty=1") {
 	const req = new FakeRequest(url);
 	const res = new FakeResponse();
 	const finished = new Promise((resolve) => res.once("finish", () => {

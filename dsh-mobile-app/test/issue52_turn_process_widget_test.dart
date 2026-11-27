@@ -61,15 +61,24 @@ class _Backend {
         final page = preceding.length > limit
             ? preceding.sublist(preceding.length - limit)
             : preceding;
-        body = {'ok': true, 'events': page, 'hasMore': preceding.length > page.length};
+        body = {
+          'ok': true,
+          'events': page,
+          'hasMore': preceding.length > page.length,
+        };
       } else if (params.containsKey('after')) {
         body = {'ok': true, 'events': <Object>[], 'hasMore': false};
       } else if (returnAllOnInitial) {
         body = {'ok': true, 'events': events, 'hasMore': false};
       } else {
-        final tail =
-            events.length > limit ? events.sublist(events.length - limit) : events;
-        body = {'ok': true, 'events': tail, 'hasMore': events.length > tail.length};
+        final tail = events.length > limit
+            ? events.sublist(events.length - limit)
+            : events;
+        body = {
+          'ok': true,
+          'events': tail,
+          'hasMore': events.length > tail.length,
+        };
       }
     } else if (request.url.path == '/m/api/event-detail') {
       detailRequests++;
@@ -107,74 +116,76 @@ List<Map<String, dynamic>> oneTurn({
   bool withTime = true,
   int startTime = 1000,
   int endTime = 4500,
-}) =>
-    [
-      {
-        'seq': 1,
-        'type': 'turn/start',
-        'data': {'turn': turn},
-        if (withTime) 'time': startTime,
-      },
-      {
-        'seq': 2,
-        'type': 'user/message',
-        'data': {'messageId': 'u$turn', 'text': '问题 $turn', 'sourceKind': 'user'},
-      },
-      {
-        'seq': 3,
-        'type': 'assistant/message',
-        'data': {
-          'turn': turn,
-          'step': 1,
-          'messageId': 'a$turn-1',
-          'text': '',
-          'reasoning': _reasoningText,
-          'reasoningChars': _reasoningText.length,
-        },
-        if (withTime) 'time': startTime + 300,
-      },
-      {
-        'seq': 4,
-        'type': 'tool/call',
-        'data': {
-          'turn': turn,
-          'step': 1,
-          'callId': 'call-$turn',
-          'name': 'shell',
-          'arguments': 'ls',
-        },
-        if (withTime) 'time': startTime + 500,
-      },
-      {
-        'seq': 5,
-        'type': 'tool/result',
-        'data': {
-          'turn': turn,
-          'step': 1,
-          'callId': 'call-$turn',
-          'name': 'shell',
-          'text': 'ok',
-        },
-        if (withTime) 'time': startTime + 900,
-      },
-      {
-        'seq': 6,
-        'type': 'assistant/message',
-        'data': {
-          'turn': turn,
-          'step': 1,
-          'messageId': 'a$turn-2',
-          'text': '最终回答 $turn',
-        },
-        if (withTime) 'time': startTime + 1200,
-      },
-      {
-        'seq': 7,
-        'type': 'turn/end',
-        'data': {'turn': turn, 'reason': {'kind': endKind}},
-        if (withTime) 'time': endTime,
-      },
-    ];
+}) => [
+  {
+    'seq': 1,
+    'type': 'turn/start',
+    'data': {'turn': turn},
+    if (withTime) 'time': startTime,
+  },
+  {
+    'seq': 2,
+    'type': 'user/message',
+    'data': {'messageId': 'u$turn', 'text': '问题 $turn', 'sourceKind': 'user'},
+  },
+  {
+    'seq': 3,
+    'type': 'assistant/message',
+    'data': {
+      'turn': turn,
+      'step': 1,
+      'messageId': 'a$turn-1',
+      'text': '',
+      'reasoning': _reasoningText,
+      'reasoningChars': _reasoningText.length,
+    },
+    if (withTime) 'time': startTime + 300,
+  },
+  {
+    'seq': 4,
+    'type': 'tool/call',
+    'data': {
+      'turn': turn,
+      'step': 1,
+      'callId': 'call-$turn',
+      'name': 'shell',
+      'arguments': 'ls',
+    },
+    if (withTime) 'time': startTime + 500,
+  },
+  {
+    'seq': 5,
+    'type': 'tool/result',
+    'data': {
+      'turn': turn,
+      'step': 1,
+      'callId': 'call-$turn',
+      'name': 'shell',
+      'text': 'ok',
+    },
+    if (withTime) 'time': startTime + 900,
+  },
+  {
+    'seq': 6,
+    'type': 'assistant/message',
+    'data': {
+      'turn': turn,
+      'step': 1,
+      'messageId': 'a$turn-2',
+      'text': '最终回答 $turn',
+    },
+    if (withTime) 'time': startTime + 1200,
+  },
+  {
+    'seq': 7,
+    'type': 'turn/end',
+    'data': {
+      'turn': turn,
+      'reason': {'kind': endKind},
+    },
+    if (withTime) 'time': endTime,
+  },
+];
 
 Future<AppStore> _pumpChat(
   WidgetTester tester,
@@ -193,7 +204,9 @@ Future<AppStore> _pumpChat(
     MaterialApp(
       home: ChatScreen(
         // 每次 pump 用新 key：同一测试里切换展示模式要重建状态（否则沿用上一次的 store）。
-        key: ValueKey('issue52-chat-${mode.name}-${timing.name}-${backend.hashCode}'),
+        key: ValueKey(
+          'issue52-chat-${mode.name}-${timing.name}-${backend.hashCode}',
+        ),
         store: store,
         apiClient: backend.api,
         onTitleChanged: () {},
@@ -205,7 +218,7 @@ Future<AppStore> _pumpChat(
 }
 
 void main() {
-  testWidgets('单轮过程行 >50：分批展示并可「显示更多」', (tester) async {
+  testWidgets('单轮过程行 >50：全部渲染，不再有「显示更多」', (tester) async {
     final events = <Map<String, dynamic>>[
       {
         'seq': 1,
@@ -274,13 +287,8 @@ void main() {
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
       await tester.pump(const Duration(milliseconds: 120));
     }
-    // 完全展开：整轮与过程行默认展开，但单轮只先渲染 50 行。
-    await tester.ensureVisible(find.textContaining('显示更多（还有 10 行）'));
-    await tester.pumpAndSettle();
-    expect(find.text('shell'), findsNWidgets(processBatchSize));
-    expect(find.textContaining('显示更多（还有 10 行）'), findsOneWidget);
-
-    await tester.tap(find.textContaining('显示更多（还有 10 行）'));
+    // issue #126：取消分批隐藏，60 个工具调用全部渲染（不再只显示前 50 行）。
+    // 「显示更多」行不再存在。
     await tester.pumpAndSettle();
     expect(find.text('shell'), findsNWidgets(60));
     expect(find.textContaining('显示更多'), findsNothing);
@@ -294,19 +302,22 @@ void main() {
       _Backend(events: running),
       mode: WorkStepDisplayMode.detailed,
     );
-    expect(find.text('1 次工具调用'), findsNothing, reason: '运行中不出现过程组抬头');
-    expect(find.text('shell'), findsOneWidget, reason: '过程行平铺可见');
+    expect(find.text('1 次工具调用'), findsOneWidget, reason: 'v4 详细运行中组抬头展开');
+    expect(find.text('shell'), findsOneWidget, reason: '过程行摘要可见');
+    expect(find.text('参数'), findsNothing, reason: '详情默认收起');
 
-    // 已完成：详细档仍自动折叠整轮；手动展开后按组呈现（组抬头出现）。
+    // 已完成：详细档段展开、组抬头折叠（不再整轮折叠）。
     await _pumpChat(
       tester,
       _Backend(events: oneTurn()),
       mode: WorkStepDisplayMode.detailed,
     );
-    expect(find.text('1 次工具调用'), findsNothing);
-    await tester.tap(find.textContaining('1 组 · 1 次工具调用'));
-    await tester.pumpAndSettle();
     expect(find.text('1 次工具调用'), findsOneWidget);
+    expect(find.text('shell'), findsNothing);
+    await tester.tap(find.text('1 次工具调用'));
+    await tester.pumpAndSettle();
+    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('参数'), findsNothing);
   });
 
   testWidgets('过程块内工具卡加载详情后即时刷新（计划不缓存旧条目）', (tester) async {
@@ -339,8 +350,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
     }
     expect(backend.detailRequests, greaterThan(0), reason: '展开工具卡应触发详情请求');
-    expect(find.textContaining('FULL-TOOL-DETAIL'), findsOneWidget,
-        reason: '详情加载后过程块内（计划解析到的当前条目）必须刷新');
+    expect(
+      find.textContaining('FULL-TOOL-DETAIL'),
+      findsOneWidget,
+      reason: '详情加载后过程块内（计划解析到的当前条目）必须刷新',
+    );
   });
 
   testWidgets('页脚反馈 toggle 即时刷新高亮（计划不缓存旧条目）', (tester) async {
@@ -350,8 +364,11 @@ void main() {
     for (var i = 0; i < 6; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
-    expect(find.byTooltip('好的回答（已选，点此取消）'), findsOneWidget,
-        reason: '反馈更新后页脚操作栏必须反映新评级');
+    expect(
+      find.byTooltip('好的回答（已选，点此取消）'),
+      findsOneWidget,
+      reason: '反馈更新后页脚操作栏必须反映新评级',
+    );
   });
 
   testWidgets('标准档默认：已完成轮折叠成一行摘要，不构建工具子项', (tester) async {
@@ -401,7 +418,7 @@ void main() {
       _Backend(events: oneTurn()),
       timing: TurnFoldTiming.onNewMessage,
     );
-    // 展开态仍保留「收起」入口（整轮摘要行），但过程组抬头已经出现。
+    // 标准档完成轮在「下次新消息」前保持段展开，组抬头折叠。
     expect(find.text('1 次工具调用'), findsOneWidget);
   });
 
@@ -429,21 +446,19 @@ void main() {
     expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
   });
 
-  testWidgets('详细档：已完成轮仍被折叠（foldCompletedTurns=true）', (tester) async {
+  testWidgets('详细档：已完成轮段展开、组抬头折叠', (tester) async {
     await _pumpChat(
       tester,
       _Backend(events: oneTurn()),
       mode: WorkStepDisplayMode.detailed,
     );
-    // 整轮默认收起 → 只有一行摘要，过程组抬头不出现。
-    expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
-    expect(find.text('1 次工具调用'), findsNothing);
-
-    // 手动展开后按组呈现，过程组默认折叠（组抬头出现）。
-    await tester.tap(find.textContaining('1 组 · 1 次工具调用'));
-    await tester.pumpAndSettle();
+    expect(find.textContaining('1 组 · 1 次工具调用'), findsNothing);
     expect(find.text('1 次工具调用'), findsOneWidget);
     expect(find.text('shell'), findsNothing);
+    await tester.tap(find.text('1 次工具调用'));
+    await tester.pumpAndSettle();
+    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('参数'), findsNothing);
   });
 
   testWidgets('完全展开档：已完成轮不折叠且工具卡仍默认收起', (tester) async {
@@ -462,9 +477,7 @@ void main() {
     expect(find.text('参数'), findsOneWidget);
   });
 
-  testWidgets('完全展开档运行中：过程行仍显示，只是不分组（liveProcessDetail 不隐藏行）', (
-    tester,
-  ) async {
+  testWidgets('完全展开档运行中：过程行仍显示，只是不分组（liveProcessDetail 不隐藏行）', (tester) async {
     final events = oneTurn()..removeWhere((e) => e['type'] == 'turn/end');
     await _pumpChat(
       tester,
@@ -477,18 +490,25 @@ void main() {
     expect(find.text('shell'), findsOneWidget);
   });
 
-  testWidgets('标准档运行中：按组且组强制展开，抬头附带当前工具名', (tester) async {
-    // issue #61：抬头只信真实运行态——必须留一条未回结果的工具调用（只有 call 无 result）。
+  testWidgets('标准档运行中：组抬头折叠、不铺行、状态由组抬头承载', (tester) async {
     final events = oneTurn()
       ..removeWhere(
-        (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
+        (e) =>
+            e['type'] == 'turn/end' ||
+            e['type'] == 'tool/result' ||
+            e['type'] == 'assistant/message',
       );
     await _pumpChat(tester, _Backend(events: events));
-    expect(find.text('正在调用工具…（shell）'), findsOneWidget);
-    expect(find.text('shell'), findsOneWidget); // 组强制展开 → 工具行可见
+    expect(find.text('1 次工具调用 · 进行中'), findsOneWidget);
+    expect(find.text('shell'), findsNothing, reason: '标准运行中不铺组内行');
+    expect(
+      find.textContaining('正在调用 shell'),
+      findsNothing,
+      reason: 'ADR 0035：活动条删除，工具状态由过程行/组抬头承载',
+    );
   });
 
-  testWidgets('简洁档运行中：行仍在，抬头只给通用文案（无工具名）', (tester) async {
+  testWidgets('简洁档运行中：整组折叠一行，工具卡不铺开（#104）', (tester) async {
     final events = oneTurn()
       ..removeWhere(
         (e) => e['type'] == 'turn/end' || e['type'] == 'tool/result',
@@ -498,9 +518,9 @@ void main() {
       _Backend(events: events),
       mode: WorkStepDisplayMode.concise,
     );
-    expect(find.text('正在调用工具…'), findsOneWidget);
+    expect(find.textContaining('1 组 · 1 次工具调用'), findsOneWidget);
     expect(find.textContaining('（shell）'), findsNothing);
-    expect(find.text('shell'), findsOneWidget);
+    expect(find.text('shell'), findsNothing, reason: '运行中不得铺开工具卡');
   });
 
   testWidgets('手动展开只存内存：本会话内重建保持，重新进入会话按策略重算', (tester) async {
@@ -524,8 +544,7 @@ void main() {
   testWidgets('过程块位于用户提问之后：提问 → 本轮过程 → 回答', (tester) async {
     await _pumpChat(tester, _Backend(events: oneTurn()));
     final promptY = tester.getTopLeft(find.text('问题 1')).dy;
-    final processY =
-        tester.getTopLeft(find.textContaining('1 组 · 1 次工具调用')).dy;
+    final processY = tester.getTopLeft(find.textContaining('1 组 · 1 次工具调用')).dy;
     final answerY = tester.getTopLeft(find.textContaining('最终回答 1')).dy;
     expect(promptY, lessThan(processY));
     expect(processY, lessThan(answerY));
@@ -641,7 +660,11 @@ void main() {
       events.add({
         'seq': seq++,
         'type': 'user/message',
-        'data': {'messageId': 'u$turn', 'text': '问题 $turn', 'sourceKind': 'user'},
+        'data': {
+          'messageId': 'u$turn',
+          'text': '问题 $turn',
+          'sourceKind': 'user',
+        },
       });
       events.add({
         'seq': seq++,

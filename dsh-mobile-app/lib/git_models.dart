@@ -1,5 +1,27 @@
 import 'dart:collection';
 
+/// issue #86：Git 分支图选中上限三档（全局本地偏好）。
+enum GitGraphBranchLimit {
+  five(5, '5'),
+  ten(10, '10'),
+  unlimited(null, 'unlimited');
+
+  const GitGraphBranchLimit(this.max, this.storageValue);
+
+  final int? max;
+  final String storageValue;
+
+  bool get isUnlimited => max == null;
+
+  static GitGraphBranchLimit fromStorage(Object? value) => switch (value) {
+    '10' => GitGraphBranchLimit.ten,
+    'unlimited' => GitGraphBranchLimit.unlimited,
+    _ => GitGraphBranchLimit.five,
+  };
+
+  static const GitGraphBranchLimit fallback = GitGraphBranchLimit.five;
+}
+
 const maxSelectedGraphBranches = 5;
 
 List<String> _strings(Object? value) => (value as List? ?? const [])
@@ -17,18 +39,59 @@ class GitReadCapabilities {
   final String? reason;
   final Map<String, bool> features;
 
+  /// task-28（#86 方案 B）：POST graph 的 tips 上限；旧宿主缺字段 = null（回退 5）。
+  final int? graphTipsMax;
+
+  /// GET graph 的 tips 上限；旧宿主缺字段时与 max 一起回退 5。
+  final int? graphTipsGetMax;
+
+  /// issue #93：全部分支模式（all=true）的服务端页大小；旧宿主缺字段 = 不支持 all。
+  final int? graphAllPageSize;
+  final int? graphAllMaxRefs;
+  final int? graphAllMaxScan;
+
   const GitReadCapabilities({
     this.available = false,
     this.reason,
     this.features = const {},
+    this.graphTipsMax,
+    this.graphTipsGetMax,
+    this.graphAllPageSize,
+    this.graphAllMaxRefs,
+    this.graphAllMaxScan,
   });
 
-  factory GitReadCapabilities.fromJson(Map<String, dynamic> json) =>
-      GitReadCapabilities(
-        available: json['available'] == true,
-        reason: json['reason']?.toString(),
-        features: _boolMap(json['features']),
-      );
+  /// 旧宿主无 all 能力 → App 回退现有 5/10/不限选择档。
+  bool get graphAll => graphAllPageSize != null;
+
+  /// 是否支持 POST graph（新宿主才暴露 graphTips）。
+  bool get supportsGraphPost => graphTipsMax != null;
+
+  /// 实际生效的 POST 上限（旧宿主回退 5）。
+  int get effectiveGraphTipsMax => graphTipsMax ?? 5;
+
+  /// 实际生效的 GET 上限（缺 getMax 按 5，保持旧契约）。
+  int get effectiveGraphTipsGetMax => graphTipsGetMax ?? 5;
+
+  factory GitReadCapabilities.fromJson(Map<String, dynamic> json) {
+    final tips = json['graphTips'];
+    final tipsMap = tips is Map ? tips : const {};
+    int? readTipLimit(Object? value) {
+      final parsed = value is num ? value.toInt() : int.tryParse('${value ?? ''}');
+      return parsed != null && parsed > 0 ? parsed : null;
+    }
+    final allMap = json['graphAll'] is Map ? json['graphAll'] as Map : const {};
+    return GitReadCapabilities(
+      available: json['available'] == true,
+      reason: json['reason']?.toString(),
+      features: _boolMap(json['features']),
+      graphTipsMax: readTipLimit(tipsMap['max']),
+      graphTipsGetMax: readTipLimit(tipsMap['getMax']),
+      graphAllPageSize: readTipLimit(allMap['pageSize']),
+      graphAllMaxRefs: readTipLimit(allMap['maxRefs']),
+      graphAllMaxScan: readTipLimit(allMap['maxScan']),
+    );
+  }
 
   /// 宿主是否返回结构化 `refsDetail`/`tagsDetail`（契约 1.1.0+）。
   ///
@@ -452,13 +515,29 @@ class GitGraphPage {
   final List<GitCommitSummary> commits;
   final String? snapshotId;
   final String? nextCursor;
+
+  /// issue #93：更**新**一页的 cursor（向上加载）；旧宿主/5/10 为 null。
+  final String? prevCursor;
   final List<GitGraphTip> tips;
+  final bool all;
+  final int? pageSize;
+  final int? pageStart;
+  final String? focusOid;
+  final bool hasNewer;
+  final bool hasOlder;
 
   const GitGraphPage({
     this.commits = const [],
     this.snapshotId,
     this.nextCursor,
+    this.prevCursor,
     this.tips = const [],
+    this.all = false,
+    this.pageSize,
+    this.pageStart,
+    this.focusOid,
+    this.hasNewer = false,
+    this.hasOlder = false,
   });
 
   factory GitGraphPage.fromJson(Map<String, dynamic> json) => GitGraphPage(
@@ -467,6 +546,13 @@ class GitGraphPage {
         (item) => GitCommitSummary.fromJson(Map<String, dynamic>.from(item)),
       ),
     ),
+    prevCursor: json['prevCursor']?.toString(),
+    all: json['all'] == true,
+    pageSize: json['pageSize'] is num ? (json['pageSize'] as num).toInt() : null,
+    pageStart: json['pageStart'] is num ? (json['pageStart'] as num).toInt() : null,
+    focusOid: json['focusOid']?.toString(),
+    hasNewer: json['hasNewer'] == true,
+    hasOlder: json['hasOlder'] == true,
     snapshotId: json['snapshotId']?.toString(),
     nextCursor: json['nextCursor']?.toString(),
     tips: List.unmodifiable(

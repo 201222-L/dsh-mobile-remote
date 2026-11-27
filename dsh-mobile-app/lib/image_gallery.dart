@@ -195,10 +195,24 @@ Size imageThumbBoxSize(Map<String, dynamic> image) {
   final ratio = (width > 0 && height > 0)
       ? (width / height).clamp(0.3, 3.0)
       : 1.5;
+  // ADR 0035：单图在时间线内最高 320dp；完整尺寸仍在全屏查看器里。
   return Size(
     imageThumbBoxWidth,
-    (imageThumbBoxWidth / ratio).clamp(80.0, 480.0),
+    (imageThumbBoxWidth / ratio).clamp(80.0, 320.0),
   );
+}
+
+/// ADR 0035：图片网格的估算高度（与 [imageThumbBoxSize] 同一口径，纯函数便于单测）。
+double imageGalleryEstimatedHeight(
+  List<Map<String, dynamic>> images, {
+  double gap = 6,
+}) {
+  if (images.isEmpty) return 0;
+  var height = gap * (images.length - 1);
+  for (final image in images) {
+    height += imageThumbBoxSize(image).height;
+  }
+  return height;
 }
 
 /// 大 GIF 角标：长边 > 4096 或解码字节 > 16MB（体积只在已加载时可知）。
@@ -250,6 +264,10 @@ String _attachmentIdOf(Map<String, dynamic> image) =>
 
 /// 消息/工具卡附图区域：纵向缩略图列表，每张图下一行紧凑元数据；点击打开统一
 /// 多图查看器（与列表共享字节缓存，打开/切页不重复 HTTP）。
+/// ADR 0035：图片网格整体高度上限（窗口高度，避免键盘开合改变 cap）。
+double imageGalleryMaxHeight(BuildContext context) =>
+    (MediaQuery.sizeOf(context).height * 0.5).clamp(0.0, 400.0);
+
 class ImageGalleryGrid extends StatefulWidget {
   const ImageGalleryGrid({
     super.key,
@@ -304,23 +322,59 @@ class _ImageGalleryGridState extends State<ImageGalleryGrid> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final images = widget.images;
+    if (images.isEmpty) return const SizedBox.shrink();
+    final cap = imageGalleryMaxHeight(context);
+    final estimated = imageGalleryEstimatedHeight(images);
+    final grid = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (var index = 0; index < widget.images.length; index++) ...[
+        for (var index = 0; index < images.length; index++) ...[
           if (index > 0) const SizedBox(height: 6),
           _ImageThumbnail(
             key: ValueKey<String>(
               'issue69-thumb-state:${widget.sessionId}:'
-              '${_attachmentIdOf(widget.images[index])}:$index',
+              '${_attachmentIdOf(images[index])}:$index',
             ),
-            image: widget.images[index],
+            image: images[index],
             index: index,
             cache: _cache,
             onOpen: () => _openViewer(index),
           ),
         ],
       ],
+    );
+    if (estimated <= cap) return grid;
+    // ADR 0035：网格整体高度有界；超出不内层滚动，点“查看全部”进图库。
+    return SizedBox(
+      height: cap,
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          Positioned(top: 0, left: 0, right: 0, child: grid),
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: TextButton.icon(
+              key: const ValueKey<String>('image-grid-open-all'),
+              onPressed: () => _openViewer(0),
+              style: TextButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.surface,
+                foregroundColor: Theme.of(context).colorScheme.onSurface,
+                elevation: 1,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+              ),
+              icon: const Icon(Icons.photo_library_outlined, size: 16),
+              label: Text(
+                L10n.t('查看全部 ${images.length} 张', 'View all ${images.length}'),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

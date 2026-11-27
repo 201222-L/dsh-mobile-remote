@@ -11,6 +11,7 @@ import '../api.dart';
 import '../app_icon.dart';
 import '../app_icon_switcher.dart';
 import '../floating.dart';
+import '../git_models.dart';
 import '../keep_alive.dart';
 import '../l10n.dart';
 import '../local_notifications.dart';
@@ -27,6 +28,393 @@ import 'providers_screen.dart';
 import 'usage_screen.dart';
 import 'update_screen.dart';
 
+/// issue #135：环境诊断的中文名与纯文本渲染（从 State 抽出，便于单测）。
+///
+/// 约束：
+/// - 已知 key 只显示本地化名称，不再重复 `中文（key）`；未知 key 原样回退，便于复制排障。
+/// - 常用状态值友好化（ok→正常、up-to-date→已是最新、config→配置；npm 源保留）。
+/// - 不删版本号/路径/IP/插件名，保留可对照信息。
+
+String diagnosticFormText(Object? form) {
+  if (form == 'desktop') return L10n.t('桌面版', 'DSH Desktop');
+  if (form == 'cli') return L10n.t('命令行 / 网页', 'CLI / Web');
+  if (form == null || '$form'.isEmpty) return L10n.t('未知', 'unknown');
+  return '$form';
+}
+
+String diagnosticMetricName(String key) {
+  switch (key) {
+    case 'mobileOnline':
+      return L10n.t('手机在线连接', 'Phone connections');
+    case 'mobileOldestAgeMs':
+      return L10n.t('最旧连接年龄（毫秒）', 'Oldest connection age (ms)');
+    case 'mobileOldestIdleMs':
+      return L10n.t('最久未写连接（毫秒）', 'Longest idle connection (ms)');
+    case 'mobileStalled':
+      return L10n.t('停滞连接', 'Stalled connections');
+    case 'mobileEvicted':
+      return L10n.t('累计驱逐连接', 'Connections evicted');
+    case 'mobileRejected':
+      return L10n.t('累计拒绝连接', 'Connections rejected');
+    case 'agents':
+      return L10n.t('运行中 Agent', 'Live agents');
+    case 'sessions':
+      return L10n.t('会话数', 'Sessions');
+    case 'workspaces':
+      return L10n.t('工作区数', 'Workspaces');
+    case 'pushChannels':
+      return L10n.t('推送通道', 'Push channels');
+    default:
+      return key;
+  }
+}
+
+String diagnosticItemName(String section, String key) {
+  if (section == 'services') {
+    switch (key) {
+      case 'webServer':
+        return L10n.t('网页服务', 'Web server');
+      case 'agents':
+        return L10n.t('Agent 服务', 'Agents');
+      case 'sessions':
+        return L10n.t('会话服务', 'Sessions');
+      case 'llm':
+        return L10n.t('模型服务', 'LLM');
+      case 'permissionPresets':
+        return L10n.t('权限预设', 'Permission presets');
+      case 'agentPresets':
+        return L10n.t('Agent 预设', 'Agent presets');
+      case 'workspaceRegistry':
+        return L10n.t('工作区服务', 'Workspaces');
+      case 'approval':
+        return L10n.t('审批服务', 'Approval');
+      case 'credentials':
+        return L10n.t('凭据服务', 'Credentials');
+      case 'messageFeedback':
+        return L10n.t('消息反馈', 'Message feedback');
+      case 'userQuestions':
+        return L10n.t('问询服务', 'Questions');
+      case 'pluginManager':
+        return L10n.t('插件管理（免重启更新）', 'Plugin manager (restart-free)');
+      case 'hmr':
+        return L10n.t('热更新（HMR）', 'Hot reload (HMR)');
+      case 'apiProxy':
+        return L10n.t(
+          '旧帧桥 apiProxy（0.1.1 内核）',
+          'Legacy apiProxy (0.1.1 kernel)',
+        );
+      default:
+        return key;
+    }
+  }
+  switch (key) {
+    case 'modelsRpc':
+      return L10n.t('模型目录 RPC', 'Model catalog RPC');
+    case 'sessionsList':
+      return L10n.t('会话列表', 'Session list');
+    case 'directories':
+      return L10n.t('目录浏览', 'Directory browse');
+    case 'workspaces':
+      return L10n.t('工作区列表', 'Workspace list');
+    case 'notifications':
+      return L10n.t('通知中心', 'Notifications');
+    case 'actions':
+      return L10n.t('动作区', 'Actions');
+    case 'approvalMode':
+      return L10n.t('审批策略', 'Approval mode');
+    case 'remoteEvents':
+      return L10n.t('双端审批通道', 'Dual-end channel');
+    case 'respondBridge':
+      return L10n.t('旧帧桥应答（0.1.1 内核）', 'Legacy respond (0.1.1 kernel)');
+    case 'frameBridge':
+      return L10n.t('旧帧桥循环（0.1.1 内核）', 'Legacy frame loop (0.1.1 kernel)');
+    case 'pendingFrames':
+      return L10n.t('挂起待答', 'Pending frames');
+    case 'pendingApprovals':
+      return L10n.t('待处理审批', 'Pending approvals');
+    case 'pendingQuestions':
+      return L10n.t('待处理问询', 'Pending questions');
+    case 'sseConnections':
+      return L10n.t('SSE 连接', 'SSE connections');
+    case 'hostCapabilities':
+      return L10n.t('宿主能力', 'Host capabilities');
+    case 'hostCapabilityReasons':
+      return L10n.t('能力降级原因', 'Capability reasons');
+    case 'hostGeneration':
+      return L10n.t('宿主代际', 'Host generation');
+    case 'appAlignment':
+      return L10n.t('两端版本对齐', 'App/plugin alignment');
+    case 'pluginUpdate':
+      return L10n.t('插件更新', 'Plugin update');
+    case 'appArtifact':
+      return L10n.t('App 分发包', 'App artifact');
+    case 'currentRelease':
+      return L10n.t('当前发布', 'Current release');
+    case 'currentReleaseHealth':
+      return L10n.t('当前发布健康', 'Current release health');
+    case 'updateTarget':
+      return L10n.t('更新目标', 'Update target');
+    case 'updateDir':
+      return L10n.t('更新目录', 'Update dir');
+    default:
+      return key;
+  }
+}
+
+/// 单个稳定状态码/短语的友好文案（未知码原样返回，便于对照日志）。
+String diagnosticStatusToken(String token) {
+  switch (token) {
+    case 'ok':
+      return L10n.t('正常', 'OK');
+    case 'fail':
+    case 'failed':
+      return L10n.t('失败', 'failed');
+    case 'up-to-date':
+      return L10n.t('已是最新', 'up to date');
+    case 'outdated':
+      return L10n.t('有更新', 'update available');
+    case 'config':
+      return L10n.t('配置', 'config');
+    case 'generated':
+      return L10n.t('已生成', 'generated');
+    case 'default':
+      return L10n.t('默认', 'default');
+    case 'npm':
+      return 'npm';
+    case 'ready':
+      return L10n.t('就绪', 'ready');
+    case 'not-ready':
+      return L10n.t('未就绪', 'not ready');
+    case 'missing':
+      return L10n.t('缺失', 'missing');
+    case 'drift':
+      return L10n.t('状态漂移', 'drift');
+    case 'unknown':
+      return L10n.t('未知', 'unknown');
+    case 'none':
+      return L10n.t('无', 'none');
+    case 'unavailable':
+      return L10n.t('不可用', 'unavailable');
+    case 'idle':
+      return L10n.t('空闲', 'idle');
+    case 'stalled':
+      return L10n.t('停滞', 'stalled');
+    case 'legacy':
+      return L10n.t('旧代', 'legacy');
+    case 'controlArg':
+      return L10n.t('控制参数', 'control arg');
+    case 'legacyArg':
+      return L10n.t('旧参数', 'legacy arg');
+    case 'get':
+      return L10n.t('读取', 'get');
+    case 'describe':
+      return L10n.t('描述', 'describe');
+    case 'sessionId':
+      return L10n.t('按会话', 'sessionId');
+    case 'agent':
+      return L10n.t('按 Agent', 'agent');
+    case 'createPeer':
+      return L10n.t('进程内 Peer', 'in-process Peer');
+    case 'operatorPeer':
+      return L10n.t('网关 Peer', 'gateway Peer');
+    case 'descendants':
+      return L10n.t('后代目录', 'descendants');
+    case 'children':
+      return L10n.t('子会话', 'children');
+    case 'user':
+      return L10n.t('用户中断', 'user');
+    case 'parent':
+      return L10n.t('父级中断', 'parent');
+    case 'both':
+      return L10n.t('双端同卡，先答生效', 'both ends, first answer wins');
+    case 'mobile':
+      return L10n.t('手机在线独占', 'phone-exclusive while online');
+    case 'desktop':
+      return L10n.t('仅桌面 GUI', 'desktop GUI only');
+    default:
+      return token;
+  }
+}
+
+/// 状态字符串友好化：**只做确切 token 映射**。
+///
+/// 路径/URL/版本/任意 unknown 字符串原样返回。禁止对任意字符串做逐词替换——
+/// 那会把 `/home/u/config/npm` 改成 `/home/u/配置/npm`、把 `https://host/ready`
+/// 改成 `https://host/就绪`，破坏可复制排障（review P2）。
+String diagnosticStatusText(String value) => diagnosticStatusToken(value);
+
+/// 允许做状态友好化的顶层 check key 白名单（其余 key 的值一律原样）。
+const Set<String> _diagStatusStringKeys = {'currentReleaseHealth'};
+
+/// 单条 check 值渲染：仅白名单字段/语义化格式做翻译；Map 按明确子 key 白名单；
+/// 未知 key/value 原样保留。
+String diagnosticCheckValueText(String key, Object? value) {
+  if (value is Map) {
+    final parts = <String>[];
+    value.forEach((k, v) {
+      parts.add('$k: ${_diagnosticNestedValueText(key, '$k', v)}');
+    });
+    return '{${parts.join(', ')}}';
+  }
+  if (value is Iterable) {
+    return '[${value.map(diagnosticValueText).join(', ')}]';
+  }
+  if (value is String) return _diagnosticCheckString(key, value);
+  return '$value';
+}
+
+String _diagnosticCheckString(String key, String value) {
+  if (key == 'sseConnections') {
+    // 服务端摘要已是中文，只替换独立词 stalled；数字/路径/URL 不碰。
+    return value.replaceAll(
+      RegExp(r'(?<![A-Za-z-])stalled(?![A-Za-z-])'),
+      L10n.t('停滞', 'stalled'),
+    );
+  }
+  if (key == 'currentRelease') {
+    if (value.startsWith('current ')) {
+      return '${L10n.t('当前', 'current')} ${value.substring(8)}';
+    }
+    return diagnosticStatusToken(value);
+  }
+  if (key == 'updateTarget') {
+    if (value.startsWith('target ')) {
+      return '${L10n.t('目标', 'target')} ${value.substring(7)}';
+    }
+    return diagnosticStatusToken(value);
+  }
+  if (key == 'appArtifact' || key == 'updateDir') {
+    final pair = RegExp(r'^([a-z][a-z-]*)\(([^()]*)\)$').firstMatch(value);
+    if (pair != null) {
+      return '${diagnosticStatusToken(pair.group(1)!)}（${diagnosticStatusToken(pair.group(2)!)}）';
+    }
+    return diagnosticStatusToken(value);
+  }
+  if (key.startsWith('push:')) {
+    final prefix = RegExp(r'^(ok|fail|idle)(?=\s|$)').firstMatch(value);
+    if (prefix != null) {
+      return '${diagnosticStatusToken(prefix.group(1)!)}${value.substring(prefix.end)}';
+    }
+    return value;
+  }
+  if (_diagStatusStringKeys.contains(key)) {
+    return diagnosticStatusToken(value);
+  }
+  return value;
+}
+
+String _diagnosticNestedValueText(
+  String parentKey,
+  String childKey,
+  Object? value,
+) {
+  if (value is Map || value is Iterable) return diagnosticValueText(value);
+  if (value is! String) return '$value';
+  // 明确白名单：只有这些父/子字段的值是稳定状态码。
+  switch (parentKey) {
+    case 'hostCapabilities':
+    case 'hostCapabilityReasons':
+    case 'hostGeneration':
+      return diagnosticStatusToken(value);
+    case 'appAlignment':
+      return (childKey == 'state' || childKey == 'reason')
+          ? diagnosticStatusToken(value)
+          : value;
+    case 'pluginUpdate':
+      return (childKey == 'state' || childKey == 'installShape')
+          ? diagnosticStatusToken(value)
+          : value;
+    default:
+      return value;
+  }
+}
+
+/// 仅保留结构的通用值渲染（**不做任何状态词替换**）；未知/任意字符串原样。
+String diagnosticValueText(Object? value) {
+  if (value is Map) {
+    final parts = <String>[];
+    value.forEach((k, v) {
+      parts.add('$k: ${diagnosticValueText(v)}');
+    });
+    return '{${parts.join(', ')}}';
+  }
+  if (value is Iterable) {
+    return '[${value.map(diagnosticValueText).join(', ')}]';
+  }
+  return '$value';
+}
+
+/// 环境诊断纯文本（设置页「环境诊断」与复制按钮共用）。
+String buildDiagnosticsText(Map<String, dynamic>? d) {
+  if (d == null) return L10n.t('检测失败', 'Check failed');
+  final buf = StringBuffer();
+  final runtime = d['runtime'] as Map<String, dynamic>? ?? {};
+  final formText = diagnosticFormText(runtime['form']);
+  buf.writeln(
+    '${L10n.t('运行形态: ', 'Mode: ')}$formText${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}',
+  );
+  buf.writeln(
+    '${L10n.t('监听: ', 'Listen: ')}${runtime['host']}:${runtime['port']}',
+  );
+  buf.writeln('${L10n.t('进程目录: ', 'CWD: ')}${runtime['cwd']}');
+  final metrics = runtime['metrics'] as Map<String, dynamic>?;
+  if (metrics != null && metrics.isNotEmpty) {
+    buf.writeln();
+    buf.writeln(L10n.t('实时指标:', 'Live metrics:'));
+    metrics.forEach((k, v) {
+      buf.writeln('  • ${diagnosticMetricName(k)} = $v');
+    });
+  }
+  buf.writeln();
+  final services = d['services'] as Map<String, dynamic>? ?? {};
+  buf.writeln(L10n.t('服务:', 'Services:'));
+  services.forEach((k, v) {
+    buf.writeln(
+      '  ${v == true ? '✅' : '❌'} ${diagnosticItemName('services', k)}',
+    );
+  });
+  buf.writeln();
+  final checks = d['checks'] as Map<String, dynamic>? ?? {};
+  buf.writeln(L10n.t('端点实测:', 'Endpoint checks:'));
+  checks.forEach((k, v) {
+    final shown = diagnosticItemName('checks', k);
+    if (k == 'approvalMode') {
+      final m = v == 'both'
+          ? L10n.t('双端同卡，先答生效', 'both ends, first answer wins')
+          : v == 'mobile'
+          ? L10n.t('手机在线独占', 'phone-exclusive while online')
+          : v == 'desktop'
+          ? L10n.t('仅桌面 GUI', 'desktop GUI only')
+          : '${v ?? '?'}';
+      buf.writeln('  ℹ $shown：$m');
+    } else if (v == true) {
+      buf.writeln('  ✅ $shown');
+    } else if (v == false) {
+      buf.writeln('  ❌ $shown');
+    } else if (v is num) {
+      buf.writeln(
+        '  ${v == 0 ? '✅' : '⚠'} $shown = $v${v == 0 ? '' : L10n.t('（有审批/问询待处理）', ' (approval/question pending)')}',
+      );
+    } else {
+      buf.writeln('  ℹ $shown = ${diagnosticCheckValueText(k, v)}');
+    }
+  });
+  final notes = d['notes'] as List? ?? [];
+  if (notes.isNotEmpty) {
+    buf.writeln();
+    buf.writeln(L10n.t('备注:', 'Notes:'));
+    for (final n in notes) {
+      buf.writeln('  • $n');
+    }
+  }
+  final plugin = d['plugin'] as Map<String, dynamic>? ?? {};
+  buf.writeln();
+  buf.writeln(
+    '${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}',
+  );
+  return buf.toString();
+}
+
 class SettingsScreen extends StatefulWidget {
   final AppStore store;
   final Future<void> Function() onReconfigure;
@@ -41,6 +429,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  bool _showInlineGitLimit = false;
   UsageSnapshot? _usage;
   String? _usageError; // partial | outdated | failed；build 时再翻译
   bool _usageBusy = false; // 用量与额度刷新中
@@ -355,6 +744,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String get _gitTabsSummary =>
       widget.store.gitTabs.map(_gitTabName).join(' · ');
+
+  String get _gitGraphLimitSummary => switch (widget.store.gitGraphBranchLimit) {
+    GitGraphBranchLimit.five => '5',
+    GitGraphBranchLimit.ten => '10',
+    GitGraphBranchLimit.unlimited => L10n.t('不限', 'Unlimited'),
+  };
+
+  String get _gitGraphLimitSub => switch (widget.store.gitGraphBranchLimit) {
+    GitGraphBranchLimit.five => L10n.t(
+      '最多同时选中 5 个分支（默认）；下次打开分支图时生效',
+      'Up to 5 selected branches (default); applies the next time you open the branch graph',
+    ),
+    GitGraphBranchLimit.ten => L10n.t(
+      '最多同时选中 10 个分支；下次打开分支图时生效',
+      'Up to 10 selected branches; applies the next time you open the branch graph',
+    ),
+    GitGraphBranchLimit.unlimited => L10n.t(
+      '不限制已选分支数；大仓库可能较慢，30 秒超时会提示改回 10 档',
+      'No cap on selected branches; large repos may be slow, and a 30s timeout suggests switching to 10',
+    ),
+  };
+
+  Future<void> _pickGitGraphLimit() async {
+    setState(() => _showInlineGitLimit = !_showInlineGitLimit);
+  }
+
+  Widget _inlineGitLimitOptions() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            L10n.t('Git 分支图上限', 'Git branch graph limit'),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          Text(
+            L10n.t(
+              '对所有仓库生效；下次打开分支图时生效',
+              'Applies to all repositories; takes effect the next time the branch graph opens',
+            ),
+            style: TextStyle(fontSize: 11, color: DshColors.ink3(context)),
+          ),
+          for (final limit in GitGraphBranchLimit.values)
+            InkWell(
+              key: Key('git-graph-limit-${limit.storageValue}'),
+              onTap: () async {
+                await widget.store.setGitGraphBranchLimit(limit);
+                if (mounted) setState(() => _showInlineGitLimit = false);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Text(
+                  limit == widget.store.gitGraphBranchLimit
+                      ? '${_inlineLimitLabel(limit)}  ${L10n.t('当前', 'Current')}'
+                      : _inlineLimitLabel(limit),
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ),
+            ),
+          InkWell(
+            key: const Key('git-graph-limit-cancel'),
+            onTap: () => setState(() => _showInlineGitLimit = false),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(L10n.t('取消', 'Cancel')),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _inlineLimitLabel(GitGraphBranchLimit limit) => switch (limit) {
+    GitGraphBranchLimit.five => '5',
+    GitGraphBranchLimit.ten => '10',
+    GitGraphBranchLimit.unlimited => L10n.t('不限', 'Unlimited'),
+  };
 
   Future<void> _pickGitTabs() async {
     var selected = List<String>.of(widget.store.gitTabs);
@@ -697,172 +1164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  String get _diagText {
-    final d = _diag;
-    if (d == null) return L10n.t('检测失败', 'Check failed');
-    final buf = StringBuffer();
-    final runtime = d['runtime'] as Map<String, dynamic>? ?? {};
-    final form = runtime['form'];
-    final formText = form == 'desktop'
-        ? 'desktop · ${L10n.t('桌面版', 'DSH Desktop')}'
-        : form == 'cli'
-        ? 'cli · ${L10n.t('命令行/网页', 'CLI / Web')}'
-        : '${form ?? '?'}';
-    buf.writeln(
-      '${L10n.t('运行形态: ', 'Mode: ')}$formText${runtime['authEnabled'] == true ? L10n.t(' · 口令已启用', ' · auth on') : L10n.t(' · 口令未启用', ' · auth off')}',
-    );
-    buf.writeln(
-      '${L10n.t('监听: ', 'Listen: ')}${runtime['host']}:${runtime['port']}',
-    );
-    buf.writeln('${L10n.t('进程目录: ', 'CWD: ')}${runtime['cwd']}');
-    final metrics = runtime['metrics'] as Map<String, dynamic>?;
-    if (metrics != null && metrics.isNotEmpty) {
-      buf.writeln();
-      buf.writeln(L10n.t('实时指标:', 'Live metrics:'));
-      metrics.forEach((k, v) {
-        final n = _metricsName(k);
-        buf.writeln('  • $n（$k）= $v');
-      });
-    }
-    buf.writeln();
-    final services = d['services'] as Map<String, dynamic>? ?? {};
-    buf.writeln(L10n.t('服务:', 'Services:'));
-    services.forEach((k, v) {
-      final n = _diagName('services', k);
-      buf.writeln('  ${v == true ? '✅' : '❌'} ${k == n ? n : '$n ($k)'}');
-    });
-    buf.writeln();
-    final checks = d['checks'] as Map<String, dynamic>? ?? {};
-    buf.writeln(L10n.t('端点实测:', 'Endpoint checks:'));
-    checks.forEach((k, v) {
-      final n = _diagName('checks', k);
-      final shown = k == n ? n : '$n ($k)';
-      if (k == 'approvalMode') {
-        // v3.1.3：审批策略取值说明（both 双端同卡 / mobile 手机独占 / desktop 仅桌面）
-        final m = v == 'both'
-            ? L10n.t('both · 双端同卡，先答生效', 'both · both ends, first answer wins')
-            : v == 'mobile'
-            ? L10n.t('mobile · 手机在线独占', 'mobile · phone-exclusive while online')
-            : v == 'desktop'
-            ? L10n.t('desktop · 仅桌面 GUI', 'desktop · desktop GUI only')
-            : '${v ?? '?'}';
-        buf.writeln('  ℹ $shown：$m');
-      } else if (v == true) {
-        buf.writeln('  ✅ $shown');
-      } else if (v == false) {
-        buf.writeln('  ❌ $shown');
-      } else if (v is num) {
-        // 计数字段（如 pendingFrames 挂起待答数）：0 正常，>0 表示有问询/审批待处理
-        buf.writeln(
-          '  ${v == 0 ? '✅' : '⚠'} $shown = $v${v == 0 ? '' : L10n.t('（有审批/问询待处理）', ' (approval/question pending)')}',
-        );
-      } else {
-        // v3.1.3（issue #9）：策略/状态字符串字段（如 approvalMode = both）友好直读
-        buf.writeln('  ℹ $shown = $v');
-      }
-    });
-    final notes = d['notes'] as List? ?? [];
-    if (notes.isNotEmpty) {
-      buf.writeln();
-      buf.writeln(L10n.t('备注:', 'Notes:'));
-      for (final n in notes) {
-        buf.writeln('  • $n');
-      }
-    }
-    final plugin = d['plugin'] as Map<String, dynamic>? ?? {};
-    buf.writeln();
-    buf.writeln(
-      '${L10n.t('插件: ', 'Plugin: ')}${plugin['name']} v${plugin['version']}',
-    );
-    return buf.toString();
-  }
-
-  /// 实时指标中文名（v3.1.3 runtime.metrics）。未知 key 原样返回。
-  String _metricsName(String key) {
-    switch (key) {
-      case 'mobileOnline':
-        return L10n.t('手机在线连接', 'Phone connections');
-      case 'agents':
-        return L10n.t('运行中 Agent', 'Live agents');
-      case 'sessions':
-        return L10n.t('会话数', 'Sessions');
-      case 'workspaces':
-        return L10n.t('工作区数', 'Workspaces');
-      case 'pushChannels':
-        return L10n.t('推送通道', 'Push channels');
-      default:
-        return key;
-    }
-  }
-
-  /// 服务/实测项中文名（环境诊断可读化，v3.1.3+）。未知 key 原样返回。
-  /// 渲染时保留英文 key 便于复制粘贴排障（issue/日志对照）。
-  String _diagName(String section, String key) {
-    switch (section) {
-      case 'services':
-        switch (key) {
-          case 'webServer':
-            return L10n.t('网页服务', 'Web server');
-          case 'agents':
-            return L10n.t('Agent 服务', 'Agents');
-          case 'sessions':
-            return L10n.t('会话服务', 'Sessions');
-          case 'llm':
-            return L10n.t('模型服务', 'LLM');
-          case 'permissionPresets':
-            return L10n.t('权限预设', 'Permission presets');
-          case 'agentPresets':
-            return L10n.t('Agent 预设', 'Agent presets');
-          case 'workspaceRegistry':
-            return L10n.t('工作区服务', 'Workspaces');
-          case 'approval':
-            return L10n.t('审批服务', 'Approval');
-          case 'credentials':
-            return L10n.t('凭据服务', 'Credentials');
-          case 'messageFeedback':
-            return L10n.t('消息反馈', 'Message feedback');
-          case 'userQuestions':
-            return L10n.t('问询服务', 'Questions');
-          case 'apiProxy':
-            return L10n.t(
-              '旧帧桥 apiProxy（0.1.1 内核）',
-              'Legacy apiProxy (0.1.1 kernel)',
-            );
-          default:
-            return key;
-        }
-      default:
-        switch (key) {
-          case 'modelsRpc':
-            return L10n.t('模型目录 RPC', 'Model catalog RPC');
-          case 'sessionsList':
-            return L10n.t('会话列表', 'Session list');
-          case 'directories':
-            return L10n.t('目录浏览', 'Directory browse');
-          case 'workspaces':
-            return L10n.t('工作区列表', 'Workspace list');
-          case 'notifications':
-            return L10n.t('通知中心', 'Notifications');
-          case 'actions':
-            return L10n.t('动作区', 'Actions');
-          case 'approvalMode':
-            return L10n.t('审批策略', 'Approval mode');
-          case 'remoteEvents':
-            return L10n.t('双端审批通道', 'Dual-end channel');
-          case 'respondBridge':
-            return L10n.t('旧帧桥应答（0.1.1 内核）', 'Legacy respond (0.1.1 kernel)');
-          case 'frameBridge':
-            return L10n.t(
-              '旧帧桥循环（0.1.1 内核）',
-              'Legacy frame loop (0.1.1 kernel)',
-            );
-          case 'pendingFrames':
-            return L10n.t('挂起待答', 'Pending frames');
-          default:
-            return key;
-        }
-    }
-  }
+  String get _diagText => buildDiagnosticsText(_diag);
 
   /// 外观：主题皮肤（4 选 1）+ App 图标（8 选 1，仅 Android）。
   Widget _appearanceCard() {
@@ -1165,6 +1467,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _row({
+    Key? key,
     required Widget leading,
     required String title,
     String? sub,
@@ -1174,6 +1477,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final ink3 = DshColors.ink3(context);
     final line = DshColors.line(context);
     return InkWell(
+      key: key,
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1416,29 +1720,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: _pickGitTabs,
           ),
           _row(
-            leading: const Icon(Icons.psychology_outlined),
-            title: L10n.t('思考内容', 'Thinking content'),
-            sub: L10n.t(
-              '活动条思考状态展开时是否显示思考原文（默认关：只显示状态）',
-              'Show raw thinking text when expanded (default off: status only)',
-            ),
-            trailing: DshSwitch(
-              value: store.showReasoning,
-              onChanged: (v) => store.setShowReasoning(v),
-            ),
-          ),
-          _row(
+            key: const Key('settings-git-graph-limit'),
             leading: const Icon(Icons.account_tree_outlined),
-            title: L10n.t('思维链默认展开', 'Thinking chain default expanded'),
-            sub: L10n.t(
-              '轮次过程行里的思维链默认折叠还是展开（单条仍可点按切换）',
-              'Whether thinking rows inside turn processes are expanded by default (each row stays toggleable)',
+            title: L10n.t('Git 分支图上限', 'Git branch graph limit'),
+            sub: _gitGraphLimitSub,
+            trailing: Text(
+              _gitGraphLimitSummary,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: brand,
+              ),
             ),
-            trailing: DshSwitch(
-              value: store.reasoningDefaultExpanded,
-              onChanged: (v) => store.setReasoningDefaultExpanded(v),
-            ),
+            onTap: _pickGitGraphLimit,
           ),
+          if (_showInlineGitLimit) _inlineGitLimitOptions(),
           // issue #52（ADR 0027 §2）：轮次过程折叠的工作步骤展示模式与收起时机。
           // 偏好只存手机本地；改动即时重算时间线（store.notifyListeners）。
           //
@@ -1927,26 +2223,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _stepDisplayModeSummary(WorkStepDisplayMode mode) {
     switch (mode) {
       case WorkStepDisplayMode.concise:
-        // 运行中组因轮次未结束被强制展开（与桌面 compact 的 turnClosed=false 一致），
-        // 简洁档的差异是抬头不附带当前工具名、完成轮折叠成一行。
         return L10n.t(
-          '简洁：已完成轮折叠成一行；运行中过程组按组且强制展开，抬头不附带当前工具名',
-          'Concise: completed turns fold into one line; running groups stay expanded without the current tool name',
+          '简洁：已完成轮折叠成一行；运行中只显示过程段摘要（含状态/进度），活动条隐藏',
+          'Concise: completed turns fold into one line; running turns show only the segment summary (status/progress), activity bar hidden',
         );
       case WorkStepDisplayMode.standard:
         return L10n.t(
-          '标准：已完成轮折叠成一行；运行中按过程组展开，抬头附带当前工具名（默认）',
-          'Standard: completed turns fold into one line; running turns expand by process group with the current tool name (default)',
+          '标准：已完成轮折叠成一行；运行中过程组收起、只显示组抬头，详情收起（默认）',
+          'Standard: completed turns fold into one line; running groups stay collapsed with headers only (default)',
         );
       case WorkStepDisplayMode.detailed:
         return L10n.t(
-          '详细：已完成轮仍折叠；运行中过程行平铺、完成后按过程组呈现',
-          'Detailed: completed turns still fold; running process rows stay flat and group only after the turn ends',
+          '详细：已完成轮展开过程段、组抬头折叠；运行中组抬头展开、行摘要、详情收起',
+          'Detailed: completed turns expand segments with collapsed group headers; running groups expand with row summaries',
         );
       case WorkStepDisplayMode.expanded:
         return L10n.t(
-          '完全展开：整轮与过程行保持展开、不分组；工具卡仍默认收起',
-          'Expanded: turns and process rows stay expanded without grouping; tool cards still start collapsed',
+          '完全展开：运行中当前轮不分组、详情自动展开；已完成轮行摘要、详情收起',
+          'Expanded: the running turn is flat with details expanded; completed turns show row summaries only',
         );
     }
   }
@@ -1976,8 +2270,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     WorkStepDisplayMode.concise => L10n.t('简洁', 'Concise'),
                     WorkStepDisplayMode.standard => L10n.t('标准', 'Standard'),
                     WorkStepDisplayMode.detailed => L10n.t('详细', 'Detailed'),
-                    WorkStepDisplayMode.expanded =>
-                      L10n.t('完全展开', 'Expanded'),
+                    WorkStepDisplayMode.expanded => L10n.t('完全展开', 'Expanded'),
                   },
                   style: TextStyle(
                     fontSize: 14,

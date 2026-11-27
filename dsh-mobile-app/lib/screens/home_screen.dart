@@ -185,9 +185,11 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _openPetPanel(BuildContext context) async {
     final store = widget.store;
     final en = L10n.lang == 'en';
-    final running = store.activeSessions
-        .where((s) => store.agentStatusForSession(s.id) == 'running')
-        .length;
+    // issue #124/#133：与列表行同口径（含递归子代理/后台任务），避免“行在转、面板 0 个”。
+    final running = runningSessionCountOf(
+      store.activeSessions,
+      store.rowStateOf,
+    );
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,

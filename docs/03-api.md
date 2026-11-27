@@ -1626,3 +1626,375 @@ Range / 条件请求语义：
 - `filePath` 的 300 字 clamp 与 `relative` 的 300 字上限是两件事：前者是既有 display 口径（可截断），后者超限**整段缺省**。
 
 > 验证：`test/issue67-file-path-preview.test.mjs`（cwd 内外、词法拒绝、符号链接、不可读/FIFO、300 字边界、四工具覆盖、同现约束）、`test/tool-cards-projection.test.mjs`（旧字段只增不改）。
+
+### 6.25 GET|HEAD /m/api/workspace-image 与 POST /m/api/workspace-image/consent（会话内图片授权链路）
+
+> 注：§6.25–§6.28 里出现的 `#86`、`#93`、`#94`、`#95`、`#124`、`#131`、`#133`、`#137` 等编号，指上游化之前贡献者 fork 的跟踪编号，**不是本仓库的 issue / PR 号**；本仓库对应的是 PR #98。
+
+> v3.3.0（issue #94 / #95 / #98 / #137）新增：App 渲染会话 Markdown 里的本地图片（`![alt](path)`）时，把 `path` 交给服务端取字节；服务端**只从该会话 cwd 取图**，且 cwd 必须属于已登记工作区。客户端只提交 Markdown 里出现的图片路径（相对 cwd 或绝对），服务端不会把它当作任意主机文件读取——cwd 之外的图片必须先由用户在 App 里显式点按授权（consent），且授权后仍要过同一套 fd/类型/大小校验。客户端始终不直接读文件系统。与通用下载 `/m/api/files`（§6.17）的分工：`/files` 是口令鉴权下的通用文件下载（路径由手机显式指定），本端点只读图片、绑定「会话 cwd + 登记工作区」，并带字节/像素上限与 magic 嗅探。
+
+**方法与参数：`GET|HEAD /m/api/workspace-image`**
+
+| 方法 | 行为 |
+|---|---|
+| `GET` | 返回图片字节 |
+| `HEAD` | 与 `GET` 同参数、同校验、同响应头，只返回头（body 为空） |
+| 其它 | `405 method-not-allowed` |
+
+| 查询参数 | 必填 | 说明 |
+|---|---|---|
+| `sessionId` | 是 | 目标会话；缺/空 → `400 bad-request` |
+| `path` | 是 | Markdown 图片路径：相对路径按会话 cwd 展开，也可绝对路径；缺失、空串或含 NUL → `400 bad-request` |
+| `consentId` | cwd 外必填 | `POST /workspace-image/consent` 返回的授权 id；cwd 外缺失 → `403 consent-required`，无效/过期/跨会话/作用域不匹配 → `403 consent-invalid` |
+
+**授权与校验规则**
+
+1. **会话与工作区前置**：`sessionId` 必须能解析出会话（live agent 优先，回退 `sessions.get`）→ 否则 `404 session-not-found`；会话必须有 cwd → 否则 `404 workspace-not-found`；cwd realpath 必须落在某个已登记工作区根内 → 否则 `403 workspace-not-authorized`。
+2. **cwd 内无需授权**：目标路径（词法归一后）在会话 cwd 内时直接走 fd 校验，旧 App 行为不变。
+3. **cwd 外必须授权**：`..` 逃逸、其它工作区、绝对路径越界一律视为 cwd 外，未带 `consentId` → `403 consent-required`。授权只解除「cwd 外」这一道限制，不绕过类型/大小/像素/fd 校验。
+4. **真实 fd 校验（fail-closed）**：Linux 上以 `O_NOFOLLOW` 打开文件，再用 `/proc/self/fd/<fd>` 读出实际路径复检：无 consent 时实际路径必须仍落在 cwd real 与某个登记工作区根内；实际文件名扩展名必须仍是期望图片类型。open 报 `ELOOP` / `EACCES` / `EPERM` 或实际路径逃逸 → `403 path-outside-workspace`。
+5. **平台门禁**：非 Linux、无 `O_NOFOLLOW`、无 procfs（Windows / macOS）→ `501 image-verification-unavailable`，**不退化为 realpath→stat→read**（那会重新引入 TOCTOU）。测试对 Windows/macOS 有 501 平台门禁用例，不伪造 200。
+6. **只接受普通文件**：目录 / FIFO / socket / 设备 / 空文件 / 读空 → `404 image-not-found`。
+
+**响应 200 / 304**
+
+```
+HTTP/1.1 200 OK
+content-type: image/png
+content-length: 68
+cache-control: private, max-age=86400
+etag: "<图片字节 sha256 前 32 位十六进制>"
+x-content-type-options: nosniff
+connection: close
+```
+
+- `content-type` 是 **magic bytes 嗅探**结果（`image/png` / `image/jpeg` / `image/gif` / `image/webp`），不是扩展名推断；扩展名必须白名单 `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp`（大小写不敏感）。
+- `If-None-Match` 与 `etag` 全等 → `304`（只带 `etag` / `cache-control` / `connection`，无 body）。
+- `HEAD` 走完整校验与响应头，`content-length` 为真实字节数、body 为空。
+- 字节/像素上限：单文件 **8 MiB**（`IMAGE_MAX_BYTES`）、宽或高 **8192**、像素总数 **40,000,000**；超限 → `413 image-too-large`。
+
+**`POST /m/api/workspace-image/consent`（申请工作区外图片授权）**
+
+请求体为 JSON，上限 **16 KiB**；仅此方法，其它方法 → `405 method-not-allowed`：
+
+```json
+{ "sessionId": "session-abc", "path": "C:\\Users\\me\\Pictures\\shot.png", "scope": "once" }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `sessionId` | string | 是 | 授权绑定的会话；不存在 → `404 session-not-found` |
+| `path` | string | 是 | 目标图片路径；相对路径按会话 cwd 展开，也可绝对路径；含 NUL → `400 bad-request` |
+| `scope` | string | 是 | `once`（仅这一个文件）或 `session-directory`（该图片所在目录，不递归）；其它值 → `400 bad-request` |
+
+响应 200：
+
+```json
+{ "ok": true, "consentId": "…", "scope": "once", "expiresAt": "2026-11-28T05:34:00.000Z" }
+```
+
+**授权记录、TTL 与失效**
+
+- **仅内存**：进程重启即全部失效；`consentId` 是 24 字节随机数（base64url），不可猜测、不含凭证。
+- **TTL**：自签发起默认 **12 小时**，绝对过期、不滑续；最多保存 **512** 条，超出按签发顺序 FIFO 驱逐最旧；每次签发/查找先清理过期条目。
+- **绑定会话**：`consentId` 只能由签发时的同一 `sessionId` 使用；换会话 → `403 consent-invalid`（伪造/未知 id 同样）。
+- **`once`**：读取时 fd 复检的实际路径必须与签发时 realpath **完全一致**；换文件/换链接目标 → `403 consent-invalid`。
+- **`session-directory`**：读取时 fd 复检的实际路径的**目录**必须等于签发文件所在目录 realpath；子目录（不递归）→ `403 consent-invalid`。签发时目录为文件系统根 `/`、家目录 realpath 或任一已登记工作区根 → `403 consent-root-not-allowed`。
+- **符号链接**：签发阶段末级是符号链接直接 `415 unsupported-image-symlink`（提前拒绝，避免「授权成功但取图永远 403」的死循环）。
+- consent 是**取图时的附加前提**，不是能力放大：签发阶段同样执行扩展名/magic/字节/像素/普通文件校验。
+
+**校验顺序（便于客户端定位失败原因）**
+
+- 取图：方法 → `sessionId`/`path` → 会话/cwd → 路径归一 → 扩展名（415）→ cwd/工作区（403）→ consent（403）→ fd 校验（403/404/413/501）→ 嗅探/尺寸（415/413）。
+- 签发：方法 → 请求体 JSON/字段（400）→ 会话/cwd（404）→ 路径归一（400）→ 扩展名（415）→ 工作区（403）→ 末级 symlink（415）/目标存在性与大小（404/413）→ magic/尺寸（415/413）→ 授权目录前置（403）→ 签发（200）。
+
+**错误码**
+
+| HTTP | error | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId` / `path`、路径含 NUL；consent 请求体超 16 KiB、非 JSON、缺字段、scope 非法；路径无法归一化（`invalid path`） |
+| 401 | `auth-required` / `bad-token` | 未鉴权（同 §1） |
+| 403 | `workspace-not-authorized` | 会话 cwd 不在任何已登记工作区内（realpath 判据） |
+| 403 | `consent-required` | 取图路径在 cwd 外且未带 `consentId` |
+| 403 | `consent-invalid` | `consentId` 不存在/已过期/跨会话/作用域不匹配（once 文件变了、目录授权遇到子目录） |
+| 403 | `consent-root-not-allowed` | `session-directory` 授权目标目录是 `/`、home 或工作区根 |
+| 403 | `path-outside-workspace` | fd 实际路径逃逸 cwd/工作区，或 open 报 `ELOOP` / `EACCES` / `EPERM` |
+| 404 | `session-not-found` | `sessionId` 不存在 |
+| 404 | `workspace-not-found` | 会话没有可用 cwd（或 cwd realpath 失败） |
+| 404 | `image-not-found` | 目标不存在 / 非普通文件 / 空文件 / 读空 |
+| 405 | `method-not-allowed` | 取图用了 `GET`/`HEAD` 之外的方法；consent 用了 `POST` 之外的方法 |
+| 413 | `image-too-large` | 字节 > 8 MiB，或宽/高 > 8192，或像素总数 > 40,000,000 |
+| 415 | `unsupported-image-type` | 扩展名不在白名单、magic 与扩展名不符、图片头解析失败 |
+| 415 | `unsupported-image-symlink` | consent 阶段目标末级是符号链接 |
+| 501 | `image-verification-unavailable` | 平台无法做 fd 校验（非 Linux / 无 `O_NOFOLLOW` / 无 procfs），fail-closed |
+
+> 错误体统一 `{ "error": string, "detail"?: string }`，**不泄露**主机绝对路径（含进程 cwd）。
+
+> 验证：`test/workspace-image.test.mjs`（合法 PNG/JPEG、相对/绝对路径、HEAD/304、目录逃逸与 symlink → 403、类型/大小/像素限制、consent 的 once / session-directory / 过期 / 跨会话 / 伪造、consent 不绕过限制、非 Linux 501 平台门禁）。
+
+### 6.26 GET|POST /m/api/git/graph（双传输 + 全部分支模式）
+
+> 3.3.0 把 §6.19 的 `GET /m/api/git/graph` 扩展为 **GET / HEAD / POST 三方法**：POST 用 JSON body 传 tips，突破 URL 长度限制（GET 仍保留）；新增 `all: true` 全部分支模式与双向分页（`prevCursor` / `pageStart` / `hasNewer` / `hasOlder` / `focusOid`）。除 graph 外的 8 个 Git 只读端点仍只允许 GET/HEAD（POST → 405，§6.19 不变）。
+
+**方法矩阵**
+
+| 方法 | 行为 |
+|---|---|
+| `GET` | 查询参数传输；tips 上限 **32**（`graphTips.getMax`） |
+| `HEAD` | 能力探测：恒 `200` + 无 body；**不校验参数、不解析 refs、不创建快照** |
+| `POST` | JSON body 传输；tips 上限 **128**（`graphTips.max`）；`all` 模式只能走 POST |
+| 其它 | `405 method-not-allowed` |
+
+**GET 查询参数**
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `sessionId` | 是 | 目标会话；缺 → `400 bad-request` |
+| `repositoryId` | 是 | `GET /m/api/git/repository` 返回、与会话绑定的仓库 id；缺 → `400 bad-request` |
+| `tips` | 否 | JSON 数组字符串，元素形如 `{"name":"refs/heads/main","tipOid":"<可选 oid>"}`；`name` 只接受 `HEAD` / `refs/heads/*` / `refs/remotes/*`；省略等价于 `[{"name":"HEAD"}]`；不是合法 JSON → `400 bad-request`（`tips must be JSON`） |
+| `snapshotId` + `cursor` | 否 | 翻页时成对提交；只给其一/过期/非法 → `409 graph-stale` |
+| `limit` | 否 | 每页条数 1–200，默认 100（`all` 模式忽略此参数，固定每页 16） |
+| `all` | 否 | **GET 不接受**：传 `all=true`/`all=1` → `400 bad-request`（`all mode requires POST`） |
+
+**POST body 字段**
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `sessionId` | 是 | 缺 → `400 bad-request`（body 优先，缺省回退同名查询参数） |
+| `repositoryId` | 是 | 缺 → `400 bad-request`（同上） |
+| `tips` | 新快照必填 | 数组，元素 `{ name, tipOid? }`，1–128 个；续页（带 `snapshotId`+`cursor`）可省略；不是数组 → `400 bad-request` |
+| `snapshotId` / `cursor` | 续页成对 | 与首次请求同源；`snapshotId`/`cursor` 与传输方式（GET/POST）无关、可互通；`all` 模式必须与快照的 `all` 一致，否则 `409 graph-stale` |
+| `limit` | 否 | 同 GET（1–200，默认 100；`all` 模式忽略） |
+| `all` | 否 | `true` → 全部分支模式：忽略 `tips`，服务端自行解析 `refs/heads/*` + `refs/remotes/*`（排除 `*/HEAD`、不含 tags），每页固定 16 |
+| `focus` | 否 | 仅 `all` 模式：分支 ref 或完整 commit oid（40/64 位十六进制）；定位该提交所在页 |
+
+- 请求体上限 **256 KiB**、单个 `tip.name` UTF-8 长度上限 **1024 字节**，超限 → `413 payload-too-large`（`Content-Length` 预检，读体时同限）。
+- body 必须是 JSON 对象；非法 JSON / 数组 / 非对象 → `400 bad-request`。
+- 新快照（既无 `snapshotId`/`cursor` 又无 `tips`）→ `400 bad-request`。
+- `all: true` 时 `tips` 必须省略或为空数组；带非空 `tips` → `400 bad-request`（`tips must be omitted in all mode`）。
+
+**响应 200**
+
+```json
+{
+  "ok": true,
+  "repositoryId": "repo_…",
+  "snapshotId": "…",
+  "tips": [{ "name": "refs/heads/main", "tipOid": "…" }],
+  "commits": [
+    {
+      "oid": "…",
+      "parents": ["…"],
+      "author": "Alice",
+      "timestamp": 1700000000,
+      "subject": "update guide",
+      "refs": ["HEAD -> refs/heads/main"],
+      "refsDetail": [{ "kind": "head", "name": "HEAD", "shortName": "HEAD", "oid": "…", "current": true }],
+      "tagsDetail": []
+    }
+  ],
+  "nextCursor": "…",
+  "prevCursor": null,
+  "all": false,
+  "pageSize": 100,
+  "pageStart": 0,
+  "focusOid": null,
+  "hasNewer": false,
+  "hasOlder": true
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `repositoryId` | string | 同 §6.19 |
+| `snapshotId` | string | 快照 id；续页时原样带回（GET/POST 互通）。快照默认 **5 分钟**过期、最多保留 128 个（FIFO） |
+| `tips` | array | 本快照的 tip 列表 `[{ name, tipOid }]`；`all` 模式为服务端解析出的全部分支 ref（按 name 升序） |
+| `commits[]` | array | 本页提交；字段与 §6.19.4 相同：`oid` / `parents` / `author` / `timestamp` / `subject` / `refs`（旧字符串数组，deprecated）/ `refsDetail` / `tagsDetail`（结构见 §6.19.2） |
+| `nextCursor` | string \| null | 更早一页的游标；只有本页满 `pageSize` 才下发（对应 `hasOlder`） |
+| `prevCursor` | string \| null | 更新一页的游标；`pageStart > 0` 才下发（对应 `hasNewer`） |
+| `all` | bool | 是否全部分支模式；续页时必须与首次请求一致 |
+| `pageSize` | number | 本页大小：普通模式 = `limit`（1–200，默认 100）；`all` 模式固定 16 |
+| `pageStart` | number | 本页起始偏移；`all` + `focus` 时为 focus 所在页的起始偏移 |
+| `focusOid` | string \| null | `all` 模式 focus 解析出的 commit oid；无 focus 或普通模式为 `null` |
+| `hasNewer` | bool | `pageStart > 0`（可用 `prevCursor` 上翻） |
+| `hasOlder` | bool | `nextCursor` 非空（可继续下翻） |
+
+**分页与一致性**
+
+- 每页返回前后都会再次校验 refs 未移动：普通模式校验选择集 tips，`all` 模式校验**全部分支指纹**（任一分支新增/移动/删除都会变）→ 变化则 `409 graph-stale`，客户端应丢弃该快照从头拉。
+- 服务端对 provider 调用有 **25 秒硬截止**（`GRAPH_DEADLINE_MS`）：超时或 provider 自报 `timedOut` → `504 graph-timeout`，**不把半页当完整页返回**。
+- `all` 模式内部保护：分支 ref 数 > **4096** → `400 graph-too-many-refs`（绝不静默截断）；focus 定位最多扫描 **5000** 条提交，找不到 → `409 graph-focus-not-found`。
+- 批量解析：POST 的 N 个 tips 优先一次 `provider.refs` 映射（128 tips 不逐 tip `resolveTip`）；外部 provider 无 `refs()` 时回退逐 tip（§6.19.11）。
+
+**`GET /m/api/git/capabilities` 的加法能力位**
+
+```json
+{
+  "graphTips": { "max": 128, "getMax": 32 },
+  "graphAll": { "pageSize": 16, "maxRefs": 4096, "maxScan": 5000 }
+}
+```
+
+- 旧宿主缺这两个字段 → App 回退旧选择档（5/5）与「仅选择集」模式，不按版本号推断。
+- `contractVersion` 仍为 **`1.1.0`**：本扩展为纯加法，不提升契约版本。
+
+**与既有 `/git/*` 端点（§6.19）的关系**
+
+- §6.19.4 的 GET 参数表写「1–5 个 tip」是旧口径；自 3.3.0 起 **GET ≤32 / POST ≤128**，5/10 选择集仍合法（不受影响）。
+- 鉴权、`sessionId` + `repositoryId` 绑定、`403 repository-not-authorized`、`refsDetail` / `tagsDetail`、错误体不泄露主机路径等约定与 §6.19 / §6.19.2 / §6.19.9 完全一致。
+- 只有 graph 放宽到 POST；其余 8 个只读端点仍 GET/HEAD（`POST` → `405`），这是有意的权限面收敛。
+
+**错误码**
+
+| HTTP | error | 场景 |
+|---|---|---|
+| 400 | `bad-request` | 缺 `sessionId` / `repositoryId`；body 非 JSON 对象；`tips` 不是数组；`all` 模式带非空 `tips`；GET 传 `all`；新快照缺 `tips`；GET 的 `tips` 不是合法 JSON |
+| 400 | `graph-tip-invalid` | `tips` 为空数组；名称重复 / 不是合法 ref；`tipOid` 非法；`all` 模式无任何分支 ref |
+| 400 | `graph-too-many-tips` | GET > 32 或 POST > 128 |
+| 400 | `graph-too-many-refs` | `all` 模式分支 ref 数 > 4096 |
+| 400 | `graph-focus-invalid` | `focus` 既不是分支 ref 也不是完整 oid，或 ref 不是分支 |
+| 401 | `auth-required` / `bad-token` | 未鉴权（同 §1） |
+| 403 | `repository-not-authorized` | repositoryId 与会话不匹配 / cwd 不在已登记工作区 |
+| 404 | `session-not-found` / `not-git-repository` | 会话不存在 / 会话 cwd 不是 Git 仓库 |
+| 405 | `method-not-allowed` | `GET`/`HEAD`/`POST` 之外的方法 |
+| 409 | `graph-stale` | 快照/游标非法或过期、只给 `snapshotId`/`cursor` 之一、`all` 模式不一致、分页期间 refs 移动 |
+| 409 | `graph-tip-invalid` | tip 解析不到（ref 已不存在）或解析出的 oid 与请求的 `tipOid` 不一致 |
+| 409 | `graph-focus-not-found` | focus commit 落在前 5000 条扫描之外 |
+| 413 | `payload-too-large` | POST body > 256 KiB 或 `tip.name` > 1024 字节 |
+| 503 | `git-provider-unavailable` | 当前生效 provider 不可用（外部 provider 透传的稳定码同 §6.19.9） |
+| 504 | `graph-timeout` | 服务端 25 秒截止（含 provider 自报 timedOut） |
+
+> 验证：`test/git-graph-post.test.js`（GET 1/5/32、POST 10/64/128、33/129 拒绝、POST 缺 tips、PUT 405、body/name 超限 413、GET↔POST 续页互通、HEAD 不建快照、25s 超时 504、`all` 模式 capability/tips 省略/focus/409/5000 扫描、>4096 refs 400）。
+
+### 6.27 `/sessions` 的 `subagentsRunning` 与 SSE 对应字段
+
+> 解决真机问题：主会话自身已 `idle`、但它的子代理仍在 `running` 时，App 会话列表的运行指示熄灭。3.3.0 在 `/m/api/sessions` 每行新增 `subagentsRunning`，并在 SSE `agent/status` 帧新增 `rootSessionId` + `subagentsRunning`。计数只有**一个数据源**：宿主 `agents.list()` 的 `status`（`running` / `idle`），不调用 `/subagents`、不逐会话扇出 `listDescendants`。
+
+**`GET /m/api/sessions` 行字段**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `subagentsRunning` | int | 该会话下**递归** running 子代理数（不含自身）；**恒下发，`0` 也发**（旧 App 忽略即可）；无子代理、宿主 `agents` 不可用/读失败 → `0`，不阻塞列表 |
+
+语义：
+
+- 只统计 **`origin === "subagent"` 链**（会话头 `origin: "subagent"` + `parentSession`）。用户主动 fork 的会话只有 `parentSession`、没有 `origin`，即使它自己在 running 也**不**计入父会话（ADR 0013）。
+- **递归**：`root → child → grandchild`，child running 时 root 与 child 各 +1，grandchild 自身 0。
+- 父子映射用**空会话过滤前**的完整语料构建：被默认 `includeEmpty` 过滤掉的空子代理仍计入父会话。
+- 链断（父不在已知语料）/成环：停止上溯、**不猜**，不会把 running 子代理挂到别的根。
+- 每次列表请求只做一次 `agents.list()` 反向计数；88 会话用例锁定「不扇出 `/subagents` 或 `listDescendants`」。
+- 行上既有的 `origin` / `parentSession` 字段是聚合依据，原样透出，供 App 识别子代理行。
+
+**SSE `agent/status` 帧新增字段**
+
+```json
+{
+  "type": "agent/status",
+  "sessionId": "session-child",
+  "agentId": "session:session-child",
+  "status": "running",
+  "child": true,
+  "rootSessionId": "session-root",
+  "subagentsRunning": 2
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `rootSessionId` | string? | 该 agent 所属主会话根：子代理沿 `parentSession` 递归上溯；根 agent 即自身（或已缓存的根提示）。**解析失败时省略**（旧宿主 / 链断 / 未知会话），不猜 |
+| `subagentsRunning` | int? | 该根下递归 running 子代理数（**`0` 也发**）；与 `rootSessionId` **同现**——root 省略时本字段也省略 |
+
+语义：
+
+- 计数会先用手头 `agents.list()` 覆盖同一会话的 status 为**本帧**状态后重算，因此启停帧一到即可见，不必等下一次 `/sessions`。
+- `agent/disposed` 可能没有对应的 `idle` 帧 → 插件补发一条**合成 idle** 帧（`status: "idle"` + `rootSessionId` + 重算的 `subagentsRunning`）；root 无法解析时不发该合成帧（不猜）。
+- SSE 侧的父子映射可跨休眠：用最近一次 `/sessions` 留下的完整语料 + 根提示缓存，dormant root 也能正确上溯。
+- 既有字段 `sessionId` / `agentId` / `status` / `child` 的语义与形状不变；新字段为纯增量，旧 App 忽略即可。
+
+**客户端消费约定（三路并集）**
+
+- App 对 SSE 计数、`/sessions` 的 `subagentsRunning`、本地可见子代理树**三者取并集**，任一路径说 running 就显示运行指示，三路不互相门控。
+- 慢速 `/sessions` 快照不得覆盖刷新期间新到的帧；连接代切换（换地址/重连/销毁）时两路瞬态数据全部清空，避免旧宿主计数串台。
+- 旧宿主两者都缺 → App 回落本地树；不发额外请求。
+
+> 验证：`test/session-list-running-indicator.test.mjs`（递归计数含孙代理、fork 不误聚合、0 也发、空会话过滤前计数、88 会话不扇出、SSE 帧 rootSessionId/subagentsRunning/0/fork/断链省略、dormant root 与 disposed 合成帧）；App 侧并集见 `dsh-mobile-app/lib/store.dart`（`rowStateOf` 与 `agent/status` 分支）。
+
+### 6.28 SSE 连接池语义与 3.3.0 语义变更
+
+> `GET /m/api/events` 是长连接，服务端按 `maxConnections`（默认 **16**）限定并发。3.3.0（issue #131）修复真机问题「只有一台手机却显示 `mobileOnline = 16 / 16`、之后所有 `/m/api/events` 永久 503、只能重启宿主」：满额不再直接拒绝，而是先驱逐一条**满龄**连接；同时服务端开启 TCP keepalive，并修正「手机在线」判据。底层 `connections: Set` 与 `mobileOnline` 指标的既有语义保持不变。
+
+**路由与方法**
+
+- 仅 `GET`；`HEAD` 及其它方法 → `405 method-not-allowed`（HEAD 会让 SSE 连接悬挂，故明确不放行）。
+
+**容量与准入**
+
+| 项 | 值 / 说明 |
+|---|---|
+| 配额 | 配置 `maxConnections`，默认 **16** |
+| 安全年龄 | 配置 `sseEvictMinAgeMs`，默认 **60000 ms**；硬下限 60 s，配置只能调高（不能把新连接变成候选） |
+| 满额判定 | `connections.size >= maxConnections` |
+| 驱逐上限 | 每次准入**最多驱逐 1 条**；绝不通过调大 `maxConnections` 掩盖泄漏 |
+| 拒绝条件 | 没有满龄候选（`no-eligible`）；或 `connections.size > maxConnections`（配额被调小 → `over-capacity`，不连续驱逐） |
+
+**503 拒绝响应**
+
+```
+HTTP/1.1 503
+content-type: application/json; charset=utf-8
+retry-after: 5
+
+{
+  "error": "too-many-connections",
+  "mobileOnline": 2,
+  "maxConnections": 2,
+  "oldestAgeMs": 1200,
+  "maxIdleMs": 800,
+  "evictMinAgeMs": 60000
+}
+```
+
+- `Retry-After: 5`（秒）：客户端必须按此退避重连，禁止并发重试风暴。
+- 503 日志按 **30 秒**窗口汇总一次（`reason=no-eligible` / `over-capacity` + 最旧年龄/空闲），避免刷屏。
+- 配额确实被调小到低于当前连接数时，**不**通过连续驱逐追赶——按 `over-capacity` 拒绝，直到连接自然衰减。
+
+**驱逐优先级（仅在满龄候选中，即 `age >= 安全年龄`）**
+
+1. **stalled** 优先（写失败 / 背压标记 / ≥50 s 无成功写）；
+2. **同 clientId**（请求头 `x-mobile-client-id`，双方都有且相同）——跨网络重连也能优先清掉自己的旧连接；
+3. **同 clientIp**（`socket.remoteAddress`）；
+4. **全局最旧**（`createdAt` 最小）；
+5. 建立时间相同时按连接 id 稳定排序。
+
+`reason` 取值：`same-client-id` / `same-client-ip` / `oldest`；驱逐日志含 `id` / `age` / `idle` / `remote` / `app` / `reason` / `stalled`。被驱逐连接**静默销毁**：只留 `SSE evict` 日志，不再重复打 `SSE close`，并计入 `mobileEvicted`。
+
+**stalled 只是排序/日志信号**
+
+- 定义：`writeFailures > 0`，或 `backpressure === true`，或距最后一次成功写 **≥ 50 s**。
+- **不是**「连接已死」的证明：半开连接的 `res.write` 可能仍然「成功」；`age >= 60 s` 也只是**可驱逐门槛**，不是活跃/陈旧判据。整套策略是启发式，**不承诺**绝不误踢活跃连接（架构顾问契约原文口径）。
+
+**心跳与清理**
+
+- 每 **25 s** 写一次 `: ping` 注释行（与 §3.6 既有周期一致）；写前若 `socket` 已销毁 → 直接摘除（`reason=dead-socket`），不再向僵尸连接写心跳。
+- 写失败 → 摘除（`write-error`）；`res.writableLength > 256 KiB` → 标记背压并摘除（`backpressure`）。
+- `close` / `error` 事件共用幂等清理，不会重复删除或重复计数；每个连接元数据含 `id`（`c1`、`c2`…）、`createdAt`、`lastWriteAt`、`lastHeartbeatAt`、`writeFailures`、`backpressure`、`clientIp`、`appVersion`、可选 `clientId`（仅用于准入排序与排障，不参与鉴权）。
+
+**3.3.0 语义变更（重要）**
+
+1. **TCP keepalive**：SSE 建链成功后对 socket 开启 keepalive（**30 s 起探测**）并 `setNoDelay(true)`。半开连接被内核判定失效后触发 `close`/`error` → 清理，不再永久占配额。
+2. **「手机在线」判据（`phoneOnline`）**：审批/问询等待的在线判定从 `connections.size > 0` 改为「存在至少一条**未销毁 socket** 的连接」（`res.socket && !res.socket.destroyed`）。旧行为下半开连接会让审批按「手机在线」等满 1 小时才回退桌面；现在死连接不再被算作在线。
+3. **诊断口径**：`runtime.metrics.mobileOnline` 仍等于 `connections.size`（配额占用数，**不剔半开**），语义保持不变；新增 `mobileOldestAgeMs` / `mobileOldestIdleMs` / `mobileStalled` / `mobileEvicted` / `mobileRejected`（旧 App 忽略未知字段）。`checks.sseConnections` 为一行摘要，例如：
+
+```
+2 / 3 · 最旧 12s · 最久未写 8s · 满龄候选 0 · stalled 0 · 安全年龄 1m0s · 累计驱逐 0 · 累计拒绝 0
+```
+
+- `满龄候选` 只表示 `age >= 安全年龄` 的连接数，**不是**陈旧连接数（诊断文案刻意区分）。
+- 无连接时摘要只含 `0 / M · 安全年龄 … · 累计驱逐 … · 累计拒绝 …`。
+
+**客户端约定**
+
+- 收到 `503 too-many-connections` 按 `Retry-After: 5` 退避后重连；不要因 503 放大重连并发。
+- 连接被服务端驱逐后按正常重连逻辑重连即可（旧记录已被摘除，重连不会放大配额）。
+
+> 验证：`test/issue131-sse-connections.test.mjs`（名额未满/满额无候选 503 + Retry-After/满龄驱逐最旧/二次驱逐/诊断摘要与 runtime.metrics/驱逐日志不含重复 close）、`test/sse-connections.test.mjs`（stalled 判定、候选年龄门槛、stalled > 同 clientId > 同 IP > 最旧、每次最多 1 条、over-capacity、统计）。
