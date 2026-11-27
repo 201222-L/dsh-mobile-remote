@@ -271,7 +271,9 @@ class AppStore extends ChangeNotifier {
 
   /// 把某会话的未读通知标为已读（S1：现在只有点单条才标已读，所以会积到几十条）。
   ///
-  /// 优先用缓存列表；缓存为空（还没拉过）时才重新请求一次。
+  /// 缓存只是加速手段，不是真源（issue #96）：点系统通知进会话时 App 可能刚从后台
+  /// 回来，缓存是旧的、不含这条通知——旧实现此时 `ids` 为空直接 return，一条都不标。
+  /// 现在缓存里找不到该会话的未读时，先重拉一次服务端再判定。
   Future<void> markSessionNotifsRead(String sessionId) async {
     try {
       var items = notifs;
@@ -279,10 +281,13 @@ class AppStore extends ChangeNotifier {
         items = await api.notifications();
         notifs = items;
       }
-      final ids = items
-          .where((n) => n.unread && n.sessionId == sessionId)
-          .map((n) => n.id)
-          .toList(growable: false);
+      var ids = _unreadIdsOfSession(items, sessionId);
+      if (ids.isEmpty) {
+        // 缓存非空但没命中：可能是后台期间新到的通知，或重连前拿到的旧列表。
+        items = await api.notifications();
+        notifs = items;
+        ids = _unreadIdsOfSession(items, sessionId);
+      }
       if (ids.isEmpty) return;
       await api.markNotifsRead(ids: ids);
       AppLog.instance.log('通知：进入会话 $sessionId，标记 ${ids.length} 条已读');
@@ -291,6 +296,16 @@ class AppStore extends ChangeNotifier {
       AppLog.instance.log('通知：标记会话已读失败（$e）');
     }
   }
+
+  /// 某会话里仍未读的通知 id（顺序与列表一致，便于稳定测试）。
+  List<String> _unreadIdsOfSession(
+    List<AppNotification> items,
+    String sessionId,
+  ) => items
+      .where((n) => n.unread && n.sessionId == sessionId)
+      .map((n) => n.id)
+      .toList(growable: false);
+
 
   // ── SSE 内部 ──
   StreamSubscription<Map<String, dynamic>>? _sub;
