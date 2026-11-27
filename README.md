@@ -68,6 +68,9 @@
 
 ## 安装（部署者 3 步）
 
+> ⚠️ **官方安装来源**：本仓库的 [GitHub Releases](https://github.com/201222-L/dsh-mobile-remote/releases)（`dsh-mobile-remote-vX.Y.Z.tgz` + `DSH-Remote-vX.Y.Z.apk`），以及作者维护的 `@polaris-l/dsh-mobile-remote`（仅旧版，未随新版发布）。
+> npm 上**其他 scope 下的同名包**（或版本号高于本仓库最新 Release 的包）属于第三方分发，不是本项目发布；用这些包时请一并说明版本号，否则没法按上游代码排查。
+
 > 🤖 **让 DSH 的 agent 自动安装**：直接告诉 agent「按本仓库 docs/06 安装 dsh-mobile-remote 插件」即可。agent 默认会采用下面的「方式一」，拉取的就是**当前正式版**（main 分支永远保持完整可发布状态，版本号与最新 Release 一致）。需要与手机 App 精确配对时，把依赖写成 `"dsh-mobile-remote": "github:201222-L/dsh-mobile-remote#v3.0.0"`。
 
 ### 方式一：命令行 dsh web（web 版流程）
