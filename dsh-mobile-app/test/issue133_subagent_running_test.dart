@@ -141,6 +141,21 @@ Future<void> _bootServer() async {
   });
 }
 
+/// 等 `connState` 变 offline（上限 3s）。
+///
+/// 用例原先固定等 400ms：Linux 上连 `127.0.0.1:1` 立即 RST，够用；Windows 上是防火墙
+/// 丢包 + 超时，400ms 时还停在 `connecting`，4 个用例会稳定红。轮询对两个平台都成立，
+/// 超时后由调用方的 `expect(store.connState, 'offline')` 给出失败信息。
+Future<void> _waitOffline(
+  AppStore store, {
+  Duration timeout = const Duration(seconds: 3),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (store.connState != 'offline' && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+}
+
 Future<AppStore> _pumpSessions(
   WidgetTester tester, {
   Size size = const Size(390, 844),
@@ -709,7 +724,7 @@ void main() {
     api.baseUrl = 'http://127.0.0.1:1';
     await tester.runAsync(() async {
       store.connect();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await _waitOffline(store);
     });
     await tester.pump();
     expect(store.connState, 'offline');
@@ -742,7 +757,7 @@ void main() {
     api.baseUrl = 'http://127.0.0.1:1';
     await tester.runAsync(() async {
       store.connect();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await _waitOffline(store);
     });
     await tester.pump();
     expect(store.connState, 'offline');
@@ -765,7 +780,7 @@ void main() {
     api.baseUrl = 'http://127.0.0.1:1';
     await tester.runAsync(() async {
       store.connect();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await _waitOffline(store);
     });
     await tester.pump();
     expect(store.connState, 'offline');
@@ -786,7 +801,7 @@ void main() {
     api.baseUrl = 'http://127.0.0.1:1';
     await tester.runAsync(() async {
       store.connect();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await _waitOffline(store);
     });
     await tester.pump();
     expect(store.connState, 'offline');
